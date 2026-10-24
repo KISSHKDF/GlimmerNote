@@ -56,13 +56,18 @@ fixtures/**/*.zip
 *.gif
 *.webp
 *.bmp
-!fixtures/**/*.png
-!fixtures/**/*.jpg
+# ★ 2026-10-25 删掉两行 `!fixtures/**/*.png` / `!fixtures/**/*.jpg`：
+#   它们把上面「影像仍然不放进 fixtures」的说法**自己推翻了** —— 实测往 fixtures 丢一张
+#   png/jpg，git status 直接显示 ?? 可提交（jpeg/webp/bmp/pdf/zip 反而被拦住）。
+#   当时 fixtures 里零张图，等于上了膛没扣扳机；真卷影像一旦落进去就会静默入库。
+#   现在影像一律不进 fixtures；确实要放就得人肉改这条并过 fixtures-smoke 门禁。
 # 文档截图要入库：README 引用的界面图是"文档资产"，不是用户数据、也不是可再生的
 # 测试产物（tests/out/ 才是后者）。所以单独开一个口子，且限定目录。
 !docs/images/*.png
 *.pdf
 *.zip
+# release\ 只放行占位文件：其余（含手放的 README、包）一律不跟踪
+release/*
 !release/.gitkeep
 
 # ---------- 三、构建产物 ----------
