@@ -1,0 +1,16 @@
+{
+  "note": "合成测试数据：组卷台账最小样例。★ 2026-10-24 修：原文件误抄了通用台账模板（{updatedAt,items,seq}），_标记复习.mjs loadLedger 只认 batches 数组 ⇒ 真生成器跑 fixtures 必崩。形状与真实台账一致（paperId/date/student/subject/title/items/status/results）。",
+  "batches": [
+    {
+      "paperId": "P20261001-01",
+      "date": "2026-10-01",
+      "student": "学生A",
+      "subject": "数学",
+      "title": "错题重做卷·合成样例",
+      "items": ["S0001"],
+      "status": "已批改",
+      "results": { "S0001": "对" },
+      "note": "合成样例批次"
+    }
+  ]
+}

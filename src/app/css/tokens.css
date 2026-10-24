@@ -1,0 +1,131 @@
+/* ============================================================
+   错题本 2.0 · 设计令牌（tokens）
+   纸墨风：亮色=暖纸底+墨青字+靛蓝主行动色；暗色=深岩底。
+   全部颜色/尺寸/阴影/圆角只从本文件出，组件样式不许私加色值。
+   ============================================================ */
+:root{
+  color-scheme: light;
+  /* 底与面 */
+  --bg:#f4f2ed;            /* 页面底：暖纸 */
+  --bg-grad:radial-gradient(1200px 500px at 80% -10%, #ece8df 0%, var(--bg) 60%);
+  --surface:#fffefb;        /* 卡片面 */
+  --surface2:#f6f4ee;       /* 次级面/表头 */
+  --surface3:#edeae2;       /* 凹陷/进度槽 */
+  --line:#e2ddd2;           /* 描边 */
+  --line2:#cfc9bb;          /* 强描边 */
+  /* 字 */
+  --text:#22262e;           /* 主文本：墨青 */
+  --text2:#5b6069;          /* 次文本 */
+  --text3:#6b7280;          /* 弱文本：2026-10-11 由 #8b9099 调深。
+                               原值在 --surface:#fffefb 上对比只有 3.2:1，正文/说明文字不达 WCAG AA(4.5:1)；
+                               现值 4.8:1。弱≠看不清，「弱」只能靠字号/字重表达。 */
+  /* 主行动 */
+  --brand:#4353c9;
+  --brand-2:#5b6be0;
+  --brand-soft:#e8ebfa;
+  --brand-ink:#2c3aa0;
+  /* 语义色：基色（--ok/--warn/--bad/--info）用于**填充/描边/边条**——面积大，不受 4.5:1 约束；
+     `-ink` 后缀专供「浅色语义底上的**文字**」。2026-10-11 逐个实算对比度：
+       原 --warn:#c07f10 在 --warn-soft:#faf0da 上只有 2.9:1（琥珀底深字，正是用户点名的右栏提示配色）
+       原 --bad :#cf3d51 在 --bad-soft :#fae8ec 上 4.0:1
+       原 --info:#2f7fb3 在 --info-soft:#e4f0f8 上 3.8:1
+     全部不达 AA。故基色保持不动（条形填充观感不变），文字改用下面的 -ink 值。*/
+  --ok:#0e8f5f; --ok-soft:#e3f4ec;   --ok-ink:#0a6b47;     /* 5.7:1 on ok-soft */
+  --warn:#c07f10; --warn-soft:#faf0da; --warn-ink:#8a5a00; /* 5.2:1 on warn-soft */
+  --bad:#cf3d51;  --bad-soft:#fae8ec;  --bad-ink:#b02036;   /* 5.7:1 on bad-soft */
+  --info:#2f7fb3; --info-soft:#e4f0f8; --info-ink:#1d5f8a; /* 5.9:1 on info-soft */
+  /* 错因三层：基色供条形填充；-ink 供彩底文字（原值在各自 -soft 底上只有 3.1/3.8/3.8:1，不达 AA） */
+  --k:#b97c10;  --k-soft:#f8efdd;  --k-ink:#8a5c00;   /* 5.1:1 on k-soft */
+  --l:#2f7fb3;  --l-soft:#e4f0f8;  --l-ink:#1d5f8a;   /* 5.9:1 on l-soft */
+  --s:#c0517a;  --s-soft:#f9e8f0;  --s-ink:#9c2f57;   /* 6.0:1 on s-soft */
+  /* 难度：同样分成填充基色与彩底文字色（原值在白底上仅 4.1/3.3，-ink 分别 6.5/5.9/6.7:1） */
+  --d-easy:#0e8f5f; --d-mid:#c07f10; --d-hard:#cf3d51;
+  --d-easy-ink:#0a6b47; --d-mid-ink:#8a5a00; --d-hard-ink:#b02036;
+  /* 学科（未知学科自动按色相环派生） */
+  --sj-数学:#4353c9; --sj-物理:#7c4dbe; --sj-化学:#0e8f7c; --sj-英语:#c07f10; --sj-语文:#cf3d51; --sj-生物:#2f9e44; --sj-历史:#8a6d3b; --sj-地理:#2f7fb3; --sj-道德与法治:#a04c8c;
+  /* 尺寸 */
+  --r-s:8px; --r-m:12px; --r-l:16px; --r-xl:22px;
+  --sp:4px;
+  /* 间距阶梯（4/8/12/16/24/32）——2026-10-11 起组件只准落在这六档上：
+     之前 9/10/11/14/18/22px 混用，卡片内边距与卡片间距不一致，视觉上「忽大忽小」。 */
+  --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:32px;
+  /* 字号阶梯（6 档）——KPI 大数字 / 卡头 / 正文 / 辅助 / 说明 / 微标 层级分明。
+     之前正文 13~15.5px 混排，12/12.3/12.5/12.8/13.5 五种「小字」彼此差不到 1px。 */
+  --fs-xxl:28px; --fs-xl:20px; --fs-lg:16px; --fs-md:14px; --fs-sm:13px; --fs-xs:12px;
+  /* 焦点环（键盘可达性的唯一可见凭据，见 app.css 的 :focus-visible 段） */
+  --focus:var(--brand-2);
+  --shadow-s:0 1px 2px rgba(40,35,20,.06), 0 2px 8px -4px rgba(40,35,20,.10);
+  --shadow-m:0 2px 4px rgba(40,35,20,.06), 0 12px 32px -14px rgba(40,35,20,.22);
+  --shadow-l:0 4px 12px rgba(40,35,20,.10), 0 28px 64px -20px rgba(40,35,20,.30);
+  --top-h:54px; --side-w:216px; --drawer-w:600px;
+  --font-ui:'Microsoft YaHei UI','Segoe UI Variable Text','Segoe UI','PingFang SC','Hiragino Sans GB','Source Han Sans SC','Noto Sans CJK SC',system-ui,-apple-system,sans-serif;
+  --font-num:'Consolas','JetBrains Mono','Segoe UI',var(--font-ui);
+  --ease:cubic-bezier(.2,.7,.3,1);
+}
+html[data-theme="dark"]{
+  color-scheme: dark;
+  --bg:#12151c;
+  --bg-grad:radial-gradient(1200px 500px at 80% -10%, #171c28 0%, var(--bg) 60%);
+  --surface:#1a1f2a;
+  --surface2:#222836;
+  --surface3:#2a3142;
+  --line:#2c3342;
+  --line2:#3c4557;
+  --text:#e7eaf2;
+  --text2:#aab3c4;
+  --text3:#7d8798;
+  --brand:#7b88ee;
+  --brand-2:#8f9bf5;
+  --brand-soft:#232a4a;
+  --brand-ink:#c3cbff;
+  --ok:#42c08d; --ok-soft:#16302a;   --ok-ink:#42c08d;     /* 深色底上基色已 5.6:1，-ink 与基色同值 */
+  --warn:#dfae58; --warn-soft:#33290f; --warn-ink:#dfae58; /* 7.0:1 */
+  --bad:#f2788c; --bad-soft:#3a1c24;  --bad-ink:#f2788c;   /* 6.2:1 */
+  --info:#74b6e0; --info-soft:#15293a; --info-ink:#74b6e0; /* 6.4:1 */
+  --k:#dfae58;  --k-soft:#33290f;  --k-ink:#dfae58;   /* 深色底下基色已达标，-ink 同值 */
+  --l:#74b6e0;  --l-soft:#15293a;  --l-ink:#74b6e0;
+  --s:#e58ba9;  --s-soft:#361f2b;  --s-ink:#e58ba9;
+  --d-easy:#42c08d; --d-mid:#dfae58; --d-hard:#f2788c;
+  --d-easy-ink:#42c08d; --d-mid-ink:#dfae58; --d-hard-ink:#f2788c;
+  --sj-数学:#7b88ee; --sj-物理:#b18cf0; --sj-化学:#3fc7ad; --sj-英语:#dfae58; --sj-语文:#f2788c; --sj-生物:#5ecb72; --sj-历史:#c2a06b; --sj-地理:#74b6e0; --sj-道德与法治:#d38fc0;
+  --shadow-s:0 1px 2px rgba(0,0,0,.35), 0 2px 10px -4px rgba(0,0,0,.45);
+  --shadow-m:0 2px 4px rgba(0,0,0,.35), 0 14px 36px -14px rgba(0,0,0,.6);
+  --shadow-l:0 4px 14px rgba(0,0,0,.45), 0 30px 70px -20px rgba(0,0,0,.7);
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;height:100%}
+body{
+  background:var(--bg-grad) fixed,var(--bg);
+  color:var(--text);
+  font:15px/1.7 var(--font-ui);
+  -webkit-font-smoothing:antialiased;
+  overflow:hidden;
+}
+::selection{background:var(--brand-soft);color:var(--brand-ink)}
+/* 细滚动条 */
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:var(--line2);border-radius:8px;border:2px solid transparent;background-clip:content-box}
+::-webkit-scrollbar-thumb:hover{background:var(--text3)}
+::-webkit-scrollbar-track{background:transparent}
+/* ---------- 数字：等宽/表格数字 ----------
+   凡是对齐比较的数字（KPI、计数、进度值、表格数值列）一律走这里，
+   否则 1 和 8 宽度不同，纵向一列数字会左右抖。 */
+.num,.tnum,.kpi-n,.mv,.kv2,td.n,th.n{font-variant-numeric:tabular-nums}
+.num,.kpi-n,.mv,.kv2{font-family:var(--font-num)}
+a{color:var(--brand);text-decoration:none}
+a:hover{text-decoration:underline}
+kbd{
+  font:11.5px/1 var(--font-num);color:var(--text2);
+  background:var(--surface2);border:1px solid var(--line2);border-bottom-width:2px;
+  border-radius:5px;padding:2.5px 6px;white-space:nowrap;
+}
+
+/* ---------- 键盘可达性：全站唯一的可见焦点凭据 ----------
+   2026-10-11 前 v2 **一条 :focus-visible 都没有**：Tab 走一圈屏幕上没有任何指示，
+   键盘用户只能靠猜（`?` 帮助里却写着「可键盘操作」）。这里补一个统一焦点环。
+   `:focus:not(:focus-visible)` 把鼠标点击产生的焦点环去掉，保证这个信号不被稀释。 */
+:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
+:focus:not(:focus-visible){outline:none}
+/* 跳转锚点落点高亮（待办锚点已用 .anchor，这里兜底纯键盘 Tab 到的行） */
+.skip-target:focus{outline-offset:0}

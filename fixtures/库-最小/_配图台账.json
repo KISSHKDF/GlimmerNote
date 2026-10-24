@@ -1,0 +1,4 @@
+{
+  "note": "合成测试数据：配图台账最小样例。★ 2026-10-24 修：原文件误抄了通用台账模板（{updatedAt,items,seq}），_配图门禁.mjs loadLedger 只认 cards 对象 ⇒ 真生成器跑 fixtures 必崩。合成卡 hasImage=false，全部无需配图，cards 为空对象即合法。",
+  "cards": {}
+}

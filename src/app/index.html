@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>拾光小册</title>
+<link rel="stylesheet" href="css/tokens.css">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<!-- 应用骨架：由 js/shell.js 挂载（经典 script，兼容 file:// 直开） -->
+<div id="boot" class="boot">
+  <div class="boot-card">
+    <div class="boot-logo">拾</div>
+    <div class="boot-t">拾光小册</div>
+    <div class="boot-s" id="bootMsg">正在连接数据…</div>
+    <div class="boot-bar"><i></i></div>
+  </div>
+</div>
+<div id="app" hidden>
+  <aside id="sidebar"></aside>
+  <div class="maincol">
+    <header id="topbar"></header>
+    <main id="view"></main>
+    <footer id="statusbar"></footer>
+  </div>
+  <div id="drawerWrap" class="drawer-wrap" hidden>
+    <div class="drawer-mask" id="drawerMask"></div>
+    <section id="drawer" class="drawer"></section>
+  </div>
+  <div id="paletteWrap" class="palette-wrap" hidden>
+    <div class="palette-mask" id="paletteMask"></div>
+    <div class="palette"><input id="paletteInput" placeholder="搜索题目 / 输命令（&gt; 前缀执行命令）"><div id="paletteList" class="palette-list"></div></div>
+  </div>
+  <div id="lightbox" class="lightbox" hidden></div>
+  <div id="toasts" class="toasts"></div>
+  <div id="printArea" class="print-area"></div>
+</div>
+<!-- 顺序装载（无构建依赖）：版本 → 工具 → 数据 → 渲染 → 视图 → 启动 -->
+<!-- 版本.js 由打包脚本生成（注入 window.__GNOTE_VERSION__）；开发态没有它也无妨，必须排在
+     js/version.js 之前 —— 后者只负责把它读进 CTB.version，自己不含版本号。 -->
+<script src="版本.js"></script>
+<script src="js/version.js"></script>
+<script src="js/util.js"></script>
+<script src="js/md.js"></script>
+<script src="js/chart.js"></script>
+<script src="js/host.js"></script>
+<script src="js/model.js"></script>
+<script src="js/shell.js"></script>
+<script src="js/views/dash.js"></script>
+<script src="js/views/bank.js"></script>
+<script src="js/views/review.js"></script>
+<script src="js/views/paper.js"></script>
+<script src="js/views/pending.js"></script>
+<script src="js/views/stats.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

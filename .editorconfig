@@ -1,0 +1,37 @@
+# 编辑器统一配置
+# 为什么：多人/多编辑器协作时缩进与行尾不一致会污染 diff，也会改变产物字节。
+# 与 .gitattributes 配套使用。
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+[*.{js,mjs,cjs,json,html,css,yml,yaml,md}]
+indent_size = 2
+
+[*.cs]
+indent_size = 4
+
+[*.ps1]
+end_of_line = crlf
+indent_size = 4
+
+[*.{bat,cmd}]
+end_of_line = crlf
+
+[*.md]
+# Markdown 里行尾两个空格是有意义的换行，不要自动裁掉
+trim_trailing_whitespace = false
+
+[*.{png,jpg,jpeg,gif,webp,bmp,ico,pdf,zip,dll,exe,nupkg}]
+# 二进制文件不做这些处理
+charset = unset
+end_of_line = unset
+insert_final_newline = unset
+trim_trailing_whitespace = unset

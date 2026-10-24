@@ -1,0 +1,207 @@
+{
+  "version": 3,
+  "generatedAt": "2026-10-24T09:53:00.129Z",
+  "data": [
+    {
+      "name": "学生A",
+      "grade": "九年级",
+      "subjects": [
+        {
+          "name": "数学",
+          "dir": "九年级",
+          "items": [
+            {
+              "id": "S0001",
+              "source": "合成样例",
+              "sourceDate": "2026-10-01",
+              "type": "填空题",
+              "question": "计算 1 + 1 = ____。",
+              "answer": "2",
+              "studentAnswer": "3",
+              "kpoints": [
+                "有理数加法"
+              ],
+              "causeLayer": "知识",
+              "causeCode": "K01",
+              "causeDesc": "进位加法算错",
+              "causeConfirmed": true,
+              "difficulty": "易",
+              "errorCount": 1,
+              "status": "在册",
+              "hasImage": false,
+              "hasVariants": false,
+              "reviews": [
+                {
+                  "at": "2026-10-02T20:00:00+08:00",
+                  "pass": true,
+                  "mode": "到期待复习"
+                }
+              ],
+              "reviewStatus": "复习中",
+              "reviewCount": 1,
+              "passStreak": 1,
+              "lastReviewedAt": "2026-10-02T20:00:00+08:00",
+              "nextDue": "2026-10-05",
+              "masteredAt": null,
+              "blindStatus": "已通过",
+              "blindSolveAt": "2026-10-01T21:00:00+08:00",
+              "blindSolver": "合成样例",
+              "blindNote": "",
+              "blindFingerprint": "0000000000000000",
+              "answerSource": "独立判卷",
+              "answerSourceNote": "合成样例，无真实来源",
+              "img": null,
+              "md": null,
+              "stem": null,
+              "stemHtml": "<p>计算 <b>1 + 1 = ____</b>。</p>\r\n",
+              "fig": null,
+              "pdf": null,
+              "origPage": null,
+              "origBox": null,
+              "origImport": null,
+              "origBy": "合成样本"
+            }
+          ]
+        },
+        {
+          "name": "物理",
+          "dir": "九年级",
+          "items": [
+            {
+              "id": "S0002",
+              "source": "合成样例",
+              "sourceDate": "2026-10-02",
+              "type": "选择题",
+              "question": "物体浸没在水中受到的浮力方向是？",
+              "answer": "竖直向上",
+              "studentAnswer": "竖直向下",
+              "kpoints": [
+                "浮力方向"
+              ],
+              "causeLayer": "知识",
+              "causeCode": "K02",
+              "causeDesc": "浮力方向记反",
+              "causeConfirmed": true,
+              "difficulty": "易",
+              "errorCount": 1,
+              "status": "在册",
+              "hasImage": false,
+              "hasVariants": false,
+              "reviews": [],
+              "reviewStatus": "未复习",
+              "reviewCount": 0,
+              "passStreak": 0,
+              "lastReviewedAt": "",
+              "nextDue": "2026-10-03",
+              "masteredAt": null,
+              "blindStatus": "未盲解",
+              "blindSolveAt": "",
+              "blindSolver": "",
+              "blindNote": "",
+              "blindFingerprint": "",
+              "answerSource": "",
+              "answerSourceNote": "",
+              "img": null,
+              "md": null,
+              "stem": null,
+              "stemHtml": "<p>物体浸没在水中受到的浮力方向是？</p>\r\n",
+              "fig": null,
+              "pdf": null,
+              "origPage": null,
+              "origBox": null,
+              "origImport": null,
+              "origBy": "合成样本"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "papers": [
+    {
+      "paperId": "P20261001-01",
+      "date": "2026-10-01",
+      "student": "学生A",
+      "subject": "数学",
+      "title": "错题重做卷·合成样例",
+      "items": [
+        "S0001"
+      ],
+      "status": "已批改",
+      "results": {
+        "S0001": "对"
+      },
+      "gradedAt": null,
+      "source": null,
+      "note": "合成样例批次"
+    }
+  ],
+  "blindFresh": {
+    "学生A|S0001": "待重盲解",
+    "学生A|S0002": "未盲解"
+  },
+  "pending": {
+    "ok": true,
+    "problems": [],
+    "open": 0,
+    "noVerdict": [],
+    "byAsk": {
+      "孩子": 0,
+      "老师": 0,
+      "原卷": 0,
+      "系统": 0
+    },
+    "noQref": [],
+    "noBox": [],
+    "truncated": [],
+    "doneTotal": 0,
+    "noDisposition": [],
+    "evidenceBad": [],
+    "origOn": [],
+    "origOff": [],
+    "origBad": [],
+    "alignBad": [],
+    "alignProblems": {},
+    "ids": [],
+    "dupId": [],
+    "items": []
+  },
+  "figState": {
+    "学生A|S0001": {
+      "state": "未登记",
+      "ok": true,
+      "hasAsset": false,
+      "hasStemHtml": true,
+      "inline": false,
+      "files": [],
+      "need": null
+    },
+    "学生A|S0002": {
+      "state": "未登记",
+      "ok": true,
+      "hasAsset": false,
+      "hasStemHtml": true,
+      "inline": false,
+      "files": [],
+      "need": null
+    }
+  },
+  "dataHealth": {
+    "blindFresh": "ok",
+    "figState": "ok",
+    "admit": "ok",
+    "pending": "ok"
+  },
+  "admit": {
+    "学生A|S0001": {
+      "ok": true,
+      "why": ""
+    },
+    "学生A|S0002": {
+      "ok": false,
+      "why": "盲解未过：未盲解"
+    }
+  },
+  "_pendingSrc": {},
+  "_genBy": "生成状态.mjs"
+}

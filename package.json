@@ -1,0 +1,15 @@
+{
+  "name": "glimmernote",
+  "private": true,
+  "version": "0.0.0-static",
+  "description": "拾光小册（GlimmerNote）—— 完全离线的本地错题本工具。此 package.json 仅用于承载本地 lint 配置，不是 npm 包，也不会发布。",
+  "scripts": {
+    "lint": "node tools\\lint.mjs",
+    "gate:quick": "node tests\\run.mjs quick",
+    "gate:full": "node tests\\run.mjs full",
+    "portability": "node tests\\portability.cjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

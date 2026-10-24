@@ -1,0 +1,20 @@
+{
+    "cards":  {
+                  "学生A|S0001":  {
+                                    "page":  null,
+                                    "box":  null,
+                                    "import":  null,
+                                    "by":  "合成样本",
+                                    "note":  "合成测试库：无原卷母本，显式标 lost（豁免但不隐藏）",
+                                    "lost":  true
+                                },
+                  "学生A|S0002":  {
+                                    "page":  null,
+                                    "box":  null,
+                                    "import":  null,
+                                    "by":  "合成样本",
+                                    "note":  "合成测试库：无原卷母本，显式标 lost（豁免但不隐藏）",
+                                    "lost":  true
+                                }
+              }
+}

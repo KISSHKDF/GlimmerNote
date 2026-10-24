@@ -1,0 +1,86 @@
+{
+  "student": "学生A",
+  "grade": "九年级",
+  "note": "合成测试数据，非真实题库。用于 fixtures 与门禁自检。",
+  "updatedAt": "2026-10-24T00:00:00+08:00",
+  "subjects": {
+    "数学": {
+      "items": [
+        {
+          "id": "S0001",
+          "dir": "S0001-示例加法",
+          "source": "合成样例",
+          "sourceDate": "2026-10-01",
+          "type": "填空题",
+          "question": "计算 1 + 1 = ____。",
+          "answer": "2",
+          "studentAnswer": "3",
+          "kpoints": ["有理数加法"],
+          "causeLayer": "知识",
+          "causeCode": "K01",
+          "causeDesc": "进位加法算错",
+          "causeConfirmed": true,
+          "difficulty": "易",
+          "errorCount": 1,
+          "status": "在册",
+          "hasImage": false,
+          "hasVariants": false,
+          "reviews": [
+            { "at": "2026-10-02T20:00:00+08:00", "pass": true, "mode": "到期待复习" }
+          ],
+          "reviewStatus": "复习中",
+          "reviewCount": 1,
+          "passStreak": 1,
+          "lastReviewedAt": "2026-10-02T20:00:00+08:00",
+          "nextDue": "2026-10-05",
+          "masteredAt": null,
+          "blindStatus": "已通过",
+          "blindSolveAt": "2026-10-01T21:00:00+08:00",
+          "blindSolver": "合成样例",
+          "blindNote": "",
+          "blindFingerprint": "0000000000000000",
+          "answerSource": "独立判卷",
+          "answerSourceNote": "合成样例，无真实来源"
+        }
+      ]
+    },
+    "物理": {
+      "items": [
+        {
+          "id": "S0002",
+          "dir": "S0002-示例浮力",
+          "source": "合成样例",
+          "sourceDate": "2026-10-02",
+          "type": "选择题",
+          "question": "物体浸没在水中受到的浮力方向是？",
+          "answer": "竖直向上",
+          "studentAnswer": "竖直向下",
+          "kpoints": ["浮力方向"],
+          "causeLayer": "知识",
+          "causeCode": "K02",
+          "causeDesc": "浮力方向记反",
+          "causeConfirmed": true,
+          "difficulty": "易",
+          "errorCount": 1,
+          "status": "在册",
+          "hasImage": false,
+          "hasVariants": false,
+          "reviews": [],
+          "reviewStatus": "未复习",
+          "reviewCount": 0,
+          "passStreak": 0,
+          "lastReviewedAt": "",
+          "nextDue": "2026-10-03",
+          "masteredAt": null,
+          "blindStatus": "未盲解",
+          "blindSolveAt": "",
+          "blindSolver": "",
+          "blindNote": "",
+          "blindFingerprint": "",
+          "answerSource": "",
+          "answerSourceNote": ""
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,75 @@
+name: BUG 报告
+description: 报告一个可复现的问题（请不要用来报告安全问题，见 SECURITY.md）
+title: "[BUG] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。请尽量填全，缺信息的问题很难定位。
+        **安全漏洞请走 SECURITY.md 里的私密渠道，不要在这里公开。**
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本号
+      description: 见 `VERSION.json` 的 `version`，或在程序「关于」里看
+      placeholder: 2026.10.24.02
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 出问题的区域
+      options:
+        - 界面（面板 / 列表 / 详情 / 灯箱）
+        - 题库数据（增删改 / 索引 / 台账）
+        - 组卷 / 打印
+        - 桌面壳（启动 / 关闭 / 托盘）
+        - 打包 / 部署 / 回滚
+        - 测试或门禁
+        - 其他 / 不确定
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 从启动程序开始，一步一步写，写到问题出现为止
+      placeholder: |
+        1. 打开程序
+        2. 进入「错题本」页
+        3. 点击某张卡的「灯箱」
+        4. 图片不显示
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望结果
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际结果
+      description: 有报错就把错误原文贴全（不要只写"报错了"）
+    validations:
+      required: true
+
+  - type: input
+    id: env
+    attributes:
+      label: 运行环境
+      description: Windows 版本 + WebView2 版本（如有）
+      placeholder: Windows 11 23H2 / WebView2 1.0.2903.40
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 补充信息
+      description: 截图、日志、数据目录大小等。**不要粘贴真实学生姓名等个人信息。**

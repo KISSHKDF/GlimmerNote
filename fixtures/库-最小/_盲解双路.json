@@ -1,0 +1,9 @@
+{
+  "note": "合成测试数据：盲解双路最小样例。形状与 _盲解复核.mjs loadLanes 约定一致（键=学生|编号；lane1/lane2 各存 {verdict,at,solver,note}）。★ 2026-10-24 修：原文件误抄了组卷台账模板（{updatedAt,items,seq}），loadLanes 拒识 ⇒ 真生成器（生成状态.mjs）跑 fixtures 必崩——此前没暴露是因为 fixtures 的 _状态.json 是手写的。",
+  "lanes": {
+    "学生A|S0001": {
+      "lane1": { "verdict": "已通过", "at": "2026-10-01", "solver": "合成样例第1路", "note": "1+1=2，与录入一致" },
+      "lane2": { "verdict": "已通过", "at": "2026-10-01", "solver": "合成样例第2路", "note": "独立复算 1+1=2" }
+    }
+  }
+}

@@ -1,0 +1,41 @@
+# 行尾与编码统一
+# 为什么：Windows 上 csc/node 对 CRLF/LF 混用不报错但会静默改变产物字节，
+# 破坏"归档件与源码一一对应"。这里把规则钉死。
+
+# 默认：文本文件用 LF，提交时按 LF 存
+* text=auto eol=lf
+
+# 源码：显式 LF
+*.js      text eol=lf
+*.mjs     text eol=lf
+*.cjs     text eol=lf
+*.json    text eol=lf
+*.md      text eol=lf
+*.cs      text eol=lf
+*.ps1     text eol=crlf
+*.psm1    text eol=crlf
+*.bat     text eol=crlf
+*.cmd     text eol=crlf
+*.html    text eol=lf
+*.css     text eol=lf
+*.yml     text eol=lf
+*.yaml    text eol=lf
+
+# PowerShell 脚本在 Windows 上必须 CRLF，否则某些宿主解析出错
+
+# 二进制：不参与行尾转换，不做文本 diff
+*.png     binary
+*.jpg     binary
+*.jpeg    binary
+*.gif     binary
+*.webp    binary
+*.bmp     binary
+*.ico     binary
+*.pdf     binary
+*.zip     binary
+*.dll     binary
+*.exe     binary
+*.nupkg   binary
+
+# 归档与截图：diff 里不显示内容
+*.sha256  text eol=lf
