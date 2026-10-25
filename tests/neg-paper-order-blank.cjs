@@ -69,8 +69,12 @@ try {
   if (chem.length < 2) throw new Error('临时库里可组卷的化学卡不足 2 张（eligible=' + elig.length + '）');
   const CHEM_STU = chem[0].stu;
   const ids = chem.map(x => x.id).join(',');
+  /* ★ 2026-10-25（本条用例第一次在"今天真出过卷"的机器上跑红）：临时库会复制 `_组卷台账.json`，
+     于是同一批化学卡若今天刚被印过，`防重复组卷门禁` 会正常拦截 ⇒ 本用例的 A1 误红。
+     它测的是「默认不重排 / 答卷区渲染」，与"最近印过"无关，所以显式加 `--force`
+     —— 门禁自身有独立的 `neg-paper-no-repeat.cjs` 覆盖，这里绕过不会削弱任何断言。 */
   const out = execFileSync(process.execPath, [E.tool('_标记复习.mjs'), '组卷',
-    '--student', CHEM_STU, '--subject', '化学', '--ids', ids,
+    '--student', CHEM_STU, '--subject', '化学', '--ids', ids, '--force',
     '--title', '单序回归自检卷', '--note', '顺序单一真源回归，测毕撤批'], { encoding: 'utf8', env: TOOL_ENV });
   paper = (out.match(/P\d{8}-\d{2}/) || [null])[0];
   A('A1 组卷成功', !!paper, paper);
