@@ -91,7 +91,8 @@
   M.cardsOf = function () { return M.isAll() ? M.cards : M.cards.filter(c => c.kid === M.student()); };
 
   /* ---------- 复习派生态（a2 精神：nextDue 只是建议日，不排期不强制） ---------- */
-  M.dueInfo = function (c) {
+  M.dueInfo = function (x) {
+    const c = M.cardOf(x) || {};
     const today = U.today();
     if (c.status === '已归档' || c.reviewStatus === '已归档') return { code: 'arch', label: '已归档', cls: 'gray', overdue: 0 };
     if (!c.nextDue) return { code: 'new', label: c.reviewCount > 0 ? '待再练' : '未复习', cls: 'gray', overdue: 0 };
@@ -100,8 +101,11 @@
     if (dd >= 0) return { code: 'due', label: dd === 0 ? '今日到期' : '逾期 ' + dd + ' 天', cls: 'bad', overdue: dd };
     return { code: 'future', label: U.fmtMd(c.nextDue) + ' 建议', cls: 'gray', overdue: -dd };
   };
-  M.mastered = c => (c.passStreak >= 2 && c.status !== '已归档') || c.reviewStatus === '已掌握';
-  M.inBook = c => c.status === '在册';
+  M.mastered = x => {
+    const c = M.cardOf(x) || {};
+    return (c.passStreak >= 2 && c.status !== '已归档') || c.reviewStatus === '已掌握';
+  };
+  M.inBook = x => { const c = M.cardOf(x) || {}; return c.status === '在册'; };
   /* ⚠ 2026-10-11（F-09，高）：此前判据是 `/通过|修正/.test(s)` ⇒ 「未通过」「不通过」「已通过但存疑」
      全部被判成 ok:true（探针实证 3/3）。工具侧的唯一白名单是 `_标记复习.mjs:368 BLIND_OK` 与
      `_盲解复核.mjs:57 VERIFIED`，两者都是 `['已通过','已修正']` **精确相等**。
@@ -118,7 +122,8 @@
     '待双路': '只跑完一路，还差另一路（双路一致才准入）',
     '不一致': '两路里有结论与录入不符，待回原卷核实',
   };
-  M.blindCls = function (c) {
+  M.blindCls = function (x) {
+    const c = M.cardOf(x) || {};        // 形状统一：包装对象与裸卡都吃（见 M.cardOf 的说明）
     const s = (c && c.blindStatus) || '';
     if (M.BLIND_OK.indexOf(s) >= 0) return { ok: true };
     if (M.BLIND_NO[s]) return { ok: false, why: M.BLIND_NO[s] };
@@ -130,7 +135,8 @@
      ⚠ 2026-10-10 修：此前 v2 只镜了 blindStatus 这一半，且用 `ok !== false` —— 把「未盲解/待双路」
      这种**未知态**也当放行，与工具口径（只认 已通过/已修正）不一致。现在两边同口径：
      ① 状态必须明确是 已通过/已修正；② 若状态包给了新鲜度且不是「有效」→ 拦。 */
-  M.blindFreshOf = function (c) {
+  M.blindFreshOf = function (x) {
+    const c = M.cardOf(x) || {};
     const k = M.keyOf && M.keyOf.get(c);
     if (!k) return undefined;
     return ((M.state && M.state.blindFresh) || {})[k];
@@ -145,13 +151,39 @@
      ⚠ 2026-10-10：此前 v2 自己写了一份判断、只镜了盲解门禁、漏了答案来源门禁
      ⇒ 界面上选得动、一提交就被工具拒（发布门禁实测踩到）。仍保留 blindOk 作为兜底：
      状态包里没有 admit（旧包）时退回"只看盲解"，宁可界面宽容一点，也绝不让界面比工具更严。 */
-  M.admitOf = function (c) {
+  M.admitOf = function (x) {
+    const c = M.cardOf(x) || {};
     const k = M.keyOf && M.keyOf.get(c);
     if (!k) return null;
     const a = ((M.state && M.state.admit) || {})[k];
     return a && typeof a.ok === 'boolean' ? a : null;
   };
-  M.canGroup = function (c) {
+  /* ★ 2026-10-25（用户 3 次报障「这批题都没过准入」，实测 177/177 门禁全绿）：
+     真正的缺陷是**入参形状被静默误用**——`cardsOf()`/`basketCards()`/`filtered()` 返回的条目是
+     包装对象 `{key,kid,subject,card}`，而 canGroup/blindCls/admitOf 要的是**裸卡**。
+     包装对象上 `status` 是 undefined ⇒ `inBook()` 恒 false ⇒ **一律返回 false**。
+     于是「题库浏览 → 用筛选结果开复习会」和「复习流 → 题源=组卷篮」这两个入口永远进不去，
+     而界面只提示"盲解未过/答案来源没核实"，把一条**类型错误**伪装成**数据质量问题**，
+     用户去逐题核对只会越核对越糊涂（本次就是这么查了三轮）。
+     修法有两层，缺一不可：
+       ① 入口统一收卡：`M.cardOf(x)` 是唯一实现，包装对象与裸卡都能吃（兼容旧的调用点）；
+       ② 错误形状**响亮失败**：既不是裸卡也不是能解出裸卡的包装对象时抛错，
+          绝不再静默 false —— "静默 false 看着像门禁在工作"正是本 bug 活了这么久的根因。 */
+  M.cardOf = function (x) {
+    if (!x || typeof x !== 'object') return null;
+    /* 只在**确实是包装对象**时拆包（有 .card 对象、自身没有 id）。
+       其余一律原样当裸卡 —— 判据自身会对缺字段给出"未知/空"的既定语义
+       （例：`blindCls({blindStatus:'已通过'})` 这种只带单字段的调用必须继续有效）。 */
+    if (x.card && typeof x.card === 'object' && x.id === undefined) return x.card;
+    return x;
+  };
+  M.canGroup = function (x) {
+    const c = M.cardOf(x);
+    /* 报错要指名坐标：哪个编号/哪个键，否则下次又是"看不到问题在哪"。
+       注意判据是"有没有 id"——canGroup 要做准入查表，没有编号就不可能判得对，
+       与其静默 false（本 bug 活了这么久的根因），不如当场响亮失败。 */
+    if (!c || c.id === undefined) throw new Error('canGroup(入参形状错)：既不是卡也不是 {card} 包装对象 → ' +
+      JSON.stringify(x && Object.keys(x).slice(0, 6)));
     if (!M.inBook(c)) return false;
     /* ⚠ 2026-10-11（F-10）：v1 `_生成首页.ps1:737` 的池子是
        `statusOf(it) ∉ {已掌握,已归档} && blindOk(it)` —— 已掌握题**不进池**。
@@ -443,7 +475,8 @@
   /* 卡片目录：stemHtml 里的相对 src 必须相对**卡片自身目录**解析。目录来源＝索引里既有的
      题库根相对路径字段（不新造约定）；四个字段实测同目录（202 张卡 0 例不一致）。 */
   M.CARD_DIR_SRC = ['md', 'img', 'stem', 'fig', 'origPage'];
-  M.cardDirOf = function (card) {
+  M.cardDirOf = function (x) {
+    const card = M.cardOf(x);           // 形状统一（2026-10-25 D-063）：喂包装对象不再静默返回空串
     if (!card) return '';
     for (const f of M.CARD_DIR_SRC) {
       const dec = U.decPath(card[f]);
@@ -463,11 +496,14 @@
     return dir ? dir + '/' + s : s;
   };
   /* 净化 + 相对图重写（asset 由 host 提供：题库根相对路径 → 可加载 URL） */
-  M.stemHtmlSafe = function (card) {
+  M.stemHtmlSafe = function (x) {
     /* ⚠ 2026-10-11 修（F-58 其实没修完）：原先 `if (!card || !card.stemHtml) return '';` 直接早退，
        于是"**只有题图、没有 题干.html**"的卡（本库 C0003 实测 1 张，且题图正是这类题的题干本体）
        永远走不到下面的 fig 兜底 ⇒ v2 印不出题，而断言"有 fig 应补出题图"必然红。
-       现在：card 为空才早退；stemHtml 为空时按空串继续走净化，再由 fig 兜底补图。 */
+       现在：card 为空才早退；stemHtml 为空时按空串继续走净化，再由 fig 兜底补图。
+       ★ 2026-10-25（D-063）：再加一层形状统一——喂包装对象时取其 .card，
+         否则这里会静默返回空串（题干整块空白，用户看到的是"这题没题面"）。 */
+    const card = M.cardOf(x);
     if (!card) return '';
     const dir = M.cardDirOf(card);
     const asset = rel => H.asset(rel);
@@ -543,7 +579,8 @@
   };
   /* 卡片 → 原卷溯源三件套（索引 origPage/origImport 是 URL 编码形态，壳要的是解码相对路径）。
      三处灯箱调用点共用这一个实现，禁止各写一份——漂移过一次（裁图冒充原图）就是教训。 */
-  M.origOf = function (c) {
+  M.origOf = function (x) {
+    const c = M.cardOf(x);              // 形状统一（2026-10-25 D-063）
     return {
       orig: c && c.origPage ? H.relPath(c.origPage) : null,
       origImport: c && c.origImport ? H.relPath(c.origImport) : null,

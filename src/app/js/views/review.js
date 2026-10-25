@@ -53,7 +53,9 @@
     const blockCnt = all.length - cards.length;
     const due = cards.filter(x => M.dueInfo(x.card).code === 'due').sort((a, b) => M.dueInfo(b.card).overdue - M.dueInfo(a.card).overdue);
     const unrev = cards.filter(x => !x.card.reviewCount && M.dueInfo(x.card).code !== 'due').sort((a, b) => (a.card.sourceDate || '').localeCompare(b.card.sourceDate || ''));
-    const basket = M.basketCards().filter(M.canGroup);
+    /* ⚠ 2026-10-25（同 bank.js:104 的同类错）：basketCards() 返回包装对象，必须取 .card。
+       此前 `filter(M.canGroup)` 让"题源=组卷篮"永远空池。 */
+    const basket = M.basketCards().filter(x => M.canGroup(x.card));
     const pools = { due: ['⏰ 到期优先', due], all: ['🗂 全部未复习', unrev], basket: ['🧾 组卷篮', basket] };
     /* ⚠ 2026-10-11 修（用户实测报错：总览点「进入复习流」→「视图渲染出错 Cannot read properties of undefined (reading '1')」）：
        总览的 CTA 走 `S.route('review', { queue: 'pick' })`，而 pools 只有 due/all/basket **没有 pick** ⇒

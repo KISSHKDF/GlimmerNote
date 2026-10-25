@@ -101,7 +101,11 @@
          冤枉数据，用户逐题核对全绿反而更糊涂。现在两态分开说，且把被拦原因**按门禁逐项
          计数**，让提示自己拿出证据（与工具侧同口径：在册/未掌握/盲解/答案来源）。 */
       const all = filtered();
-      const list = all.filter(M.canGroup);
+      /* ⚠ 2026-10-25（第三轮报障的元凶）：`filtered()` 返回的是**包装对象** {key,kid,subject,card}，
+         旧写法 `all.filter(M.canGroup)` 把包装对象直接喂给要裸卡的 canGroup
+         ⇒ `status` 取不到 ⇒ inBook 恒 false ⇒ **每道题都被判"没过准入"**
+         （实测 177/177 题门禁全绿却全被拦）。必须显式传 `x.card`。 */
+      const list = all.filter(x => M.canGroup(x.card));
       if (!list.length) {
         if (!all.length) {
           return S.toast('当前筛选筛出 0 题，开不了复习会——放宽筛选（如把「状态/盲解」切回·全部）再试', 'warn', 7000);
@@ -126,16 +130,19 @@
         }
         const brief = Object.keys(why).sort((p, q) => why[q] - why[p])
           .map(k => k + ' ' + why[k] + '题').join('，');
-        /* 自证探针（2026-10-25）：页面取到的状态包 vs 磁盘文件对不上时，这行能当场定位。
-           generatedAt 是状态包出生证明；样例卡把 键/盲解/指纹/准入 四个原始值全摆出来。 */
-        const s0 = all[0], c0 = s0.card, k0 = (M.keyOf && M.keyOf.get(c0)) || '(无键)';
-        const rawBF = ((M.state && M.state.blindFresh) || {})[k0];
-        const rawAD = ((M.state && M.state.admit) || {})[k0];
-        const probe = '样例 ' + c0.id + '［键=' + k0 + '，盲=' + (c0.blindStatus || '空')
-          + '，指纹=' + (rawBF === undefined ? '缺' : rawBF)
-          + '，准入=' + (rawAD ? (rawAD.ok ? '过' : rawAD.why) : '缺')
-          + '，包=' + String((M.state && M.state.generatedAt) || '无').slice(0, 19) + '］';
-        return S.toast('这 ' + all.length + ' 题全被拦：' + brief + '。' + probe + ' 先补门禁/点⟳重刷，或换筛选范围', 'warn', 15000);
+        /* 探针（2026-10-25）：F-60 修好后"全被拦"应当极罕见。只在真出现"未知拦截"桶时
+           才把原始值摆出来 —— 上次正是靠它一眼看出「指纹=有效、准入=过却仍被拦」，
+           从而把排查从"数据质量"拉到"入参类型"。平时不打扰用户。 */
+        let probe = '';
+        if (why['未知拦截(数据异常)']) {
+          const c0 = all[0].card, k0 = (M.keyOf && M.keyOf.get(c0)) || '(无键)';
+          const rawBF = ((M.state && M.state.blindFresh) || {})[k0];
+          const rawAD = ((M.state && M.state.admit) || {})[k0];
+          probe = ' ［样例 ' + c0.id + ' 键=' + k0 + '，盲=' + (c0.blindStatus || '空')
+            + '，指纹=' + (rawBF === undefined ? '缺' : rawBF)
+            + '，准入=' + (rawAD ? (rawAD.ok ? '过' : rawAD.why) : '缺') + '］';
+        }
+        return S.toast('这 ' + all.length + ' 题全被拦：' + brief + '。' + probe + ' 先补门禁/点⟳重刷，或换筛选范围', 'warn', 12000);
       }
       M.startSession(interleave(list)); S.route('review');
     };

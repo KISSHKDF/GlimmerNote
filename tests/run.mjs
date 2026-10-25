@@ -40,6 +40,32 @@ function run(script, args = []) {
   return r.status ?? 1;
 }
 
+/* ════════ 运行区部署一致性（两种模式都跑，2026-10-25 用户定规）════════
+ * 用户原话：「我需要你以后只能走正确链路：dev 改 → dev 测 → build-release.ps1 打包 →
+ *   deploy.ps1 部署（自动写部署记录）。如何设置，确保以后只能走这条路？」
+ * 起因：AI 直接 edit 了运行区 app\js\model.js，绕过打包与部署，运行区于是有一套
+ *   「不对应任何发布包」的代码（部署记录.txt 最后一条还是旧版本）。
+ * 判据：scripts\verify-deploy.mjs 逐文件 sha256 比对 <运行区>\_deploy-manifest.json。
+ * ⚠ 放在 fixture 分支**之前**：新克隆/换机跑 fixture 时也应当知道"运行区有没有漂移"，
+ *   否则这道检查只在开发机 quick/full 时存在（本仓 L-175「能绿但没人跑」的老坑）。
+ * ⚠ 退出码 3 = 运行区尚无清单（机制建立前的历史状态）→ 只告警不判红：
+ *   否则基线建立之前本门禁会永久红，反而逼人跳过它。建基线只有一条路：
+ *   走一次正规 build-release.ps1 → deploy.ps1。 */
+{
+  const r = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'verify-deploy.mjs'), '--quiet'], { encoding: 'utf8', cwd: ROOT });
+  const code = r.status == null ? 1 : r.status;
+  if (code === 3) {
+    console.log('\n⚠ 运行区尚无部署清单（_deploy-manifest.json）——本门禁暂无法判定；');
+    console.log('  建立基线只有一条路：scripts\\build-release.ps1 → scripts\\deploy.ps1');
+  } else if (code !== 0) {
+    console.log('\n' + String(r.stderr || r.stdout || '').trim());
+    console.log('✖ 运行区被绕过 deploy.ps1 改动过（或版本与清单不符），先归位再发版');
+    process.exit(1);
+  } else {
+    console.log('\n✔ 运行区与部署清单一致（' + String(r.stdout || '').trim().split('\n')[0] + '）');
+  }
+}
+
 /* ════════ fixture 模式：零依赖自检（新克隆第一步）════════
  * 2026-10-24 审计结论：`quick` 需要两样东西 ——
  *   ① `src\shell\build.ps1` 产出的 exe（被 .gitignore 挡住，克隆里没有）

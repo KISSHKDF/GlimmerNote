@@ -1,4 +1,4 @@
-﻿# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════
 # 拾光小册 · 部署到运行区
 #   铁律：只替换 app\，绝不触碰 数据\
 #   用法：
@@ -115,6 +115,35 @@ try {
   }
   $rec += "$stamp | $newVer | $($zipItem.Name) | 从 $oldVer 升级"
   Add-Content -Path $logFile -Value $rec -Encoding UTF8
+
+  # ── 6b) 写部署清单（运行区防篡改基线）──────────────────────────────
+  #  2026-10-25 用户定规：「我需要你以后只能走正确链路：dev 改 → dev 测 →
+  #  build-release.ps1 打包 → deploy.ps1 部署（自动写部署记录）」。
+  #  起因：AI 直接 edit 了运行区 app\js\model.js，绕过打包与部署，运行区于是
+  #  存在一套"不对应任何发布包"的代码（部署记录.txt 最后一条还是旧版本）。
+  #  清单 = 这条纪律的**可验证物证**：scripts\verify-deploy.mjs 拿它逐文件比对，
+  #  对不上就证明有人绕过了本脚本。清单写在 $ProdRoot 而不是 app\ 内，
+  #  这样下次部署清空 app\ 时不会把它自己删掉。
+  $appFiles = @(Get-ChildItem $appDir -Recurse -File -Force)
+  $fileMap = [ordered]@{}
+  foreach ($f in $appFiles) {
+    $rel = $f.FullName.Substring($appDir.Length).TrimStart('\') -replace '\\', '/'
+    $fileMap[$rel] = (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash
+  }
+  $manifest = [ordered]@{
+    schema     = 1
+    version    = $newVer
+    zip        = $zipItem.Name
+    zipSha256  = $actual
+    deployedAt = $stamp
+    appDir     = 'app'
+    count      = $fileMap.Count
+    files      = $fileMap
+    note       = '本清单由 deploy.ps1 唯一写入；verify-deploy.mjs 用它判断运行区是否被绕过部署改动。'
+  }
+  $manifestPath = Join-Path $ProdRoot '_deploy-manifest.json'
+  ($manifest | ConvertTo-Json -Depth 5) | Set-Content -Path $manifestPath -Encoding UTF8
+  Write-Host "  清单：$manifestPath（$($fileMap.Count) 个文件 sha256）"
 
   Write-Host ""
   Write-Host "✔ 部署完成：$oldVer → $newVer" -ForegroundColor Green

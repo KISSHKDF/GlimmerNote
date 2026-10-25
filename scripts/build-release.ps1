@@ -1,4 +1,4 @@
-﻿# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════
 # 拾光小册 · 打发布包
 #   版本号唯一来源：VERSION.json（本脚本不接收版本参数，避免两处打架）
 #   产出：release\GlimmerNote-<ver>-win-x64.zip + 同名 .sha256
@@ -34,6 +34,22 @@ if (-not (Test-Path $srcApp))  { throw "找不到源码目录：$srcApp" }
 $V = Get-Content $verFile -Raw -Encoding UTF8 | ConvertFrom-Json
 $ver = [string]$V.version
 if ($ver -notmatch '^\d{4}\.\d{2}\.\d{2}\.\d{2}$') { throw "VERSION.json 里的 version 不符合日期制（YYYY.MM.DD.NN）：$ver" }
+
+# ── 0a) 打包前必须工作区干净（2026-10-25 用户要求「只能走正确链路」）──
+#  为什么：本脚本把构建时间戳钉在 **git HEAD 的提交时间**上。若工作区有未提交改动，
+#  打出来的包里有新代码、时间戳却是旧提交 ⇒ 事后无法用 tag 复现这个包，
+#  "包 ↔ 提交"的对应关系断掉（这正是 2026-10-25 那次绕过部署的同类断链）。
+#  所以：不干净就拒绝打包 —— 逼你先在 dev 改完、测完、commit，再打包。
+try { $porcelain = (git -C $root status --porcelain 2>$null) } catch { $porcelain = $null }
+if ($null -eq $porcelain) {
+  Write-Host "  ⚠ 取不到 git 状态（不是 git 仓库？）—— 跳过干净树检查" -ForegroundColor Yellow
+} elseif ($porcelain -and $porcelain.Trim()) {
+  $lines = (($porcelain -split "`n") | Where-Object { $_.Trim() } | Select-Object -First 12) -join "`n"
+  throw ("工作区不干净，拒绝打包（先 commit 再打包，否则包内容与 git 时间戳对不上）：`n" + $lines +
+    "`n  正确顺序：dev 改 → dev 测（tools\lint.mjs / tests\run.mjs fixture）→ git commit → 本脚本")
+} else {
+  Write-Host "  工作区干净（git status 无改动）"
+}
 
 Write-Host "拾光小册 · 打包" -ForegroundColor Cyan
 Write-Host "  版本：$ver"
