@@ -12,8 +12,10 @@
  *
  * 本模块把"空"变成可计算的事实：
  *   slotsOf(html)      逐空列出（顺序＝印在纸上的顺序），含每空声明宽度
- *   needEm(answer)     这个答案写下来要几 em（估算，宁可偏宽）
+ *   needEm(answer)     这个答案写下来要几 em（"成人字迹正好"的宽度）
+ *   blankWidthEm()     横线至少要几 em ＝ needEm × 1.5（小孩写字不规矩的余量，用户 2026-10-25 定）
  *   applySlotWidths()  按答案长度把每个空撑到够宽（渲染器的唯一实现，Node 侧对拍用）
+ *   alignedAnswers()   partial 合卡：把"第几空→答案"摊平成与空位等长的数组
  *   fitSlots()         「这题的空够不够写」的判定（门禁与渲染共用同一口径）
  *
  * ⚠ 浏览器侧对应实现是 `src/app/js/model.js` 的 `M.slotsOf / M.needEm / M.applySlotWidths`
@@ -96,7 +98,7 @@ export const slotCount = html => slotsOf(html).length;
 /* ---------- 答案宽度估算（"这条横线够不够写这个答案"） ----------
    口径：中文/全角 1em，ASCII 字母数字 0.58em（正文等宽偏宽的保守值），空格 0.35em，
    非空白 ASCII 标点 0.45em；末尾再留 1.2em 余量（避免答案顶到下一句）。
-   宁可偏宽也不能偏窄 —— 偏窄正是用户 M0084 的投诉。 */
+   宁可偏宽也不能偏窄 —— 偏窄正是用户 M0084 / Y0003 两次投诉。 */
 const FULLWIDTH_RE = /[\u2e80-\u9fff\u3000-\u303f\uff00-\uffef\u2200-\u22ff\u2190-\u21ff\u00b1\u00d7\u00f7\u2212\u2260]/;
 
 export function needEm(answer) {
@@ -113,21 +115,56 @@ export function needEm(answer) {
   return round(Math.min(40, Math.max(0, w + 1.2)));
 }
 
+/* ---------- 小孩写字不规矩：横线 = 答案所需 × 1.5（2026-10-25 用户二次报障定档） ----------
+   用户原话（语文默写 Y0003 行路难默写）：「给出的横线明显不够写答案…… 再考虑到小孩子写字
+   不规矩，你再放一个 1.5 倍的带下横线的空格出来，这才是合理的出题方式」。
+   上一版把横线撑到 needEm 就收工 —— 7 个字给 8.2em，正是"成人字迹刚好写满"，孩子一落笔就
+   挤出线外（Y0003 实测：8.2em / 7 字 = 5.2mm 一格）。现在横线至少 = needEm × 1.5
+   （7 字 8.2em → 12.3em ≈ 54mm ≈ 7.7mm 一字），并设物理上限 BLANK_MAX_WIDTH_EM
+   （30em ≈ 132mm；A4 可用宽 178mm，再宽就只能换行或溢出纸面）。 */
+export const CHILD_FACTOR = 1.5;
+export const BLANK_MAX_WIDTH_EM = 30;
+
+/** 这条横线至少要几 em（含 1.5 倍书写余量；空答案返回 0） */
+export function blankWidthEm(answer) {
+  const need = needEm(answer);
+  if (!need) return 0;
+  return round(Math.min(BLANK_MAX_WIDTH_EM, need * CHILD_FACTOR));
+}
+
 /* 判"这个空的答案是不是长到不该塞进横线"：
-   ≤18em（约 18 个汉字 ≈ 72mm）算短答，横线撑宽即可；超过就得改成"另留答题区"。
-   ★ 2026-10-25 定档依据：A4 可用宽 178mm，一行正文里放一条 72mm 的横线仍有余量；
-     实测把线划在 16em 时，一批 16.2~16.4em 的答案会在边界上反复横跳
-     （子代理填报时按 15.x em 估值，写进库时微调两个括号就超线），
-     这类"差 0.2em"不该逼人去改作答方式。18em 是"一行写得下"的真实上限。 */
+   need（答案本身的排版宽度）> BLANK_MAX_EM ⇒ 该改 zone（横线再怎么撑都是把一句话硬塞进一行）；
+   否则只要"声明宽度 < blankWidthEm（1.5 倍）"就算偏窄 —— 渲染器会自动撑宽，`修宽` 补数据基线。 */
 export const BLANK_MAX_EM = 18;
 
-/** 单空判定：{ok, need, width, why} */
+/** 单空判定：{ok, need, want, width, why} */
 export function judgeSlot(answer, width, fallbackEm) {
   const need = needEm(answer);
+  const want = blankWidthEm(answer);
   const have = width == null ? (fallbackEm || 0) : width;
-  if (need > BLANK_MAX_EM) return { ok: false, code: 'too-long', need, width: have, why: `答案需 ${need}em > 横线上限 ${BLANK_MAX_EM}em，应改为另留答题区` };
-  if (have && need > have) return { ok: false, code: 'too-narrow', need, width: have, why: `横线 ${have}em < 需 ${need}em` };
-  return { ok: true, code: 'ok', need, width: have, why: '' };
+  if (need > BLANK_MAX_EM) return { ok: false, code: 'too-long', need, want, width: have, why: `答案需 ${need}em > 横线上限 ${BLANK_MAX_EM}em，应改为另留答题区` };
+  if (have && want > have) return { ok: false, code: 'too-narrow', need, want, width: have, why: `横线 ${have}em < 需 ${want}em（答案 ${need}em × ${CHILD_FACTOR}）` };
+  return { ok: true, code: 'ok', need, want, width: have, why: '' };
+}
+
+/**
+ * 把逐空答案铺成"与空位等长"的数组（partial 用 answerSlotsAt 定位）。
+ * ★ 2026-10-25 实测踩到：`answerScope=partial` 的合卡里，答案[0] 是**第 5 空**的答案，
+ *   而 applySlotWidths 按数组下标往第 1 空上套 ⇒ 该宽的第 5 空没撑、不该宽的第 1 空被撑开
+ *   （用户看到的还是"这条横线不够写"）。所以先按 answerSlotsAt 摊平，再交给渲染/写回。
+ * 未登记答案的空位为 undefined（applySlotWidths 见到 undefined 保持原宽，绝不瞎撑）。
+ */
+export function alignedAnswers(answers, at, slotCount) {
+  const list = Array.isArray(answers) ? answers : [];
+  const n = Math.max(0, Number(slotCount) || 0);
+  const nums = Array.isArray(at) ? at.map(Number) : null;
+  if (!nums || !nums.length) return list.slice(0, n);
+  const out = new Array(n);
+  list.forEach((a, k) => {
+    const pos = (nums[k] || 0) - 1;
+    if (pos >= 0 && pos < n) out[pos] = a;
+  });
+  return out;
 }
 
 /**
@@ -156,7 +193,9 @@ export function applySlotWidths(html, answers, opts) {
     const ans = list[k];
     let width;
     if (ans == null || String(ans) === '') width = s.width == null ? o.fallbackEm : s.width;
-    else width = round(Math.max(o.minEm, s.width == null ? 0 : s.width, needEm(ans)));
+    /* ★ 2026-10-25：宽度不再取 needEm，而取 blankWidthEm —— 答案所需 × 1.5 的小孩书写余量。
+       见文件头 CHILD_FACTOR 段（用户 Y0003 原话「再放一个 1.5 倍的带下横线的空格出来」）。 */
+    else width = round(Math.max(o.minEm, s.width == null ? 0 : s.width, blankWidthEm(ans)));
     out = out.slice(0, s.start) + rewrite(raw, s.kind, width, o) + out.slice(s.end);
   }
   return out;
@@ -204,7 +243,7 @@ function rewrite(raw, kind, widthEm, o) {
   return `<span${classPart} style="${styleVal}"${rest ? ' ' + rest : ''}>`;
 }
 
-/** 「够不够写」整体判定：逐空对照声明答案 */
+/** 「够不够写」整体判定：逐空对照声明答案（answers 需已按空位摊平，见 alignedAnswers） */
 export function fitSlots(html, answers, opts) {
   const o = Object.assign({ fallbackEm: 7 }, opts || {});
   const slots = slotsOf(html);
@@ -214,7 +253,7 @@ export function fitSlots(html, answers, opts) {
     const ans = list[i];
     if (ans == null || String(ans) === '') return;          // 缺答案由"答案齐全"那条规则管
     const j = judgeSlot(ans, s.width, s.width == null ? o.fallbackEm : s.width);
-    if (!j.ok) out.bad.push({ i: i + 1, kind: s.kind, width: j.width, need: j.need, code: j.code, answer: String(ans).slice(0, 30) });
+    if (!j.ok) out.bad.push({ i: i + 1, kind: s.kind, width: j.width, need: j.need, want: j.want, code: j.code, answer: String(ans).slice(0, 30) });
   });
   return out;
 }

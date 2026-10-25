@@ -8,16 +8,22 @@
  *   「M0084，给出的下横线长度根本不够写答案」。
  * 并且明确要求：**不许只改这三张卡，要把三类问题变成制度**。
  *
+ * ★ 2026-10-25 晚间二次报障（语文默写 Y0003 行路难默写），原话：
+ *   「给出的横线明显不够写答案…… 再考虑到小孩子写字不规矩，你再放一个 1.5 倍的带下横线的
+ *     空格出来，这才是合理的出题方式」。
+ *   上一版把横线撑到"答案所需 ×1.0"（成人字迹刚好写满：7 个字给 8.2em = 5.2mm 一格），
+ *   孩子一落笔就挤出线外 ⇒ 本用例 C 段改成 1.5 倍口径，并把 Y0003 这一类的原始症状做成断言（C7）。
+ *
  * 断言分五段：
  *   P. **两份实现逐卡对拍**（Node `src/tools/_空位.mjs` vs 浏览器 `model.js`）：全库每张卡的题干
- *      空位数/空位类型/声明宽度必须完全一致 —— 这是"唯一实现"在本仓的可执行形态，
- *      任一侧改了规则而另一侧没跟，立刻红。
+ *      空位数/空位类型/声明宽度必须完全一致；needEm / blankWidthEm / applySlotWidths 同判；
+ *      partial 合卡的答案必须撑到"它自己那一空"（旧版按下标硬套，撑错了空）。
  *   A. 答案齐全：空位可数；逐空答案条数必须等于空位数（partial 用 answerSlotsAt 定位）；
  *      空串、越界、partial 缺 note 全部判红。
  *   B. 图上作答：answerMode=figure 的卡不得输出答题区；none（选择/判断）同理；
  *      M0011 这种"圈里填数"的题必须判 figure（不是靠 type 猜）。
- *   C. 横线够宽：6em 横线 + 9em 答案 → 渲染后 min-width 必须 ≥ 答案所需；
- *      窄线不得被原样印出（用户 M0084 的原始症状）。
+ *   C. 横线够宽：横线 ≥ 答案所需 × 1.5（小孩书写余量），且不得超过单条横线物理上限；
+ *      窄线不得被原样印出（用户 M0084 / Y0003 的原始症状）。
  *   D. 阴性自证：故意造"少一条答案""图上作答没登记"的卡，判定函数必须报红
  *      （否则门禁永远绿 = 假门禁；同 L-175「可选工具 ≠ 机械化」）。
  *
@@ -99,6 +105,22 @@ function runAll() {
     const ca = M.applySlotWidths(html, ans), cb = K.applySlotWidths(html, ans);
     A('P2 撑宽：两份实现同判', ca === cb, ca === cb ? '一致' : `浏览器=${ca}\nnode=${cb}`);
     A('P3 needEm 同判', M.needEm(ans[0]) === K.needEm(ans[0]), `${M.needEm(ans[0])} vs ${K.needEm(ans[0])}`);
+    /* ★ 2026-10-25 晚：横线口径从 1.0 倍改成 1.5 倍，两份实现必须同判（否则纸面与门禁各说各话） */
+    A('P3b blankWidthEm 同判（答案所需 × 1.5）', M.blankWidthEm(ans[0]) === K.blankWidthEm(ans[0]), `${M.blankWidthEm(ans[0])} vs ${K.blankWidthEm(ans[0])}`);
+    A('P3c 书写余量常数同值', M.CHILD_FACTOR === K.CHILD_FACTOR && M.BLANK_MAX_WIDTH_EM === K.BLANK_MAX_WIDTH_EM,
+      `CHILD_FACTOR=${M.CHILD_FACTOR}/${K.CHILD_FACTOR} 上限=${M.BLANK_MAX_WIDTH_EM}/${K.BLANK_MAX_WIDTH_EM}`);
+    /* partial 合卡：答案必须撑到"它自己那一空"（下标硬套会撑错，用户看到的仍是窄线） */
+    {
+      const stem3 = '<p>1.<span class="blank" style="min-width:4em"></span> 2.<span class="blank" style="min-width:4em"></span> 3.<span class="blank" style="min-width:4em"></span></p>';
+      const card3 = { id: 'T-PARTIAL', type: '填空题', answerMode: 'blank', answerScope: 'partial', answerSlots: ['communication'], answerSlotsAt: [3] };
+      const out3 = M.stemHtmlSafe(Object.assign({ stemHtml: stem3 }, card3));
+      const ws = [...out3.matchAll(/min-width:\s*([\d.]+)em/g)].map(m => parseFloat(m[1]));
+      const want3 = K.blankWidthEm('communication');
+      A('P4 partial：横线只撑答案对应的那一空', ws.length === 3 && ws[2] >= want3 && ws[0] < want3, `[${ws.join(', ')}]，答案需 ${want3}em`);
+      const nodeOut = K.applySlotWidths(stem3, K.alignedAnswers(card3.answerSlots, card3.answerSlotsAt, 3));
+      const wsN = [...nodeOut.matchAll(/min-width:\s*([\d.]+)em/g)].map(m => parseFloat(m[1]));
+      A('P5 partial：Node 侧同判', JSON.stringify(ws) === JSON.stringify(wsN), `浏览器 [${ws.join(',')}] / node [${wsN.join(',')}]`);
+    }
   }
 
   /* ================= A. 答案齐全 ================= */
@@ -169,7 +191,7 @@ function runAll() {
     A('B6 全库 figure 卡都不留答题区', leak.length === 0, leak.map(x => x.key).join(' ') || `figure ${figAll.length} 张`);
   }
 
-  /* ================= C. 横线够宽 ================= */
+  /* ================= C. 横线够宽（口径：答案所需 × 1.5） ================= */
   {
     const narrow = '<div class="stem"><p>式子 −(−<i>a</i>)＝<i>a</i> 表示的意义是<span class="blank" style="width:6em"></span>。</p></div>';
     const card = { id: 'T-W', answerSlots: ['−a 的相反数是 a'], answerMode: 'blank' };
@@ -184,32 +206,63 @@ function runAll() {
     /* 反例：没有任何 answerSlots 时不得擅自改宽（避免把版面撑乱） */
     const out3 = M.stemHtmlSafe({ stemHtml: narrow });
     A('C4 未登记逐空答案时不改宽（保持原排版）', /width:6em/.test(out3) && !/min-width/.test(out3), out3.slice(0, 160));
+
+    /* ★ C7（2026-10-25 晚，用户二次报障的原症状）：语文默写 Y0003 行路难默写——
+       7 个字的答案，上一版给的横线 8.2em（= 答案所需 1.0 倍，5.2mm 一格，孩子写不下）。
+       现在必须 ≥ 答案所需 × 1.5。这条断言就是"下次别再给我刚好够"的护栏。 */
+    {
+      const y3ans = '忽复乘舟梦日边';
+      const need = K.needEm(y3ans), want = K.blankWidthEm(y3ans);
+      A('C7.0 Y0003 答案所需 = 8.2em（7 个字 + 尾余）', need === 8.2, `${need}em`);
+      A('C7 横线 ≥ 答案所需 × 1.5（小孩书写余量）', want >= 12.29, `want=${want}em（= ${need} × ${K.CHILD_FACTOR}）`);
+      const y3stem = '<div class="stem"><p>闲来垂钓碧溪上，<span class="blank" style="min-width:8.2em"></span>。</p></div>';
+      const y3out = M.stemHtmlSafe({ id: 'Y0003', stemHtml: y3stem, answerSlots: [y3ans], answerMode: 'blank' });
+      const w3 = parseFloat((/min-width:\s*([\d.]+)em/.exec(y3out) || [])[1]);
+      A('C8 Y0003 旧横线（8.2em）渲染后必须被撑到 1.5 倍', w3 >= want, `渲染 ${w3}em ≥ ${want}em`);
+      /* 换算成人话：12.5pt 正文 1em ≈ 4.41mm，7 个字要写在这个长度里 */
+      const mm = Math.round(w3 * 4.41);
+      A('C9 下笔空间换算成人话（≥ 6mm 一字才写得开）', mm / 7 >= 6, `${mm}mm / 7 字 = ${(mm / 7).toFixed(1)}mm 一字`);
+      /* 门禁口径必须和渲染口径一致：声明的 8.2em 应判"偏窄"（提示可修），不应判通过 */
+      const fit3 = K.fitSlots(y3stem, [y3ans]);
+      A('C10 门禁把 1.0 倍横线判为偏窄（口径与渲染一致）', fit3.bad.length === 1 && fit3.bad[0].code === 'too-narrow',
+        JSON.stringify(fit3.bad.map(b => ({ i: b.i, code: b.code, width: b.width, want: b.want }))));
+    }
+    /* C11 物理上限：超长答案（如 60em 的整段话）不得把横线撑爆纸面 */
+    {
+      const longAns = '（参考）Hello, everyone! I am Li Hua. I would like to share my idea about how to protect our environment in our daily life and at school.';
+      const capped = K.applySlotWidths('<p><span class="blank" style="min-width:6em"></span></p>', [longAns]);
+      const wc = parseFloat((/min-width:\s*([\d.]+)em/.exec(capped) || [])[1]);
+      A('C11 超长答案的横线夹在物理上限内（不撑爆纸面）', wc > 0 && wc <= K.BLANK_MAX_WIDTH_EM,
+        `${wc}em ≤ 上限 ${K.BLANK_MAX_WIDTH_EM}em（A4 可用宽 178mm ≈ 40em）`);
+    }
     /* 真库：每个已登记的空位在**渲染后**都写得下（宽度由 applySlotWidths 实时撑开）。
-       判据分两层，与门禁同口径（2026-10-25）：
-         · too-long（>18em）→ 必须已经判 zone/figure，否则红（这是排版决策，机器不替人决定）；
-         · too-narrow → 数据基线偏窄可以接受，但**渲染后必须够宽**，否则红（用户 M0084 的原症状）。 */
+       判据分两层，与门禁同口径（2026-10-25 晚口径换成 1.5 倍）：
+         · too-long（答案本身 >18em）→ 必须已经判 zone/figure，否则红（这是排版决策，机器不替人决定）；
+         · too-narrow（声明宽度 < 答案所需 × 1.5）→ 数据基线偏窄可以接受，但**渲染后必须够宽**，
+           否则红（用户 M0084 / Y0003 的原症状：横线写不下答案）。 */
     const tooLong = [], notFixed = [];
     for (const x of cards) {
       const ans = Array.isArray(x.item.answerSlots) ? x.item.answerSlots.map(String) : null;
       if (!ans || !ans.length) continue;
       const mode = String(x.item.answerMode || '');
       const stem = stemOf(x);
-      if (String(x.item.answerScope || '') === 'partial') {
-        ans.forEach((a, i) => { if (K.needEm(a) > K.BLANK_MAX_EM && mode !== 'zone' && mode !== 'figure') tooLong.push(`${x.key}#p${i + 1}`); });
-        continue;
-      }
-      const fit = K.fitSlots(stem, ans);
+      const n = K.slotCount(stem);
+      if (!n) continue;
+      const partial = String(x.item.answerScope || '') === 'partial';
+      /* partial 要先摊平到"第几空"，否则判的是错位的宽度（同 P4/P5 的教训） */
+      const aligned = partial ? K.alignedAnswers(ans, x.item.answerSlotsAt, n) : ans;
+      const fit = K.fitSlots(stem, aligned);
       for (const b of fit.bad) {
-        if (b.code === 'too-long') { if (mode !== 'zone' && mode !== 'figure') tooLong.push(`${x.key}#${b.i}`); }
+        if (b.code === 'too-long') { if (mode !== 'zone' && mode !== 'figure') tooLong.push(`${x.key}#${b.i}(${b.need}em)`); }
         else {
-          const rendered = M.applySlotWidths(M.stemBlankify(stem), ans);
+          const rendered = M.applySlotWidths(M.stemBlankify(stem), M.slotAnswersAligned(x.item, M.slotCount(M.stemBlankify(stem))));
           const ws = K.slotsOf(rendered).map(s => s.width);
-          if (!(ws[b.i - 1] >= b.need)) notFixed.push(`${x.key}#${b.i}(${ws[b.i - 1]}<${b.need})`);
+          if (!(ws[b.i - 1] >= b.want)) notFixed.push(`${x.key}#${b.i}(${ws[b.i - 1]}<${b.want})`);
         }
       }
     }
     A('C5 超长答案一律改判 zone/figure（不许硬塞横线）', tooLong.length === 0, tooLong.slice(0, 12).join(' ') || '全绿');
-    A('C6 偏窄的空位在渲染后都够宽（用户 M0084 的原症状）', notFixed.length === 0, notFixed.slice(0, 12).join(' ') || '全绿');
+    A('C6 偏窄的空位在渲染后都够宽（用户 M0084 / Y0003 的原症状）', notFixed.length === 0, notFixed.slice(0, 12).join(' ') || '全绿');
   }
 
   /* ================= D. 阴性自证（门禁必须真的会红） ================= */

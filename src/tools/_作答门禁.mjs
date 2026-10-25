@@ -39,7 +39,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { libraryRoot, toolPath } from './_库根.mjs';
 import { readJsonStrict, writeJsonAtomic, backupJson, writeTextAtomic } from './_安全写.mjs';
-import { slotsOf, slotCount, needEm, fitSlots, applySlotWidths, BLANK_MAX_EM } from './_空位.mjs';
+import { slotsOf, slotCount, needEm, blankWidthEm, alignedAnswers, fitSlots, applySlotWidths, BLANK_MAX_EM, CHILD_FACTOR } from './_空位.mjs';
 
 const ROOT = libraryRoot();
 const STEM_HTML = '题干.html';
@@ -167,23 +167,21 @@ function judge(x) {
     }
     raw.forEach((v, i) => { if (!v.trim()) problems.push({ code: 'slots-empty', msg: `第 ${i + 1} 条逐空答案为空` }); });
     /* ③ 横线够宽 —— 分两档，判据不同（2026-10-25 定档，避免"机器本来就能自动修的"混进阻断）：
-       · **太长（>16em）** ⇒ 阻断：这是排版**决策**（该空改成另留答题区），机器不该替人决定；
-       · **偏窄** ⇒ 只提示：渲染器每次都按答案撑宽（model.js applySlotWidths），印出来一定够写，
-         数据侧宽度只是排版基线，`修宽` 可把基线也补齐。把这类当阻断会逼出一堆无意义的数据改写。
+       · **太长（答案本身 > BLANK_MAX_EM=18em）** ⇒ 阻断：这是排版**决策**（该空改成另留答题区），
+         机器不该替人决定；
+       · **偏窄（声明宽度 < 答案所需 × 1.5）** ⇒ 只提示：渲染器每次都按 blankWidthEm 撑宽
+         （model.js applySlotWidths），印出来一定够写；`修宽` 可把数据基线也补齐。
+         ★ 2026-10-25 晚用户二次报障（Y0003 横线明显不够写）后定档：横线 ≡ 答案所需 × 1.5，
+           上一版只撑到 1.0 倍（成人字迹刚好写满），孩子的字一落笔就挤出线外。
        · mode=zone（答案写在答题区）与 mode=figure（答案在图上/是一段画法描述）不做宽度判定。 */
     if (raw.length && mode !== 'zone' && mode !== 'figure') {
-      if (scope === 'partial') {
-        /* partial 的答案序号与空位序号不一一对应，只能逐条判"太长" */
-        raw.forEach((v, i) => {
-          const need = needEm(v);
-          if (need > BLANK_MAX_EM) problems.push({ code: 'width-too-long', msg: `partial 第 ${i + 1} 条答案需 ${need}em > 横线上限 ${BLANK_MAX_EM}em，应把该空改成另留答题区（answerMode=zone）` });
-        });
-      } else {
-        const fit = fitSlots(stem, raw);
-        for (const b of fit.bad) {
-          if (b.code === 'too-long') problems.push({ code: 'width-too-long', msg: `第 ${b.i} 空：「${b.answer}」答案太长（${b.need}em > ${BLANK_MAX_EM}em），应把该空改成另留答题区（answerMode=zone）` });
-          else warnsWidth.push(`第${b.i}空 ${b.width}em < 需 ${b.need}em「${b.answer}」（渲染时自动撑宽，跑 修宽 可把题干基线也补上）`);
-        }
+      /* 逐空对照：partial 合卡先按 answerSlotsAt 摊平到"第几空"再判——旧版因为不知道第几条
+         对应第几空，只能逐条判"太长"，**偏窄永远发现不了**（而这正是用户看得见的那个毛病）。 */
+      const aligned = scope === 'partial' ? alignedAnswers(raw, at, n) : raw;
+      const fit = fitSlots(stem, aligned);
+      for (const b of fit.bad) {
+        if (b.code === 'too-long') problems.push({ code: 'width-too-long', msg: `第 ${b.i} 空：「${b.answer}」答案太长（${b.need}em > ${BLANK_MAX_EM}em），应把该空改成另留答题区（answerMode=zone）` });
+        else warnsWidth.push(`第${b.i}空 ${b.width}em < 需 ${b.want}em（答案 ${b.need}em × ${CHILD_FACTOR}）「${b.answer}」（渲染时自动撑宽，跑 修宽 可把题干基线也补上）`);
       }
     }
   }
@@ -218,7 +216,7 @@ function judge(x) {
   for (const w of warnsWidth) warns.push(w);
   const ok = problems.length === 0;
   return { key: x.key, id: it.id, subject: x.subject, type: it.type || '', mode, scope, slots: n, answers: raw.length, fig, figSuspect, archived, ok, problems, warns,
-    need: raw.map(a => needEm(a)), widths: slots.map(s => s.width) };
+    need: raw.map(a => needEm(a)), want: raw.map(a => blankWidthEm(a)), widths: slots.map(s => s.width) };
 }
 
 /* ---------- 回写（唯一写入入口） ----------
@@ -346,10 +344,22 @@ switch (action) {
       const rows = [];
       for (const { x, r } of list) {
         const stem = stemOf(x);
+        const sl = slotsOf(stem);
+        const answers = Array.isArray(x.item.answerSlots) ? x.item.answerSlots.map(String) : [];
+        /* 摊平到"第几空"，工单直接把「这个空答案多长、横线至少要几 em」写清楚，
+           免得填报人再自己估（上一版就是这么估出 1.0 倍窄线的）。 */
+        const aligned = String(x.item.answerScope || '') === 'partial'
+          ? alignedAnswers(answers, x.item.answerSlotsAt, sl.length)
+          : answers;
         rows.push({
           card: x.key, id: r.id, type: r.type, difficulty: x.item.difficulty || '',
           slots: r.slots,
-          slotDetail: slotsOf(stem).map((s, i) => ({ n: i + 1, kind: s.kind, widthEm: s.width })),
+          slotDetail: sl.map((s, i) => ({
+            n: i + 1, kind: s.kind, widthEm: s.width,
+            answer: aligned[i] == null ? '' : String(aligned[i]).slice(0, 40),
+            needEm: aligned[i] == null || !String(aligned[i]) ? null : needEm(aligned[i]),
+            wantEm: aligned[i] == null || !String(aligned[i]) ? null : blankWidthEm(aligned[i]),
+          })),
           mode: r.mode || null,
           fig: r.fig, figSuspect: r.figSuspect,
           problems: r.problems.map(p => p.code + ':' + p.msg),
@@ -402,23 +412,27 @@ switch (action) {
 
   case '修宽': {
     /* 按声明答案把 题干.html 里过窄的空位改宽（数据侧兜底）。
-       渲染器已经会按答案实时撑宽（model.js applySlotWidths），这里是把"数据本身"也补齐，
-       让任何离屏消费（导出 HTML、别的渲染器）不会重新踩窄线。
-       ★ 2026-10-25：宽度偏窄在门禁里是**提示**不是阻断（机器能自动修），
-         所以这里不能靠 problems 过滤——直接全库重算一遍，只有真的会变宽才动文件。 */
+       渲染器已经会按答案实时撑宽（model.js applySlotWidths，口径＝答案所需 × 1.5），
+       这里是把"数据本身"也补齐，让任何离屏消费（导出 HTML、别的渲染器、直接看文件的人）
+       不会重新踩窄线。★ 2026-10-25 晚用户二次报障（Y0003）后：目标宽度改成 blankWidthEm
+       （needEm × 1.5），旧版撑到 1.0 倍等于"成人字迹刚好写满"，孩子写不下。
+       ★ 同晚修：partial 合卡不再跳过——用 answerSlotsAt 摊平后按真实空号撑宽
+       （旧版整卡跳过 ⇒ 那批合卡的横线永远是原始排版值，用户看到的就是"不够写"）。 */
     const all = allCards();
     let n = 0, need = 0;
     for (const x of all) {
       const it = x.item;
       const ans = Array.isArray(it.answerSlots) ? it.answerSlots.map(String) : null;
       if (!ans || !ans.length) continue;
-      if (String(it.answerScope || '') === 'partial') continue;     // partial 序号对不上，不能逐空套宽度
       const stem = stemOf(x);
-      if (!slotsOf(stem).length) continue;
+      const slotCountHere = slotsOf(stem).length;
+      if (!slotCountHere) continue;
+      const partial = String(it.answerScope || '') === 'partial';
+      const aligned = partial ? alignedAnswers(ans, it.answerSlotsAt, slotCountHere) : ans;
       /* onlySpan：裸下划线串是正文的一部分，换成 span 会改纯净文本 ⇒ 盲解指纹整库失效
          （指纹对"纯文本+图形"取哈希）。所以写回文件时只动本来就是 span 的空位，
          裸下划线交给渲染器在内存里转（`M.stemBlankify`）。 */
-      const next = applySlotWidths(stem, ans, { onlySpan: true });
+      const next = applySlotWidths(stem, aligned, { onlySpan: true });
       if (next === stem) continue;
       need++;
       if (opt.dry) { console.log(`[dry] ${x.key} 的 span 空位会被改宽`); continue; }

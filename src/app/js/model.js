@@ -409,8 +409,13 @@
      （删除语句写在 r2 成功之后）⇒ 用户重试同一场 → 同一批题**再组一张卷**：台账出现两个 P 批次，
      第一张永久停在「待批改」，孩子会收到两张一样的卷。
      现在与 paper.js 的 `sheet.committed` 同款「先记批次再批改」：组卷成功立刻摘出本组判定并登记
-     `committed[组]={paperId,list}`，失败重试时**只补批改、绝不再组卷**。 */
-  M.endSession = async function () {
+     `committed[组]={paperId,list}`，失败重试时**只补批改、绝不再组卷**。
+     ⚠ 2026-10-25：新增 `opts.force` —— 用户在确认框里明确选「仍要落库」时把 --force 透传给组卷口
+     （用途：防重复印卷门禁拦下但用户坚持；工具会打印"绕过"告警留痕）。
+     另：返回 `[]` 表示**这一趟什么都没写进台账**，调用方必须据此提示「没有写入」，
+     绝不能报「已落库」（2026-10-25 实测：判定被剔空后旧代码打的是绿色「已落库」）。 */
+  M.endSession = async function (opts) {
+    const force = !!(opts && opts.force);
     const s = M.session;
     if (!s) return [];
     s.committed = s.committed || {};
@@ -431,7 +436,9 @@
       if (!paperId) {
         const ids = list.map(x => x.id).join(',');
         const paperTitle = '屏幕复习·' + kid + subject + '·' + stamp;
-        const r1 = await CTB.host.mark('组卷', { student: kid, subject, ids, title: paperTitle, date: stamp, note: '复习流自动卷' });
+        const payload = { student: kid, subject, ids, title: paperTitle, date: stamp, note: '复习流自动卷' };
+        if (force) payload.force = '1';
+        const r1 = await CTB.host.mark('组卷', payload);
         if (!r1 || r1.code !== 0) throw new Error('组卷失败：' + ((r1 && (r1.err || r1.out) || '').slice(-400)));
         const pm = String(r1.out || '').match(/P\d{8}-\d{2}/);
         if (!pm) throw new Error('组卷成功但未解析到批次号：' + String(r1.out || '').slice(-200));
@@ -633,14 +640,49 @@
     }
     return Math.round(Math.min(40, Math.max(0, w + 1.2)) * 100) / 100;
   };
-  /* 与 Node 侧 _空位.mjs BLANK_MAX_EM 同值（18em ≈ 72mm，一行写得下的上限；改一处必须改两处） */
+  /* 与 Node 侧 _空位.mjs BLANK_MAX_EM 同值（18em ≈ 72mm：答案本身超过它就不该塞横线，该改 zone；
+     改一处必须改两处，tests 的 P 段逐卡对拍） */
   M.BLANK_MAX_EM = 18;
+  /* ★ 2026-10-25 二次报障（用户原话，语文默写 Y0003 行路难默写）：
+     「给出的横线明显不够写答案…… 再考虑到小孩子写字不规矩，你再放一个 1.5 倍的带下横线的
+      空格出来，这才是合理的出题方式」。
+     上一版撑到 needEm 就收工 = 成人字迹刚好写满（Y0003：8.2em / 7 字 = 5.2mm 一格），
+     孩子一落笔就挤出线外。现在横线至少 = needEm × CHILD_FACTOR(1.5)，
+     并夹在 BLANK_MAX_WIDTH_EM(30em ≈ 132mm) 之内（A4 可用宽 178mm，再宽就换行/溢出纸面）。
+     与 Node 侧 blankWidthEm / CHILD_FACTOR / BLANK_MAX_WIDTH_EM 逐字同判。 */
+  M.CHILD_FACTOR = 1.5;
+  M.BLANK_MAX_WIDTH_EM = 30;
+  M.blankWidthEm = function (answer) {
+    const need = M.needEm(answer);
+    if (!need) return 0;
+    return Math.round(Math.min(M.BLANK_MAX_WIDTH_EM, need * M.CHILD_FACTOR) * 100) / 100;
+  };
   /* 逐空答案（只对 full 作用；partial 用 answerSlotsAt 定位，不能按序号硬套） */
   M.slotAnswers = function (card) {
     const c = card || {};
     const arr = Array.isArray(c.answerSlots) ? c.answerSlots : null;
     if (!arr) return null;
     return arr.map(v => (v == null ? '' : String(v)));
+  };
+  /* 把逐空答案摊平成"与空位等长"的数组（partial 靠 answerSlotsAt 定位到第几空）。
+     ★ 2026-10-25 实测踩到：partial 合卡里 answers[0] 是第 5 空的答案，而 applySlotWidths
+       按下标往第 1 空上套 ⇒ 该宽的第 5 空没撑、不该宽的第 1 空被撑开，纸面照旧写不下。
+       未登记答案的空位留 undefined（applySlotWidths 见到 undefined 保持原宽，绝不瞎撑）。 */
+  M.slotAnswersAligned = function (card, slotCount) {
+    const list = M.slotAnswers(card);
+    if (!list) return null;
+    const c = card || {};
+    const n = Math.max(0, Number(slotCount) || 0);
+    const at = Array.isArray(c.answerSlotsAt) ? c.answerSlotsAt.map(Number) : null;
+    const partial = String(c.answerScope || '') === 'partial';
+    const nums = partial && at && at.length ? at : null;
+    if (!nums) return list.slice(0, n || list.length);
+    const out = new Array(n);
+    list.forEach((a, k) => {
+      const pos = (nums[k] || 0) - 1;
+      if (pos >= 0 && pos < n) out[pos] = a;
+    });
+    return out;
   };
   /* 把每个空撑到够宽（渲染唯一实现；与 _空位.mjs applySlotWidths 同判） */
   M.applySlotWidths = function (html, answers, opts) {
@@ -653,9 +695,11 @@
       const s = slots[k];
       const raw = out.slice(s.start, s.end);
       const ans = list[k];
+      /* ★ 2026-10-25：宽度取 M.blankWidthEm（= needEm × 1.5 的小孩书写余量），不再取 needEm。
+         见 M.CHILD_FACTOR 段（用户 Y0003 原话「再放一个 1.5 倍的带下横线的空格出来」）。 */
       const width = (ans == null || String(ans) === '')
         ? (s.width == null ? o.fallbackEm : s.width)
-        : Math.round(Math.max(o.minEm, s.width == null ? 0 : s.width, M.needEm(ans)) * 100) / 100;
+        : Math.round(Math.max(o.minEm, s.width == null ? 0 : s.width, M.blankWidthEm(ans)) * 100) / 100;
       const w = width + 'em';
       /* ⚠ 2026-10-25：标签必须**规范化输出**（class 在前、min-width 写在 style 内）。
          原因：盲解清稿的 stemToText 用 `<span class="blank"[^>]*>` 还原空位，属性顺序一变
@@ -685,10 +729,10 @@
     }
     return out;
   };
-  /* 题干出口的统一收尾：填空转换 + 按声明答案撑宽 */
+  /* 题干出口的统一收尾：填空转换 + 按声明答案撑宽（partial 先按 answerSlotsAt 摊平） */
   M.stemFit = function (html, card) {
     let out = M.stemBlankify(html);
-    const ans = M.slotAnswers(card);
+    const ans = M.slotAnswersAligned(card, M.slotCount(out));
     if (ans && ans.length) out = M.applySlotWidths(out, ans);
     return out;
   };
