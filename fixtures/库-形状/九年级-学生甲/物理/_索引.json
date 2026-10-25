@@ -50,7 +50,10 @@
       "blindNote": "",
       "blindFingerprint": "0000000000000000",
       "answerSource": "独立判卷",
-      "answerSourceNote": "合成样例，无真实来源"
+      "answerSourceNote": "合成样例，无真实来源",
+      "answerMode": "zone",
+      "answerSlotsBy": "fixture",
+      "answerSlotsAt2": "2026-10-25"
     },
     {
       "id": "C0202",
@@ -86,7 +89,10 @@
       "blindNote": "",
       "blindFingerprint": "0000000000000000",
       "answerSource": "独立判卷",
-      "answerSourceNote": "合成样例，无真实来源"
+      "answerSourceNote": "合成样例，无真实来源",
+      "answerMode": "zone",
+      "answerSlotsBy": "fixture",
+      "answerSlotsAt2": "2026-10-25"
     }
   ]
 }

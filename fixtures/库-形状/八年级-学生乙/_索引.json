@@ -51,7 +51,13 @@
           "blindNote": "",
           "blindFingerprint": "0000000000000000",
           "answerSource": "独立判卷",
-          "answerSourceNote": "合成样例，无真实来源"
+          "answerSourceNote": "合成样例，无真实来源",
+          "answerMode": "blank",
+          "answerSlots": [
+            "全等"
+          ],
+          "answerSlotsBy": "fixture",
+          "answerSlotsAt2": "2026-10-25"
         }
       ]
     },
@@ -91,7 +97,13 @@
           "blindNote": "",
           "blindFingerprint": "0000000000000000",
           "answerSource": "独立判卷",
-          "answerSourceNote": "合成样例，无真实来源"
+          "answerSourceNote": "合成样例，无真实来源",
+          "answerMode": "blank",
+          "answerSlots": [
+            "visited"
+          ],
+          "answerSlotsBy": "fixture",
+          "answerSlotsAt2": "2026-10-25"
         }
       ]
     }

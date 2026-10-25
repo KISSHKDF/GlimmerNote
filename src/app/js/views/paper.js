@@ -383,12 +383,31 @@
     refs.forEach((x, i) => { h += qHtml(x, i, form); });
     return h + '</div>';
   }
+  /* ⚠ 2026-10-25（用户报障三连的制度化，见 model.js「作答契约」段）：
+     ①「答案好像不全」→ 答案册改为**逐空列出**（answerSlots），不再只印一段话；
+     ②「在图上写出答案，所以组卷时这类题目不需要再留答题区」→ answerMode=figure/none 不留答题区；
+     ③「下横线长度根本不够写答案」→ 空位宽度由 model.js applySlotWidths 按逐空答案撑宽。
+     数据契约字段由工具 `_作答门禁.mjs` 唯一写入；本文件只消费，不做判定。 */
   function ansHtml(title, refs) {
     let h = '<div class="sheet">' + shHead(title, refs, { h1: '答案册（家长批改用）', score: false, req: false });
     refs.forEach((x, i) => {
       const c = x.card;
+      const slots = M.slotAnswers(c);
+      const at = Array.isArray(c.answerSlotsAt) ? c.answerSlotsAt : null;
+      const partial = String(c.answerScope || '') === 'partial';
+      let slotLine = '';
+      if (slots && slots.length) {
+        const items = slots.map((a, k) => {
+          const n = partial && at && at[k] ? at[k] : k + 1;
+          return '第' + n + '空：' + U.esc(a || '—');
+        });
+        slotLine = '<div class="ans-slot"><b>逐空：</b>' + items.join('　｜　') +
+          (partial ? '<span class="small muted">（' + U.esc(c.answerNote || '本卡只列部分空') + '）</span>' : '') + '</div>';
+      }
+      const modeTip = String(c.answerMode || '') === 'figure'
+        ? '<div class="small muted">（本题答案写在图上／按图形批改，卷面不留答题区）</div>' : '';
       h += '<div class="q"><div class="q-hd">' + (i + 1) + '．' + U.esc(c.id) + '　<span style="font-weight:400">' + U.esc(c.type || '') + '</span></div>' +
-        '<div class="ans-a"><b>答案：</b>' + U.esc(c.answer || '—') + '</div>' +
+        '<div class="ans-a"><b>答案：</b>' + U.esc(c.answer || '—') + '</div>' + slotLine + modeTip +
         '<div class="why"><b>当时错答：</b>' + U.esc(c.studentAnswer || '—') + '　<b>错因：</b>' + U.esc((c.causeLayer || '') + (c.causeCode || '')) + '　' + U.esc(c.causeDesc || '') + '</div></div>';
     });
     return h + '</div>';
@@ -406,7 +425,7 @@
        「裁净题干图」模式只许用 题干.jpg（stem），没有就降级印刷版题干/文字题干。
        F-27/F-57/F-58：题干走 M.stemHtmlSafe（唯一实现：白名单净化 + 相对图解析到卡片目录 + fig 兜底）。 */
     if (form === 'img' && c.stem) stem = '<div class="q-stem"><img src="' + U.esc(H.asset(c.stem)) + '"></div>';
-    else stem = '<div class="q-stem">' + (M.stemHtmlSafe(c) || M.stemBlankify(U.esc(c.question))) + '</div>';
+    else stem = '<div class="q-stem">' + (M.stemHtmlSafe(c) || M.stemFit(U.esc(c.question), c)) + '</div>';
     const t = (c.type || '') + (c.question || '');
     /* 答题区自适应（2026-10-16 修，用户 P20261015-01 实测两条）：
        ① 填空题「题干里已有坑」的（ASCII 下划线或 blank span）不再另留 90px 大框——
@@ -414,12 +433,20 @@
           字还挤不出去（下划线 6 个字符太窄）。现在：有坑 = 就地写（CSS 把坑加宽），
           无坑（如"写出符号表达式"整句作答类）才留答题条。
        ② stemHtmlSafe 会把 blank span 透传成 HTML，纯 question 文本里的 ______ 也能落坑——
-          判据同时看两者（与 v1 answerSpaceOf 同思路，但"有坑不留框"比 v1 更进一步）。 */
+          判据同时看两者（与 v1 answerSpaceOf 同思路，但"有坑不留框"比 v1 更进一步）。
+       ★ 2026-10-25（用户 M0011 报障「在图上写出答案，所以组卷时这类题目不需要再留答题区」）：
+         答题区改由**卡片显式契约** answerMode 决定，不再靠"题干里有没有坑"猜：
+           figure（答案写在/画在图上）、none（选择/判断）→ 一律不留答题区（0 高匿名区，
+           保持与既有 DOM 形状一致，e2e 断言不受影响）；
+           blank（答案进横线）→ 也不另留大框；zone → 按题型/难度留。
+         这张卡以前 type 是「解答题（集合填数）」⇒ 命中 220px 分支，孩子在图里填数的题被
+         白印了一个大空框——正是这次点名的那类。 */
     const stemRaw = String(c.stemHtml || '') + String(c.question || '');
     const hasBlankInStem = /_{2,}|＿{2,}/.test(stemRaw) || /class="[^"]*blank/.test(String(c.stemHtml || ''));
+    const mode = String(c.answerMode || '');
     let zone = '';
-    if (/选择|判断/.test(c.type || '')) zone = '<div class="anszone note" style="height:0"></div>';
-    else if (/填空|默写/.test(c.type || '') && hasBlankInStem) zone = '';
+    if (mode === 'figure' || mode === 'none' || /选择|判断/.test(c.type || '')) zone = '<div class="anszone note" style="height:0"></div>';
+    else if (mode === 'blank' || (/填空|默写/.test(c.type || '') && hasBlankInStem)) zone = '';
     else if (/填空|默写/.test(c.type || '')) zone = '<div class="anszone" style="height:90px"></div>';
     else if (/计算/.test(t)) zone = '<div class="anszone" style="height:180px"></div>';
     else if (/解答|应用|压轴|证明|简答/.test(t)) zone = '<div class="anszone" style="height:' + (c.difficulty === '难' ? 280 : 220) + 'px"></div>';

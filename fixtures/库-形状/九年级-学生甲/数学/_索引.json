@@ -55,7 +55,13 @@
       "blindNote": "",
       "blindFingerprint": "0000000000000000",
       "answerSource": "独立判卷",
-      "answerSourceNote": "合成样例，无真实来源"
+      "answerSourceNote": "合成样例，无真实来源",
+      "answerMode": "blank",
+      "answerSlots": [
+        "−11"
+      ],
+      "answerSlotsBy": "fixture",
+      "answerSlotsAt2": "2026-10-25"
     },
     {
       "id": "C0102",
@@ -91,7 +97,10 @@
       "blindNote": "",
       "blindFingerprint": "0000000000000000",
       "answerSource": "独立判卷",
-      "answerSourceNote": "合成样例，无真实来源"
+      "answerSourceNote": "合成样例，无真实来源",
+      "answerMode": "zone",
+      "answerSlotsBy": "fixture",
+      "answerSlotsAt2": "2026-10-25"
     },
     {
       "id": "C0103",
@@ -148,7 +157,13 @@
       "blindNote": "",
       "blindFingerprint": "0000000000000000",
       "answerSource": "独立判卷",
-      "answerSourceNote": "合成样例，无真实来源"
+      "answerSourceNote": "合成样例，无真实来源",
+      "answerMode": "blank",
+      "answerSlots": [
+        "−6"
+      ],
+      "answerSlotsBy": "fixture",
+      "answerSlotsAt2": "2026-10-25"
     },
     {
       "id": "C0104",
@@ -184,7 +199,10 @@
       "blindNote": "",
       "blindFingerprint": "0000000000000000",
       "answerSource": "独立判卷",
-      "answerSourceNote": "合成样例，无真实来源"
+      "answerSourceNote": "合成样例，无真实来源",
+      "answerMode": "zone",
+      "answerSlotsBy": "fixture",
+      "answerSlotsAt2": "2026-10-25"
     },
     {
       "id": "C0105",
@@ -231,7 +249,10 @@
       "blindNote": "",
       "blindFingerprint": "0000000000000000",
       "answerSource": "独立判卷",
-      "answerSourceNote": "合成样例，无真实来源"
+      "answerSourceNote": "合成样例，无真实来源",
+      "answerMode": "zone",
+      "answerSlotsBy": "fixture",
+      "answerSlotsAt2": "2026-10-25"
     },
     {
       "id": "C0106",
@@ -267,7 +288,13 @@
       "blindNote": "",
       "blindFingerprint": "0000000000000000",
       "answerSource": "独立判卷",
-      "answerSourceNote": "合成样例，无真实来源"
+      "answerSourceNote": "合成样例，无真实来源",
+      "answerMode": "blank",
+      "answerSlots": [
+        "90"
+      ],
+      "answerSlotsBy": "fixture",
+      "answerSlotsAt2": "2026-10-25"
     },
     {
       "id": "C0107",
@@ -303,7 +330,10 @@
       "blindNote": "",
       "blindFingerprint": "0000000000000000",
       "answerSource": "独立判卷",
-      "answerSourceNote": "合成样例，无真实来源"
+      "answerSourceNote": "合成样例，无真实来源",
+      "answerMode": "figure",
+      "answerSlotsBy": "fixture",
+      "answerSlotsAt2": "2026-10-25"
     }
   ]
 }

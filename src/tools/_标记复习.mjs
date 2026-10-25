@@ -469,6 +469,32 @@ switch (action) {
     }
     const subject = opt.subject || known[ids[0]];
     const date = opt.date || today();
+    /* ── 作答契约门禁（2026-10-25 建）：答案不全 / 图上作答未登记 的题不得进组卷池 ──
+       用户同一天三条报障：「M0066 答案好像不全」「M0011 在图上写出答案，所以组卷时这类题目
+       不需要再留答题区」「M0084 给出的下横线长度根本不够写答案」。这三类缺陷的共同特征是
+       **印出来才被发现**（孩子卷面、家长答案册），此前没有任何机器拦截点。
+       判据同 `_作答门禁.mjs`（唯一裁判），这里只做组卷口硬拦截，不重复实现规则。 */
+    if (!opt.force) {
+      let gate = null;
+      try {
+        const r = spawnSync(process.execPath, [toolPath('_作答门禁.mjs'), '门禁', '--json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+        if (r.stdout) gate = JSON.parse(String(r.stdout).trim());
+      } catch { gate = null; }
+      if (!gate || typeof gate.cards !== 'object') {
+        console.error('✖ 作答契约门禁结果不可用（_作答门禁.mjs 门禁 --json 没给出 cards 字典）。');
+        console.error('  这道门禁负责拦"答案册会印出残缺答案"的题；取不到就不放行（静默降级正是 2026-10-10 修过的坑）。');
+        process.exit(2);
+      }
+      const bad = ids.filter(id => { const v = gate.cards[json.student + '|' + id]; return v && v.ok === false; });
+      if (bad.length) {
+        console.error('✖ 作答契约门禁拦截：' + bad.map(id => id + '[空' + (gate.cards[json.student + '|' + id].slots) + '/登' + (gate.cards[json.student + '|' + id].answers) + ']').join(' '));
+        console.error('   → 逐空补答案：node _作答门禁.mjs 补登 --card ' + json.student + '|' + bad[0] + ' --slots "答案1；答案2"');
+        console.error('     或整库看：node _作答门禁.mjs 门禁；确需绕过加 --force（不推荐，答案册会缺答案）。');
+        process.exit(2);
+      }
+    } else {
+      console.log('⚠ --force 同时绕过作答契约门禁（答案册可能缺答案）');
+    }
     /* ── 交错组卷（v2.6 引入，v2.7 改为**显式选择**，2026-10-15）：相邻两题不同「同族考点」──
         依据：Rohrer et al. 2020 预注册整群 RCT（54 个七年级班，1 个月后无预告测验）
         交错组 61% vs 分块组 38%，d=0.83，WWC 最高证据等级（ERIC EJ1237752）。

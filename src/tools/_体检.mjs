@@ -79,6 +79,13 @@ H('原卷台账门禁', ledger.code === 0, lastLine(ledger.out));
 const fig = runTool('_配图门禁.mjs', ['门禁']);
 H('配图门禁', fig.code === 0, lastLine(fig.out));
 
+/* 作答契约门禁（2026-10-25 建）：用户同一天三条报障——答案册答案不全 / 图里作答的题白留答题区 /
+   下横线写不下答案。判据＝题干空位数（客观可数）× 卡片逐空答案登记 + answerMode。
+   与前两道数据门禁同一地位：红了就是"印出来会出丑"，不是进度欠账。 */
+const ansGate = tryJson('_作答门禁.mjs', ['门禁', '--json']);
+H('作答契约门禁', ansGate.code === 0,
+  ansGate.json ? `契约通过 ${(ansGate.json.stats || {}).pass || 0}/${(ansGate.json.stats || {}).total || 0}，阻断 ${(ansGate.json.stats || {}).block || 0}` : lastLine(ansGate.out));
+
 const ev = tryJson('_待确认.mjs', ['证据', '--json']);
 H('待办证据图门禁', ev.code === 0, ev.json ? `未确认 ${ev.json.open || 0} 条｜缺图 ${(ev.json.missing || []).length} / 通配符 ${(ev.json.wildcard || []).length} / 失效 ${(ev.json.broken || []).length}` : lastLine(ev.out));
 

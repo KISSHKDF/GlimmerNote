@@ -550,6 +550,9 @@ textarea{width:100%;resize:vertical;min-height:64px;line-height:1.7}
    与 v1 同形：inline-block + 底边线；min-width 给到手指能下笔（3em≈四个字），
    行内 style 只负责加宽。屏幕与打印同用一条（打印态 #printArea 也吃 .sheet 规则）。 */
 .blank{display:inline-block;height:1.4em;border-bottom:1.5px solid currentColor;vertical-align:-3px;margin:0 3px;min-width:3em}
+/* 编号横线里的编号标签（2026-10-25）：`____3____` 整体是一个空位，编号以小标签印在空位左端，
+   占位极小、不侵犯书写区（早一版按普通下划线拆成两个空位，8 空的完形渲染成 16 条横线）。 */
+.blank .blank-no{font-size:.72em;opacity:.62;vertical-align:super;margin-right:.25em}
 /* 题干里手写的 ASCII 下划线（______）由 M.stemHtmlSafe 转成 .blank 并带 min-width:7em
    （≈31mm，化学式 Na⁺、Cl⁻ 这类答案写得下）——C0002「字跑出去」实测的修复点；
    题干.html 手写的 span 自带 style 宽度，与此规则互不干扰。 */
@@ -557,3 +560,8 @@ textarea{width:100%;resize:vertical;min-height:64px;line-height:1.7}
 .sheet .fr .nu{border-bottom:1.5px solid #111;padding:0 3px}
 .sheet .ans-a{margin:2mm 0 5mm;padding-bottom:2mm;border-bottom:1.5px solid #111}
 .sheet .ans-a .why{font-size:10pt;color:#444}
+/* 答案册「逐空」行（2026-10-25，用户「M0066 答案好像不全」的制度化产物）：
+   答案册从"一段话"改成"逐空列出"，家长对着空批改不必再自己拆段。
+   比主答案低一级（10.5pt，稍浅），不抢主答案的视觉权重。 */
+.sheet .ans-slot{font-size:10.5pt;color:#222;margin:1mm 0 3mm;line-height:1.6}
+.sheet .ans-slot .small{font-size:9.5pt}

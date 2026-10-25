@@ -525,22 +525,174 @@
     out += s.slice(last);
     /* fig 兜底（F-58）：题干里既无 <img> 也无 <svg> 时才补，避免与内联图重复 */
     if (card.fig && !/<(img|svg)\b/i.test(out)) out += '<div class="stem-figure"><img src="' + U.esc(H.asset(card.fig)) + '" alt="题图"></div>';
-    /* 填空空位（2026-10-16）：转 .blank 的实现唯一化到 M.stemBlankify（纯文本兜底同用）。 */
-    out = M.stemBlankify(out);
+    /* 填空空位（2026-10-16）：转 .blank 的实现唯一化到 M.stemBlankify（纯文本兜底同用）。
+       ★ 2026-10-25：收尾改走 M.stemFit —— 除了把下划线转成空位，还要按卡片声明的
+         逐空答案（answerSlots）把每个空撑到写得下（用户 M0084 报障：6em 的横线装 9em 的答案）。 */
+    out = M.stemFit(out, card);
     return out;
   };
   /* 填空空位转换（2026-10-16，C0002 实测「填空位置太小，一写就跑出去」）：
      题干里的 ASCII 下划线（______，多为索引 question 直印）与全角＿串转成真空位 .blank；
      已是 .blank 的（题干.html 手写，自带宽度）不受影响（无下划线串可匹配）。
-     宽度：手写 span 有 style 用 style，转换出来的给 min-width:7em（≈31mm，Na⁺、Cl⁻ 这类
-     短答案写得下；多空题均分纸面也够）。⚠ 只动「空位」不动文字；SVG 内部不下笔，跳过。
+     ★ 2026-10-25：**编号横线 `____3____` 整体转成一个空位**，编号作为标签印在空位里
+       （`.blank-no`）。早一版按普通下划线处理 ⇒ 8 空的完形填空渲染出 16 条横线，
+       逐空答案对不上号（实测 E0010）。
+     宽度：手写 span 有 style 用 style，转换出来的给 min-width:7em（答案再由 stemFit 撑宽）。
+     ⚠ 只动「空位」不动文字；SVG 内部不下笔，跳过。
      stemHtmlSafe 的出口与 qHtml 的纯文本兜底（无 题干.html 的卡）都走这一个实现。 */
+  M.blankLabel = function (raw) {
+    const m = /[0-9０-９]{1,3}/.exec(String(raw || ''));
+    return m ? m[0].replace(/[０-９]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0)) : '';
+  };
   M.stemBlankify = function (s) {
     if (!s || !/_{2,}|＿{2,}/.test(s)) return s;
-    return String(s).split(/(<svg[\s\S]*?<\/svg>)/gi).map(seg =>
-      /^<svg/i.test(seg) ? seg : seg.replace(/_{2,}/g, '<span class="blank" style="min-width:7em"></span>').replace(/＿{2,}/g, '<span class="blank" style="min-width:7em"></span>')
-    ).join('');
+    const conv = seg => {
+      /* 先吃编号横线：整段一个空位 + 编号标签 */
+      let out = String(seg).replace(M.NUMBERED_UNDERSCORE_RE, m => {
+        const n = M.blankLabel(m);
+        return '<span class="blank" style="min-width:7em">' + (n ? '<span class="blank-no">' + n + '</span>' : '') + '</span>';
+      });
+      out = out.replace(/_{2,}/g, '<span class="blank" style="min-width:7em"></span>')
+        .replace(/＿{2,}/g, '<span class="blank" style="min-width:7em"></span>');
+      return out;
+    };
+    return String(s).split(/(<svg[\s\S]*?<\/svg>)/gi).map(seg => /^<svg/i.test(seg) ? seg : conv(seg)).join('');
   };
+  /* ---------- 作答契约（2026-10-25 用户报障三连的制度化） ----------
+     用户原话：「M0066 答案好像不全」「M0011 在图上写出答案，所以组卷时这类题目不需要再留答题区」
+     「M0084 给出的下横线长度根本不够写答案」。三件事同一个根：**题干里的"空"从来没被当成数据**。
+     现在卡片带三个契约字段（工具侧 `_作答门禁.mjs` 是唯一写入入口）：
+       answerMode   blank（答案进横线）| figure（写在/画在图上，不留答题区）| zone（另留答题区）| none（选择/判断）
+       answerSlots  逐空答案，顺序＝卷面顺序；条数由工具数题干空位对账
+       answerScope  full（缺省）| partial（合卡只考部分空，配 answerSlotsAt + answerNote）
+     ⚠ 这里的空位解析与 Node 侧 `src/tools/_空位.mjs` **必须逐字同判**（前端不能 import ESM）。
+        `tests/neg-answer-slot-contract.cjs` 的 P 段把全库题干同时喂两份实现逐卡对拍，分叉即红。 */
+
+  /* 空位解析：① <span class="blank">  ② 编号横线 ____3____（算一个空）  ③ ASCII 下划线串  ④ 全角＿串；
+     SVG 内部不算空。★ 2026-10-25：编号横线必须整体算一个空——早一版把两段各算一个，
+     "8 空的完形"被数成 16 空，工单/答案册全跟着错（子代理填报时实测报回）。 */
+  M.SVG_RE = /<svg[\s\S]*?<\/svg>/gi;
+  /* 空位 span 识别：class 里含**独立 token `blank`** 才算。
+     ⚠ 2026-10-25 实测踩到：早一版 `<span class="blank"[^>]*>` 会把空位内部编号标签
+     `<span class="blank-no">3</span>` 也当成一个空位，8 空渲染后又被数成 16 空。 */
+  M.BLANK_SPAN_RE = /<\s*span\b([^>]*)>/gi;
+  M.hasBlankClass = function (attrs) {
+    const m = /class\s*=\s*"([^"]*)"/i.exec(String(attrs || ''));
+    return !!m && m[1].split(/\s+/).indexOf('blank') >= 0;
+  };
+  M.NUMBERED_UNDERSCORE_RE = /(?:_{2,}|＿{2,})\s*[0-9０-９]{1,3}\s*(?:_{2,}|＿{2,})/g;
+  M.UNDERSCORE_RE = /_{2,}|＿{2,}/g;
+  M._widthOfTag = function (tag) {
+    const m = /style\s*=\s*"[^"]*?\bwidth\s*:\s*([\d.]+)\s*(em|px|mm|%)?/i.exec(String(tag || ''));
+    if (!m) return null;
+    const v = parseFloat(m[1]); const u = String(m[2] || 'em').toLowerCase();
+    if (!isFinite(v)) return null;
+    if (u === 'px') return Math.round(v / 16 * 100) / 100;
+    if (u === 'mm') return Math.round(v / 4 * 100) / 100;
+    if (u === '%') return null;
+    return Math.round(v * 100) / 100;
+  };
+  M.slotsOf = function (html) {
+    const src = String(html == null ? '' : html).replace(M.SVG_RE, s => ' '.repeat(s.length));
+    const hits = [];
+    let m;
+    M.BLANK_SPAN_RE.lastIndex = 0;
+    while ((m = M.BLANK_SPAN_RE.exec(src))) {
+      if (!M.hasBlankClass(m[1])) continue;
+      hits.push({ i: m.index, len: m[0].length, kind: 'span', width: M._widthOfTag(m[0]) });
+    }
+    const numbered = [];
+    M.NUMBERED_UNDERSCORE_RE.lastIndex = 0;
+    while ((m = M.NUMBERED_UNDERSCORE_RE.exec(src))) {
+      numbered.push([m.index, m.index + m[0].length]);
+      hits.push({ i: m.index, len: m[0].length, kind: 'raw', width: null });
+    }
+    const inNumbered = i => numbered.some(([a, b]) => i >= a && i < b);
+    M.UNDERSCORE_RE.lastIndex = 0;
+    while ((m = M.UNDERSCORE_RE.exec(src))) {
+      if (hits.some(h => m.index >= h.i && m.index < h.i + h.len && h.kind === 'span')) continue;
+      if (inNumbered(m.index)) continue;
+      hits.push({ i: m.index, len: m[0].length, kind: 'raw', width: null });
+    }
+    hits.sort((a, b) => a.i - b.i);
+    return hits.map((h, i) => ({ i: i, kind: h.kind, width: h.width, start: h.i, end: h.i + h.len }));
+  };
+  M.slotCount = html => M.slotsOf(html).length;
+  /* 答案要几 em（宁可偏宽——偏窄正是 M0084 的投诉） */
+  M.FULLWIDTH_RE = /[\u2e80-\u9fff\u3000-\u303f\uff00-\uffef\u2200-\u22ff\u2190-\u21ff\u00b1\u00d7\u00f7\u2212\u2260]/;
+  M.needEm = function (answer) {
+    const s = String(answer == null ? '' : answer);
+    if (!s) return 0;
+    let w = 0;
+    for (const ch of s) {
+      if (M.FULLWIDTH_RE.test(ch)) w += 1;
+      else if (ch === ' ') w += 0.35;
+      else if (/[A-Za-z0-9]/.test(ch)) w += 0.58;
+      else if (/[\u0300-\u036f]/.test(ch)) w += 0;
+      else w += 0.45;
+    }
+    return Math.round(Math.min(40, Math.max(0, w + 1.2)) * 100) / 100;
+  };
+  /* 与 Node 侧 _空位.mjs BLANK_MAX_EM 同值（18em ≈ 72mm，一行写得下的上限；改一处必须改两处） */
+  M.BLANK_MAX_EM = 18;
+  /* 逐空答案（只对 full 作用；partial 用 answerSlotsAt 定位，不能按序号硬套） */
+  M.slotAnswers = function (card) {
+    const c = card || {};
+    const arr = Array.isArray(c.answerSlots) ? c.answerSlots : null;
+    if (!arr) return null;
+    return arr.map(v => (v == null ? '' : String(v)));
+  };
+  /* 把每个空撑到够宽（渲染唯一实现；与 _空位.mjs applySlotWidths 同判） */
+  M.applySlotWidths = function (html, answers, opts) {
+    const o = Object.assign({ fallbackEm: 7, minEm: 4 }, opts || {});
+    const list = Array.isArray(answers) ? answers : [];
+    const slots = M.slotsOf(html);
+    if (!slots.length) return html;
+    let out = String(html);
+    for (let k = slots.length - 1; k >= 0; k--) {
+      const s = slots[k];
+      const raw = out.slice(s.start, s.end);
+      const ans = list[k];
+      const width = (ans == null || String(ans) === '')
+        ? (s.width == null ? o.fallbackEm : s.width)
+        : Math.round(Math.max(o.minEm, s.width == null ? 0 : s.width, M.needEm(ans)) * 100) / 100;
+      const w = width + 'em';
+      /* ⚠ 2026-10-25：标签必须**规范化输出**（class 在前、min-width 写在 style 内）。
+         原因：盲解清稿的 stemToText 用 `<span class="blank"[^>]*>` 还原空位，属性顺序一变
+         就还原失败 ⇒ 纯净文本变 ⇒ 盲解指纹失效（Node 侧早期版本踩过，5 张语文卡当场失效）。
+         这里与 src/tools/_空位.mjs 的 rewrite() 逐字同判（tests 的 P 段逐卡对拍）。 */
+      let tag;
+      if (s.kind === 'span') {
+        const mm = /^<span\b([^>]*)>/i.exec(raw || '');
+        if (!mm) tag = raw;
+        else {
+          let attrs = mm[1];
+          const cls = /class\s*=\s*"([^"]*)"/i.exec(attrs);
+          attrs = attrs.replace(/class\s*=\s*"[^"]*"/i, '');
+          const st = /style\s*=\s*"([^"]*)"/i.exec(attrs);
+          let styleVal;
+          if (st) {
+            styleVal = st[1];
+            if (/\bmin-width\s*:/i.test(styleVal)) styleVal = styleVal.replace(/\bmin-width\s*:\s*[\d.]+\s*(em|px|mm)?/i, 'min-width:' + w);
+            else styleVal = 'min-width:' + w + ';' + styleVal;
+            attrs = attrs.replace(/style\s*=\s*"[^"]*"/i, '');
+          } else styleVal = 'min-width:' + w;
+          const rest = attrs.trim();
+          tag = '<span' + (cls ? ' class="' + cls[1] + '"' : ' class="blank"') + ' style="' + styleVal + '"' + (rest ? ' ' + rest : '') + '>';
+        }
+      } else tag = '<span class="blank" style="min-width:' + w + '"></span>';
+      out = out.slice(0, s.start) + tag + out.slice(s.end);
+    }
+    return out;
+  };
+  /* 题干出口的统一收尾：填空转换 + 按声明答案撑宽 */
+  M.stemFit = function (html, card) {
+    let out = M.stemBlankify(html);
+    const ans = M.slotAnswers(card);
+    if (ans && ans.length) out = M.applySlotWidths(out, ans);
+    return out;
+  };
+
   /* 属性级白名单（`on*` 一律剔除；src 重写到卡片目录；style 值过危险函数） */
   M.filterAttrs = function (raw, dir, asset) {
     const re = /([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g;
