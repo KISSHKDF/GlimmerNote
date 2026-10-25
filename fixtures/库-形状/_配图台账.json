@@ -1,0 +1,93 @@
+{
+  "note": "合成形状库：配图台账（make-fixture-lib 生成，形状⑧）",
+  "cards": {
+    "学生甲|C0101": {
+      "need": false,
+      "kind": "none",
+      "ref": "",
+      "note": "纯文字题",
+      "by": "make-fixture-lib",
+      "date": "2026-10-25"
+    },
+    "学生甲|C0102": {
+      "need": false,
+      "kind": "none",
+      "ref": "",
+      "note": "纯文字题",
+      "by": "make-fixture-lib",
+      "date": "2026-10-25"
+    },
+    "学生甲|C0103": {
+      "need": false,
+      "kind": "none",
+      "ref": "",
+      "note": "纯文字题",
+      "by": "make-fixture-lib",
+      "date": "2026-10-25"
+    },
+    "学生甲|C0104": {
+      "need": true,
+      "kind": "jpg",
+      "ref": "",
+      "note": "题干提到图，必须有图",
+      "by": "make-fixture-lib",
+      "date": "2026-10-25"
+    },
+    "学生甲|C0105": {
+      "need": true,
+      "kind": "svg",
+      "ref": "",
+      "note": "题干提到图，必须有图",
+      "by": "make-fixture-lib",
+      "date": "2026-10-25"
+    },
+    "学生甲|C0106": {
+      "need": false,
+      "kind": "svg",
+      "ref": "配图.svg",
+      "note": "图走 fig 兜底链路（生成状态→前端 F-58），配图门禁侧无需图",
+      "by": "make-fixture-lib",
+      "date": "2026-10-25"
+    },
+    "学生甲|C0107": {
+      "need": false,
+      "kind": "svg",
+      "ref": "配图.svg",
+      "note": "图走 fig 兜底链路（生成状态→前端 F-58），配图门禁侧无需图",
+      "by": "make-fixture-lib",
+      "date": "2026-10-25"
+    },
+    "学生甲|C0201": {
+      "need": false,
+      "kind": "none",
+      "ref": "",
+      "note": "纯文字题",
+      "by": "make-fixture-lib",
+      "date": "2026-10-25"
+    },
+    "学生甲|C0202": {
+      "need": false,
+      "kind": "none",
+      "ref": "",
+      "note": "纯文字题",
+      "by": "make-fixture-lib",
+      "date": "2026-10-25"
+    },
+    "学生乙|C0301": {
+      "need": false,
+      "kind": "none",
+      "ref": "",
+      "note": "纯文字题",
+      "by": "make-fixture-lib",
+      "date": "2026-10-25"
+    },
+    "学生乙|C0302": {
+      "need": false,
+      "kind": "none",
+      "ref": "",
+      "note": "纯文字题",
+      "by": "make-fixture-lib",
+      "date": "2026-10-25"
+    }
+  }
+}

@@ -1,0 +1,92 @@
+{
+  "student": "学生甲",
+  "grade": "九年级",
+  "note": "合成形状数据（make-fixture-lib.mjs 生成），非真实题库。",
+  "updatedAt": "2026-10-25T00:00:00+08:00",
+  "subject": "物理",
+  "items": [
+    {
+      "id": "C0201",
+      "dir": "C0201-浮力与密度综合",
+      "source": "合成样例·单元卷3 第3题",
+      "sourceDate": "2026-09-03",
+      "type": "计算题",
+      "question": "物体浸没在水中，排开水的体积是 2×10⁻⁴ m³，求浮力大小。（g=10N/kg）",
+      "answer": "2N",
+      "studentAnswer": "20N",
+      "kpoints": [
+        "浮力"
+      ],
+      "causeLayer": "技能",
+      "causeCode": "S01",
+      "causeDesc": "体积单位没换算",
+      "causeConfirmed": true,
+      "difficulty": "中",
+      "errorCount": 1,
+      "status": "在册",
+      "hasImage": false,
+      "hasVariants": false,
+      "reviews": [
+        {
+          "at": "2026-09-05T20:00:00+08:00",
+          "pass": true,
+          "mode": "到期待复习"
+        },
+        {
+          "at": "2026-09-12T20:00:00+08:00",
+          "pass": true,
+          "mode": "到期待复习"
+        }
+      ],
+      "reviewStatus": "复习中",
+      "reviewCount": 2,
+      "passStreak": 1,
+      "lastReviewedAt": "2026-09-12T20:00:00+08:00",
+      "nextDue": "2026-10-24",
+      "masteredAt": null,
+      "blindStatus": "已通过",
+      "blindSolveAt": "2026-09-01T21:00:00+08:00",
+      "blindSolver": "合成样例",
+      "blindNote": "",
+      "blindFingerprint": "0000000000000000",
+      "answerSource": "独立判卷",
+      "answerSourceNote": "合成样例，无真实来源"
+    },
+    {
+      "id": "C0202",
+      "dir": "C0202-欧姆定律动态电路",
+      "source": "合成样例·单元卷1 第1题",
+      "sourceDate": "2026-09-01",
+      "type": "计算题",
+      "question": "电源电压 6V，定值电阻 10Ω，串联滑动变阻器（0~20Ω），电流最小是多少？",
+      "answer": "0.2A",
+      "studentAnswer": "0.6A",
+      "kpoints": [
+        "欧姆定律"
+      ],
+      "causeLayer": "技能",
+      "causeCode": "S02",
+      "causeDesc": "没取最大电阻",
+      "causeConfirmed": true,
+      "difficulty": "中",
+      "errorCount": 1,
+      "status": "在册",
+      "hasImage": false,
+      "hasVariants": false,
+      "reviews": [],
+      "reviewStatus": "未复习",
+      "reviewCount": 0,
+      "passStreak": 0,
+      "lastReviewedAt": "",
+      "nextDue": "2026-10-26",
+      "masteredAt": null,
+      "blindStatus": "已通过",
+      "blindSolveAt": "2026-09-01T21:00:00+08:00",
+      "blindSolver": "合成样例",
+      "blindNote": "",
+      "blindFingerprint": "0000000000000000",
+      "answerSource": "独立判卷",
+      "answerSourceNote": "合成样例，无真实来源"
+    }
+  ]
+}

@@ -1,0 +1,868 @@
+{
+  "version": 3,
+  "generatedAt": "2026-10-25T05:00:20.438Z",
+  "data": [
+    {
+      "name": "学生甲",
+      "grade": "九年级",
+      "subjects": [
+        {
+          "name": "数学",
+          "dir": "九年级-学生甲\\数学",
+          "items": [
+            {
+              "id": "C0101",
+              "source": "合成样例·单元卷1 第4题",
+              "sourceDate": "2026-09-04",
+              "type": "填空题",
+              "question": "计算 (−5)+3×(−2) = ____。",
+              "answer": "−11",
+              "studentAnswer": "1",
+              "kpoints": [
+                "有理数运算"
+              ],
+              "causeLayer": "技能",
+              "causeCode": "S01",
+              "causeDesc": "先加后乘",
+              "causeConfirmed": true,
+              "difficulty": "易",
+              "errorCount": 2,
+              "status": "在册",
+              "hasImage": false,
+              "hasVariants": false,
+              "reviews": [
+                {
+                  "at": "2026-09-05T20:00:00+08:00",
+                  "pass": true,
+                  "mode": "到期待复习"
+                },
+                {
+                  "at": "2026-09-12T20:00:00+08:00",
+                  "pass": true,
+                  "mode": "到期待复习"
+                },
+                {
+                  "at": "2026-09-19T20:00:00+08:00",
+                  "pass": true,
+                  "mode": "到期待复习"
+                }
+              ],
+              "reviewStatus": "复习中",
+              "reviewCount": 3,
+              "passStreak": 2,
+              "lastReviewedAt": "2026-09-19T20:00:00+08:00",
+              "nextDue": "2026-10-24",
+              "masteredAt": null,
+              "blindStatus": "已通过",
+              "blindSolveAt": "2026-09-01T21:00:00+08:00",
+              "blindSolver": "合成样例",
+              "blindNote": "",
+              "blindFingerprint": "0000000000000000",
+              "answerSource": "独立判卷",
+              "answerSourceNote": "合成样例，无真实来源",
+              "img": null,
+              "md": null,
+              "stem": null,
+              "stemHtml": "<p>计算 <b>(−5)+3×(−2)</b> = ____。</p>\n",
+              "fig": null,
+              "pdf": null,
+              "origPage": null,
+              "origBox": null,
+              "origImport": null,
+              "origBy": "make-fixture-lib"
+            },
+            {
+              "id": "C0102",
+              "source": "合成样例·单元卷1 第1题",
+              "sourceDate": "2026-09-01",
+              "type": "解答题",
+              "question": "方程 x²−4x+m=0 有两个不相等实根，求 m 的取值范围。",
+              "answer": "m<4",
+              "studentAnswer": "m≤4",
+              "kpoints": [
+                "一元二次方程"
+              ],
+              "causeLayer": "知识",
+              "causeCode": "K01",
+              "causeDesc": "漏排等于零",
+              "causeConfirmed": true,
+              "difficulty": "中",
+              "errorCount": 1,
+              "status": "在册",
+              "hasImage": false,
+              "hasVariants": false,
+              "reviews": [],
+              "reviewStatus": "未复习",
+              "reviewCount": 0,
+              "passStreak": 0,
+              "lastReviewedAt": "",
+              "nextDue": "2026-10-26",
+              "masteredAt": null,
+              "blindStatus": "已通过",
+              "blindSolveAt": "2026-09-01T21:00:00+08:00",
+              "blindSolver": "合成样例",
+              "blindNote": "",
+              "blindFingerprint": "0000000000000000",
+              "answerSource": "独立判卷",
+              "answerSourceNote": "合成样例，无真实来源",
+              "img": null,
+              "md": null,
+              "stem": null,
+              "stemHtml": "<p>关于 x 的方程 <b>x²−4x+m=0</b> 有两个不相等的实数根，求 m 的取值范围。</p>\n",
+              "fig": null,
+              "pdf": null,
+              "origPage": null,
+              "origBox": null,
+              "origImport": null,
+              "origBy": "make-fixture-lib"
+            },
+            {
+              "id": "C0103",
+              "source": "合成样例·单元卷2 第5题",
+              "sourceDate": "2026-09-05",
+              "type": "填空题",
+              "question": "反比例函数 y=k/x 经过点 (3,−2)，则 k = ____。",
+              "answer": "−6",
+              "studentAnswer": "6",
+              "kpoints": [
+                "反比例函数"
+              ],
+              "causeLayer": "知识",
+              "causeCode": "K02",
+              "causeDesc": "k=xy 记反",
+              "causeConfirmed": true,
+              "difficulty": "易",
+              "errorCount": 1,
+              "status": "在册",
+              "hasImage": false,
+              "hasVariants": false,
+              "reviews": [
+                {
+                  "at": "2026-09-05T20:00:00+08:00",
+                  "pass": true,
+                  "mode": "到期待复习"
+                },
+                {
+                  "at": "2026-09-12T20:00:00+08:00",
+                  "pass": true,
+                  "mode": "到期待复习"
+                },
+                {
+                  "at": "2026-09-19T20:00:00+08:00",
+                  "pass": true,
+                  "mode": "到期待复习"
+                },
+                {
+                  "at": "2026-09-26T20:00:00+08:00",
+                  "pass": true,
+                  "mode": "到期待复习"
+                }
+              ],
+              "reviewStatus": "已掌握",
+              "reviewCount": 4,
+              "passStreak": 3,
+              "lastReviewedAt": "2026-09-26T20:00:00+08:00",
+              "nextDue": "",
+              "masteredAt": "2026-09-26T20:00:00+08:00",
+              "blindStatus": "已通过",
+              "blindSolveAt": "2026-09-01T21:00:00+08:00",
+              "blindSolver": "合成样例",
+              "blindNote": "",
+              "blindFingerprint": "0000000000000000",
+              "answerSource": "独立判卷",
+              "answerSourceNote": "合成样例，无真实来源",
+              "img": null,
+              "md": null,
+              "stem": null,
+              "stemHtml": "<p>反比例函数 <b>y=k/x</b> 的图像经过点 (3, −2)，则 k = ____。</p>\n",
+              "fig": null,
+              "pdf": null,
+              "origPage": null,
+              "origBox": null,
+              "origImport": null,
+              "origBy": "make-fixture-lib"
+            },
+            {
+              "id": "C0104",
+              "source": "合成样例·单元卷1 第1题",
+              "sourceDate": "2026-09-01",
+              "type": "解答题",
+              "question": "如图，直线经过点 (1,2)，求它的解析式。",
+              "answer": "y=2x",
+              "studentAnswer": "y=x+2",
+              "kpoints": [
+                "一次函数"
+              ],
+              "causeLayer": "审式",
+              "causeCode": "W01",
+              "causeDesc": "把斜率当成截距",
+              "causeConfirmed": true,
+              "difficulty": "中",
+              "errorCount": 1,
+              "status": "在册",
+              "hasImage": true,
+              "hasVariants": false,
+              "reviews": [],
+              "reviewStatus": "未复习",
+              "reviewCount": 0,
+              "passStreak": 0,
+              "lastReviewedAt": "",
+              "nextDue": "2026-10-26",
+              "masteredAt": null,
+              "blindStatus": "已通过",
+              "blindSolveAt": "2026-09-01T21:00:00+08:00",
+              "blindSolver": "合成样例",
+              "blindNote": "",
+              "blindFingerprint": "0000000000000000",
+              "answerSource": "独立判卷",
+              "answerSourceNote": "合成样例，无真实来源",
+              "img": null,
+              "md": null,
+              "stem": null,
+              "stemHtml": "<p>如图，直线经过点 (1, 2)。</p><p><img src=\"题图.png\" alt=\"直线图像\"></p>\n",
+              "fig": null,
+              "pdf": null,
+              "origPage": null,
+              "origBox": null,
+              "origImport": null,
+              "origBy": "make-fixture-lib"
+            },
+            {
+              "id": "C0105",
+              "source": "合成样例·单元卷3 第3题",
+              "sourceDate": "2026-09-03",
+              "type": "填空题",
+              "question": "如图，AB∥CD，∠1=55°，求∠2 的度数。",
+              "answer": "125°",
+              "studentAnswer": "55°",
+              "kpoints": [
+                "平行线性质"
+              ],
+              "causeLayer": "知识",
+              "causeCode": "K01",
+              "causeDesc": "同位角与内错角混",
+              "causeConfirmed": true,
+              "difficulty": "易",
+              "errorCount": 1,
+              "status": "在册",
+              "hasImage": true,
+              "hasVariants": false,
+              "reviews": [
+                {
+                  "at": "2026-09-05T20:00:00+08:00",
+                  "pass": true,
+                  "mode": "到期待复习"
+                },
+                {
+                  "at": "2026-09-12T20:00:00+08:00",
+                  "pass": false,
+                  "mode": "到期待复习"
+                }
+              ],
+              "reviewStatus": "复习中",
+              "reviewCount": 2,
+              "passStreak": 0,
+              "lastReviewedAt": "2026-09-12T20:00:00+08:00",
+              "nextDue": "2026-10-24",
+              "masteredAt": null,
+              "blindStatus": "已通过",
+              "blindSolveAt": "2026-09-01T21:00:00+08:00",
+              "blindSolver": "合成样例",
+              "blindNote": "",
+              "blindFingerprint": "0000000000000000",
+              "answerSource": "独立判卷",
+              "answerSourceNote": "合成样例，无真实来源",
+              "img": null,
+              "md": null,
+              "stem": null,
+              "stemHtml": "<p>如图，AB∥CD，∠1=55°，求 ∠2 的度数。</p><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"220\" height=\"60\"><line x1=\"10\" y1=\"50\" x2=\"210\" y2=\"50\" stroke=\"#333\"/><line x1=\"60\" y1=\"10\" x2=\"120\" y2=\"50\" stroke=\"#333\" stroke-width=\"2\"/></svg>\n",
+              "fig": "%E4%B9%9D%E5%B9%B4%E7%BA%A7-%E5%AD%A6%E7%94%9F%E7%94%B2/%E6%95%B0%E5%AD%A6/C0105-%E5%87%A0%E4%BD%95%E7%A4%BA%E6%84%8F%E5%9B%BE%E6%B1%82%E8%A7%92/%E9%85%8D%E5%9B%BE.svg",
+              "pdf": null,
+              "origPage": null,
+              "origBox": null,
+              "origImport": null,
+              "origBy": "make-fixture-lib"
+            },
+            {
+              "id": "C0106",
+              "source": "合成样例·单元卷1 第1题",
+              "sourceDate": "2026-09-01",
+              "type": "填空题",
+              "question": "下表是某次测验成绩：85、90、78、90，则众数是 ____。",
+              "answer": "90",
+              "studentAnswer": "85",
+              "kpoints": [
+                "数据统计"
+              ],
+              "causeLayer": "审式",
+              "causeCode": "W01",
+              "causeDesc": "众数与中位数混",
+              "causeConfirmed": true,
+              "difficulty": "易",
+              "errorCount": 1,
+              "status": "在册",
+              "hasImage": false,
+              "hasVariants": false,
+              "reviews": [],
+              "reviewStatus": "未复习",
+              "reviewCount": 0,
+              "passStreak": 0,
+              "lastReviewedAt": "",
+              "nextDue": "2026-10-26",
+              "masteredAt": null,
+              "blindStatus": "已通过",
+              "blindSolveAt": "2026-09-01T21:00:00+08:00",
+              "blindSolver": "合成样例",
+              "blindNote": "",
+              "blindFingerprint": "0000000000000000",
+              "answerSource": "独立判卷",
+              "answerSourceNote": "合成样例，无真实来源",
+              "img": null,
+              "md": null,
+              "stem": null,
+              "stemHtml": "<p>下表是某次测验成绩：85、90、78、90，则众数是 ____。</p>\n",
+              "fig": null,
+              "pdf": null,
+              "origPage": null,
+              "origBox": null,
+              "origImport": null,
+              "origBy": "make-fixture-lib"
+            },
+            {
+              "id": "C0107",
+              "source": "合成样例·单元卷1 第1题",
+              "sourceDate": "2026-09-01",
+              "type": "解答题",
+              "question": "不等式 x>2 的解集在数轴上表示为：开口向右、从 2 起画空心圆圈。请描述画法。",
+              "answer": "向右开口，2 处空心",
+              "studentAnswer": "向左开口",
+              "kpoints": [
+                "不等式"
+              ],
+              "causeLayer": "知识",
+              "causeCode": "K01",
+              "causeDesc": "空心实心混淆",
+              "causeConfirmed": true,
+              "difficulty": "易",
+              "errorCount": 1,
+              "status": "在册",
+              "hasImage": true,
+              "hasVariants": false,
+              "reviews": [],
+              "reviewStatus": "未复习",
+              "reviewCount": 0,
+              "passStreak": 0,
+              "lastReviewedAt": "",
+              "nextDue": "2026-10-26",
+              "masteredAt": null,
+              "blindStatus": "已通过",
+              "blindSolveAt": "2026-09-01T21:00:00+08:00",
+              "blindSolver": "合成样例",
+              "blindNote": "",
+              "blindFingerprint": "0000000000000000",
+              "answerSource": "独立判卷",
+              "answerSourceNote": "合成样例，无真实来源",
+              "img": null,
+              "md": null,
+              "stem": null,
+              "stemHtml": "<p>不等式 x&gt;2 的解集在数轴上如何表示？请描述画法。</p>\n",
+              "fig": "%E4%B9%9D%E5%B9%B4%E7%BA%A7-%E5%AD%A6%E7%94%9F%E7%94%B2/%E6%95%B0%E5%AD%A6/C0107-%E6%95%B0%E8%BD%B4%E8%A1%A8%E7%A4%BA%E8%A7%A3%E9%9B%86/%E9%85%8D%E5%9B%BE.svg",
+              "pdf": null,
+              "origPage": null,
+              "origBox": null,
+              "origImport": null,
+              "origBy": "make-fixture-lib"
+            }
+          ]
+        },
+        {
+          "name": "物理",
+          "dir": "九年级-学生甲\\物理",
+          "items": [
+            {
+              "id": "C0201",
+              "source": "合成样例·单元卷3 第3题",
+              "sourceDate": "2026-09-03",
+              "type": "计算题",
+              "question": "物体浸没在水中，排开水的体积是 2×10⁻⁴ m³，求浮力大小。（g=10N/kg）",
+              "answer": "2N",
+              "studentAnswer": "20N",
+              "kpoints": [
+                "浮力"
+              ],
+              "causeLayer": "技能",
+              "causeCode": "S01",
+              "causeDesc": "体积单位没换算",
+              "causeConfirmed": true,
+              "difficulty": "中",
+              "errorCount": 1,
+              "status": "在册",
+              "hasImage": false,
+              "hasVariants": false,
+              "reviews": [
+                {
+                  "at": "2026-09-05T20:00:00+08:00",
+                  "pass": true,
+                  "mode": "到期待复习"
+                },
+                {
+                  "at": "2026-09-12T20:00:00+08:00",
+                  "pass": true,
+                  "mode": "到期待复习"
+                }
+              ],
+              "reviewStatus": "复习中",
+              "reviewCount": 2,
+              "passStreak": 1,
+              "lastReviewedAt": "2026-09-12T20:00:00+08:00",
+              "nextDue": "2026-10-24",
+              "masteredAt": null,
+              "blindStatus": "已通过",
+              "blindSolveAt": "2026-09-01T21:00:00+08:00",
+              "blindSolver": "合成样例",
+              "blindNote": "",
+              "blindFingerprint": "0000000000000000",
+              "answerSource": "独立判卷",
+              "answerSourceNote": "合成样例，无真实来源",
+              "img": null,
+              "md": null,
+              "stem": null,
+              "stemHtml": "<p>物体浸没在水中，排开水的体积是 <b>2×10⁻⁴ m³</b>，求浮力大小（g=10N/kg）。</p>\n",
+              "fig": null,
+              "pdf": null,
+              "origPage": "%E4%B9%9D%E5%B9%B4%E7%BA%A7/%E5%8E%9F%E5%8D%B7/C0201-%E6%95%B4%E9%A1%B5.png",
+              "origBox": [
+                0.08,
+                0.12,
+                0.84,
+                0.2
+              ],
+              "origImport": null,
+              "origBy": "make-fixture-lib"
+            },
+            {
+              "id": "C0202",
+              "source": "合成样例·单元卷1 第1题",
+              "sourceDate": "2026-09-01",
+              "type": "计算题",
+              "question": "电源电压 6V，定值电阻 10Ω，串联滑动变阻器（0~20Ω），电流最小是多少？",
+              "answer": "0.2A",
+              "studentAnswer": "0.6A",
+              "kpoints": [
+                "欧姆定律"
+              ],
+              "causeLayer": "技能",
+              "causeCode": "S02",
+              "causeDesc": "没取最大电阻",
+              "causeConfirmed": true,
+              "difficulty": "中",
+              "errorCount": 1,
+              "status": "在册",
+              "hasImage": false,
+              "hasVariants": false,
+              "reviews": [],
+              "reviewStatus": "未复习",
+              "reviewCount": 0,
+              "passStreak": 0,
+              "lastReviewedAt": "",
+              "nextDue": "2026-10-26",
+              "masteredAt": null,
+              "blindStatus": "已通过",
+              "blindSolveAt": "2026-09-01T21:00:00+08:00",
+              "blindSolver": "合成样例",
+              "blindNote": "",
+              "blindFingerprint": "0000000000000000",
+              "answerSource": "独立判卷",
+              "answerSourceNote": "合成样例，无真实来源",
+              "img": null,
+              "md": null,
+              "stem": null,
+              "stemHtml": "<p>电源电压 6V，定值电阻 10Ω，串联滑动变阻器（0~20Ω），电流最小是多少？</p>\n",
+              "fig": null,
+              "pdf": null,
+              "origPage": null,
+              "origBox": null,
+              "origImport": null,
+              "origBy": "make-fixture-lib"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "学生乙",
+      "grade": "八年级",
+      "subjects": [
+        {
+          "name": "数学",
+          "dir": "八年级-学生乙",
+          "items": [
+            {
+              "id": "C0301",
+              "source": "合成样例·单元卷3 第3题",
+              "sourceDate": "2026-09-03",
+              "type": "填空题",
+              "question": "两边和它们的夹角对应相等的两个三角形 ____。",
+              "answer": "全等",
+              "studentAnswer": "相似",
+              "kpoints": [
+                "全等三角形"
+              ],
+              "causeLayer": "知识",
+              "causeCode": "K01",
+              "causeDesc": "SAS 记成 SSA",
+              "causeConfirmed": true,
+              "difficulty": "中",
+              "errorCount": 2,
+              "status": "在册",
+              "hasImage": false,
+              "hasVariants": false,
+              "reviews": [
+                {
+                  "at": "2026-09-12T20:00:00+08:00",
+                  "pass": true,
+                  "mode": "到期待复习"
+                },
+                {
+                  "at": "2026-09-19T20:00:00+08:00",
+                  "pass": true,
+                  "mode": "到期待复习"
+                }
+              ],
+              "reviewStatus": "复习中",
+              "reviewCount": 2,
+              "passStreak": 1,
+              "lastReviewedAt": "2026-09-19T20:00:00+08:00",
+              "nextDue": "2026-10-24",
+              "masteredAt": null,
+              "blindStatus": "已通过",
+              "blindSolveAt": "2026-09-01T21:00:00+08:00",
+              "blindSolver": "合成样例",
+              "blindNote": "",
+              "blindFingerprint": "0000000000000000",
+              "answerSource": "独立判卷",
+              "answerSourceNote": "合成样例，无真实来源",
+              "img": null,
+              "md": null,
+              "stem": null,
+              "stemHtml": "<p>两边和它们的<b>夹角</b>对应相等的两个三角形 ____。</p>\n",
+              "fig": null,
+              "pdf": null,
+              "origPage": null,
+              "origBox": null,
+              "origImport": null,
+              "origBy": "make-fixture-lib"
+            }
+          ]
+        },
+        {
+          "name": "英语",
+          "dir": "八年级-学生乙",
+          "items": [
+            {
+              "id": "C0302",
+              "source": "合成样例·单元卷1 第1题",
+              "sourceDate": "2026-09-01",
+              "type": "填空题",
+              "question": "He ____ (visit) the museum last week.",
+              "answer": "visited",
+              "studentAnswer": "visits",
+              "kpoints": [
+                "一般过去时"
+              ],
+              "causeLayer": "知识",
+              "causeCode": "K01",
+              "causeDesc": "last week 没触发过去时",
+              "causeConfirmed": true,
+              "difficulty": "易",
+              "errorCount": 1,
+              "status": "在册",
+              "hasImage": false,
+              "hasVariants": false,
+              "reviews": [],
+              "reviewStatus": "未复习",
+              "reviewCount": 0,
+              "passStreak": 0,
+              "lastReviewedAt": "",
+              "nextDue": "2026-10-26",
+              "masteredAt": null,
+              "blindStatus": "已通过",
+              "blindSolveAt": "2026-09-01T21:00:00+08:00",
+              "blindSolver": "合成样例",
+              "blindNote": "",
+              "blindFingerprint": "0000000000000000",
+              "answerSource": "独立判卷",
+              "answerSourceNote": "合成样例，无真实来源",
+              "img": null,
+              "md": null,
+              "stem": null,
+              "stemHtml": "<p>He ____ (visit) the museum last week.</p>\n",
+              "fig": null,
+              "pdf": null,
+              "origPage": null,
+              "origBox": null,
+              "origImport": null,
+              "origBy": "make-fixture-lib"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "papers": [
+    {
+      "paperId": "P20261017-01",
+      "date": "2026-10-17",
+      "student": "学生甲",
+      "subject": "数学",
+      "title": "错题重做卷·合成形状一",
+      "items": [
+        "C0101",
+        "C0103"
+      ],
+      "status": "已批改",
+      "results": {
+        "C0101": "半对",
+        "C0103": "对"
+      },
+      "gradedAt": null,
+      "source": null,
+      "note": "合成批次"
+    }
+  ],
+  "blindFresh": {
+    "学生甲|C0101": "待重盲解",
+    "学生甲|C0102": "待重盲解",
+    "学生甲|C0103": "待重盲解",
+    "学生甲|C0104": "待重盲解",
+    "学生甲|C0105": "待重盲解",
+    "学生甲|C0106": "待重盲解",
+    "学生甲|C0107": "待重盲解",
+    "学生甲|C0201": "待重盲解",
+    "学生甲|C0202": "待重盲解",
+    "学生乙|C0301": "待重盲解",
+    "学生乙|C0302": "待重盲解"
+  },
+  "pending": {
+    "ok": false,
+    "problems": [
+      "待确认 1 条"
+    ],
+    "open": 1,
+    "noVerdict": [],
+    "byAsk": {
+      "孩子": 1,
+      "老师": 0,
+      "原卷": 0,
+      "系统": 0
+    },
+    "noQref": [],
+    "noBox": [
+      "T101"
+    ],
+    "truncated": [],
+    "doneTotal": 0,
+    "noDisposition": [],
+    "evidenceBad": [
+      "T101"
+    ],
+    "origOn": [
+      "T101"
+    ],
+    "origOff": [],
+    "origBad": [],
+    "alignBad": [
+      "T101"
+    ],
+    "alignProblems": {
+      "T101": [
+        "证据图文件不在",
+        "红框不是 4 个数字",
+        "问句里没有「第N页」，无法对位"
+      ]
+    },
+    "ids": [
+      "T101"
+    ],
+    "dupId": [],
+    "items": [
+      {
+        "id": "T101",
+        "student": "学生甲",
+        "subject": "数学",
+        "cardId": "C0101",
+        "kind": "笔迹归属",
+        "askWho": "孩子",
+        "question": "这步 −5+3 的结果是多少？请孩子口述。",
+        "detail": "合成样例：字迹较潦草",
+        "source": "合成样例",
+        "raisedAt": "2026-10-20",
+        "evidence": "九年级-学生甲/数学/待办证据/T101.png",
+        "evidenceOk": false,
+        "qRef": "第3题",
+        "box": null,
+        "origPage": "",
+        "origBox": null,
+        "evidenceFix": "",
+        "evidenceNote": "",
+        "boxFix": "",
+        "origFix": ""
+      }
+    ]
+  },
+  "figState": {
+    "学生甲|C0101": {
+      "state": "无需图",
+      "ok": true,
+      "hasAsset": false,
+      "hasStemHtml": true,
+      "inline": false,
+      "files": [],
+      "need": false
+    },
+    "学生甲|C0102": {
+      "state": "无需图",
+      "ok": true,
+      "hasAsset": false,
+      "hasStemHtml": true,
+      "inline": false,
+      "files": [],
+      "need": false
+    },
+    "学生甲|C0103": {
+      "state": "无需图",
+      "ok": true,
+      "hasAsset": false,
+      "hasStemHtml": true,
+      "inline": false,
+      "files": [],
+      "need": false
+    },
+    "学生甲|C0104": {
+      "state": "有图",
+      "ok": true,
+      "hasAsset": true,
+      "hasStemHtml": true,
+      "inline": true,
+      "files": [],
+      "need": true
+    },
+    "学生甲|C0105": {
+      "state": "有图",
+      "ok": true,
+      "hasAsset": true,
+      "hasStemHtml": true,
+      "inline": true,
+      "files": [],
+      "need": true
+    },
+    "学生甲|C0106": {
+      "state": "无需图",
+      "ok": true,
+      "hasAsset": false,
+      "hasStemHtml": true,
+      "inline": false,
+      "files": [],
+      "need": false
+    },
+    "学生甲|C0107": {
+      "state": "无需图",
+      "ok": true,
+      "hasAsset": false,
+      "hasStemHtml": true,
+      "inline": false,
+      "files": [],
+      "need": false
+    },
+    "学生甲|C0201": {
+      "state": "无需图",
+      "ok": true,
+      "hasAsset": false,
+      "hasStemHtml": true,
+      "inline": false,
+      "files": [],
+      "need": false
+    },
+    "学生甲|C0202": {
+      "state": "无需图",
+      "ok": true,
+      "hasAsset": false,
+      "hasStemHtml": true,
+      "inline": false,
+      "files": [],
+      "need": false
+    },
+    "学生乙|C0301": {
+      "state": "无需图",
+      "ok": true,
+      "hasAsset": false,
+      "hasStemHtml": true,
+      "inline": false,
+      "files": [],
+      "need": false
+    },
+    "学生乙|C0302": {
+      "state": "无需图",
+      "ok": true,
+      "hasAsset": false,
+      "hasStemHtml": true,
+      "inline": false,
+      "files": [],
+      "need": false
+    }
+  },
+  "dataHealth": {
+    "blindFresh": "ok",
+    "figState": "ok",
+    "admit": "ok",
+    "pending": "ok"
+  },
+  "admit": {
+    "学生甲|C0101": {
+      "ok": true,
+      "why": ""
+    },
+    "学生甲|C0102": {
+      "ok": true,
+      "why": ""
+    },
+    "学生甲|C0103": {
+      "ok": true,
+      "why": ""
+    },
+    "学生甲|C0104": {
+      "ok": true,
+      "why": ""
+    },
+    "学生甲|C0105": {
+      "ok": true,
+      "why": ""
+    },
+    "学生甲|C0106": {
+      "ok": true,
+      "why": ""
+    },
+    "学生甲|C0107": {
+      "ok": true,
+      "why": ""
+    },
+    "学生甲|C0201": {
+      "ok": true,
+      "why": ""
+    },
+    "学生甲|C0202": {
+      "ok": true,
+      "why": ""
+    },
+    "学生乙|C0301": {
+      "ok": true,
+      "why": ""
+    },
+    "学生乙|C0302": {
+      "ok": true,
+      "why": ""
+    }
+  },
+  "_pendingSrc": {},
+  "_genBy": "生成状态.mjs"
+}

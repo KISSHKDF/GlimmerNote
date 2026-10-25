@@ -1,0 +1,99 @@
+{
+  "student": "学生乙",
+  "grade": "八年级",
+  "note": "合成形状数据（make-fixture-lib.mjs 生成），非真实题库。",
+  "updatedAt": "2026-10-25T00:00:00+08:00",
+  "subjects": {
+    "数学": {
+      "items": [
+        {
+          "id": "C0301",
+          "dir": "C0301-全等三角形判定",
+          "source": "合成样例·单元卷3 第3题",
+          "sourceDate": "2026-09-03",
+          "type": "填空题",
+          "question": "两边和它们的夹角对应相等的两个三角形 ____。",
+          "answer": "全等",
+          "studentAnswer": "相似",
+          "kpoints": [
+            "全等三角形"
+          ],
+          "causeLayer": "知识",
+          "causeCode": "K01",
+          "causeDesc": "SAS 记成 SSA",
+          "causeConfirmed": true,
+          "difficulty": "中",
+          "errorCount": 2,
+          "status": "在册",
+          "hasImage": false,
+          "hasVariants": false,
+          "reviews": [
+            {
+              "at": "2026-09-12T20:00:00+08:00",
+              "pass": true,
+              "mode": "到期待复习"
+            },
+            {
+              "at": "2026-09-19T20:00:00+08:00",
+              "pass": true,
+              "mode": "到期待复习"
+            }
+          ],
+          "reviewStatus": "复习中",
+          "reviewCount": 2,
+          "passStreak": 1,
+          "lastReviewedAt": "2026-09-19T20:00:00+08:00",
+          "nextDue": "2026-10-24",
+          "masteredAt": null,
+          "blindStatus": "已通过",
+          "blindSolveAt": "2026-09-01T21:00:00+08:00",
+          "blindSolver": "合成样例",
+          "blindNote": "",
+          "blindFingerprint": "0000000000000000",
+          "answerSource": "独立判卷",
+          "answerSourceNote": "合成样例，无真实来源"
+        }
+      ]
+    },
+    "英语": {
+      "items": [
+        {
+          "id": "C0302",
+          "dir": "C0302-英语一般过去时",
+          "source": "合成样例·单元卷1 第1题",
+          "sourceDate": "2026-09-01",
+          "type": "填空题",
+          "question": "He ____ (visit) the museum last week.",
+          "answer": "visited",
+          "studentAnswer": "visits",
+          "kpoints": [
+            "一般过去时"
+          ],
+          "causeLayer": "知识",
+          "causeCode": "K01",
+          "causeDesc": "last week 没触发过去时",
+          "causeConfirmed": true,
+          "difficulty": "易",
+          "errorCount": 1,
+          "status": "在册",
+          "hasImage": false,
+          "hasVariants": false,
+          "reviews": [],
+          "reviewStatus": "未复习",
+          "reviewCount": 0,
+          "passStreak": 0,
+          "lastReviewedAt": "",
+          "nextDue": "2026-10-26",
+          "masteredAt": null,
+          "blindStatus": "已通过",
+          "blindSolveAt": "2026-09-01T21:00:00+08:00",
+          "blindSolver": "合成样例",
+          "blindNote": "",
+          "blindFingerprint": "0000000000000000",
+          "answerSource": "独立判卷",
+          "answerSourceNote": "合成样例，无真实来源"
+        }
+      ]
+    }
+  }
+}

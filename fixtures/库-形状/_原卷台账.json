@@ -1,0 +1,97 @@
+{
+  "note": "合成形状库：原卷台账。page 指向运行时生成的 PNG（见 _影像清单.json）。",
+  "cards": {
+    "学生甲|C0101": {
+      "page": null,
+      "box": null,
+      "import": null,
+      "by": "make-fixture-lib",
+      "note": "合成形状：无母本，显式 lost",
+      "lost": true
+    },
+    "学生甲|C0102": {
+      "page": null,
+      "box": null,
+      "import": null,
+      "by": "make-fixture-lib",
+      "note": "合成形状：无母本，显式 lost",
+      "lost": true
+    },
+    "学生甲|C0103": {
+      "page": null,
+      "box": null,
+      "import": null,
+      "by": "make-fixture-lib",
+      "note": "合成形状：无母本，显式 lost",
+      "lost": true
+    },
+    "学生甲|C0104": {
+      "page": null,
+      "box": null,
+      "import": null,
+      "by": "make-fixture-lib",
+      "note": "合成形状：无母本，显式 lost",
+      "lost": true
+    },
+    "学生甲|C0105": {
+      "page": null,
+      "box": null,
+      "import": null,
+      "by": "make-fixture-lib",
+      "note": "合成形状：无母本，显式 lost",
+      "lost": true
+    },
+    "学生甲|C0106": {
+      "page": null,
+      "box": null,
+      "import": null,
+      "by": "make-fixture-lib",
+      "note": "合成形状：无母本，显式 lost",
+      "lost": true
+    },
+    "学生甲|C0107": {
+      "page": null,
+      "box": null,
+      "import": null,
+      "by": "make-fixture-lib",
+      "note": "合成形状：无母本，显式 lost",
+      "lost": true
+    },
+    "学生甲|C0201": {
+      "page": "九年级/原卷/C0201-整页.png",
+      "box": [
+        0.08,
+        0.12,
+        0.84,
+        0.2
+      ],
+      "import": null,
+      "by": "make-fixture-lib",
+      "note": "合成形状：有整页+box（形状④）"
+    },
+    "学生甲|C0202": {
+      "page": null,
+      "box": null,
+      "import": null,
+      "by": "make-fixture-lib",
+      "note": "合成形状：素材灭失豁免",
+      "lost": true
+    },
+    "学生乙|C0301": {
+      "page": null,
+      "box": null,
+      "import": null,
+      "by": "make-fixture-lib",
+      "note": "合成形状：无母本，显式 lost",
+      "lost": true
+    },
+    "学生乙|C0302": {
+      "page": null,
+      "box": null,
+      "import": null,
+      "by": "make-fixture-lib",
+      "note": "合成形状：无母本，显式 lost",
+      "lost": true
+    }
+  }
+}

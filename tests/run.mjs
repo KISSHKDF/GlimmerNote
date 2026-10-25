@@ -57,6 +57,12 @@ function run(script, args = []) {
   if (code === 3) {
     console.log('\n⚠ 运行区尚无部署清单（_deploy-manifest.json）——本门禁暂无法判定；');
     console.log('  建立基线只有一条路：scripts\\build-release.ps1 → scripts\\deploy.ps1');
+  } else if (code === 2) {
+    /* ★ 2026-10-25：exit 2 = 运行区不存在（新克隆 / 换机 / CI——仓库旁边根本没有 GlimmerNote\）。
+       这不是"有人绕过链路"，是"这台机器本来就没有运行区"。判死 fixture 会把新克隆第一步
+       堵死（实测：干净克隆跑 fixture 直接红，README 承诺的 3 秒 exit 0 失效）。
+       语义修正：运行区在 ⇒ 一致性照旧硬判（开发机红线不动）；运行区不在 ⇒ 提示后继续。 */
+    console.log('\n○ 本机没有运行区（' + String(r.stderr || '').trim().split('\n')[0].replace(/^✖\s*/, '') + '）——部署一致性门禁只在有运行区的机器上生效');
   } else if (code !== 0) {
     console.log('\n' + String(r.stderr || r.stdout || '').trim());
     console.log('✖ 运行区被绕过 deploy.ps1 改动过（或版本与清单不符），先归位再发版');
@@ -76,7 +82,12 @@ function run(script, args = []) {
  * SKIP 必须可见 —— 这是本仓门禁纪律（同 run.mjs 里其它 SKIP 的写法）。 */
 if (mode === 'fixture') {
   /* 白名单不是猜的：2026-10-24 在干净克隆上用 CTB_TEST_LIB=fixtures\库-最小 逐个实跑筛出来的，
-     只有这几个 exit 0。加新条目必须先在干净克隆上实测。 */
+     只有这几个 exit 0。加新条目必须先在干净克隆上实测。
+     ★ 2026-10-25 扩：合成库升级为「形状库」（fixtures\库-形状，11 卡铺满 8 类形状）+ 影像
+     运行时物化（_测试环境 选中 fixtures 即自动生成 PNG）之后，**三道数据门禁在干净克隆上
+     也能真跑了**（原先因"图不在盘上"必然 SKIP）。fixture 模式把它们从 SKIP 挪进白名单：
+     干净克隆的门禁覆盖从 6 项升到 10 项——原卷台账（含 lost 豁免/box 对位路径）、
+     待办证据图、配图台账三条主链路从此有真实回归。 */
   const HERMETIC = [
     ['repo-hygiene.cjs', '全仓内部痕迹机检（真实化名/内部根名 tracked 0 命中，B-09）'],
     ['neg-v2-smoke.cjs', 'v2 纯函数回归（污染/净化/fig 兜底）'],
@@ -88,14 +99,24 @@ if (mode === 'fixture') {
   const SKIPPED = [
     ['portability.cjs', '需要已构建的 src\\app\\拾光小册.exe（gitignored）'],
     ['e2e-ui.mjs / neg-v2-ui-*.cjs', '需要桌面壳 exe + 9223 调试口'],
-    ['_原卷台账.mjs 门禁 / _配图门禁.mjs 门禁', '需要真实题库的整页原卷与题图影像'],
-    ['verify-stem-shape.cjs / verify-stem-13.cjs', '需要真实题库的题干文件'],
     ['selftest-pipeline.ps1', '需要已构建的发布包与运行区'],
   ];
   let worst = 0;
   for (const [name] of HERMETIC) {
     worst = Math.max(worst, run(name));
     if (worst !== 0) { console.log('✖ 零依赖自检未过（' + name + '）'); process.exit(worst); }
+  }
+  /* ★ 2026-10-25：三道数据门禁（干净克隆可跑版）。库来自 _测试环境 的物化合成库。
+     verify-stem-shape 是普查脚本（不设退出判据），fixture 下不跑；它跑真库时也只是打印。 */
+  if (!E.isFrozen(E.LIB)) {
+    worst = Math.max(worst, runTool('_原卷台账.mjs', ['门禁']));
+    if (worst !== 0) { console.log('✖ 原卷台账门禁未过（合成库形状与门禁口径漂移）'); process.exit(worst); }
+    worst = Math.max(worst, runTool('_待确认.mjs', ['证据']));
+    if (worst !== 0) { console.log('✖ 待办证据图门禁未过'); process.exit(worst); }
+    worst = Math.max(worst, runTool('_配图门禁.mjs', ['门禁']));
+    if (worst !== 0) { console.log('✖ 配图门禁未过'); process.exit(worst); }
+  } else {
+    console.log('\n────────── fixture 模式：数据门禁因 LIB 指向真库而跳过（quick 会以只读方式跑）──────────');
   }
   console.log('\n────────── fixture 模式：以下项因缺依赖而 SKIP（可见，不隐藏）──────────');
   for (const [what, why] of SKIPPED) console.log('  [SKIP] ' + what + '  ← ' + why);

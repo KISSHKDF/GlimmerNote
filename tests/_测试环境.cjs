@@ -33,6 +33,12 @@ function resolveLib() {
   if (env && String(env).trim()) {
     const p = path.resolve(String(env).trim());
     if (!isDir(p)) throw new Error('[测试环境] CTB_TEST_LIB 指向的目录不存在：' + p);
+    /* ★ 2026-10-25：显式指向 fixtures 合成库时也要物化（与候选分支同一条规则）——
+       否则"显式指定"反而绕开影像生成，门禁在合成库上永远缺图（实测踩过）。 */
+    if (p.startsWith(path.join(REPO, 'fixtures'))) {
+      const { materialize } = require('./_合成库.cjs');
+      return materialize();
+    }
     return p;
   }
   /* ★ 2026-10-24 审计修复（F-06 / DEFECT-REGISTRY D-051）：
@@ -47,7 +53,8 @@ function resolveLib() {
   const cands = [
     path.resolve(REPO, '..', 'GlimmerNote', '数据'),        // 运行区库（真库所在）
     path.resolve(REPO, '..', '错题本'),                    // 旧冻结区（观察期兜底）
-    path.join(REPO, 'fixtures', '库-最小'),                 // ★ 仓库自带合成库（新克隆的兜底）
+    path.join(REPO, 'fixtures', '库-形状'),                 // ★ 仓库自带合成形状库（新克隆默认；影像运行时物化）
+    path.join(REPO, 'fixtures', '库-最小'),                 // 合成最小库（形状库缺失时的兜底）
   ];
   for (const c of cands) {
     if (!isDir(c)) continue;
@@ -57,7 +64,20 @@ function resolveLib() {
     const gradeLike = fs.readdirSync(c).some(n => /^\d+年级(-.+)?$/.test(n));
     if (fs.existsSync(path.join(c, '_索引.json')) ||
       gradeLike ||
-      fs.existsSync(path.join(c, '_状态.json'))) return c;
+      fs.existsSync(path.join(c, '_状态.json'))) {
+      /* ★ 2026-10-25：选中的是仓库 fixtures 合成库时，自动「物化」到临时目录——
+       * 合成库的影像（原卷整页/题图/证据图）不进 git（.gitignore 挡全部 png，
+       * 2026-10-25 刚删掉 fixtures png 反向口子），只存 _影像清单.json 契约；
+       * 物化 = 复制文本 + 按清单现场生成 PNG。此后所有门禁（_原卷台账/_待确认 证据/
+       * _配图门禁 的"图必须在盘上"判据）在合成库上也能真跑，而不是 SKIP。 */
+      if (c.startsWith(path.join(REPO, 'fixtures'))) {
+        const { materialize } = require('./_合成库.cjs');
+        const m = materialize();
+        if (process.env.CTB_TEST_LIB) process.env.CTB_TEST_LIB = m;
+        return m;
+      }
+      return c;
+    }
   }
   throw new Error('[测试环境] 找不到库。三种办法任选其一：' +
     '\n  ① 什么都不做 —— 仓库自带的 fixtures\\库-最小 应当被自动选中（若报这个错说明它缺文件）' +
