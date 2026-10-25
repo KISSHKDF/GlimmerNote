@@ -250,9 +250,13 @@
     const g = {}; for (const x of refs) g[x.kid + '|' + x.subject] = (g[x.kid + '|' + x.subject] || 0) + 1; return Object.keys(g);
   }
   async function commitPaper() {
-    /* F-39：门禁降级（admit 读不到 ⇒ 界面用的是兜底盲解判据）时，入账前必须让用户知道 */
-    if (!M.healthOk() && !confirm('⚠ 数据源降级：' + M.healthText() +
-      '\n\n这道门禁现在是「读不到」而不是「通过了」。继续入账可能被工具拒（工具侧判据仍在跑）。\n\n仍要继续吗？')) return;
+    /* F-39：门禁降级（admit 读不到 ⇒ 界面用的是兜底盲解判据）时，入账前必须让用户知道
+       ⚠ 2026-10-25 换 S.confirm：壳里原生 confirm 不可见且冻结整页（见 shell.js S.confirm 注释） */
+    if (!M.healthOk() && !await S.confirm({
+      title: '⚠ 数据源降级，仍要入账吗？',
+      body: M.healthText() + '<br><br>这道门禁现在是「读不到」而不是「通过了」。继续入账可能被工具拒（工具侧判据仍在跑）。',
+      ok: '仍要入账', danger: true,
+    })) return;
     /* 防重复印卷（2026-10-24 用户报障）：入账前把"近 7 天已印过"的题摆到眼前。
        这里只是**告知+给选择**，真正的硬门禁在工具侧 —— 它会 exit 2 拦下（需 --force 才放行）。
        为什么两道都要有：界面这道是让人当场知道，工具那道是保证任何入口（含命令行/别的界面）都逃不掉。 */
@@ -264,10 +268,13 @@
         const r = rm[x.kid + '|' + x.card.id] || {};
         return x.card.id + '（' + (r.date || '') + ' ' + (r.paperId || '') + '）';
       }).join('、');
-      if (!confirm('⚠ 这张卷里有 ' + repNow.length + ' 题最近 ' + REPEAT_DAYS + ' 天已经印过卷：\n' + lines +
-        (repNow.length > 12 ? ' …' : '') +
-        '\n\n同一套题短期内重印，孩子是照答案默写，这次判的「对」不代表掌握。' +
-        '\n\n点「确定」= 仍然入账（工具侧会拦，需要你确认后才放行）；点「取消」= 先回配卷屏剔除这些题。')) {
+      if (!await S.confirm({
+        title: '⚠ 有 ' + repNow.length + ' 题近 ' + REPEAT_DAYS + ' 天已印过，仍要入账吗？',
+        body: '<b>' + U.esc(lines) + (repNow.length > 12 ? ' …' : '') + '</b><br><br>' +
+          '同一套题短期内重印，孩子是照答案默写，这次判的「对」不代表掌握。<br>' +
+          '「仍要入账」= 继续提交（工具侧还会再拦一次）；「取消」= 回配卷屏剔除这些题。',
+        ok: '仍要入账', danger: true,
+      })) {
         S.toast('已取消入账：请先剔除近 ' + REPEAT_DAYS + ' 天印过的题，或等它们到期再组', 'warn', 9000);
         return;
       }
@@ -327,8 +334,11 @@
         const ids = [...new Set(msg.match(/[MPLCEY]\d{4}/g) || [])].filter(id => inPaper.has(id));
         /* 防重复门禁单独一条路：它的错误码/文案可辨识，允许"确认后 --force 重试" */
         if (/防重复组卷拦截/.test(msg) && ids.length && !allowRepeat) {
-          if (confirm('⚠ 工具侧防重复门禁拦下 ' + ids.length + ' 题（最近 ' + REPEAT_DAYS + ' 天内已印过）：\n' + ids.join('、') +
-            '\n\n仍要把这些题再印一遍吗？（重印后这次的对错会写进复习流水）')) {
+          if (await S.confirm({
+            title: '⚠ 防重复门禁拦下 ' + ids.length + ' 题',
+            body: '<b>' + U.esc(ids.join('、')) + '</b><br><br>这些题最近 ' + REPEAT_DAYS + ' 天内已印过。仍要再印一遍吗？（重印后这次的对错会写进复习流水）',
+            ok: '仍要重印', danger: true,
+          })) {
             allowRepeat = true; continue;
           }
           S.toast('已取消：请先剔除这些题，或在台账里「看这张卷」直接重印当初那张', 'warn', 12000);
@@ -336,7 +346,11 @@
           return;
         }
         if (ids.length && curKey && groups[curKey] &&
-          confirm('工具门禁拦下 ' + ids.length + ' 题（盲解/答案来源未归档）：\n' + ids.join('、') + '\n\n剔除这些题、其余继续入账吗？')) {
+          await S.confirm({
+            title: '工具门禁拦下 ' + ids.length + ' 题',
+            body: '<b>' + U.esc(ids.join('、')) + '</b><br><br>（盲解/答案来源未归档）剔除这些题、其余继续入账吗？',
+            ok: '剔除并继续',
+          })) {
           groups[curKey] = groups[curKey].filter(x => !ids.includes(x.card.id));
           if (!groups[curKey].length) delete groups[curKey];
           if (!Object.keys(groups).length) { S.toast('剩余题目全被拦，未入账', 'warn'); return; }
@@ -435,6 +449,10 @@
     const isShell = (typeof H !== 'undefined') && H.mode === 'shell' && typeof H.print === 'function';
     if (isShell) {
       S.toast(tip || '已送入打印视图，正在打开打印预览…', 'ok');
+      /* ★ 2026-10-25：预览打开的同时盖打印遮罩（S.printLock）——预览层开着时主窗口输入
+         全被它吃掉，不遮住说明，用户只会觉得「点了没反应」（详见 shell.js S.printLock 注释）。
+         预览关闭（主窗口重新获焦）后遮罩自动解除。 */
+      S.printLock(true);
       H.print().then(r => {
         if (r && r.ok === false) throw new Error(r.error || '宿主打印不可用');
         /* ⚠⚠ 2026-10-11 修（用户第二次报障「点左下角打印之后没反应」的真凶）：
@@ -448,6 +466,7 @@
            清空只在"下一次注入新的打印单元"时发生（`fillPrintArea` 是赋值覆盖），
            顺带让 Ctrl+P 这条退路也始终能印出正确卷面。 */
       }).catch(e => {
+        S.printLock(false);   /* 没弹成预览就没有「看不见的层」，遮罩立即撤 */
         S.toast('没能打开打印预览（' + ((e && e.message) || e) + '）——请按 Ctrl+P 打印，卷面已备好', 'warn', 12000);
         try { console.error('[print] 宿主打印失败：', e); } catch (_) { }
       });

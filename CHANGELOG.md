@@ -3,6 +3,53 @@
 格式遵循 Keep a Changelog；版本号遵循日期制 `YYYY.MM.DD.NN`。
 版本号唯一真源：`VERSION.json`。
 
+## [2026.10.25.04] - 2026-10-25 · 两个「点了没反应」的根因（不可见确认框 + 打印预览吞点击）
+
+> 本版只修**两个同族缺陷**：桌面壳里「看不见的原生覆盖层」把界面冻住/把点击吃掉。
+> 用户报障原话：「第一次点击台账/回录进去之后，必然要卡一会」「打印之后点什么都没反应，只能重启」。
+
+### 根因（均有实机证据，非推测）
+
+1. **`window.confirm` / `alert` 在 WebView2 WinForms 壳里不渲染，但会冻结整个页面。**
+   组卷入账的防重复确认、复习流落库的门禁剔除确认、退出/丢弃本场确认都走这条路。
+   实测（CDP + PrintWindow + FindWindow 三重取证）：对话框挂起期间 `Runtime.evaluate`
+   全部超时 3s+（主线程冻结），而主窗口截图上**没有任何弹窗**、系统里也没有 `#32770`
+   对话框句柄 —— 用户看到的只是「点了没反应」。
+2. **页内打印预览（`ShowPrintUI(Browser)` → `edge://print`）开着时，主窗口所有鼠标输入被它吃掉。**
+   实测：CDP `Input.dispatchMouseEvent` 与系统级 `SendInput` 双路验证点击 100% 被吞，
+   同期 `Runtime.evaluate` 正常（说明 JS/壳桥都活着，只是输入进不去）。
+   用户以为预览已关/没意识到它开着，对着主界面连点全部无反应。
+
+### 改了什么
+
+| 位置 | 改动 | 为什么 |
+|---|---|---|
+| `src/app/js/shell.js` | 新增 `S.confirm({title, body, ok, cancel, danger})`：**页内自绘确认抽屉**，Promise 化，Esc/点遮罩 = 取消；同一时刻只允许一个，并发调用排队 | 彻底不再调用原生 `confirm`，页面永不被冻结 |
+| `src/app/js/shell.js` | 新增 `S.printLock(on)` + 打印遮罩 DOM；主窗口重新获焦时自动解除，另有 10 分钟兜底 | 把「看不见的坑」变成「看得见的墙」：预览开着时明确告知，而不是让人以为程序卡死 |
+| `src/app/js/views/paper.js` | 4 处 `confirm` → `await S.confirm`；打印入口接 `S.printLock(true)`，失败分支立即撤遮罩 | 同上 |
+| `src/app/js/views/review.js` | 4 处 `confirm` → `await S.confirm`（退出本场 / 丢弃判定 / 门禁降级 / 剔除被拦题） | 同上 |
+| `src/app/js/views/pending.js` | 1 处 `confirm` → `await S.confirm`（办结包直接落库） | 同上 |
+| `src/app/css/app.css` | 新增 `.print-lock` 遮罩样式 | 同上 |
+
+### 修复过程中自己踩到并修掉的坑
+
+`S.confirm` 第一版的防双触发判据用了**全局** `S.confirmBusy`：排队弹出下一个确认框时，
+上一个对话框的 `closeDrawer → onClose → settle(false)` 晚到一步，把**新框**错杀
+（实测：点「确定」后 `confirmBusy` 仍为 true、抽屉残留旧标题、队列堆积不消化）。
+现改为每个对话框自己的 `closed` 标志。
+
+### 护栏
+- `tools/lint.mjs` 0 处问题。
+- `node tests\run.mjs fixture` exit 0；`node tests\run.mjs quick` exit 0（断言 61，跳过 3）。
+- `tests/neg-v2-ui-review-bank.cjs` 的 Esc 桩同步从 mock `window.confirm` 改为 mock
+  `CTB.shell._confirmOpen`（handler 变成 async + await），并新增静态断言
+  「review.js 不得再出现裸 `confirm(`」。
+
+### 实机验证（开发壳 + 数据副本，运行区一个字未动）
+- 确认框期间页面 JS：**alive**（修复前 BLOCKED）；原生 dialog 出现次数 **0**。
+- 页内确认抽屉正常出现、取消可中止；两连弹链路（入账→防重复确认→工具门禁→剔除确认）正确串行。
+- 打印预览打开 → 遮罩出现（「打印预览已打开」）；窗口重新获焦 → 遮罩自动解除。
+
 ## [2026.10.25.02] - 2026-10-25 · 对外首发版（化名痕迹清零 + 文档面向陌生人修订）
 
 > 本版**不改功能**，只为"第一次挂到 GitHub 给陌生人看"做清理。功能面与 `2026.10.25.01` 一致。

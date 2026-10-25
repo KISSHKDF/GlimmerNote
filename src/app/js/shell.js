@@ -249,6 +249,12 @@
   };
   /* 壳事件（托盘菜单等） */
   H.onEvent = function (m) { if (m.evt === 'refresh') S.reload(true); };
+  /* 打印预览关闭探测：主窗口重新获得焦点时，若打印遮罩还开着就收掉它
+     （预览层是原生覆盖层，页面拿不到它的关闭事件；焦点恢复是最可靠的信号） */
+  window.addEventListener('focus', () => {
+    const pl = U.$id('printLock');
+    if (pl && !pl.hidden) setTimeout(() => S.printLock(false), 600);
+  });
 
   /* ================= Toast =================
      2026-10-11 重做。起因（用户报）：右上角同时堆了 5 条一模一样的面板提示，
@@ -309,6 +315,96 @@
     t.onclick = () => toastDismiss(t, k);
     box.appendChild(t);
     return t;
+  };
+
+  /* ================= 打印预览遮罩（防「看不见的预览吃掉所有点击」） =================
+     ⚠ 2026-10-25 修（用户报障「打印之后点什么都没反应」的根因）：
+     壳的 `ShowPrintUI(Browser)` 弹的页内打印预览（edge://print）是盖在 WebView 上的
+     原生层——它开着时**主窗口所有鼠标输入都被它吃掉**（实测 CDP Input 与系统级
+     SendInput 双路验证），但用户往往以为预览已关/没意识到它开着，对着主界面连点
+     全部无反应，只能重启。
+     现在：打开打印预览的同时盖一个**页内全屏遮罩**说明状况，把「看不见的坑」变成
+     「看得见的墙」；预览关闭（主窗口重新获得焦点）后遮罩自动退场。
+     解除判据用焦点：预览层开着时主窗口失焦，用户关掉预览（点取消/打印完成）后窗口
+     重新获焦 ⇒ focus 事件 + 短延迟解除。兜底：10 分钟自动解除（防极端情况下锁死）。
+     遮罩本身可点（点了提示「请先关闭打印预览」），不冒充可交互。 */
+  let printLockTimer = 0;
+  S.printLock = function (on) {
+    let el = U.$id('printLock');
+    if (on) {
+      if (!el) {
+        el = U.h('div', { id: 'printLock', class: 'print-lock' });
+        el.innerHTML = '<div class="print-lock-card"><div class="e-ic">🖨</div>' +
+          '<b>打印预览已打开</b>' +
+          '<div class="small muted">预览窗口还开着时，主界面暂时点不动。<br>请在预览里完成打印或点「取消」关闭它，<br>关闭后这里会自动恢复。</div></div>';
+        U.$id('app').appendChild(el);
+        el.onclick = () => S.toast('请先关闭打印预览（点预览左下角的「取消」或右上角 ✕），主界面就会恢复', 'warn', 6000);
+      }
+      el.hidden = false;
+      clearTimeout(printLockTimer);
+      printLockTimer = setTimeout(() => S.printLock(false), 600000);   // 兜底：10 分钟自动解除
+      return;
+    }
+    clearTimeout(printLockTimer);
+    if (el) el.hidden = true;
+  };
+
+  /* ================= 页内确认框（替代 window.confirm） =================
+     ⚠ 2026-10-25 修（用户报障「点台账/回录必卡一阵」的根因）：
+     WebView2 WinForms 壳里 `window.confirm` / `alert` 的原生对话框**不渲染**——
+     对话框事件挂起期间页面 JS 主线程被完全冻结（实测 CDP evaluate 全部超时 3s+，
+     PrintWindow 截图证实主窗口无任何弹窗、FindWindow 也找不到 #32770 对话框），
+     用户看到的就是「点了没反应、卡一阵」。组卷入账的防重复确认、复习流落库的
+     门禁剔除确认都会走到这条路。
+     现在统一换成**页内自绘确认抽屉**（复用 S.drawer 的遮罩与样式），Promise 化：
+     `await S.confirm({title, body, ok, cancel, danger})` → true/false。
+     Esc/点遮罩 = 取消（与原生语义一致）。同屏只允许一个确认框（重复调用排队等待，
+     防止连点叠框）。 */
+  S.confirmBusy = false;
+  S.confirmQueue = [];
+  S.confirm = function (opts) {
+    opts = opts || {};
+    if (S.confirmBusy) {   // 已开着：排队（连点/并发触发时按序应答，不叠框）
+      return new Promise(res => S.confirmQueue.push({ opts: opts, res: res }));
+    }
+    return S._confirmOpen(opts);
+  };
+  S._confirmNext = function () {
+    const next = S.confirmQueue.shift();
+    if (next) S._confirmOpen(next.opts).then(next.res);
+  };
+  S._confirmOpen = function (opts) {
+    S.confirmBusy = true;
+    return new Promise(resolve => {
+      /* 防双触发判据必须是**本对话框**的 closed 标志，不能用全局 confirmBusy：
+         settle 链尾会先弹下一个确认框（_confirmNext → confirmBusy=true），
+         若用全局判据，closeDrawer 触发的 onClose→settle(false) 会把**新框**错杀
+         （probe28 实测：点 OK 后 busy 仍 true、抽屉残留旧标题、队列堆积不消化）。 */
+      let closed = false;
+      const settle = v => {
+        if (closed) return;
+        closed = true;
+        S.confirmBusy = false;
+        S.closeDrawer();
+        document.removeEventListener('keydown', escFn);
+        resolve(v);
+        S._confirmNext();
+      };
+      const escFn = e => { if (e.key === 'Escape') { e.stopPropagation(); settle(false); } };
+      S.drawer({
+        title: opts.title || '请确认',
+        body: '<div class="pp-note" style="margin:0;border-left:4px solid ' + (opts.danger ? 'var(--bad)' : 'var(--warn)') + '">' + (opts.body || '') + '</div>',
+        footer: '<span class="small muted" style="flex:1"></span>' +
+          '<button class="btn" id="cfCancel">' + U.esc(opts.cancel || '取消') + '</button>' +
+          '<button class="btn ' + (opts.danger ? 'danger' : 'primary') + '" id="cfOk">' + U.esc(opts.ok || '确定') + '</button>',
+        onClose: () => settle(false),        // 遮罩点击 / drawerClose 都按取消结算
+        onMount: d => {
+          U.$id('cfCancel').onclick = () => settle(false);
+          U.$id('cfOk').onclick = () => settle(true);
+          document.addEventListener('keydown', escFn);
+        },
+      });
+    });
   };
 
   /* ================= 抽屉 ================= */

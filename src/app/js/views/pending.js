@@ -305,7 +305,12 @@
     a.download = 'ctb-pending-' + U.today() + '.json';
     a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
     if (H.mode === 'shell' || H.mode === 'server') {
-      if (confirm('已生成办结包。检测到落库通道——要现在直接落库吗？（只清除**成功**条目的本地草稿；被工具拒的会原样保留）')) {
+      /* 2026-10-25 换 S.confirm：壳里原生 confirm 不可见且冻结整页（见 shell.js S.confirm 注释） */
+      if (await S.confirm({
+        title: '办结包已生成，现在直接落库吗？',
+        body: '检测到落库通道。只清除<b>成功</b>条目的本地草稿；被工具拒的会原样保留。',
+        ok: '直接落库',
+      })) {
         try {
           const st = await H.pendingResolve(pkg.resolves);
           if (st && st.ok === false) throw new Error(st.error || '工具拒绝');

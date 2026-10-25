@@ -209,7 +209,10 @@
       (reveal ? revealBox(c, noteByKey[x.key] || '') : '') +
       '</div></div>';
 
-    U.$id('rvAbort').onclick = () => { if (confirm('退出并清空本场判定？（未落库的判分将丢失）')) { M.session = null; S.render(); } };
+    U.$id('rvAbort').onclick = async () => {
+      /* 2026-10-25 换 S.confirm：壳里原生 confirm 不可见且冻结整页（见 shell.js S.confirm 注释） */
+      if (await S.confirm({ title: '退出并清空本场判定？', body: '未落库的判分将丢失。', ok: '退出并清空', danger: true })) { M.session = null; S.render(); }
+    };
     /* ⚠ 2026-10-11（F-22）：此前 `splice(idx,1)` +「idx 回退」——跳过队尾那题时 idx 退 1，
        会**重新显示上一道已判过的题**（判定还在 results 里），用户以为跳题没生效。
        现在：用 skipped 集合标记、idx 单调前进（不改题目顺序，撤销栈的语义也保持不变）。 */
@@ -350,7 +353,9 @@
         '<button class="btn" id="rvRedoSkipped">只练这 ' + skippedN + ' 题</button></div></div>' : '') +
       '<div class="row"><button class="btn" id="rvMore">再来一场</button><span class="tb-sp"></span></div></div>';
     const c1 = U.$id('rvCommit'); if (c1) c1.onclick = commit;
-    const d1 = U.$id('rvDrop'); if (d1) d1.onclick = () => { if (confirm('丢弃本场判定？（不落库）')) { M.session = null; S.render(); } };
+    const d1 = U.$id('rvDrop'); if (d1) d1.onclick = async () => {
+      if (await S.confirm({ title: '丢弃本场判定？', body: '不落库，判定直接清空。', ok: '丢弃', danger: true })) { M.session = null; S.render(); }
+    };
     U.$id('rvMore').onclick = () => { M.session = null; S.render(); };
     const m2 = U.$id('rvMore2'); if (m2) m2.onclick = () => { M.session = null; S.render(); };
     el.querySelectorAll('#rvRedoSkipped').forEach(b => b.onclick = () => {
@@ -370,9 +375,13 @@
        ⇒ 这一句会直接 return "本场还没有任何判定"，把用户**唯一**的补救入口堵死。
        判据改为"还有没有任何东西没写回台账"（results ∪ committed）。 */
     if (!M.sessionPendingCount()) { S.toast('本场还没有任何判定，无需落库', 'warn'); return; }
-    /* F-39：门禁降级时先让用户知情再落库（工具侧判据仍在跑，可能被拒） */
-    if (!M.healthOk() && !confirm('⚠ 数据源降级：' + M.healthText() +
-      '\n\n这道门禁现在是「读不到」而不是「通过了」。继续落库可能被工具拒。\n\n仍要继续吗？')) return;
+    /* F-39：门禁降级时先让用户知情再落库（工具侧判据仍在跑，可能被拒）
+       2026-10-25 换 S.confirm：壳里原生 confirm 不可见且冻结整页 */
+    if (!M.healthOk() && !await S.confirm({
+      title: '⚠ 数据源降级，仍要落库吗？',
+      body: U.esc(M.healthText()) + '<br><br>这道门禁现在是「读不到」而不是「通过了」。继续落库可能被工具拒。',
+      ok: '仍要落库', danger: true,
+    })) return;
     commitBusy = true;
     const cb = U.$id('rvCommit'); if (cb) { cb.disabled = true; cb.textContent = '⏳ 落库中…'; }
     S.toast('正在按学科组卷并回录…');
@@ -407,8 +416,14 @@
           S.render(); return;
         }
         if (safeIds.length && still.length === safeIds.length &&
-          confirm('工具门禁拦下 ' + safeIds.length + ' 题（盲解/答案来源未归档）：\n' + safeIds.join('、') +
-            '\n\n要把这些题从本场剔除、其余继续落库吗？\n（取消=中止落库，判定保留在屏幕；被剔的判定会先存本地草稿）\n\n工具原文：\n' + String(e.message).slice(0, 300))) {
+          await S.confirm({
+            title: '工具门禁拦下 ' + safeIds.length + ' 题',
+            body: '<b>' + U.esc(safeIds.join('、')) + '</b>（盲解/答案来源未归档）<br>' +
+              '要把这些题从本场剔除、其余继续落库吗？<br>' +
+              '<span class="small muted">取消 = 中止落库，判定保留在屏幕；被剔的判定会先存本地草稿</span><br>' +
+              '<span class="small muted">工具原文：' + U.esc(String(e.message).slice(0, 300)) + '</span>',
+            ok: '剔除并继续',
+          })) {
           /* 不把复习判定塞进 `pending.localSet` —— 那个库键是**待办编号 T###**，
              混入 kid|id 会让待办工作台出现打不开的条目（2026-10-12 修）。
              判定本来就在 `s.committed` 里，结算屏会把它连批次号一起列出来，用户点「落库」即可补批改。 */

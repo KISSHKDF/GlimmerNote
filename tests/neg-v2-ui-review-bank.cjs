@@ -121,6 +121,11 @@ function staticChecks() {
   A('F-RB-5 空格在 keyup 上也被吞（防 button 激活）',
     /addEventListener\('keyup'/.test(review) && /spaceHandled/.test(review) && /e\.preventDefault\(\)/.test(review));
   A('F-RB-6 Esc 接进退出路径', /e\.key\s*===\s*'Escape'/.test(review) && /rvAbort/.test(review));
+  /* 2026-10-25：退出/丢弃确认从 window.confirm 换成页内 S.confirm（壳里原生 confirm
+     不可见且冻结整页）。静态口径：源码不得再出现裸 confirm( 调用。 */
+  A('F-RB-6 退出确认走页内 S.confirm（不再用会冻结整页的原生 confirm）',
+    /S\.confirm\(/.test(review) && !/[^.\w]confirm\(/.test(review.replace(/S\.confirm\(/g, '')),
+    'review.js 中 S.confirm 调用数=' + (review.match(/S\.confirm\(/g) || []).length);
   A('键盘长按不连发（e.repeat 闸）', /e\.repeat/.test(review));
 
   /* F-RB-7 键盘可达 */
@@ -287,19 +292,25 @@ async function reachable(u) { try { const r = await fetch(u, { signal: AbortSign
   A('F-RB-5 焦点在「跳过」上按空格：翻到答案（keydown 被吞）', sp.reveal === true && sp.kdPrevented === true, JSON.stringify(sp));
   A('F-RB-5 同一次空格不得顺带把「跳过」点掉（keyup 也被吞）', sp.kuPrevented === true && sp.idx === 0, JSON.stringify(sp));
 
-  /* ---- F-RB-6 Esc 两个分支 ---- */
-  const esc = JSON.parse(await cdp.evalJs(`(function(){
-    var orig=window.confirm, M2=CTB.model;
+  /* ---- F-RB-6 Esc 两个分支 ----
+     ⚠ 2026-10-25：退出确认已从 window.confirm 换成页内 S.confirm（壳里原生 confirm
+     不可见且冻结整页，见 shell.js）。桩同步改成 mock CTB.shell._confirmOpen。
+     handler 是 async（await S.confirm），判定必须等微任务落定后再读——用 Promise
+     链回传（awaitPromise:true）。 */
+  const esc = JSON.parse(await cdp.evalJs(`(async function(){
+    var M2=CTB.model;
     M2.session=null; CTB.shell.route('review');
     var xs=M2.cardsOf().filter(function(x){return M2.canGroup(x.card)});
     M2.startSession([xs[0],xs[1]]); CTB.shell.route('review');
-    window.confirm=function(){return false};
+    CTB.shell._confirmOpen=function(o){ return Promise.resolve(false) };
     document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
+    await Promise.resolve(); await Promise.resolve();
     var cancel={session:!!M2.session};
-    window.confirm=function(){return true};
+    CTB.shell._confirmOpen=function(o){ return Promise.resolve(true) };
     document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
+    await Promise.resolve(); await Promise.resolve();
     var okd={session:!!M2.session, backToSetup:!!document.getElementById('rvStart')};
-    window.confirm=orig; M2.session=null; CTB.shell.route('review');
+    M2.session=null; CTB.shell.route('review');
     return JSON.stringify({cancel:cancel, confirm:okd})})()`));
   A('F-RB-6 Esc 会被接住（取消则保留本场）', esc.cancel.session === true, JSON.stringify(esc));
   A('F-RB-6 Esc 确认后退出本场并回配置屏（改前无反应）',

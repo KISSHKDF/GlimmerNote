@@ -226,6 +226,16 @@ kbd{font:11px var(--font-num);background:var(--surface3);border:1px solid var(--
 .drawer-f{padding:var(--s3) var(--s4);border-top:1px solid var(--line);display:flex;gap:var(--s2);align-items:center;background:var(--surface);flex-wrap:wrap}
 .drawer .sect+.sect{margin-top:var(--s5);padding-top:var(--s4);border-top:1px dashed var(--line)}
 .drawer .sect>h4{margin:0 0 var(--s2);font-size:var(--fs-sm);color:var(--text3);font-weight:700;letter-spacing:.08em}
+
+/* ---------- 打印预览遮罩（S.printLock：预览层开着时挡住主界面，防「看不见的预览吃点击」） ---------- */
+.print-lock{position:fixed;inset:0;z-index:95;display:flex;align-items:center;justify-content:center;
+  background:rgba(10,12,20,.55);backdrop-filter:blur(3px);animation:fade .2s;cursor:pointer}
+.print-lock[hidden]{display:none}
+.print-lock-card{background:var(--surface);border:1px solid var(--line2);border-radius:var(--r-xl);box-shadow:var(--shadow-l);
+  padding:34px 44px;text-align:center;display:flex;flex-direction:column;gap:10px;max-width:min(460px,88vw)}
+.print-lock-card .e-ic{font-size:40px}
+.print-lock-card b{font-size:var(--fs-lg)}
+.print-lock-card .small{line-height:1.7}
 .kv{display:grid;grid-template-columns:88px 1fr;gap:6px var(--s3);font-size:var(--fs-sm)}
 .kv dt{color:var(--text3)} .kv dd{margin:0}
 
