@@ -86,6 +86,13 @@ const ansGate = tryJson('_作答门禁.mjs', ['门禁', '--json']);
 H('作答契约门禁', ansGate.code === 0,
   ansGate.json ? `契约通过 ${(ansGate.json.stats || {}).pass || 0}/${(ansGate.json.stats || {}).total || 0}，阻断 ${(ansGate.json.stats || {}).block || 0}` : lastLine(ansGate.out));
 
+/* 着重号门禁（2026-10-25 晚建）：用户指着印出来的 Y0001 说「打点能力很差，全库都是这样」。
+   根因＝`.rd` 加点标记在 app.css 里从来没有样式 ⇒ 加点字当普通字印出来。
+   和上面三道同一地位：红了就是"印出来会出丑"（卷面缺「加点」这个条件，题就做不了）。 */
+const dotGate = tryJson('_着重号门禁.mjs', ['门禁', '--json']);
+H('着重号门禁', dotGate.code === 0,
+  dotGate.json ? `带标记 ${(dotGate.json.stats || {}).withMarks || 0} 张，阻断 ${(dotGate.json.stats || {}).block || 0}${(dotGate.json.style || {}).ok ? '' : '，样式缺失'}` : lastLine(dotGate.out));
+
 const ev = tryJson('_待确认.mjs', ['证据', '--json']);
 H('待办证据图门禁', ev.code === 0, ev.json ? `未确认 ${ev.json.open || 0} 条｜缺图 ${(ev.json.missing || []).length} / 通配符 ${(ev.json.wildcard || []).length} / 失效 ${(ev.json.broken || []).length}` : lastLine(ev.out));
 

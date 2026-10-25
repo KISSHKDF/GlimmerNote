@@ -556,6 +556,23 @@ textarea{width:100%;resize:vertical;min-height:64px;line-height:1.7}
 /* 题干里手写的 ASCII 下划线（______）由 M.stemHtmlSafe 转成 .blank 并带 min-width:7em
    （≈31mm，化学式 Na⁺、Cl⁻ 这类答案写得下）——C0002「字跑出去」实测的修复点；
    题干.html 手写的 span 自带 style 宽度，与此规则互不干扰。 */
+/* ---------- 着重号（"加点字"）2026-10-25 晚补 ----------
+   事故（用户原话）：「从印刷体来看，你的打点能力很差，全库都是这样，如何加强？」
+   实测根因：题干里用 `<span class="rd">制</span>` 标加点字，全库 14 处 / 3 张卡，
+   而 **app.css 里从来没有 `.rd` 规则**（新旧两版都没有）⇒ 加点字被当普通字印出来，
+   Y0001（古今异义）四个选项一个字都没有点——不是标错了字，是**标记根本没有外观**。
+   做法：自绘小圆点（伪元素 + 绝对定位），落在字的下方＝中文着重号的正规位置。
+   为什么不用 `text-emphasis`：实测（Edge headless → print-to-pdf → 栅格化）它在打印管线里
+   点的直径只有 ~0.14em 且明显发灰，A4/12.5pt 下几乎看不见；自绘点的粗细/颜色可定，
+   打印稳定。代价：只对"一个字一个标记"成立 ⇒ 门禁强制 rd span 必须单字（多字要么拆开，
+   要么改用下划线题型）。 */
+.rd{position:relative}
+.rd::after{content:'';position:absolute;left:50%;bottom:-.34em;width:.15em;height:.15em;
+  border-radius:50%;background:currentColor;transform:translateX(-50%)}
+/* 点在字上：数学「循环节」（如 2.050 表示 2.05050…）。与着重号是两种语义，别混用。 */
+.rd-above::after{bottom:auto;top:-.06em}
+/* 打印态不需要另写规则：屏幕这几条在 #printArea 里同样生效（同 .blank 的既有做法） */
+
 .sheet .fr{display:inline-flex;flex-direction:column;vertical-align:middle;text-align:center;line-height:1.1;font-size:.85em}
 .sheet .fr .nu{border-bottom:1.5px solid #111;padding:0 3px}
 .sheet .ans-a{margin:2mm 0 5mm;padding-bottom:2mm;border-bottom:1.5px solid #111}

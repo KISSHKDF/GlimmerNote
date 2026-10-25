@@ -183,7 +183,12 @@ export function stemToText(html) {
   s = s.replace(/<span class="fr">\s*<span class="nu">([\s\S]*?)<\/span>\s*<span class="de">([\s\S]*?)<\/span>\s*<\/span>/g, '($1)/($2)');
   s = s.replace(/<sup>([\s\S]*?)<\/sup>/g, '^($1)');
   s = s.replace(/<span class="blank"[^>]*>\s*<\/span>/g, '________');
-  s = s.replace(/<span class="rd">([\s\S]*?)<\/span>/g, '$1\u0307');
+  /* 加点/着重号 → 字后跟组合点 U+0307（清稿里"这个字被点出来了"要能看出来）。
+     ⚠ 2026-10-25 晚：正则从写死 `class="rd"` 放宽成 `class="rd[^"]*"`——
+     因为新增了 `rd-above`（数学循环节，点在字上）这类组合写法。放宽对老数据**逐字等价**
+     （老数据只有 class="rd"，两种正则产出同一个字符串），所以盲解指纹不变；但若不放宽，
+     以后任何人给标记加一个修饰类，纯净文本就会变 ⇒ 全库指纹失效（L-579 同族）。 */
+  s = s.replace(/<span class="rd[^"]*">([\s\S]*?)<\/span>/g, '$1\u0307');
   s = s.replace(/<\/(p|div|tr|table|h[1-6]|article|section)>/g, '\n');
   s = s.replace(/<br\s*\/?>/g, '\n');
   s = s.replace(/<\/t[dh]>/g, ' | ');
