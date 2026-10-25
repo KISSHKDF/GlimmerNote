@@ -696,10 +696,14 @@
       const raw = out.slice(s.start, s.end);
       const ans = list[k];
       /* ★ 2026-10-25：宽度取 M.blankWidthEm（= needEm × 1.5 的小孩书写余量），不再取 needEm。
-         见 M.CHILD_FACTOR 段（用户 Y0003 原话「再放一个 1.5 倍的带下横线的空格出来」）。 */
-      const width = (ans == null || String(ans) === '')
-        ? (s.width == null ? o.fallbackEm : s.width)
-        : Math.round(Math.max(o.minEm, s.width == null ? 0 : s.width, M.blankWidthEm(ans)) * 100) / 100;
+         见 M.CHILD_FACTOR 段（用户 Y0003 原话「再放一个 1.5 倍的带下横线的空格出来」）。
+         ★ 当晚补：物理上限要连**声明宽度**一起夹——早期按答案撑宽把 39.2em（≈173mm）写进了题干，
+           那条横线本身就撑出纸面（全库终检抓到 6 处），而"原有宽度是下限"会把它原样保留。
+           与 _空位.mjs applySlotWidths 同判（测试 P2 逐字对拍）。 */
+      const width = Math.round(Math.min(M.BLANK_MAX_WIDTH_EM,
+        (ans == null || String(ans) === '')
+          ? (s.width == null ? o.fallbackEm : s.width)
+          : Math.max(o.minEm, s.width == null ? 0 : s.width, M.blankWidthEm(ans))) * 100) / 100;
       const w = width + 'em';
       /* ⚠ 2026-10-25：标签必须**规范化输出**（class 在前、min-width 写在 style 内）。
          原因：盲解清稿的 stemToText 用 `<span class="blank"[^>]*>` 还原空位，属性顺序一变

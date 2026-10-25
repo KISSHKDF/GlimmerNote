@@ -175,7 +175,7 @@ export function alignedAnswers(answers, at, slotCount) {
  * @returns {string}
  */
 export function applySlotWidths(html, answers, opts) {
-  const o = Object.assign({ fallbackEm: 7, minEm: 4, onlySpan: false }, opts || {});
+  const o = Object.assign({ fallbackEm: 7, minEm: 4, maxEm: BLANK_MAX_WIDTH_EM, onlySpan: false }, opts || {});
   const list = Array.isArray(answers) ? answers : [];
   const slots = slotsOf(html);
   if (!slots.length) return html;
@@ -196,6 +196,12 @@ export function applySlotWidths(html, answers, opts) {
     /* ★ 2026-10-25：宽度不再取 needEm，而取 blankWidthEm —— 答案所需 × 1.5 的小孩书写余量。
        见文件头 CHILD_FACTOR 段（用户 Y0003 原话「再放一个 1.5 倍的带下横线的空格出来」）。 */
     else width = round(Math.max(o.minEm, s.width == null ? 0 : s.width, blankWidthEm(ans)));
+    /* ★ 2026-10-25 晚补：物理上限必须**连声明宽度一起夹**。
+       起因（全库终检抓到 6 处）：早期"按答案撑宽"把答案需要的 39.2em 写进了题干
+       （≈173mm，比 A4 可用宽 178mm 减去行首文字还宽）⇒ 这条横线本身就撑出纸面，
+       而"原有宽度是下限"的规则会把它原样保留（不是变窄，是变宽到溢出）。
+       夹到 BLANK_MAX_WIDTH_EM 后，这类答案进横线也只能占一行；答案更长的题本就该判 zone。 */
+    width = round(Math.min(o.maxEm, Math.max(o.minEm, width)));
     out = out.slice(0, s.start) + rewrite(raw, s.kind, width, o) + out.slice(s.end);
   }
   return out;

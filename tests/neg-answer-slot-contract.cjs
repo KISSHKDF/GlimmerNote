@@ -235,6 +235,19 @@ function runAll() {
       A('C11 超长答案的横线夹在物理上限内（不撑爆纸面）', wc > 0 && wc <= K.BLANK_MAX_WIDTH_EM,
         `${wc}em ≤ 上限 ${K.BLANK_MAX_WIDTH_EM}em（A4 可用宽 178mm ≈ 40em）`);
     }
+    /* C12（2026-10-25 晚全库终检抓到 6 处）：**声明宽度本身**超上限时也必须夹。
+       早期"按答案撑宽"把 39.2em（≈173mm）写进了题干，而"原有宽度是下限"会把它原样保留
+       ⇒ 那条横线自己就撑出纸面；夹紧后同一张纸不再溢出（代价：这类答案进横线只能占一行，
+       更长的本就该判 zone）。 */
+    {
+      const overDeclared = '<p>答：<span class="blank" style="min-width:39.2em"></span></p>';
+      const ansOver = ['用镊子夹取块状大理石放在试管口，再把试管慢慢竖立起来'];
+      const outOver = M.applySlotWidths(overDeclared, ansOver);
+      const wOver = parseFloat((/min-width:\s*([\d.]+)em/.exec(outOver) || [])[1]);
+      A('C12 声明宽度超上限也被夹到上限（横线不许自己撑出纸面）', wOver > 0 && wOver <= M.BLANK_MAX_WIDTH_EM,
+        `${wOver}em ≤ 上限 ${M.BLANK_MAX_WIDTH_EM}em`);
+      A('C12b 上限夹紧两份实现同判', outOver === K.applySlotWidths(overDeclared, ansOver), '一致');
+    }
     /* 真库：每个已登记的空位在**渲染后**都写得下（宽度由 applySlotWidths 实时撑开）。
        判据分两层，与门禁同口径（2026-10-25 晚口径换成 1.5 倍）：
          · too-long（答案本身 >18em）→ 必须已经判 zone/figure，否则红（这是排版决策，机器不替人决定）；
