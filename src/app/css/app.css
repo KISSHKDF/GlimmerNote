@@ -409,8 +409,32 @@ html[data-theme="dark"] .hm-cell{stroke:rgba(255,255,255,.05)}
 .rv-row-k{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
 /* ---------- 题库浏览 ---------- */
-.bk-filters{margin-bottom:var(--s3)}
-.bk-q{flex:1;min-width:220px}
+/* ---------- 题库筛选台（2026-10-26 重做：用户「这个界面好丑啊，就不能改漂亮点嘛」） ----------
+   旧结构：四行胶囊各自把第一个"全部"当标签 ⇒ 每行起点不齐；错因与状态挤一行、盲解与"只有图"
+   挤一行；搜索框/下拉/按钮三种控件高矮不一，整块像草稿。
+   新结构：① 一行搜索条（搜索 + 只有图 + 排序 + 重置，控件同高 30–34px）；
+          ② 五行筛选，每行「38px 标签列 + 胶囊组」用 grid 对齐 ⇒ 五行的胶囊左边缘一条直线；
+          ③ 胶囊统一 26px 高、选中态品牌软底（不再是满屏描边圈）。 */
+.bk-filters{padding:var(--s3) var(--s4);margin-bottom:var(--s3)}
+.bk-searchrow{display:flex;align-items:center;gap:var(--s2);flex-wrap:wrap}
+.bk-search{position:relative;flex:1 1 280px;min-width:220px;display:flex;align-items:center}
+.bk-search-ic{position:absolute;left:11px;font-size:13px;opacity:.5;pointer-events:none;line-height:1}
+.bk-q{width:100%;height:34px;padding:0 10px 0 32px;border-radius:10px}
+.bk-sort{height:34px;border-radius:10px;padding:0 8px;max-width:150px}
+/* 搜索行里的控件一律 34px 高，避免"一排按钮高矮不齐"（这是旧版最扎眼的一处） */
+.bk-searchrow .bk-imgchip,.bk-searchrow .btn{height:34px;padding:0 12px;border-radius:10px}
+.bk-reset{margin-left:auto}
+.bk-frows{margin-top:var(--s3);padding-top:var(--s3);border-top:1px dashed var(--line);display:flex;flex-direction:column;gap:6px}
+.bk-frow{display:grid;grid-template-columns:40px minmax(0,1fr);gap:var(--s2);align-items:start}
+.bk-flabel{font-size:var(--fs-xs);font-weight:700;color:var(--text3);letter-spacing:.06em;line-height:26px;white-space:nowrap}
+.bk-frow .chips{gap:6px}
+.bk-frow .chip,.bk-imgchip{height:26px;padding:0 10px;border-radius:999px;background:transparent;
+  font-size:12.5px;line-height:1;color:var(--text2)}
+.bk-frow .chip:hover,.bk-imgchip:hover{background:var(--surface2);border-color:var(--line2);color:var(--text)}
+.bk-frow .chip.on,.bk-imgchip.on{background:var(--brand-soft);border-color:var(--brand-2);color:var(--brand-ink);font-weight:600}
+.bk-frow .chip .chip-dot{width:7px;height:7px;border-radius:2px}
+/* 窄窗口：标签列缩到 34px，胶囊允许换行（列宽用 minmax(0,1fr) 防溢出） */
+@media (max-width: 900px){ .bk-frow{grid-template-columns:34px minmax(0,1fr)} .bk-flabel{font-size:11px} }
 .bk-bar{margin:0 var(--s1) var(--s2)}
 .bk-codebar{margin-bottom:var(--s2)}
 .chip-dot{width:8px;height:8px;border-radius:3px;display:inline-block}

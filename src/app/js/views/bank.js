@@ -46,20 +46,29 @@
     const all = M.cardsOf();
     const subjects = ['全部'].concat([...new Set(all.map(x => x.subject))]);
     const fn = filtered().length;
+    /* ★ 2026-10-26 重做筛选台（用户截图原话「这个界面好丑啊，就不能改漂亮点嘛」）。
+       旧结构的毛病：四行胶囊各自把第一个"全部"当标签用 ⇒ 每行起点不齐、错因和状态挤一行、
+       盲解和"只有图"挤一行；搜索框/下拉/按钮三种控件高矮不一。
+       新结构：一行搜索条（搜索 + 只有图 + 排序 + 重置）+ 五行**带标签列**的筛选行，
+       标签列固定 38px ⇒ 五行的胶囊左边缘对齐；胶囊统一 26px 高、选中态用品牌软底。 */
+    const row = (label, inner) => '<div class="bk-frow"><span class="bk-flabel">' + label + '</span>' + inner + '</div>';
     el.innerHTML =
-      '<div class="card bk-filters"><div class="stack">' +
-      '<div class="row"><input id="bkQ" type="text" class="bk-q" placeholder="搜题干 / 编号 / 知识点 / 来源（模糊）" value="' + U.esc(f.q) + '">' +
-      '<select id="bkSort">' + opt([['new', '最新入册'], ['old', '最早入册'], ['due', '到期最优先'], ['err', '错得最多'], ['id', '按编号']], f.sort) + '</select>' +
-      '<button class="btn sm ghost" id="bkReset">重置筛选</button></div>' +
-      chipRow('subject', subjects, f.subject) +
-      chipRow('diff', ['全部'].concat(M.DIFFS), f.diff) +
-      '<div class="row">' +
-      '<div class="chips"><span class="chip' + (f.layer === '全部' ? ' on' : '') + '" role="button" tabindex="0" data-k="layer" data-v="全部">错因·全部</span>' +
-      ['K', 'L', 'S'].map(k => '<span class="chip' + (f.layer === k ? ' on' : '') + '" role="button" tabindex="0" data-k="layer" data-v="' + k + '" title="' + M.LAYER[k].name + '"><span class="chip-dot" style="background:' + M.LAYER[k].color + '"></span>' + k + ' ' + M.LAYER[k].name + '</span>').join('') + '</div>' +
-      chipRow('state', ['全部', '未复习', '到期', '复习中', '待批改', '已掌握', '已归档'], f.state) +
-      chipRow('blind', ['全部', 'ok', 'no'], f.blind, v => v === 'ok' ? '盲解已通过' : v === 'no' ? '盲解未过/存疑' : '盲解·全部') +
-      '<span class="chip' + (f.hasImg ? ' on' : '') + '" role="button" tabindex="0" data-k="hasImg">🖼 只有图</span>' +
-      '</div></div></div>' +
+      '<div class="card bk-filters">' +
+      '<div class="bk-searchrow">' +
+      '<span class="bk-search"><span class="bk-search-ic">🔍</span>' +
+      '<input id="bkQ" type="text" class="bk-q" placeholder="搜题干 / 编号 / 知识点 / 来源（模糊）" value="' + U.esc(f.q) + '"></span>' +
+      '<button class="chip bk-imgchip' + (f.hasImg ? ' on' : '') + '" role="button" tabindex="0" data-k="hasImg" title="只留有原卷截图的题">🖼 只有图</button>' +
+      '<select id="bkSort" class="bk-sort">' + opt([['new', '最新入册'], ['old', '最早入册'], ['due', '到期最优先'], ['err', '错得最多'], ['id', '按编号']], f.sort) + '</select>' +
+      '<button class="btn sm ghost bk-reset" id="bkReset">重置筛选</button></div>' +
+      '<div class="bk-frows">' +
+      row('学科', chipRow('subject', subjects, f.subject)) +
+      row('难度', chipRow('diff', ['全部'].concat(M.DIFFS), f.diff)) +
+      row('错因', '<div class="chips">' +
+        '<span class="chip' + (f.layer === '全部' ? ' on' : '') + '" role="button" tabindex="0" data-k="layer" data-v="全部">全部</span>' +
+        ['K', 'L', 'S'].map(k => '<span class="chip' + (f.layer === k ? ' on' : '') + '" role="button" tabindex="0" data-k="layer" data-v="' + k + '" title="' + M.LAYER[k].name + '"><span class="chip-dot" style="background:' + M.LAYER[k].color + '"></span>' + k + ' ' + M.LAYER[k].name + '</span>').join('') + '</div>') +
+      row('状态', chipRow('state', ['全部', '未复习', '到期', '复习中', '待批改', '已掌握', '已归档'], f.state)) +
+      row('盲解', chipRow('blind', ['全部', 'ok', 'no'], f.blind, v => v === 'ok' ? '已通过' : v === 'no' ? '未过 / 存疑' : '全部')) +
+      '</div></div>' +
       '<div class="row bk-bar"><span class="small muted" id="bkCount">' + countHtml(fn) + '</span>' +
       '<span class="small muted">· 点击行看详情；勾选进组卷篮</span>' +
       '<span class="tb-sp"></span><button class="btn sm" id="bkAddBasket">➕ 把筛选结果全选进组卷篮（上限 30）</button>' +
@@ -161,12 +170,13 @@
   };
 
   function opt(arr, sel) { return arr.map(([v, t]) => '<option value="' + U.esc(v) + '"' + (v === sel ? ' selected' : '') + '>' + U.esc(t) + '</option>').join(''); }
+  /* 一行筛选片（2026-10-26 重做）：标签由外层的 .bk-flabel 提供，这里只出胶囊。
+     调用方用 row('学科', chipRow(...)) 把标签列与胶囊列拼起来 ⇒ 各行左边缘对齐。 */
   function chipRow(key, vals, cur, lb) {
-    const label = { subject: '学科', diff: '难度', state: '状态', blind: '盲解' }[key] || key;
     /* F-48：`v`（学科名/状态名，来自 _索引.json）此前**两处都未 esc** —— 既进 data-v 属性位，也进文本位。
        学科名含 `"` 会属性逃逸 + 点该 chip 还会把半截值写进 f.subject。
        F-RB-7：补 role/tabindex，让 chip 能 Tab 到、回车/空格可激活。 */
-    return '<div class="chips">' + vals.map(v => '<span class="chip' + (v === cur ? ' on' : '') + '" role="button" tabindex="0" data-k="' + U.esc(key) + '" data-v="' + U.esc(v) + '">' + (lb ? lb(v) : (v === '全部' ? U.esc(label) + '·全部' : U.esc(v))) + '</span>').join('') + '</div>';
+    return '<div class="chips">' + vals.map(v => '<span class="chip' + (v === cur ? ' on' : '') + '" role="button" tabindex="0" data-k="' + U.esc(key) + '" data-v="' + U.esc(v) + '">' + (lb ? lb(v) : U.esc(v)) + '</span>').join('') + '</div>';
   }
   /* 错因层白名单（F-47）：causeLayer 只许进白名单类名，非法值既不进 class 也不显示 */
   function layerCls(v) { return M.LAYER[v] ? 'tag ' + v : 'tag gray'; }
