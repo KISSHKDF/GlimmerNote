@@ -45,6 +45,10 @@ const APP = path.join(PROD, 'app');
 const MANIFEST = path.join(PROD, '_deploy-manifest.json');
 
 const sha256 = p => crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
+/* ⚠ 2026-10-25（首次部署实测）：清单由 PowerShell 的 Get-FileHash 写，输出**大写**十六进制；
+   而 node crypto 的 digest('hex') 是**小写**。直接比较会 45/45 全报"被改过"——假阳。
+   判据只在大小写不敏感时相等，所以统一转大写后比较（与 deploy.ps1 侧同口径）。 */
+const sameHash = (a, b) => String(a).toUpperCase() === String(b).toUpperCase();
 const relOf = abs => path.relative(APP, abs).replace(/\\/g, '/');
 
 function die(code, msg, extra) {
@@ -89,7 +93,7 @@ const actual = {};
 const changed = [], missing = [], extra = [];
 for (const [rel, hash] of Object.entries(man.files)) {
   if (!(rel in actual)) missing.push(rel);
-  else if (actual[rel] !== hash) changed.push(rel);
+  else if (!sameHash(actual[rel], hash)) changed.push(rel);
 }
 for (const rel of Object.keys(actual)) if (!(rel in man.files)) extra.push(rel);
 
