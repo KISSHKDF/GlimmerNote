@@ -768,7 +768,10 @@ function gate(allowPxWrite = false) {
   for (const e of otherErrs.slice(0, CAP)) console.log('  ✗ ' + e);
   if (otherErrs.length > CAP) console.log(`  … 另有 ${otherErrs.length - CAP} 条（其余类别错误已截断；当前共 ${errs.length} 条错误）`);
   if (nLost) {
-    const lostKeys = Object.values(doc.cards).filter(c => c.lost && !c.page).map(c => c.key);
+    /* ⚠ 2026-10-25（合成形状库验收时暴露）：原先 `Object.values(doc.cards).map(c => c.key)`
+       ——key 是字典的键，不在条目对象里 ⇒ 打印出 10 个空名（", , , …"），"永久可见"落空。
+       合成库 11 卡里 10 张 lost，一眼就能看出这行从没打对过。改为 Object.entries 取真键。 */
+    const lostKeys = Object.entries(doc.cards).filter(([, c]) => c.lost && !c.page).map(([k]) => k);
     console.log(`  ── 素材灭失豁免（${nLost} 张，永久可见直到补拍回填）──`);
     console.log('    ' + lostKeys.join(', '));
     console.log('    这些卡的整页母本已灭失（当批只留了裁图）；回填新影像后 lost 自动解除。');
