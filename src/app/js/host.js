@@ -187,6 +187,15 @@
     if (H.mode === 'shell') return bridge('mark', payload, 180000);
     throw new Error('「' + action + '」需要桌面壳通道（拾光小册.exe）；浏览器网页版当前只支持查看与待办办结');
   };
+  /* 配方层通道（2026-10-27）：action ∈ 清单|收件箱|组装|校验|自检|指纹（白名单在壳侧）。
+     壳只做透明转发 —— 配方怎么拼、输出怎么校验，全在 src\recipes\ 与 _配方.mjs 里。
+     返回 {ok,code,out,err}：out 是工具 stdout 原文（组装时就是整份任务单，校验时是逐条报告）。
+     为什么不做成"壳返回结构化 JSON"：那会逼壳去理解配方格式，加一条反例就得重编壳。 */
+  H.recipe = async function (action, flags) {
+    const payload = Object.assign({ action }, flags || {});
+    if (H.mode === 'shell') return bridge('recipe', payload, 120000);
+    throw new Error('「录题」需要桌面壳通道（拾光小册.exe）。程序不联网，配方任务单请在本机程序里生成。');
+  };
   /* 全量重建（生成器重跑），返回新 state；生成器实测 ~5 分钟，超时给 10.5 分钟 */
   H.regen = async function () {
     if (H.mode === 'shell') return bridge('regen', {}, 630000);

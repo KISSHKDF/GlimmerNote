@@ -522,6 +522,57 @@ namespace CTBShell2
             return true;
         }
 
+        // ---- op: recipe → _配方.mjs（动作白名单；壳不解释语义，只做透明转发）----
+        /* 2026-10-27 新增：界面「录题」页的通道。
+           设计要点（为什么是"透明转发"而不是壳里判逻辑）：
+             · 壳不认识"配方/学科/错因"，它只负责把白名单动作 + 白名单参数转成命令行；
+             · 配方在哪、怎么拼、怎么校验，全由 _配方.mjs 决定 —— 这样加一条反例不用重编壳。
+           安全边界：
+             · 动作白名单（清单/收件箱/组装/校验/自检/指纹），别的一律拒；
+             · 参数逐个 AddFlag（不接受任意拼接）；
+             · 库根**显式**用 --data 传进去，不依赖环境变量继承；
+             · **不进写闸**：本工具只读配方与收件箱、只写调用方指定的临时文件，不写用户库。
+           超时 60s：组装是一次纯文本拼接，校验是一次 JSON 比对，都远低于这个量级。 */
+        static readonly HashSet<string> RECIPE_ACTIONS = new HashSet<string> { "清单", "收件箱", "组装", "校验", "自检", "指纹" };
+        public string Recipe(string payload)
+        {
+            string action = ExtractString(payload, "action");
+            if (!RECIPE_ACTIONS.Contains(action))
+                return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"白名单外的动作：" + Esc(action) + "\"}";
+            string tmp = null;
+            try
+            {
+                var args = new List<string> { ToolPath("_配方.mjs"), action };
+                AddFlag(args, payload, "recipe", "--recipe");
+                AddFlag(args, payload, "subject", "--subject");
+                AddFlag(args, payload, "textbook", "--textbook");
+                AddFlag(args, payload, "image", "--image");
+                /* 校验/自检的输入：页面传的是**文本**（用户从自己的 AI 粘回来的 JSON），
+                   先落临时文件再让工具读 —— 避免把上万字符塞进命令行（Windows 命令行上限 32767）。 */
+                string text = ExtractString(payload, "text");
+                if (!string.IsNullOrEmpty(text))
+                {
+                    tmp = Path.Combine(Path.GetTempPath(), "gn-recipe-" + DateTime.Now.Ticks + ".json");
+                    File.WriteAllText(tmp, text, new UTF8Encoding(false));
+                    args.Add("--in"); args.Add(tmp);
+                }
+                args.Add("--data"); args.Add(DataRoot);
+                if (ExtractString(payload, "json") == "1") args.Add("--json");
+
+                string so = RunNode(args.ToArray(), 60000);
+                Log("recipe " + action + " out=" + SliceForLog((so ?? "").Replace("\r\n", " | ")));
+                return "{\"ok\":true,\"code\":0,\"out\":\"" + Esc(so ?? "") + "\",\"err\":\"\"}";
+            }
+            catch (Exception ex)
+            {
+                /* 校验不通过时工具 exit=1 —— RunNode 把 1 当正常返回，所以走到这里的是真错误。
+                   但如果是 exit 2（参数/环境错误），异常文本里带着工具的原文，页面直接显示即可。 */
+                Log("recipe " + action + " FAILED: " + ex.Message);
+                return "{\"ok\":false,\"code\":1,\"out\":\"\",\"err\":\"" + Esc(ex.Message) + "\"}";
+            }
+            finally { if (tmp != null) { try { File.Delete(tmp); } catch { } } }
+        }
+
         // ---- op: readFile（限题库根内，≤4MB）----
         public string ReadFile(string payload)
         {
@@ -971,6 +1022,9 @@ namespace CTBShell2
                    起因（用户实测 BUG#1）：空库里没有任何地方能建"孩子"，新用户进门就堵死。 */
                 else if (op == "createStudent") resp = bridge.CreateStudent(payload);
                 else if (op == "mark") resp = bridge.Mark(payload);
+                /* ★ 2026-10-27 新增：配方层通道（界面「录题」页）。
+                   壳只做透明转发，配方逻辑全在 _配方.mjs —— 加一条反例不需要重编壳。 */
+                else if (op == "recipe") resp = bridge.Recipe(payload);
                 else if (op == "readFile") resp = bridge.ReadFile(payload);
                 else if (op == "openFile")
                 {

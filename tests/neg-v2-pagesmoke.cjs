@@ -80,7 +80,7 @@ const A = (name, ok, detail) => { P((ok ? '[OK]  ' : '[FAIL]') + name + (detail 
   A('通道=server（浏览器直连测试服务端）', await cdp.evalJs(`CTB.host.mode`) === 'server', await cdp.evalJs(`CTB.host.mode`));
   P('[i] 卡片数 = ' + await cdp.evalJs(`CTB.model.cards.length`));
 
-  for (const r of ['dash', 'bank', 'review', 'paper', 'pending', 'stats']) {
+  for (const r of ['dash', 'bank', 'review', 'paper', 'pending', 'ingest', 'stats']) {
     await cdp.evalJs(`CTB.shell.route('${r}')`); await sleep(450);
     const n = await cdp.evalJs(`document.getElementById('view').innerHTML.length`);
     const err = await cdp.evalJs(`/视图渲染出错/.test(document.getElementById('view').innerHTML)`);

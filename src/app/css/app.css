@@ -606,3 +606,34 @@ textarea{width:100%;resize:vertical;min-height:64px;line-height:1.7}
    比主答案低一级（10.5pt，稍浅），不抢主答案的视觉权重。 */
 .sheet .ans-slot{font-size:10.5pt;color:#222;margin:1mm 0 3mm;line-height:1.6}
 .sheet .ans-slot .small{font-size:9.5pt}
+
+/* ══ 录题页（2026-10-27）══
+   三段式：收件箱 → 生成任务单 → 校验回传。
+   视觉原则：**每段自成一张卡**，段号做成圆形徽标，让"先做哪一步"不用读文字也看得出来。 */
+.ig-hero{background:linear-gradient(180deg,var(--brand-soft),transparent);border-color:var(--brand-2)}
+.ig-hero-t{font-weight:700;font-size:var(--fs-lg);margin-bottom:4px}
+.ig-hero-b{line-height:1.7}
+.ig-step{margin-top:var(--s3)}
+.ig-h{display:flex;align-items:center;gap:8px;font-weight:700;margin-bottom:8px}
+.ig-n{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;
+  background:var(--brand);color:#fff;font-size:var(--fs-xs);font-weight:700;flex:none}
+.ig-opts{align-items:flex-end;gap:var(--s3);flex-wrap:wrap}
+.ig-f{display:flex;flex-direction:column;gap:4px;font-size:var(--fs-xs);color:var(--text3)}
+.ig-batch{margin:10px 0 4px;font-size:var(--fs-sm)}
+.ig-file{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:var(--r-s);cursor:pointer;
+  border:1px solid transparent;font-size:var(--fs-sm)}
+.ig-file:hover{background:var(--surface2)}
+.ig-file.on{background:var(--brand-soft);border-color:var(--brand-2)}
+.ig-fn{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ig-sha{font-family:var(--font-num);font-size:10px;opacity:.7}
+.ig-ta{width:100%;min-height:120px;margin-top:8px;padding:8px 10px;border-radius:var(--r-s);
+  border:1px solid var(--line);background:var(--surface);color:var(--text);font-family:var(--font-num);
+  font-size:var(--fs-xs);line-height:1.5;resize:vertical}
+.ig-pre{max-height:340px;overflow:auto;margin:8px 0 0;padding:10px 12px;border-radius:var(--r-s);
+  background:var(--surface2);border:1px solid var(--line);font-family:var(--font-num);
+  font-size:var(--fs-xs);line-height:1.55;white-space:pre-wrap;word-break:break-word}
+.ig-pre.ig-bad{border-color:var(--bad);background:color-mix(in srgb,var(--bad) 6%,var(--surface))}
+.ig-ok{margin-top:10px;padding:7px 10px;border-radius:var(--r-s);background:var(--surface2);
+  border-left:3px solid var(--ok);font-size:var(--fs-sm)}
+.ig-warn{margin-top:10px;padding:7px 10px;border-radius:var(--r-s);background:var(--surface2);
+  border-left:3px solid var(--bad);font-size:var(--fs-sm)}

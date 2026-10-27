@@ -123,9 +123,9 @@ const S = (name, why) => { skipped++; P('[SKIP]' + name + '  → ' + why); };
   A('卡片对账：model vs 状态包一致', await cdp.evalJs(`(function(){var n=0;CTB.model.state.data.forEach(function(k){k.subjects.forEach(function(s){n+=s.items.length})});return CTB.model.cards.length===n})()`));
   const nCards = await cdp.evalJs(`CTB.model.cards.length`);
   P('[i] 卡片总数 = ' + nCards);
-  A('侧栏 6 个导航项', await cdp.evalJs(`document.querySelectorAll('#sidebar .nav-item[data-r]').length`) === 6);
+  A('侧栏 7 个导航项（2026-10-27 新增「录题」）', await cdp.evalJs(`document.querySelectorAll('#sidebar .nav-item[data-r]').length`) === 7);
 
-  for (const r of ['dash', 'bank', 'review', 'paper', 'pending', 'stats']) {
+  for (const r of ['dash', 'bank', 'review', 'paper', 'pending', 'ingest', 'stats']) {
     await cdp.evalJs(`CTB.shell.route('${r}')`); await sleep(400);
     const len = await cdp.evalJs(`document.getElementById('view').innerHTML.length`);
     A('路由 #' + r + ' 渲染非空', len > 500, len);

@@ -62,7 +62,7 @@ class Cdp {
     (await c.evalJs(`(function(){var s=document.getElementById('sidebar');var t=document.getElementById('topbar');return !/渲染出错|界面出错/.test((s?s.textContent:'')+(t?t.textContent:''))})()`)) === true,
     (await c.evalJs(`(function(){var s=document.getElementById('sidebar');return (s?s.textContent:'').replace(/\\s+/g,' ').trim().slice(0,60)})()`)));
 
-  const VIEWS = ['dash', 'bank', 'review', 'paper', 'pending', 'stats'];
+  const VIEWS = ['dash', 'bank', 'review', 'paper', 'pending', 'ingest', 'stats'];
   const errText = `(function(){var v=document.getElementById('view');var t=(v?v.textContent:'');return /视图渲染出错|Cannot read propert|is not a function|undefined is not/.test(t)?t.replace(/\\s+/g,' ').slice(0,160):''})()`;
 
   /* ⚠ 本脚本会点击**会写 localStorage 的按钮**（如 bank 的「按盲解未过筛出来看原因」→

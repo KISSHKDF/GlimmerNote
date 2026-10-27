@@ -488,6 +488,7 @@ window.__SWSTUB = { calls: [], n: 0, dl: 0, confirms: 0, prints: 0 };
     { id: 'bank', name: '题库浏览', reset: 'bank' },
     { id: 'paper', name: '组卷工作台', reset: null },
     { id: 'pending', name: '待办工作台', reset: 'pending' },
+    { id: 'ingest', name: '录题', reset: null },
     { id: 'stats', name: '统计分析', reset: null },
   ];
   for (const v of VIEWS) await sweep('view:' + v.id, '#view', v.id, v.reset);

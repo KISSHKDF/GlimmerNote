@@ -12,6 +12,10 @@
        数 localStorage 键数，与配卷屏的「能配成卷的题数」分叉（同屏 5 vs 0）。 */
     { id: 'paper', ic: '🧾', name: '组卷工作台', badge: () => M.basketCount(), gray: true },
     { id: 'pending', ic: '📋', name: '待办工作台', badge: () => M.pendingOpen().length },
+    /* ★ 2026-10-27 新增「录题」：程序不带大脑，但把「怎么把照片变成错题卡」随包交付。
+       放在题库之后、组卷之前 —— 用户的实际顺序是「录进来 → 挑题组卷」。
+       badge 走内存里的收件箱数（进过本页才知道）；没进过就不显示角标，不额外起进程。 */
+    { id: 'ingest', ic: '📥', name: '录题', badge: () => ingestPending() },
     { id: 'stats', ic: '📊', name: '统计分析' },
   ];
   let route = 'dash', routeParam = null;
@@ -27,6 +31,14 @@
 
   function dueCount() {
     let n = 0; for (const x of M.cardsOf()) { const d = M.dueInfo(x.card); if (d.code === 'due') n++; } return n;
+  }
+  /* 收件箱角标（2026-10-27）：只读内存里录题页缓存下来的数字。
+     刻意**不在这里起进程去读收件箱** —— 侧栏每次重绘都跑一次 node 会把界面拖垮。
+     进过「录题」页之后才知道有多少张；没进过就不显示角标。 */
+  function ingestPending() {
+    const v = CTB.views.ingest;
+    const n = v && v.pendingCount ? v.pendingCount() : 0;
+    return n > 0 ? n : 0;
   }
 
   /* ================= 顶栏 ================= */
@@ -152,6 +164,12 @@
     try { v.render(el); } catch (e) {
       console.error(e);
       el.innerHTML = '<div class="card"><div class="empty"><div class="e-ic">⚠️</div><b>视图渲染出错</b><div class="small">' + U.esc(e.message) + '</div></div></div>';
+    }
+    /* 视图可选的「切入钩子」（2026-10-27 加，首个使用者是录题页）。
+       为什么用微任务延后：钩子会去跑工具（读收件箱），同步跑会把首屏卡住；
+       而它自己出错也绝不能影响 render 尾部那些（renderHealth / statusbar / 顶栏副标题）。 */
+    if (typeof v.onShow === 'function') {
+      Promise.resolve().then(() => { try { v.onShow(); } catch (e) { console.error(e); } });
     }
     routeParam = null;   // 视图在 render 内读过参数的（review 的 queue）到此为止
     /* ⚠ 2026-10-11 修（页面内 CTA 全遍历回归抓到的第二个真 bug）：

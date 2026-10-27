@@ -43,6 +43,12 @@ const has = (k) => argv.includes(k);
 const valOf = (k, d) => { const i = argv.indexOf(k); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
 const JSON_OUT = has('--json');
 
+/* --data 走环境变量同一条路（与 `生成状态.mjs` 同一惯例）：
+   桌面壳会显式把 DataRoot 传进来，避免"壳以为库在 A、工具以为库在 B"这类口径漂移
+   （本仓踩过：工具搬走后 ROOT 算成了程序目录，对空库报绿）。*/
+const explicitData = valOf('--data', null);
+if (explicitData) process.env.CTB_DATA = path.resolve(explicitData);
+
 /* ══════════════ 配方根：与 _库根.mjs 的 APP_ROOT 同口径 ══════════════
  * 发布包：<AppRoot>\recipes\        （build-release.ps1 把 src\recipes 平移到 app\recipes）
  * 开发区：<仓库>\src\recipes\       （APP_ROOT 在开发区就是 <仓库>\src）
@@ -319,6 +325,74 @@ function selfTest(recipeId, actual) {
   return { recipe: recipeId, version: meta.version, results };
 }
 
+/* ══════════════ 收件箱：界面「录题」页的数据来源 ══════════════
+ * 为什么由引擎提供而不是壳做：壳不该会"扫目录"（多一套文件系统语义就多一套越界风险）。
+ * 引擎本来就知道库根在哪、也会算 sha256，让它顺带列出待处理照片最省事。
+ *
+ * 铁律：**只读**。不移动、不改名、不删除收件箱里的任何文件。
+ * 用户把照片丢进 数据\_收件箱\<批次>\ 就行 —— 这就是"入口"，不需要文件选择对话框。 */
+const IMG_RE = /\.(jpe?g|png|webp|bmp|tiff?)$/i;
+const INBOX_SKIP = new Set(['_任务单', '_已处理', '_probe']);
+
+function cmdInbox() {
+  const root = libraryRoot();
+  const inbox = path.join(root, '_收件箱');
+  const batches = [];
+  if (isDir(inbox)) {
+    for (const name of fs.readdirSync(inbox).sort()) {
+      if (name.startsWith('.') || INBOX_SKIP.has(name)) continue;
+      const dir = path.join(inbox, name);
+      const isB = isDir(dir);
+      /* 支持两种投递：_收件箱\<批次>\*.jpg 或 _收件箱\*.jpg（不建批次也能用） */
+      const scanDir = isB ? dir : inbox;
+      if (!isB && !IMG_RE.test(name)) continue;
+      const files = [];
+      const pushFile = (abs, relBase) => {
+        let st; try { st = fs.statSync(abs); } catch { return; }
+        if (!st.isFile() || !IMG_RE.test(path.basename(abs))) return;
+        files.push({
+          name: path.basename(abs),
+          rel: path.relative(root, abs).split(path.sep).join('/'),
+          bytes: st.size,
+          sha256: crypto.createHash('sha256').update(fs.readFileSync(abs)).digest('hex'),
+        });
+      };
+      if (isB) {
+        for (const f of fs.readdirSync(dir).sort()) {
+          if (f.startsWith('.')) continue;
+          const a = path.join(dir, f);
+          if (isDir(a)) continue;
+          pushFile(a);
+        }
+      } else {
+        pushFile(dir);
+      }
+      if (!files.length) continue;
+      const bucketName = isB ? name : '（未分批）';
+      let bucket = batches.find((b) => b.name === bucketName);
+      if (!bucket) { bucket = { name: bucketName, files: [] }; batches.push(bucket); }
+      bucket.files.push(...files);
+    }
+  }
+  const total = batches.reduce((n, b) => n + b.files.length, 0);
+
+  if (JSON_OUT) {
+    process.stdout.write(JSON.stringify({ ok: true, root, inboxRel: '_收件箱', batches, total }) + '\n');
+    return 0;
+  }
+  console.log('收件箱：' + inbox);
+  if (!total) {
+    console.log('（空）把错题照片按批次放进 _收件箱\\<批次名>\\，再回到程序里选它。');
+    return 0;
+  }
+  console.log('共 ' + batches.length + ' 批 / ' + total + ' 张待处理：');
+  for (const b of batches) {
+    console.log('  ▸ ' + b.name + '（' + b.files.length + ' 张）');
+    for (const f of b.files) console.log('      ' + f.name + '  ' + (f.bytes / 1024).toFixed(0) + ' KB  ' + f.sha256.slice(0, 12));
+  }
+  return 0;
+}
+
 /* ══════════════ 命令实现 ══════════════ */
 
 function cmdList() {
@@ -406,11 +480,16 @@ function cmdCompose() {
     fs.mkdirSync(path.dirname(abs), { recursive: true });
     fs.writeFileSync(abs, text, 'utf8');
     console.log('已写任务单：' + abs);
+    console.log('配方=' + id + ' v' + c.meta.version + '  指纹=' + c.hash + '  层数=' + c.layerFiles.length +
+      '  提示词=' + text.length + ' 字符' + (imgSha ? '  原图sha256=' + imgSha.slice(0, 16) + '…' : ''));
   } else {
+    /* 产物走 stdout、摘要走 stderr（2026-10-27 定）：
+       界面要把整份任务单当"干净产物"取走，摘要混进 stdout 会被一起显示出来。
+       这也与本仓其余工具的约定一致：stdout 只放机器/人会消费的东西，进度信息一律 stderr。 */
     process.stdout.write(text);
+    process.stderr.write('配方=' + id + ' v' + c.meta.version + '  指纹=' + c.hash + '  层数=' + c.layerFiles.length +
+      '  提示词=' + text.length + ' 字符' + (imgSha ? '  原图sha256=' + imgSha.slice(0, 16) + '…' : '') + '\n');
   }
-  console.log('配方=' + id + ' v' + c.meta.version + '  指纹=' + c.hash + '  层数=' + c.layerFiles.length +
-    '  提示词=' + text.length + ' 字符' + (imgSha ? '  原图sha256=' + imgSha.slice(0, 16) + '…' : ''));
   return 0;
 }
 
@@ -517,6 +596,7 @@ function main() {
   try {
     switch (cmd) {
       case '清单': return cmdList();
+      case '收件箱': return cmdInbox();
       case '组装': return cmdCompose();
       case '校验': return cmdValidate();
       case '自检': return cmdSelfTest();
@@ -529,6 +609,7 @@ function main() {
           '',
           '用法：',
           '  node src\\tools\\_配方.mjs 清单',
+          '  node src\\tools\\_配方.mjs 收件箱 [--json]',
           '  node src\\tools\\_配方.mjs 组装 --recipe <id> --subject <学科> --image <原图路径> [--out <任务.md>] [--textbook <版本>]',
           '  node src\\tools\\_配方.mjs 校验 --in <cards.json> [--recipe <id>] [--json]',
           '  node src\\tools\\_配方.mjs 自检 --recipe <id> --in <cards.json> [--json]',
@@ -538,7 +619,7 @@ function main() {
         ].join('\n'));
         return 0;
       default:
-        console.error('未知命令：' + cmd + '　可用：清单/组装/校验/自检/指纹');
+        console.error('未知命令：' + cmd + '　可用：清单/收件箱/组装/校验/自检/指纹');
         return 2;
     }
   } catch (e) {
