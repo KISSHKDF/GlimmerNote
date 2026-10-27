@@ -3,6 +3,26 @@
 格式遵循 Keep a Changelog；版本号遵循日期制 `YYYY.MM.DD.NN`。
 版本号唯一真源：`VERSION.json`。
 
+## [2026.10.27.05] - 2026-10-27 · 录题页一键打开收件箱
+
+> 用户原话：「现在只能自己在资源管理器里翻到 `数据\_收件箱`，多一步且容易找错」。
+> `.04` 给了文件夹，但找它还得靠人自己翻——入口对了，路还是绕的。
+
+### 改动
+
+| 位置 | 改动 |
+|---|---|
+| `src/app/js/views/ingest.js` | 收件箱区加两个按钮：**📂 打开收件箱文件夹**、**⟳ 刷新**（空态与有内容态都显示）。打开走壳已有的 `revealFile`：目标是文件就 `explorer /select` 选中它，是目录就直接打开目录 |
+
+**没有改壳**：`LocalLinks.Reveal` 本来就有 `Directory.Exists` 分支，`H.reveal` 通道也在。路径写死传 `_收件箱`，**不接受页面传任意路径**（避免把 `revealFile` 变成任意目录浏览器）。
+
+### 验收
+
+- `node tools\lint.mjs` → `LINT=PASS`
+- `node tests\neg-recipe-contract.cjs` → `断言=58`
+- `node tests\run.mjs fixture` → 全绿
+- `node tests\run.mjs quick` → 全绿（含 `#ingest` 路由冒烟）
+
 ## [2026.10.27.04] - 2026-10-27 · 干净机器首次启动的两个必现缺陷（假红条 / 没有收件箱）
 
 > 用户把 `.03` 拷到另一台干净电脑上跑，第一眼就撞到两件事：

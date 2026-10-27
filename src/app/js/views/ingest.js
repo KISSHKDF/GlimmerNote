@@ -123,6 +123,19 @@
     paintInbox();
   };
 
+  /* 打开收件箱文件夹（2026-10-27 加）
+   * 用户提的：现在只能自己在资源管理器里翻到 `数据\_收件箱`，多一步且容易找错。
+   * 实现走壳已有的 `revealFile`（它 File.Exists → explorer /select，Directory.Exists → 直接打开目录），
+   * 所以**不需要新 op、不需要重编壳之外的东西**；路径固定传 `_收件箱`，不接受页面传任意路径。 */
+  async function openInboxFolder() {
+    try {
+      const r = await H.reveal('_收件箱');
+      if (r && r.ok === false) S.toast('打不开文件夹：' + (r.error || '未知原因'), 'warn', 6000);
+    } catch (e) {
+      S.toast('打不开文件夹：' + String(e && e.message || e), 'warn', 6000);
+    }
+  }
+
   async function paintInbox() {
     const box = U.$id('igInboxBox');
     if (!box) return;
@@ -133,9 +146,14 @@
       return;
     }
     if (!r.total) {
-      box.innerHTML = '收件箱还是空的。<br>' +
-        '<span class="small muted">把错题照片按批次放进这个文件夹，再点右上角「重读数据」或切走再切回来：<br>' +
-        '<b>数据\\_收件箱\\&lt;批次名&gt;\\</b>（不建子文件夹也能用，直接丢在 _收件箱 下即可）</span>';
+      box.innerHTML = '<div class="row" style="margin-bottom:8px">' +
+        '<button class="btn sm primary" id="igOpenInbox">📂 打开收件箱文件夹</button>' +
+        '<span class="small muted">把错题照片放进去，回来点「刷新」</span>' +
+        '<button class="btn sm ghost" id="igRefresh">⟳ 刷新</button></div>' +
+        '收件箱还是空的。<br>' +
+        '<span class="small muted">按批次建子文件夹更好找，例：<b>_收件箱\\数学-10月28日\\</b>' +
+        '（不建子文件夹也能用，直接丢在 _收件箱 下即可）</span>';
+      wireInboxButtons(box);
       return;
     }
     const rows = [];
@@ -151,8 +169,12 @@
           '</label>');
       }
     }
-    box.innerHTML = '<div class="small muted" style="margin-bottom:6px">共 ' + r.batches.length + ' 批 / ' +
+    box.innerHTML = '<div class="row" style="margin-bottom:8px">' +
+      '<button class="btn sm" id="igOpenInbox">📂 打开收件箱文件夹</button>' +
+      '<button class="btn sm ghost" id="igRefresh">⟳ 刷新</button></div>' +
+      '<div class="small muted" style="margin-bottom:6px">共 ' + r.batches.length + ' 批 / ' +
       r.total + ' 张。勾选要处理的那一张（一次一张，判错准确率最高）。</div>' + rows.join('');
+    wireInboxButtons(box);
     box.querySelectorAll('input[data-rel]').forEach(cb => {
       cb.onchange = () => {
         if (cb.checked) { st.picked = {}; }   /* 单选语义：勾新的就取消旧的 */
@@ -163,6 +185,18 @@
         if (cur && cur.checked) cur.closest('label').classList.add('on');
       };
     });
+  }
+
+  /* 收件箱区那两个按钮（空态与有内容态共用） */
+  function wireInboxButtons(box) {
+    const o = box.querySelector('#igOpenInbox');
+    if (o) o.onclick = openInboxFolder;
+    const rf = box.querySelector('#igRefresh');
+    if (rf) rf.onclick = async () => {
+      rf.disabled = true; rf.textContent = '⟳ 刷新中…';
+      await loadInbox(true);
+      await paintInbox();
+    };
   }
 
   async function onGenerate() {
@@ -231,5 +265,4 @@
   }
 
   /* 切到本页时重新读一次收件箱（用户刚丢完照片就切回来是最常见的动作） */
-  V.onShow = function () { loadInbox(true).then(paintInbox); };
-})();
+  V.onShow = function () { loadInbox(true).then(paintInbox); };})();
