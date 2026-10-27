@@ -111,7 +111,25 @@ powershell -File scripts\rollback.ps1 -Version 2026.10.24.01
 
 # 流水线自检（回滚演练，不动真实运行区）
 powershell -File scripts\selftest-pipeline.ps1
+
+# ── 配方（AI 方法层）──
+# 程序不带大脑：它不联网、不内置模型、不含 API Key。
+# 录题靠「配方」——一套纯文本的提示词 + 输出契约 + 验收清单 + 反例库，交给你自己的 AI 执行。
+# 看有哪些配方、各自版本与指纹
+node src\tools\_配方.mjs 清单
+
+# 给一份原图出一张「录题任务单」（含提示词全文与原图 sha256）
+node src\tools\_配方.mjs 组装 --recipe ingest-page --subject 数学 --image <原图路径> --out 任务.md
+
+# 校验 AI 回传的 cards.json（schema 真校验，不合格逐条指出）
+node src\tools\_配方.mjs 校验 --in cards.json
+
+# 给「换了自己的 AI」打分：拿黄金样本比一比
+node src\tools\_配方.mjs 自检 --recipe ingest-single --in cards.json
 ```
+
+> 配方怎么改、怎么加反例、发现新坑怎么回流，见 [`docs\配方规范.md`](docs/配方规范.md)。
+> 一句话：**改正文要极慎重，加反例随便加**——反例是安全的那一半。
 
 ## 新克隆自检（拿到源码后按这个顺序）
 
@@ -202,7 +220,7 @@ A：程序用的是**自签证书**（不是花钱买的正规代码签名证书
 
 ```
 GlimmerNotedev\
-├─ src\          源码（app 前端 / tools 工具链 / shell 桌面壳）
+├─ src\          源码（app 前端 / tools 工具链 / shell 桌面壳 / recipes 配方）
 ├─ fixtures\     假数据（测试专用，绝不含真实用户数据）
 ├─ release\      打包产物（不入 git）
 ├─ scripts\      build-release / deploy / rollback / fetch-deps / selftest-pipeline
@@ -213,3 +231,16 @@ GlimmerNotedev\
 ├─ VERSION.json  版本号唯一真源
 └─ CHANGELOG.md
 ```
+
+### 三层各管一件事
+
+| 层 | 位置 | 装什么 | 变化频率 |
+|---|---|---|---|
+| **内核** | `src\app\` `src\tools\` `src\shell\` | 数据、台账、门禁、渲染、打印 | 低（走发布链路） |
+| **配方** | `src\recipes\` | AI 怎么识别、怎么判错、怎么转印刷体 | **高**（加一条反例就变） |
+| **界面** | `src\app\js\` | 只读 `_状态.json`，不加工数据 | 中 |
+
+**内核不认识任何一道题、任何学科**——这是"可插拔"的前提。
+配方是纯文本，随包发布（`app\recipes\`），但**只能被读取，不能被程序改写**：
+贡献者改配方走 PR（可审可回滚），终端用户只能升级。理由见 [`docs\配方规范.md`](docs/配方规范.md) §八。
+

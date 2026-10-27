@@ -131,9 +131,16 @@ const S = (name, why) => { skipped++; P('[SKIP]' + name + '  → ' + why); };
     A('路由 #' + r + ' 渲染非空', len > 500, len);
   }
 
+  /* ⚠ 2026-10-27 修（假红根因，实测连续两轮必红）：
+     题库筛选**持久化**在 localStorage['ctb2.filters']。本文件后面的「看被拦的题」会把
+     blind 改成 'no'，一旦这一轮中途崩掉，收尾的恢复段（本文件末尾）不会执行 ⇒
+     这份筛选永久留在 WebView2 profile 里。而全库卡片的盲解**全部已通过** ⇒
+     'blind=no' 必然筛出 0 行 ⇒ 下一轮 e2e 一进题库就是 0 行、又崩、又留 —— **自我延续的假红**。
+     断言前显式复位：真 bug（渲染挂了）复位后仍然是 0 行，判据不会被掩盖。 */
+  await cdp.evalJs(`(function(){try{localStorage.removeItem('ctb2.filters')}catch(e){}return 1})()`);
   await cdp.evalJs(`CTB.shell.route('bank')`); await sleep(300);
   const rows = await cdp.evalJs(`document.querySelectorAll('#bkList .lrow').length`);
-  A('题库列表行>0', rows > 0, rows);
+  A('题库列表行>0（已复位筛选，排除历史残留）', rows > 0, rows);
   await cdp.evalJs(`document.querySelector('#bkList .lrow').click()`); await sleep(400);
   A('卡详情抽屉打开', await cdp.evalJs(`!document.getElementById('drawerWrap').hidden && document.querySelector('.drawer-b').innerHTML.length>500`));
   A('抽屉+列表行都有打印版预览入口（rc.4 找回 v1 能力）', await cdp.evalJs(`!!document.querySelector('#drawer .drawer-f #dvPrint') && document.querySelectorAll('#bkList [data-print]').length > 0`));

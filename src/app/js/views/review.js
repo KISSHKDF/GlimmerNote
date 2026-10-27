@@ -364,6 +364,20 @@
     });
   }
 
+  /* 工具侧拦截的**人话理由**（唯一实现）
+     ⚠ 2026-10-25 修（用户实测报障，原话「这是什么意思？」）：
+     这个弹窗原先把理由**写死**成一句「盲解 / 答案来源未归档」。后来新增的「防重复组卷」门禁
+     也抛进同一个 catch ⇒ 弹窗把真实原因（「最近 7 天印过卷」）说成盲解/答案来源，
+     用户既看不懂、也不知道该等什么。现在按工具原文分类，认不出来的才说「工具门禁」。 */
+  function gateReason(msg) {
+    const m = String(msg || '');
+    if (/防重复组卷拦截/.test(m)) return '最近 7 天内印过卷（防重复印卷门禁）';
+    if (/作答契约门禁/.test(m)) return '答案不全或图上作答未登记（作答契约门禁）';
+    if (/答案来源门禁/.test(m)) return '答案缺第二来源（答案来源门禁）';
+    if (/盲解/.test(m)) return '盲解未通过或结论已失效（盲解门禁）';
+    return '工具门禁';
+  }
+
   async function commit() {
     /* ⚠ 2026-10-11（F-RB-2，高）：双击「落库」此前会**并发跑两遍 endSession**——
        两次都在第一个 await（mark('组卷')）之前读到了同一份 results，于是同一批题
@@ -385,10 +399,22 @@
     commitBusy = true;
     const cb = U.$id('rvCommit'); if (cb) { cb.disabled = true; cb.textContent = '⏳ 落库中…'; }
     S.toast('正在按学科组卷并回录…');
+    /* 用户在「防重复印卷」确认框里选「仍要落库」后，本场后续重试一律带 --force */
+    let allowForce = false;
     for (let attempt = 0; attempt < 4; attempt++) {
       try {
-        const papers = await M.endSession();
-        S.toast('已落库：' + (papers.join('；') || '（剩余判定此前已入账）'), 'ok', 8000);
+        const papers = await M.endSession({ force: allowForce });
+        /* ⚠ 2026-10-25 修（实测：判定被剔空后旧代码报绿色「已落库」）：
+           endSession 返回 [] 表示**这一趟什么都没写进台账**（要么全被剔除、要么本来就没内容）。
+           旧代码无条件 `S.toast('已落库：' + (... || '（剩余判定此前已入账）'))` ⇒ 用户看到"已落库"，
+           其实判分已经丢了、台账一个字节没变。现在分开说，并把"判定已丢"讲明白。 */
+        if (!papers.length) {
+          commitBusy = false; M.session = null;
+          S.toast('本场没有写入任何内容（判定已在剔除时作废，台账未改动）', 'warn', 12000);
+          S.render();
+          return;
+        }
+        S.toast('已落库：' + papers.join('；'), 'ok', 8000);
         commitBusy = false; M.session = null;
         S.regenBackground();          // 非阻塞：后台重建磁盘快照（壳侧写闸排队）
         S.render();
@@ -415,12 +441,36 @@
           S.toast('工具报出的 ' + ambiguous.join('、') + ' 在本场命中多张卡（两孩子同号），为免删错已**不剔除**。请到组卷工作台按批次号「撤批」后重做。', 'bad', 12000);
           S.render(); return;
         }
+        const reason = gateReason(e.message);
+        /* ① 防重复印卷：它的"剔除"没有意义（要的是"现在别练"或"确实要练"），
+              所以给一颗「仍要落库」（--force，工具会打告警留痕），而不是把判定删掉。 */
+        if (safeIds.length && /防重复组卷拦截/.test(String(e.message)) && !allowForce) {
+          if (await S.confirm({
+            title: '这些题最近印过（' + safeIds.length + ' 题）',
+            body: '<b>' + U.esc(safeIds.join('、')) + '</b><br><br>' +
+              '它们最近 7 天内已经印过卷，工具按「防重复印卷」拦下了。<br>' +
+              '如果这些题的<b>建议复习日已经到期</b>（本该练的），选「仍要落库」即可；' +
+              '否则建议选「取消」，等它们到期后再练（到期后这道门禁会自动放行）。<br>' +
+              '<span class="small muted">工具原文：' + U.esc(String(e.message).slice(0, 300)) + '</span>',
+            ok: '仍要落库', danger: true,
+          })) { allowForce = true; continue; }
+          commitBusy = false;
+          S.toast('已取消落库：这些题等建议复习日到期后再练（到期后自动放行）', 'warn', 12000);
+          S.render(); return;
+        }
+        /* ② 本场判定**全部**在拦下的名单里 ⇒ 剔除等于白练，不给这个选项 */
+        if (safeIds.length && still.length && still.length === mineRows.length) {
+          commitBusy = false;
+          S.toast('这 ' + safeIds.length + ' 题就是本场全部判定（原因：' + reason + '）。剔掉等于本场白练，已不做剔除；判定保留在屏幕。' +
+            '请按工具原文处理后重试。', 'bad', 14000);
+          S.render(); return;
+        }
         if (safeIds.length && still.length === safeIds.length &&
           await S.confirm({
             title: '工具门禁拦下 ' + safeIds.length + ' 题',
-            body: '<b>' + U.esc(safeIds.join('、')) + '</b>（盲解/答案来源未归档）<br>' +
+            body: '<b>' + U.esc(safeIds.join('、')) + '</b>（原因：' + U.esc(reason) + '）<br>' +
               '要把这些题从本场剔除、其余继续落库吗？<br>' +
-              '<span class="small muted">取消 = 中止落库，判定保留在屏幕；被剔的判定会先存本地草稿</span><br>' +
+              '<span class="small muted">取消 = 中止落库，判定保留在屏幕；被剔的判定会作废（本场不再写回）</span><br>' +
               '<span class="small muted">工具原文：' + U.esc(String(e.message).slice(0, 300)) + '</span>',
             ok: '剔除并继续',
           })) {
@@ -430,7 +480,7 @@
           /* F-RB-10：剔除必须同时剪掉 committed 里那一组的 list，否则整组被剔空时
              endSession 会退回 committed.list 把被拦题又捞回来重新批改（永远失败、批次永久停待批改） */
           const n = M.sessionDrop(still.map(r => r.kid + '|' + r.id));
-          S.toast('已剔除 ' + n + ' 题（判定已存本地草稿），重试落库…', 'warn');
+          S.toast('已剔除 ' + n + ' 题（本场将不再写回它们），重试落库…', 'warn');
           continue;
         }
         commitBusy = false;

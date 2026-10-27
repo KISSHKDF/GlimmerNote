@@ -95,6 +95,7 @@ if (mode === 'fixture') {
     ['neg-shell-args.mjs', 'C# 取值与参数转义（源码级断言）'],
     ['chunk-roundtrip.cjs', 'C# 分片往返逐字符相等（源码级断言）'],
     ['safe-write.test.mjs', '原子写底座自检（自带临时目录）'],
+    ['neg-recipe-contract.cjs', '配方层契约（五件套/学科分派/schema 真校验/指纹/自检，纯文本资产，不需要任何库）'],
   ];
   const SKIPPED = [
     ['portability.cjs', '需要已构建的 src\\app\\拾光小册.exe（gitignored）'],
@@ -243,6 +244,11 @@ const unitTests = [
      ledger.paperSeq 水印防批次号复用（撤掉当天最大号，新卷拿更大的号；掏掉水印的变异源码复现重号）。 */
   ['neg-paper-revoke-restore.cjs'],
   ['neg-card-shape-reviews.cjs'],     // ★ 复习字段形状：reviews 元素全为对象 + 字段不得整体缺失（2026-10-16 启动崩溃 37 卡事故门禁，含阴性自证）
+  /* ★ 2026-10-27：配方层（AI 方法层）是**唯一没有硬门禁兜底**的一层——它退化时的表现不是报错，
+     而是"AI 输出变得略微变差"，肉眼看不出来。本用例守：五件套齐全 / 学科真分派（物理不许带英语规则）/
+     schema 真校验（12 个阴性样本逐条必须被拒）/ skipped 不许空数组（装懂）/ 指纹随内容变 / 自检真能判 FAIL。
+     起因：原型（work\github-publish\proto）的 schema.json 写得漂亮但运行时零校验、0 条断言，谁也没发现。 */
+  ['neg-recipe-contract.cjs'],
   /* ★ 2026-10-21 新增（用户报障「办完之后还会弹出来，不能消失」）：三个缺陷叠加的护栏——
      拆条复用旧编号（重号）→ find 取到已作废那条 → results 为空被当成功。
      三条缺一条都不会复现，所以必须一起守：重号门禁 / 落库打对条目 / 编号扫描认 T1xx。 */

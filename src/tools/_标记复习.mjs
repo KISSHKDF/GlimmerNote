@@ -538,7 +538,17 @@ switch (action) {
        第 2 次的「对」不反映掌握程度 —— 会直接污染 passStreak / nextDue / 已掌握判定（错题本的全部下游推断）。
        判据：同一学生、同一题，在最近 N 天（默认 7）内已出现在任何非作废批次里 ⇒ 拦。
        丢纸重印**不走这条路**（走台账「👁 看这张卷」直接重印当初那张），所以不需要绕过；
-       确需重排同题（如换了题组策略）再显式 --force，并留下审计痕迹。 */
+       确需重排同题（如换了题组策略）再显式 --force，并留下审计痕迹。
+       ⚠ 2026-10-25 修（用户实测：复习流判完点「落库」被拦，问「这是什么意思？」）——
+       原判据「近 7 天印过就拦」与本工具自己算的排期**正面冲突**：
+       M0027/M0052 于 10-24 被判「错」⇒ 建议复习日 = 1 天后 = **10-25 到期**，
+       而 10-25 恰在「自 10-18 起 7 天窗口」内 ⇒ **到期题被自己的门禁挡住，练不了也落不了库**。
+       全库实测（10-25）：当天到期 24 张，24/24 全被拦，可练的到期题 = 0
+       （「到期优先」这个入口在界面上是死的）；另一名学生当天到期的那 22 张同理（当天刚印的 P20261025-04/05）。
+       两者其实不矛盾：这道门禁要拦的是**无意的重复印卷**（篮子没清空 ⇒ 同一套题隔天又印一遍），
+       而「建议复习日已到」是系统自己算出的**该练了**。所以补一条放行：
+       **nextDue ≤ 组卷日（已到期）的题不拦**。
+       原始报障那 30 题全是「对」（建议日 10-31，未到期）⇒ 照旧被拦，两个目标都不牺牲。 */
     const REPEAT_DAYS = (String(opt['no-repeat-days']) === '0') ? 0 : (num(opt['no-repeat-days']) || 7);
     if (REPEAT_DAYS > 0) {
       const since = addDays(date, -REPEAT_DAYS);
@@ -553,12 +563,21 @@ switch (action) {
           }
         }
       }
-      const rep = ids.filter(id => recent[id]);
+      /* 到期放行的唯一判据（与界面 paper.js 的 isDueCard 同口径）：
+         nextDue 有值且 ≤ 组卷日 ⇒ 系统已经判「该复习了」⇒ 不拦。 */
+      const dueOn = id => { const it = byId[id] || {}; return !!it.nextDue && String(it.nextDue) <= String(date); };
+      const hit = ids.filter(id => recent[id]);
+      const rep = hit.filter(id => !dueOn(id));          // ← 真正要拦的：近期印过 且 还没到期
+      const freed = hit.filter(id => dueOn(id));         // 到期放行的（留痕，便于事后核对）
+      if (freed.length) {
+        console.log('⚠ 到期放行：' + freed.length + ' 题虽在近 ' + REPEAT_DAYS + ' 天内印过，但建议复习日已到（≤' + date + '），按排期该练 ⇒ 不拦：' +
+          freed.slice(0, 20).map(id => id + '[' + byId[id].nextDue + ']').join(' '));
+      }
       if (rep.length && !opt.force) {
         console.error('✖ 防重复组卷拦截：' + rep.length + '/' + ids.length + ' 题在最近 ' + REPEAT_DAYS + ' 天内已经印过卷（自 ' + since + ' 起）');
         console.error('   ' + rep.map(id => id + '[' + recent[id].paperId + ' ' + recent[id].date + ' ' + recent[id].status + ']').join(' '));
         console.error('   为什么拦：同一套题短期内重印 = 孩子照答案默写，第 2 次的「对」不反映掌握，会污染连对/建议复习日/已掌握判定。');
-        console.error('   怎么办：① 等这些题的「建议复习日」到期再组（台账/首页有日期）；② 换印过的以外的题；');
+        console.error('   怎么办：① 等这些题的「建议复习日」到期——到期后本门禁**自动放行**（台账/首页有日期）；② 换印过的以外的题；');
         console.error('            ③ 纸卷丢了要原样重印 → 去台账点「👁 看这张卷」，那里直接重印当初那张，不新建批次。');
         console.error('   确需把同一批题再印一遍（如换题组策略）加 --force；想关掉本门禁加 --no-repeat-days 0。');
         process.exit(2);

@@ -1,0 +1,37 @@
+{
+  "id": "ingest-single",
+  "version": "2.0.0",
+  "title": "录入单道错题（一题一张照片）",
+  "kind": "ingest",
+  "summary": "只拍一道题：题面 + 孩子的作答 + 老师的红笔批改都在画面里。最稳、最省事的入口，适合零散错题。",
+  "inputs": [
+    "一张（或多张）照片：这道题的完整画面",
+    "原图 sha256（由程序在任务单里给出，必须原样回填）"
+  ],
+  "outputs": "cards.json —— 符合 schema.json 的错题数组，通常 1 条",
+  "appliesTo": {
+    "stages": ["小学", "初中", "高中"],
+    "subjects": ["*"]
+  },
+  "layers": [
+    "_core/base.md",
+    "_core/cause.md",
+    "_core/provenance.md",
+    "_subject/${subject}.md"
+  ],
+  "requires": {
+    "subject": true,
+    "images": 1
+  },
+  "updatedAt": "2026-10-27",
+  "changelog": [
+    {
+      "version": "2.0.0",
+      "note": "并入本仓：错因改 K/L/S 16 类（原 6 类通用键丢弃）、新增必填 confidence 与 sourceImageSha256、学科层改占位符按科加载（原三科混拼）"
+    },
+    {
+      "version": "1.0.0",
+      "note": "初版：逐字转录、答案必须有第二来源、不带题号分值"
+    }
+  ]
+}

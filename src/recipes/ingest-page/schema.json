@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ingest-page 输出契约",
+  "type": "object",
+  "required": ["pageSummary", "cards", "skipped"],
+  "additionalProperties": false,
+  "properties": {
+    "pageSummary": {
+      "type": "object",
+      "required": ["totalQuestions", "markedWrong"],
+      "additionalProperties": false,
+      "properties": {
+        "totalQuestions": { "type": "integer", "minimum": 1 },
+        "markedWrong": { "type": "integer", "minimum": 0 },
+        "unmarked": { "type": "integer", "minimum": 0 },
+        "note": { "type": "string", "maxLength": 300 }
+      }
+    },
+    "cards": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 30,
+      "items": {
+        "type": "object",
+        "required": [
+          "subject", "title", "questionText", "studentAnswer",
+          "answerSource", "causeCode", "confidence", "sourceImageSha256"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "subject": { "type": "string", "enum": ["数学", "语文", "英语", "物理", "化学", "生物", "历史", "地理", "政治"] },
+          "title": { "type": "string", "minLength": 1, "maxLength": 24 },
+          "source": { "type": "string", "maxLength": 200 },
+          "sourceDate": { "type": "string", "pattern": "^$|^\\d{4}-\\d{2}-\\d{2}$" },
+          "questionText": { "type": "string", "minLength": 1 },
+          "studentAnswer": { "type": "string", "minLength": 1 },
+          "answer": { "type": "string" },
+          "answerSource": {
+            "type": "string",
+            "enum": ["独立判卷", "老师定案", "官方答案", "红笔订正+官方答案页核对", "未能确认"]
+          },
+          "answerSourceNote": { "type": "string", "maxLength": 500 },
+          "causeCode": {
+            "type": "string",
+            "enum": ["K1", "K2", "K3", "K4", "K5", "K6", "K7", "L1", "L2", "L3", "L4", "S1", "S2", "S3", "S4", "S5"]
+          },
+          "causeNote": { "type": "string", "minLength": 1, "maxLength": 300 },
+          "kpoints": { "type": "array", "items": { "type": "string" }, "minItems": 1, "maxItems": 5 },
+          "difficulty": { "type": "string", "enum": ["易", "中", "难", ""] },
+          "hasFigure": { "type": "boolean" },
+          "confidence": { "type": "string", "enum": ["high", "medium", "low"] },
+          "sourceImageSha256": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" },
+          "notes": { "type": "string", "maxLength": 500 }
+        }
+      }
+    },
+    "skipped": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["what", "reason"],
+        "additionalProperties": false,
+        "properties": {
+          "what": { "type": "string", "minLength": 1 },
+          "reason": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

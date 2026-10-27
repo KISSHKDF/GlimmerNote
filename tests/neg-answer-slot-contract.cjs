@@ -331,6 +331,134 @@ function runAll() {
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { }
   }
 
+  /* ========= E. 答案契约指纹（v2.7，2026-10-27）——「改题干不改答案」必须被拦 =========
+     为什么单列一段：空位数对账只挡得住"空变多/变少"，挡不住"措辞改了但空数没变"。
+     那类错会原样印进答案册，家长照着批改必然判错位置/判错值。
+     断言要点：①老卡（无指纹）只警告不阻断，不能一上线就把全库判红；②登记答案即盖章；
+               ③只改措辞、空数不变 → 必须红且点名 stem-changed；④重新登记后恢复绿；
+               ⑤只跑 `修宽`（改排版宽度）**不得**让指纹失效——否则人会学会"见红就刷章"。 */
+  {
+    const tmp = E.makeTempLib(null, { copyCardFiles: true });
+    const tool = path.join(ROOT, 'src', 'tools', '_作答门禁.mjs');
+    const runTool = (lib, args) => {
+      try {
+        return { code: 0, out: execFileSync(process.execPath, [tool, ...args], { encoding: 'utf8', env: Object.assign({}, process.env, { CTB_DATA: lib }) }) };
+      } catch (e) {
+        return { code: e.status == null ? 1 : e.status, out: String(e.stdout || '') };
+      }
+    };
+    const idxFiles = indexFiles(tmp);
+    const f = idxFiles.find(p => JSON.parse(fs.readFileSync(p, 'utf8')).subjects) || idxFiles[0];
+    const readIdx = () => JSON.parse(fs.readFileSync(f, 'utf8'));
+    const writeIdx = j => fs.writeFileSync(f, JSON.stringify(j, null, 2) + '\n', 'utf8');
+    const itemsOf = j => (j.subjects ? Object.values(j.subjects).flatMap(v => v.items || []) : (j.items || []));
+    /* 卡目录解析：必须与 _作答门禁.mjs 的 allCards() 同口径——
+       有 subjects 时是 <库根>/<科目>/<dir>，纯 items 时是 <库根>/<dir>。
+       （首版漏了科目那段，临时库实测 ENOENT；这与"路径口径不一致"同族，故按同一函数取。） */
+    const cardDirOf = it => {
+      const j = readIdx();
+      const base = path.dirname(f);
+      if (j.subjects) {
+        for (const [name, v] of Object.entries(j.subjects)) {
+          if ((v.items || []).some(x => x === it || (x && x.id === it.id))) return path.join(base, name, it.dir || it.id);
+        }
+      }
+      return path.join(base, it.dir || it.id);
+    };
+    const stemPathOf = it => path.join(cardDirOf(it), '题干.html');
+    /* 挑一张"有逐空答案且 id 在**全库唯一**"的卡做样板：
+       ① 有答案才谈得上"答案依据哪版题干"；
+       ② id 必须唯一，否则 `补登 --card <id>` 会因重名而定位失败（E7 首跑实测踩到：
+          临时库里有 2 张同号卡，工具报"命中 2 张，请用 学生|编号"）。 */
+    const allItemIds = new Map();
+    for (const p of idxFiles) {
+      const jj = JSON.parse(fs.readFileSync(p, 'utf8'));
+      const its = jj.subjects ? Object.values(jj.subjects).flatMap(v => v.items || []) : (jj.items || []);
+      for (const it of its) if (it && it.id) allItemIds.set(it.id, (allItemIds.get(it.id) || 0) + 1);
+    }
+    let j = readIdx();
+    let t = itemsOf(j).find(it => Array.isArray(it.answerSlots) && it.answerSlots.length && it.dir && allItemIds.get(it.id) === 1);
+    if (!t) {
+      /* 造一张最小可用卡：题干 1 个空 + 逐空答案（id 用 EXT0001 避开真库命名） */
+      const dirName = 'EXT0001';
+      const base0 = path.dirname(f);
+      const jjPre = readIdx();
+      const subj0 = jjPre.subjects ? Object.keys(jjPre.subjects)[0] : '';
+      const cardDir = subj0 ? path.join(base0, subj0, dirName) : path.join(base0, dirName);
+      fs.mkdirSync(cardDir, { recursive: true });
+      fs.writeFileSync(path.join(cardDir, '题干.html'), '<div class="stem"><p>求 x 的值：<span class="blank" style="width:6em"></span></p></div>', 'utf8');
+      const jj = readIdx();
+      const target = jj.subjects ? jj.subjects[subj0] : jj;
+      if (target) {
+        if (!target.items) target.items = [];
+        target.items.push({ id: dirName, dir: dirName, type: '计算', answerMode: 'blank', answerSlots: ['x=3'] });
+        writeIdx(jj);
+      }
+      j = readIdx();
+      t = itemsOf(j).find(it => it && it.id === dirName);
+    }
+    A('E0 临时库有可测样板卡（有答案 + id 唯一）', Boolean(t), t ? `${t.id}` : '无');
+
+    if (t) {
+      const sp = stemPathOf(t);
+      const before = fs.readFileSync(sp, 'utf8');
+
+      /* ① 老卡（有答案、无指纹）→ 只警告不阻断 */
+      const j1 = readIdx();
+      for (const it of itemsOf(j1)) { delete it.answerSlotsFp; delete it.answerSlotsFpAt; }
+      writeIdx(j1);
+      const g1 = runTool(tmp, ['门禁', '--json']);
+      A('E1 老卡无指纹 → 不阻断（渐进式，不能一上线全红）', g1.code === 0, `exit=${g1.code}`);
+
+      /* ② 刷指纹盖章 */
+      const s1 = runTool(tmp, ['刷指纹']);
+      A('E2 刷指纹 正常执行', s1.code === 0, String(s1.out).trim().slice(0, 120));
+      const j2 = readIdx();
+      const stamped = itemsOf(j2).filter(it => it.answerSlotsFp);
+      A('E3 已登记的卡被盖章（answerSlotsFp 非空）', stamped.length > 0, `${stamped.length} 张`);
+      const assumed = itemsOf(j2).filter(it => it.answerSlotsFpAssumed === true);
+      A('E4 盖章标记为「假设」而非已核实（answerSlotsFpAssumed）', assumed.length === stamped.length, `${assumed.length}/${stamped.length}`);
+
+      /* ③ 只改措辞、空数不变 → 必须红，且点名 stem-changed。
+         ⚠ 改动方式必须是"**一定**让纯文本变化"的：首版对 `<p>求 x 的值…` 做字面替换，
+            但样板卡取自真库、根本没有这段文字 ⇒ 替换是空操作，门禁当然还是绿（假负）。
+            现在改为往正文里插一个可见字符，并**先自证纯文本真的变了**。 */
+      const plainOf = h => String(h || '')
+        .replace(/<svg[\s\S]*?<\/svg>/gi, ' ').replace(/<[^>]+>/g, ' ')
+        .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+      const stemNow = fs.readFileSync(sp, 'utf8');
+      const mutated = stemNow.replace(/<\/p>/i, '<span>换了措辞</span></p>');
+      fs.writeFileSync(sp, mutated, 'utf8');
+      A('E5.0 措辞确实变了（纯文本前后不同——防止"替换成空操作"的假负）', plainOf(mutated) !== plainOf(stemNow), '');
+      const g3 = runTool(tmp, ['门禁', '--json']);
+      const j3s = String(g3.out || '');
+      A('E5 改题干措辞（空数不变）→ 门禁红', g3.code !== 0, `exit=${g3.code}`);
+      A('E6 红的原因点名 stem-changed / 题干被改过', j3s.indexOf('stem-changed') >= 0 || j3s.indexOf('题干在登记答案之后被改过') >= 0, j3s.slice(0, 160));
+
+      /* ④ 重新登记答案 → 恢复绿。
+         ⚠ 必须按该卡**实际空位数**补答案：首版一律补 1 条 'x=3'，而样板卡有 3 个空
+            ⇒ 补登后变成"答案不全"，红得完全正确，是测试自己的用例错了（假红）。
+         这里直接沿用卡上原来的逐空答案（它本来就是按这些空登记的）。 */
+      const origSlots = Array.isArray(t.answerSlots) ? t.answerSlots.map(String) : ['x=3'];
+      const re = runTool(tmp, ['补登', '--card', String(t.id), '--slots', origSlots.join('；'), '--mode', String(t.answerMode || 'blank')]);
+      A('E7.0 补登 定位成功（id 全库唯一）', re.code === 0, String(re.out).trim().slice(0, 120));
+      const g4 = runTool(tmp, ['门禁', '--json']);
+      A('E7 重新登记后恢复绿（答案已对当前题干复核过）', g4.code === 0, `exit=${g4.code}`);
+
+      /* ⑤ 只改排版宽度（模拟 修宽）→ 指纹必须不变 */
+      const j5 = readIdx();
+      const t5 = itemsOf(j5).find(it => it && it.id === t.id);
+      const fpBefore = t5 && t5.answerSlotsFp;
+      fs.writeFileSync(sp, fs.readFileSync(sp, 'utf8').replace(/width:\s*6em/g, 'width: 7.5em'), 'utf8');
+      const j6 = readIdx();
+      const t6 = itemsOf(j6).find(it => it && it.id === t.id);
+      A('E8 只改 span width（排版）→ 指纹不变（否则人会「见红就刷章」）', fpBefore === (t6 && t6.answerSlotsFp), `${fpBefore} → ${t6 && t6.answerSlotsFp}`);
+
+      fs.writeFileSync(sp, before, 'utf8');
+    }
+    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { }
+  }
+
   console.log(`\nRESULT=${fails ? 'FAIL(' + fails + ')' : 'PASS'}`);
   process.exit(fails ? 1 : 0);
 }

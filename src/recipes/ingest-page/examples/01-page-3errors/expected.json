@@ -1,0 +1,29 @@
+{
+  "note": "黄金样本：用来给『换了自己的 AI』打分，不是回归测试。不含照片——请用你自己的一整页作业跑同一条配方，再把输出与这里比对。",
+  "caseId": "01-page-3errors",
+  "title": "一页 13 题、3 处红叉、1 题未作答",
+  "photoNote": "一整页数学作业：13 道题，老师用红叉标出 3 处错，最后 1 题整题空白（老师还没讲）",
+  "checkPoints": [
+    "pageSummary.totalQuestions = 13",
+    "pageSummary.markedWrong = 3，且与 cards 条数一致",
+    "那 1 题未作答的必须进 skipped，不能进 cards",
+    "3 条记录的 causeCode 都应落在 S1 / L2 / K1 这类具体编码上",
+    "skipped 不是空数组"
+  ],
+  "expect": {
+    "pageSummary": {
+      "totalQuestions": 13,
+      "markedWrong": 3
+    },
+    "cards": [
+      { "subject": "数学", "causeCode": "S1" },
+      { "subject": "数学", "causeCode": "L2" },
+      { "subject": "数学", "causeCode": "K1" }
+    ],
+    "mustBeAbsent": [
+      "cards 条数多于 markedWrong 且 skipped 为空",
+      "未作答的那道题出现在 cards 里",
+      "pageSummary 缺失或 totalQuestions 明显偏离实际题数"
+    ]
+  }
+}

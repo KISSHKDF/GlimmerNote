@@ -106,7 +106,10 @@
   }
   /* ---------- 近 7 天已印过的题（防重复组卷） ----------
      判据与工具侧 _标记复习.mjs 的「防重复组卷门禁」同口径：同一学生、日期在最近 REPEAT_DAYS 天内、
-     非作废批次里出现过的题。工具那边是硬门禁（exit 2），这里只是"让人先看见"。 */
+     非作废批次里出现过的题。工具那边是硬门禁（exit 2），这里只是"让人先看见"。
+     ⚠ 2026-10-25（与工具侧同步）：**建议复习日已到（nextDue ≤ 今天）的题不算"重复"**。
+     起因：复习流到期题落库被这道门禁拦死（全库实测 24/24 张到期题全被挡，可练到期题 = 0）。
+     口径必须与工具逐字同判，否则界面标红、工具却放行（或反过来），两边会互相打脸。 */
   const REPEAT_DAYS = 7;
   let _ledgerCache = null;
   function ledgerBatches() { return _ledgerCache || []; }
@@ -130,9 +133,14 @@
     }
     return m;
   }
+  /* 与工具侧 `dueOn(id)` 同口径：nextDue 有值且 ≤ 今天 ⇒ 系统已判"该复习了" ⇒ 不算重复印卷 */
+  function isDueCard(x) {
+    const nd = x && x.card && x.card.nextDue;
+    return !!nd && String(nd) <= U.today();
+  }
   function repeatOfBasket() {
     const m = recentPrinted();
-    return M.basketCards().filter(x => m[x.kid + '|' + x.card.id]);
+    return M.basketCards().filter(x => m[x.kid + '|' + x.card.id] && !isDueCard(x));
   }
   function paintRepeat() {
     const box = U.$id('ppRepeat');
@@ -146,6 +154,7 @@
     }).join('、');
     box.innerHTML = '<div class="pp-note" style="border-left:4px solid var(--bad)">⚠ <b>篮里有 ' + rep.length + ' 题最近 ' + REPEAT_DAYS + ' 天已经印过卷</b>（' + detail + '）。' +
       '同一套题短期内重印，孩子是照答案默写，这次判的「对」不代表掌握，会污染连对与建议复习日。' +
+      '（建议复习日<b>已到期</b>的题不算重复，会自动放行——到期就是该练了。）' +
       '<br>纸卷丢了要原样重印 → 去台账点「👁 看这张卷」直接重印当初那张，<b>不新建批次</b>。' +
       '<div class="row" style="margin-top:8px"><button class="btn sm" id="ppDropRep">从篮里剔除这 ' + rep.length + ' 题</button>' +
       '<span class="small muted">留着也能继续，但入账时工具会硬拦（需 --force 才放行）</span></div></div>';

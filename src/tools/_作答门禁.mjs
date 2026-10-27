@@ -30,12 +30,15 @@
  *   补登 --card 学生|编号 --slots "…；…" [--mode blank|figure|zone|none] [--scope full|partial]
  *        [--at 1,3] [--note "..."]     单卡写回索引（走 _安全写：备份 + 原子写 + 形状守卫）
  *   批量 --file <decl.json>           批量写回：[{card, mode, slots:[…], scope, at, note}]
+ *   刷指纹 [--dry]      只读+盖章：给"已登记答案但无指纹"的老卡以当前题干为基线补登记
+ *                        （v2.7；会落 answerSlotsFpAssumed=true —— 那是**假设**不是复核）
  *   修宽 [--dry]        按声明答案把 题干.html 里过窄的空位改宽（原子写 + 备份；默认 dry 预览）
  *
  * ⚠ 本工具是 answerMode/answerSlots 的**唯一写入入口**；手工改索引不算数（Gate 会重新数空位对账）。
  */
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { libraryRoot, toolPath } from './_库根.mjs';
 import { readJsonStrict, writeJsonAtomic, backupJson, writeTextAtomic } from './_安全写.mjs';
@@ -106,6 +109,36 @@ const plainText = h => String(h || '')
   .replace(/<[^>]+>/g, ' ')
   .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/&nbsp;/g, ' ')
   .replace(/\s+/g, ' ').trim();
+
+/* ---------- 答案契约指纹（v2.7，2026-10-27） ----------
+ * 为什么需要：空位数对账只挡得住"空变多/变少"，挡不住**改了措辞但空数不变**——
+ *   例：题干「求 x 的值」改成「求 2x 的值」，空还是 1 个，登记答案仍对得上数，
+ *   但答案已经错了；这类错会**原样印进答案册**，家长照着批改必然判错。
+ *   实测口径来自用户 2026-10-10 的裁定：「答案要跟题干绑在一起，不能各说各话」。
+ *
+ * 设计（与盲解指纹分工，互不影响）：
+ *   · 盲解指纹（_盲解复核.mjs）= 题干 ↔ **盲解结论** 的绑定；本条只管 题干 ↔ **逐空答案**。
+ *   · 两者算法**各自独立**：绝不改动 _盲解复核 的规范化口径（改了就等于全库指纹失效）。
+ *   · 覆盖范围 = 纯文本 + 图形签名，**不含**空位 span 的 width/style：
+ *     否则跑一次 `修宽`（只改排版宽度、不改语义）就会让全库指纹失效，
+ *     人会因此学会"看到红就刷指纹"，门禁随之退化成一枚橡皮图章。
+ *   · 兼容：老卡没有 answerSlotsFp → 只告警不阻断（与 blindFingerprintVer 同为渐进式）；
+ *     跑 `刷指纹` 以当前题干为基线补登记，此后享受保护。
+ */
+function figureSignatureOf(stemHtml) {
+  const parts = [];
+  for (const m of String(stemHtml || '').matchAll(/<svg[\s\S]*?<\/svg>/gi)) parts.push(m[0]);
+  for (const m of String(stemHtml || '').matchAll(/<img\b[^>]*>/gi)) parts.push(m[0]);
+  // 图形片段里的排版属性同样要规范化：只认结构，不认宽度/样式（理由同上，防"修宽即失效"）
+  return parts
+    .map(s => s.replace(/\s(?:width|height|style)\s*=\s*"[^"]*"/gi, '').replace(/\s+/g, ' ').trim())
+    .join('\n');
+}
+const answerContractFingerprint = (stemHtml) =>
+  crypto.createHash('sha256')
+    .update(plainText(stemHtml) + '\u0000' + figureSignatureOf(stemHtml), 'utf8')
+    .digest('hex')
+    .slice(0, 16);
 
 /** 错题记录里的「正确答案」段（工单要把它摘给填答案的人，别让人再翻一遍 md）
  *  ★ 2026-10-25：早一版只认 `## 正确答案` / `**正确答案` 两个标题，而库里真实段落名有
@@ -198,6 +231,24 @@ function judge(x) {
        要么删空位（题干失真）。现在只保留真正矛盾的那条：blank 却数不到空。 */
   if (mode === 'blank' && n === 0) problems.push({ code: 'mode-blank-noslot', msg: 'answerMode=blank 但题干里数不到空位' });
 
+  /* ⑥ 答案契约指纹：题干在登记答案之后被改过（措辞/图形变了但空数没变）⇒ 答案可能已不对。
+     这是「声明（答案）vs 权威（题干）」的绑定，与盲解指纹分工（见文件上方注释）。
+     老卡无指纹只告警不阻断：渐进式，靠 `刷指纹` 以当前题干为基线补齐。
+     ⚠ 只能往 problems 里推；warns 在下面才声明，这里引用会 ReferenceError（本改动首跑实测踩到）。 */
+  const curFp = answerContractFingerprint(stem);
+  let fpWarn = '';
+  if (raw.length > 0) {
+    if (!it.answerSlotsFp) {
+      fpWarn = '答案契约指纹未登记（老卡）——跑 `node _作答门禁.mjs 刷指纹` 以当前题干为基线补登记，此后改题干会被拦';
+    } else if (String(it.answerSlotsFp) !== curFp) {
+      problems.push({
+        code: 'stem-changed',
+        msg: `题干在登记答案之后被改过（指纹 ${String(it.answerSlotsFp)} → ${curFp}，登记于 ${it.answerSlotsFpAt || '未记'}）`
+          + '——空数虽然还对得上，但措辞/图形变了，答案很可能已不对。**请复核答案**，确认无误后用 `补登` 重登记（会以当前题干为基线重新记指纹）。',
+      });
+    }
+  }
+
   /* 归档卡：只报告不阻断（沿用本仓惯例），但要可见 */
   const archived = it.status === '已归档';
   /* 只报告不阻断的两类"契约覆盖不到的地方"（2026-10-25 子代理填报时实测提出）：
@@ -212,6 +263,7 @@ function judge(x) {
     return k;
   })();
   const warns = [];
+  if (fpWarn) warns.push(fpWarn);          // ⑥ 的指纹未登记提示（此处才拿得到 warns）
   if (bareCells > 0) warns.push(`表格里有 ${bareCells} 个空格子（不是 blank span/下划线，契约数不到；若那是作答处请在题干里补空位）`);
   for (const w of warnsWidth) warns.push(w);
   const ok = problems.length === 0;
@@ -248,9 +300,14 @@ function writeDecl(x, d) {
   if (d.note != null) { const s = String(d.note); if (s.trim()) it.answerNote = s; else delete it.answerNote; }
   it.answerSlotsBy = it.answerSlotsBy || 'agent';
   it.answerSlotsAt2 = today();     // 登记/复核日期（与"第几空"的 answerSlotsAt 是两回事，名字刻意分开）
+  /* ★ 2026-10-27：登记答案即"以当前题干为基线"盖章——人是在看着这一版题干填答案的，
+     所以这一刻的指纹就是"答案所依据的题干版本"。之后题干再变，judge() 就会红。 */
+  it.answerSlotsFp = answerContractFingerprint(stemOf(x));
+  it.answerSlotsFpAt = today();
   delete it.answerSlotsDate;       // 旧名兼容清理
   x.item.answerMode = it.answerMode; x.item.answerSlots = it.answerSlots; x.item.answerScope = it.answerScope;
   x.item.answerSlotsAt = it.answerSlotsAt; x.item.answerNote = it.answerNote;
+  x.item.answerSlotsFp = it.answerSlotsFp; x.item.answerSlotsFpAt = it.answerSlotsFpAt;
   writeJsonAtomic(x.file, j, { backup: true });
   return it;
 }
@@ -410,8 +467,40 @@ switch (action) {
     break;
   }
 
-  case '修宽': {
-    /* 按声明答案把 题干.html 里过窄的空位改宽（数据侧兜底）。
+  /* 刷指纹：给"已登记答案但没指纹"的老卡以**当前题干**为基线补登记（v2.7）。
+     ⚠ 语义要说清：这是一个**假设**——它假设"现在的题干就是当初填答案时的那一版"。
+       若题干其实已经改过而答案没跟上，本动作会把错误答案盖章成"有效"。
+       所以必须一并落 `answerSlotsFpAssumed=true`，让"这条有效性是假设来的"永久可见，
+       扫描/门禁单独计数，人不至于以为全库都真核过。 */
+  case '刷指纹': {
+    const all = allCards();
+    let stamped = 0, already = 0, blocked = 0;
+    for (const x of all) {
+      const it = x.item;
+      const raw = Array.isArray(it.answerSlots) ? it.answerSlots.filter(v => String(v == null ? '' : v).trim()) : [];
+      if (!raw.length) continue;                       // 没登记答案的卡不盖章（盖章会掩盖"答案缺失"）
+      if (it.answerSlotsFp) { already++; continue; }
+      const r = judge(x);
+      // 只给"除指纹外没有其它硬问题"的卡盖章：有真缺陷的卡必须先修，不能靠刷指纹变绿
+      const hard = r.problems.filter(p => p.code !== 'stem-changed');
+      if (hard.length) { blocked++; continue; }
+      if (opt.dry) { console.log(`[dry] ${x.key} 会盖章 → ${answerContractFingerprint(stemOf(x))}`); continue; }
+      const j = readIndexFile(x.file);
+      const t = x.holder.kind === 'items' ? j.items[x.holder.i] : j.subjects[x.holder.name].items[x.holder.i];
+      if (!t || t.id !== x.item.id) fail(`定位失效：${x.key}`);
+      t.answerSlotsFp = answerContractFingerprint(stemOf(x));
+      t.answerSlotsFpAt = today();
+      t.answerSlotsFpAssumed = true;      // 假设基线：永远可见，不许悄悄当"已核实"
+      writeJsonAtomic(x.file, j, { backup: true });
+      stamped++;
+    }
+    console.log(opt.dry
+      ? `[dry] 会盖章 ${stamped} 张（已有指纹 ${already}，有其它硬问题跳过 ${blocked}）`
+      : `已盖章 ${stamped} 张（已有指纹 ${already}，有其它硬问题跳过 ${blocked}）。⚠ 这批是「假设当前题干＝填答案时那版」，不等于已复核；题干若曾改过请逐卡看答案。`);
+    break;
+  }
+
+  case '修宽': {    /* 按声明答案把 题干.html 里过窄的空位改宽（数据侧兜底）。
        渲染器已经会按答案实时撑宽（model.js applySlotWidths，口径＝答案所需 × 1.5），
        这里是把"数据本身"也补齐，让任何离屏消费（导出 HTML、别的渲染器、直接看文件的人）
        不会重新踩窄线。★ 2026-10-25 晚用户二次报障（Y0003）后：目标宽度改成 blankWidthEm
@@ -445,6 +534,6 @@ switch (action) {
   }
 
   default:
-    console.log('未知动作：' + action + '\n可用：扫描 / 清单 / 门禁 / 工单 / 补登 / 批量 / 修宽');
+    console.log('未知动作：' + action + '\n可用：扫描 / 清单 / 门禁 / 工单 / 补登 / 批量 / 修宽 / 刷指纹');
     process.exitCode = 2;
 }

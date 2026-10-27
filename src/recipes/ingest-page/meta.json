@@ -1,0 +1,37 @@
+{
+  "id": "ingest-page",
+  "version": "2.0.0",
+  "title": "录入整页多道错题（一张整页照片 → 多条记录）",
+  "kind": "ingest",
+  "summary": "拍整页，让 AI 把整页上每一道被红笔标出的错题拆成多条记录。适合一次作业错好几道的情况。",
+  "inputs": [
+    "一张整页照片（所有题 + 红笔批改都在画面里）",
+    "原图 sha256（由程序在任务单里给出，必须原样回填）"
+  ],
+  "outputs": "cards.json —— 每道错题一条；另含 pageSummary 与 skipped",
+  "appliesTo": {
+    "stages": ["小学", "初中", "高中"],
+    "subjects": ["*"]
+  },
+  "layers": [
+    "_core/base.md",
+    "_core/cause.md",
+    "_core/provenance.md",
+    "_subject/${subject}.md"
+  ],
+  "requires": {
+    "subject": true,
+    "images": 1
+  },
+  "updatedAt": "2026-10-27",
+  "changelog": [
+    {
+      "version": "2.0.0",
+      "note": "并入本仓：错因改 K/L/S 16 类、新增必填 confidence 与 sourceImageSha256、pageSummary/skipped 改为 schema 必填（原来只在 prompt 里要求、schema 不查）"
+    },
+    {
+      "version": "1.0.0",
+      "note": "初版：先判错、再拆题、逐题转录；不确定就少录不多录"
+    }
+  ]
+}

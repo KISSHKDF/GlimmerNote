@@ -1,0 +1,27 @@
+{
+  "note": "黄金样本：用来给『换了自己的 AI』打分，不是回归测试。不含照片——请用你自己的错题照片跑同一条配方，再把输出与这里比对。",
+  "caseId": "01-symbol-error",
+  "title": "符号运算错（−16−3 算成 −13）",
+  "photoNote": "一条计算题的四则混合运算，孩子在最后一步把两个负数相加算成了减法，老师用红笔订正",
+  "checkPoints": [
+    "题面逐字照抄，没有把 ÷9/4 改写成别的形式",
+    "studentAnswer 保留了孩子的错误结果",
+    "answerSource 不应是『未能确认』之外的自造来源",
+    "causeCode 落在 S1（符号运算错）",
+    "causeNote 指出是最后一步 −16−3"
+  ],
+  "expect": {
+    "cards": [
+      {
+        "subject": "数学",
+        "causeCode": "S1",
+        "studentAnswer": "−13",
+        "answerSource": "独立判卷"
+      }
+    ],
+    "mustBeAbsent": [
+      "causeCode 不是 K 系（这不是概念问题，是符号运算）",
+      "answerSource 不能写成『老师批改』而实际老师只写了 ✗"
+    ]
+  }
+}
