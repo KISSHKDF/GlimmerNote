@@ -105,7 +105,7 @@ A('③ 纸面 svg 与 img 同规（max-width:100% !important + height:auto）',
 A('③ 抽屉侧 svg 也不能缺（.stembox svg）',
   /\.stembox[^{]*svg\s*\{[^}]*max-width:\s*100%\s*!important/.test(RULES));
 /* 打印态：题号/题干不许断（.q-stem 的 avoid 在 @media print 里；题号孤行靠 q-hd break-after:avoid）。
-   ⚠ 有意不保整题（anszone 可跨页）：整题 avoid 让 30 题卷 7→14 页，保到题干粒度是 11 页
+   ⚠ 有意不保整题（anszone 可跨页）：整题 avoid 让 30 题卷 7→14 页，保到题干粒度是 12 页
    （print-to-pdf 实测）。若日后想收紧到整题，这条断言会红，属有意提醒纸量代价。 */
 A('打印态题干不许从中间断页（.sheet .q-stem 的 break-inside:avoid 在 @media print 里）',
   /@media print\{[\s\S]*?\.sheet \.q-hd,\.sheet \.q-stem\{[^}]*break-inside:avoid/.test(CSS));
