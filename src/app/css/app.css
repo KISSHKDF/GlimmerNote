@@ -542,9 +542,12 @@ textarea{width:100%;resize:vertical;min-height:64px;line-height:1.7}
   .sheet{page-break-after:always;break-after:page}
   .sheet:last-child{page-break-after:auto}
   /* 2026-10-27 修（用户实测 P20261027-01：M0111 题干被劈成两页，下一页以半截题干「a 依次取…」开头）：
-     一题不许从中间断页——题头+题干+答题区是一个不可拆的阅读单元。
+     题号+题干是一个不可拆的阅读单元，各自的 break-inside:avoid；「题号孤行」靠 q-hd 的
+     break-after:avoid 压住。**答题框（anszone）不保**：整题 avoid 会让 30 题卷从 7 页涨到 14 页
+     （print-to-pdf 实测），改保到这个粒度是 11 页——空框跨页只是虚线框分成两截，不影响读题；
      一题真高于一整页时浏览器会自然放弃 avoid，不会截尾。 */
-  .sheet .q{page-break-inside:avoid;break-inside:avoid}
+  .sheet .q-hd,.sheet .q-stem{page-break-inside:avoid;break-inside:avoid}
+  .sheet .q-hd{page-break-after:avoid;break-after:avoid}
   @page{margin:14mm 16mm}
 }
 /* 试卷纸面（屏幕上也预览成纸张样） */

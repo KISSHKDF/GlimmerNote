@@ -3,6 +3,15 @@
 格式遵循 Keep a Changelog；版本号遵循日期制 `YYYY.MM.DD.NN`。
 版本号唯一真源：`VERSION.json`。
 
+## [2026.10.27.10] - 2026-10-27 · 防断页收窄到题干粒度（30 题卷 7 页 → 11 页而非 14 页）＋ 数实修正
+
+> `.09` 的防断页策略是「整题 break-inside:avoid」。print-to-pdf 实测 30 题真实卷：7 页 → **14 页**，
+> 纸量翻倍全部来自"答题框也被整题拖着换页"。收窄到「**题号 break-after:avoid + 题干 break-inside:avoid**」
+> 后为 **11 页**：题干被劈（本次报障那类）与题号孤行依然杜绝，只有空答题框可跨页（虚线框分两截，不影响读题）。
+> 同时按证据重数修正 `.09` 里的统计口径：内联 svg 超宽卡是 **46 张**（物理 43 + 化学 2 + 数学 1），
+> 非 45；P0089/P0090 的 svg 内截断 ≈ **35px**，非 46。
+> `.09` 已走完整链路部署又即刻被 `.10` 取代，两次都是正规 build-release → deploy → verify。
+
 ## [2026.10.27.09] - 2026-10-27 · 「刚组的卷打印有问题」：M0111 填表右侧两列被裁 + 全库 49 张同类超宽
 
 > 用户组了 P20261027-01（30 题数学重做卷），打印出来 **M0111（生物园填表）只剩前 3 列，
@@ -29,7 +38,7 @@
 | `.sheet .q-stem table{max-width:100%}` | 表格永不超纸面（列宽由内容分配） |
 | `.sheet .q-stem table .blank{min-width:0 !important;width:calc(100% - 8px)}` | 表内空位宽**由格子决定**；`!important` 压过按答案撑宽的行内 style |
 | `.sheet … svg{max-width:100% !important;height:auto}`（纸面 + 抽屉） | svg 与 img 同规：viewBox 等比缩，46 张卡右缘不再被裁 |
-| `@media print: .sheet .q{break-inside:avoid}` | 一题不许从中间断页 |
+| `@media print: .q-hd break-after:avoid + .q-stem break-inside:avoid` | 题号不孤行、题干不从中间断页（答题框可跨页；`.09` 曾用整题 avoid，14 页 → `.10` 收窄为 11 页） |
 
 ### 回归断言（新挂 `tests\neg-stem-table-fit.cjs`，13 条）
 
