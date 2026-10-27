@@ -210,7 +210,21 @@
       const flags = { recipe: st.recipe, subject: st.subject };
       if (picked.length) flags.image = picked[0];
       const r = await H.recipe('组装', flags);
-      st.task = String((r && r.out) || '');
+      /* ⚠ 2026-10-27 修（用户实测：「生成不了任务单」，而界面显示"已生成（0 字符 / 1 行）"）：
+         原代码只看 out、不看 ok/code —— 工具失败时 stdout 是空的，于是"空字符串"被当成
+         "生成成功"。**失败必须说失败**，而且要带上工具的真实原因（stderr 里那行"原图不存在"）
+         和退出码，否则用户只看到一个 0 字符的框，无从下手。 */
+      const okFlag = !(r && r.ok === false) && !(r && r.code && r.code !== 0);
+      st.task = okFlag ? String((r && r.out) || '') : '';
+      if (!okFlag || !st.task.trim()) {
+        const why = String((r && (r.err || r.out)) || '').trim() || '工具没有返回内容（退出码 ' + ((r && r.code) || '?') + '）';
+        box.innerHTML = '<div class="ig-warn">✖ 生成失败：任务单是空的</div>' +
+          '<pre class="ig-pre ig-bad">' + U.esc(why.slice(-1200)) + '</pre>' +
+          '<div class="small muted">常见原因：选中的照片已经被移走/改名（路径按库根解析）；' +
+          '或该配方缺学科文件。修好后点上面「⟳ 刷新」重新读收件箱再试。</div>';
+        S.toast('生成失败，看下面的原因', 'bad', 8000);
+        return;
+      }
       const lines = st.task.split('\n').length;
       box.innerHTML =
         '<div class="ig-ok">✔ 任务单已生成（' + st.task.length + ' 字符 / ' + lines + ' 行）' +

@@ -199,8 +199,43 @@ console.log('\n══ 四、整页配方的专属铁律 ══');
   A('推断时会把依据打印出来（不静默）', r4.out.includes('推断') || JSON.parse(engine(['校验', '--in', noSum, '--json']).out).inferred === true, r4.out.split('\n')[0]);
 }
 
-console.log('\n══ 五、指纹（改了内容必须变，否则无法追版本）══');
+console.log('\n══ 五、组装：原图路径按库根解析（用户实测「生成不了任务单」的回归）══');
 {
+  /* 2026-10-27 事故：界面传的是**库内相对路径**（`_收件箱/x.jpg`），而工具用 `path.resolve()`
+     按**进程 cwd** 解析 ⇒ 落到程序目录 ⇒ 文件不存在 ⇒ exit 2 ⇒ 界面拿到空 stdout，
+     还显示"已生成（0 字符 / 1 行）"。两处都修了，这里把两处都钉住。 */
+  const LIB = path.join(TMP, 'lib-inbox');
+  fs.mkdirSync(path.join(LIB, '_收件箱', '批次甲'), { recursive: true });
+  /* 造一张最小的"图片"：内容无所谓，工具只算 sha256 与存在性 */
+  fs.writeFileSync(path.join(LIB, '_收件箱', '批次甲', 'p01.png'), Buffer.from([0x89, 0x50, 0x4E, 0x47, 0, 0, 0, 0]));
+
+  const run2 = (args) => spawnSync(process.execPath, [ENGINE, ...args], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+
+  const okAbs = run2(['组装', '--recipe', 'ingest-single', '--subject', '数学',
+    '--image', path.join(LIB, '_收件箱', '批次甲', 'p01.png'), '--data', LIB]);
+  A('绝对路径原图 → 组装成功且 stdout 非空', okAbs.status === 0 && (okAbs.stdout || '').trim().length > 500,
+    'exit=' + okAbs.status + ' chars=' + (okAbs.stdout || '').trim().length);
+
+  const okRelSlash = run2(['组装', '--recipe', 'ingest-single', '--subject', '数学',
+    '--image', '_收件箱/批次甲/p01.png', '--data', LIB]);
+  A('★ 相对路径（正斜杠，界面传法）→ 按库根解析成功', okRelSlash.status === 0 && (okRelSlash.stdout || '').trim().length > 500,
+    'exit=' + okRelSlash.status + ' chars=' + (okRelSlash.stdout || '').trim().length);
+
+  const okRelBack = run2(['组装', '--recipe', 'ingest-single', '--subject', '数学',
+    '--image', '_收件箱\\批次甲\\p01.png', '--data', LIB]);
+  A('★ 相对路径（反斜杠）→ 也按库根解析', okRelBack.status === 0 && (okRelBack.stdout || '').trim().length > 500,
+    'exit=' + okRelBack.status);
+
+  const missRel = run2(['组装', '--recipe', 'ingest-single', '--subject', '数学',
+    '--image', '_收件箱/批次甲/不存在.png', '--data', LIB]);
+  A('不存在的相对路径 → exit 2（不许静默成功）', missRel.status === 2, 'exit=' + missRel.status);
+  A('不存在的相对路径 → stderr 说明按库根解析', /库根/.test(missRel.stderr || ''), (missRel.stderr || '').split('\n')[0]);
+
+  /* 指纹里必须含 sha256（溯源锚），且两次一致 */
+  A('组装产物带 sourceImageSha256', /[0-9a-f]{64}/.test(okRelSlash.stdout || ''), '');
+}
+
+console.log('\n══ 六、指纹（改了内容必须变，否则无法追版本）══');{
   const r1 = engine(['指纹', '--recipe', 'ingest-single', '--json']);
   const r2 = engine(['指纹', '--recipe', 'ingest-single', '--json']);
   const f1 = r1.code === 0 ? JSON.parse(r1.out).fingerprint : '';
@@ -217,7 +252,7 @@ console.log('\n══ 五、指纹（改了内容必须变，否则无法追版�
   A('全部配方指纹可算（清单命令）', rl.code === 0 && Array.isArray(JSON.parse(rl.out).recipes), '');
 }
 
-console.log('\n══ 六、自检能真的判 FAIL（不能"永远 PASS"）══');
+console.log('\n══ 七、自检能真的判 FAIL（不能"永远 PASS"）══');
 {
   const f1 = writeJson('st-good.json', { cards: [card({ studentAnswer: '−13', answerSource: '独立判卷' })] });
   const r1 = engine(['自检', '--recipe', 'ingest-single', '--in', f1, '--json']);
@@ -232,7 +267,7 @@ console.log('\n══ 六、自检能真的判 FAIL（不能"永远 PASS"）═�
   A('错误输出 → 自检必须 FAIL/ MOSTLY（判据有牙齿）', v2 === 'FAIL' || v2 === 'MOSTLY', v2);
 }
 
-console.log('\n══ 七、安全边界 ══');
+console.log('\n══ 八、安全边界 ══');
 {
   const r = engine(['组装', '--recipe', '../../etc', '--subject', '数学']);
   A('骗不过目录穿越（配方 id 只在配方根下找）', r.code === 2, 'code=' + r.code);

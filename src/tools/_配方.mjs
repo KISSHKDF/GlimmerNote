@@ -438,8 +438,19 @@ function cmdCompose() {
 
   let imgAbs = '', imgSha = '';
   if (img) {
-    imgAbs = path.resolve(img);
-    if (!isFile(imgAbs)) { console.error('原图不存在：' + imgAbs); return 2; }
+    /* ⚠ 2026-10-27 修（用户实测「生成不了任务单」，界面显示"已生成（0 字符 / 1 行）"）：
+       原写法 `path.resolve(img)` 是**相对进程 cwd** 解析的。而界面传进来的是**库内相对路径**
+       （`_收件箱/xxx.jpg`），壳 spawn node 时 cwd 是程序目录 ⇒ 解析成 `app\_收件箱\xxx.jpg`
+       ⇒ 文件不存在 ⇒ 本函数返回 2 ⇒ 界面拿到空 stdout，还当成生成成功。
+       正确语义：相对路径一律按**库根**解析（库根就是由 --data / CTB_DATA 定下来的那个）。
+       绝对路径仍然按原样（允许诊断时直接指定盘上任何位置）。 */
+    const root0 = libraryRoot();
+    imgAbs = path.isAbsolute(img) ? path.normalize(img) : path.resolve(root0, img.replace(/[\\/]+/g, path.sep));
+    if (!isFile(imgAbs)) {
+      console.error('原图不存在：' + imgAbs);
+      console.error('  说明：相对路径按库根解析（库根=' + root0 + '）；若文件确实在别处，请传绝对路径。');
+      return 2;
+    }
     imgSha = crypto.createHash('sha256').update(fs.readFileSync(imgAbs)).digest('hex');
   }
 
