@@ -250,16 +250,54 @@ console.log('\n══ 五、组装：原图路径按库根解析（用户实测�
   A('★ 任务单不含要求对端执行的 node 命令', !/node\s+src[\\/]/i.test(ticket) && !/node\s+\S*_配方\.mjs/.test(ticket), '');
   A('★ 任务单明确"不需要运行命令/访问路径"', /不需要运行任何命令/.test(ticket), '');
 
-  /* 缺③：附件必须被摆在第一位，且告诉用户去哪找 */
+  /* 缺③：附件必须被摆在第一位，且**由程序指认那一张**，不能叫人按名字去翻文件夹。
+     2026-10-27 第二次事故：上一版写的是「点打开收件箱文件夹就能找到它」，而收件箱里的照片
+     会被导入流程按页码改名（微信图片_…_242_134.jpg → p042.jpg，sha256 不变）⇒ 照着旧单子
+     的名字找不到文件 ⇒ 附件发不出去 ⇒ 对端 AI 只能回「我没有看到图片」。 */
   A('★ 任务单第一件事就是"把照片作为附件发出去"', /先把这张照片作为附件发出去/.test(ticket), '');
-  A('★ 任务单告诉用户去哪找这张图', /打开收件箱文件夹/.test(ticket), '');
+  A('★ 任务单让程序指认那一张（定位这张图）', /定位这张图/.test(ticket), '');
+  A('★ 任务单不再叫用户"照着文件名去找"', !/就能找到它/.test(ticket), '');
+  A('★ 任务单给可对核的内容指纹前缀（名字会改，指纹不会）', /内容指纹前 12 位/.test(ticket), '');
+  A('★ 任务单说明旧单子的文件名会失效', /改名/.test(ticket) && /别囤着用/.test(ticket), '');
   A('★ 任务单提醒要发原图不要发缩略图', /不要发微信\/相册里的缩略图/.test(ticket), '');
+  /* 隐私：批次文件夹名 = 日期-化名-学科-书名，写进任务单等于把这些送进别人家云端会话。
+     绝对路径已由第八节钉住，这里钉**相对路径**这一种泄漏形态。 */
+  A('★ 任务单不含库内相对路径（_收件箱/… 会带出化名与学科）', !/_收件箱[\\/]/.test(ticket), '');
+  A('★ 任务单不出现「数据」目录字样', !/数据[\\/]/.test(ticket), '');
 
   /* 止损：漏发图时 AI 应当停手，而不是编造 */
   A('★ 任务单含"没看到图片就停下"的止损指令', /我没有看到图片/.test(ticket) && /然后停下/.test(ticket), '');
 
   /* 本机留痕段必须明确标注"不用发给 AI" */
   A('本机留痕段标注"不用发给 AI"', /本机留痕[\s\S]{0,60}不用发给 AI/.test(ticket), '');
+
+  /* ══ 找图：照片被改名之后，唯一还能把它捞回来的标识是内容指纹 ══
+     钉的是本次事故的**恢复路径**：旧任务单里的文件名失效了，但 sha256 一直有效。 */
+  const inb = run2(['收件箱', '--json', '--data', LIB]);
+  const inbJ = inb.status === 0 ? JSON.parse(inb.stdout) : { batches: [] };
+  const flat = [];
+  for (const b of (inbJ.batches || [])) for (const f of (b.files || [])) flat.push(f);
+  const f01 = flat.find(f => f.name === 'p01.png');
+  A('收件箱列表带出每张图的内容指纹（找图的依据）', !!f01 && /^[0-9a-f]{64}$/.test(f01.sha256 || ''), f01 ? f01.sha256.slice(0, 12) : '列表里没有 p01.png');
+  if (f01) {
+    const loc = run2(['找图', '--sha', f01.sha256, '--json', '--data', LIB]);
+    const lj = loc.status === 0 ? JSON.parse(loc.stdout) : { total: -1 };
+    A('★ 找图：按 64 位指纹定位到那一张', lj.total === 1 && lj.matches[0].rel === f01.rel, JSON.stringify(lj).slice(0, 150));
+
+    const loc12 = run2(['找图', '--sha', f01.sha256.slice(0, 12), '--json', '--data', LIB]);
+    A('★ 找图：前 12 位（任务单上给人看的那串）也定位得到', loc12.status === 0 && JSON.parse(loc12.stdout).total === 1, 'exit=' + loc12.status);
+
+    /* 事故场景重放：文件被改名（sha 不变），旧名字已不可用 */
+    fs.renameSync(path.join(LIB, '_收件箱', '批次甲', 'p01.png'), path.join(LIB, '_收件箱', '批次甲', 'p042.jpg'));
+    const la0 = run2(['找图', '--sha', f01.sha256, '--json', '--data', LIB]);
+    const la = la0.status === 0 ? JSON.parse(la0.stdout) : { total: -1 };
+    A('★ 改名后按指纹仍能找回（名字会变，内容不会）', la.total === 1 && /p042\.jpg$/.test(la.matches[0].name || ''), JSON.stringify(la).slice(0, 150));
+
+    const badArg = run2(['找图', '--sha', 'zz', '--data', LIB]);
+    A('找图：指纹格式不对 → exit 2（不许混成"没找到"）', badArg.status === 2, 'exit=' + badArg.status);
+    const miss = run2(['找图', '--sha', 'f'.repeat(64), '--json', '--data', LIB]);
+    A('找图：库里确实没有 → exit 1（与参数错误分档）', miss.status === 1, 'exit=' + miss.status);
+  }
 }
 
 console.log('\n══ 六、指纹（改了内容必须变，否则无法追版本）══');{

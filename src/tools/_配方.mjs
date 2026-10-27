@@ -25,6 +25,8 @@
  *
  * 用法：
  *   node src\tools\_配方.mjs 清单
+ *   node src\tools\_配方.mjs 收件箱
+ *   node src\tools\_配方.mjs 找图 --sha <内容指纹或前12位>   （照片改名后按指纹找回那一张）
  *   node src\tools\_配方.mjs 组装 --recipe ingest-single --subject 数学 --image <原图路径> [--out <任务.md>]
  *   node src\tools\_配方.mjs 校验 --in cards.json [--recipe <id>] [--json]
  *   node src\tools\_配方.mjs 自检 --recipe <id> --in cards.json [--json]
@@ -401,6 +403,54 @@ function cmdInbox() {
   return 0;
 }
 
+/* ══════════════ 按内容指纹找图（2026-10-27 加，界面「📂 定位这张图」的兜底）══════════════
+ * 起因（第二次"任务单交不出去"）：任务单只写**文件名**，而收件箱里的照片会被导入流程按页码
+ *   改名（微信图片_20261025170128_242_134.jpg → p042.jpg，**sha256 不变**）。用户拿着早先生成
+ *   的单子照名字翻文件夹 ⇒ 找不到文件 ⇒ 附件发不出去 ⇒ 对端 AI 按止损指令回「我没有看到图片」。
+ * 唯一不随改名失效的标识就是 sha256，而它本来就在任务单里（溯源锚）。这个动作把它变成"能定位"：
+ *   只读，不改名、不移动、不删除、不写任何文件（与「收件箱」同一条铁律）。 */
+function cmdLocate() {
+  const raw = String(valOf('--sha', '')).trim().toLowerCase();
+  if (!/^[0-9a-f]{12,64}$/.test(raw)) {
+    console.error('用法：找图 --sha <内容指纹（64 位，或前 12 位起）>');
+    console.error('  值从任务单「sourceImageSha256」那行抄，或从录题页每张图后面的指纹前缀抄。');
+    return 2;
+  }
+  const root = libraryRoot();
+  const inbox = path.join(root, '_收件箱');
+  if (!isDir(inbox)) { console.error('收件箱不存在：' + inbox); return 2; }
+  const matches = [];
+  const walk = (dir, depth) => {
+    for (const name of fs.readdirSync(dir)) {
+      if (name.startsWith('.')) continue;
+      const abs = path.join(dir, name);
+      let st; try { st = fs.statSync(abs); } catch { continue; }
+      if (st.isDirectory()) {
+        if (INBOX_SKIP.has(name) || depth >= 3) continue;
+        walk(abs, depth + 1);
+        continue;
+      }
+      if (!st.isFile() || !IMG_RE.test(name)) continue;
+      let sha = '';
+      try { sha = crypto.createHash('sha256').update(fs.readFileSync(abs)).digest('hex'); } catch { continue; }
+      if (sha.startsWith(raw)) {
+        matches.push({
+          name, bytes: st.size, sha256: sha,
+          rel: path.relative(root, abs).split(path.sep).join('/'),
+        });
+      }
+    }
+  };
+  walk(inbox, 0);
+  if (JSON_OUT) {
+    process.stdout.write(JSON.stringify({ ok: true, want: raw, total: matches.length, matches }) + '\n');
+    return matches.length ? 0 : 1;
+  }
+  if (!matches.length) { console.log('收件箱里没有内容指纹以 ' + raw + ' 开头的图片（可能被移出库了）。'); return 1; }
+  for (const m of matches) console.log(m.rel + '　' + (m.bytes / 1024).toFixed(0) + ' KB　' + m.sha256.slice(0, 12));
+  return 0;
+}
+
 /* ══════════════ 命令实现 ══════════════ */
 
 function cmdList() {
@@ -486,8 +536,19 @@ function cmdCompose() {
   head.push('');
   head.push('1. **先把这张照片作为附件发出去**：' + (fileName ? '`' + fileName + '`' : '（本次没选照片，见下方说明）'));
   if (fileName) {
-    head.push('   - 在程序左侧「📥 录题」页点 **「📂 打开收件箱文件夹」** 就能找到它');
+    /* ★ 2026-10-27 改（第二次交不出去事故）：原先这句是「点打开收件箱文件夹就能找到它」，
+       等于把"发哪张图"锚在**文件名**上。而收件箱里的照片会被导入流程按页码改名
+       （微信图片_20261025170128_242_134.jpg → p042.jpg，sha256 不变），
+       用户拿着一张早先生成的单子去翻文件夹，**照着名字找不到文件** ⇒ 附件发不出去
+       ⇒ 对端 AI 按止损指令回「我没有看到图片」（它拒得对）。
+       改法：给"库内路径 + sha 前缀"双标识，并把动作从「自己找」换成「程序帮你选中」。 */
+    head.push('   - 这张图的内容指纹前 12 位：`' + imgSha.slice(0, 12) + '`（发图前后对一下这个，就知道发的是不是它）');
+    head.push('   - 在程序左侧「📥 录题」页点 **「📂 定位这张图」**，资源管理器会**直接选中这一张**');
+    head.push('     （不用自己翻文件夹认文件名——一屏缩略图里挑错一张，整单就废了）');
+    head.push('     任务单里**故意不写它在哪个文件夹**：目录名带着孩子化名和学科，不该进任何 AI 会话。');
     head.push('   - **要发原图**，不要发微信/相册里的缩略图（缩略图分辨率不够，AI 看不清笔下笔划）');
+    head.push('   - ⚠ **这张单子别囤着用**：照片导入后会按页码改名，旧单子里的文件名会失效。');
+    head.push('     手上这张如果不是刚生成的，回程序重新勾一次那张图、重新生成一份。');
   } else {
     head.push('   - ⚠ 本次生成时没选照片，所以没有文件名可给。**没有照片，AI 无法判题**，请不要往下发。');
   }
@@ -671,6 +732,7 @@ function main() {
     switch (cmd) {
       case '清单': return cmdList();
       case '收件箱': return cmdInbox();
+      case '找图': return cmdLocate();
       case '组装': return cmdCompose();
       case '校验': return cmdValidate();
       case '自检': return cmdSelfTest();
@@ -684,6 +746,7 @@ function main() {
           '用法：',
           '  node src\\tools\\_配方.mjs 清单',
           '  node src\\tools\\_配方.mjs 收件箱 [--json]',
+          '  node src\\tools\\_配方.mjs 找图 --sha <内容指纹或前12位> [--json]   （照片改名后按指纹找回那一张）',
           '  node src\\tools\\_配方.mjs 组装 --recipe <id> --subject <学科> --image <原图路径> [--out <任务.md>] [--textbook <版本>]',
           '  node src\\tools\\_配方.mjs 校验 --in <cards.json> [--recipe <id>] [--json]',
           '  node src\\tools\\_配方.mjs 自检 --recipe <id> --in <cards.json> [--json]',
@@ -693,7 +756,7 @@ function main() {
         ].join('\n'));
         return 0;
       default:
-        console.error('未知命令：' + cmd + '　可用：清单/收件箱/组装/校验/自检/指纹');
+        console.error('未知命令：' + cmd + '　可用：清单/收件箱/找图/组装/校验/自检/指纹');
         return 2;
     }
   } catch (e) {

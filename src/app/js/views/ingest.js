@@ -31,6 +31,8 @@
   const save = () => U.lsSet(LS_KEY, { recipe: st.recipe, subject: st.subject });
   /* 这两个不持久化：每次进来重新取，避免"昨天选中的图今天还在"的错觉 */
   st.task = ''; st.verdict = null; st.inbox = null; st.picked = {}; st.batch = '';
+  /* 本次生成任务单对应的那一张（rel + 内容指纹）。只活在内存里，切页即失效。 */
+  st.shot = null;
 
   const SUBJECTS = ['数学', '语文', '英语', '物理', '化学', '生物', '历史', '地理', '政治'];
 
@@ -136,6 +138,44 @@
     }
   }
 
+  /* 「📂 定位这张图」——把要发出去的那**一张**在资源管理器里选中。
+   * 起因（2026-10-27 第二次"任务单交不出去"）：任务单只写文件名，而收件箱里的照片会被导入
+   *   流程按页码改名（微信图片_…_242_134.jpg → p042.jpg，sha256 不变）。用户拿着旧单子
+   *   照名字翻文件夹 ⇒ 找不到 ⇒ 附件没发 ⇒ 对端 AI 按止损指令回「我没有看到图片」（它拒得对）。
+   * 所以"发哪张图"不能靠人对名字的记忆，必须由程序指认。
+   * 按指纹兜底：勾选时那条路径若已失效，用收件箱列表里已缓存的 sha256 找回同内容的那一张。
+   *   —— 这里**不调** `找图` 动作：壳的 RECIPE_ACTIONS 白名单（清单/收件箱/组装/校验/自检/指纹）
+   *      没有它，加一个动作就得重编 exe；而本页本来就握着每张图的 sha256，纯内存查表足够。 */
+  function inboxFiles() {
+    const out = [];
+    for (const b of ((st.inbox && st.inbox.batches) || [])) for (const f of (b.files || [])) out.push(f);
+    return out;
+  }
+  async function revealShot() {
+    const shot = st.shot;
+    if (!shot || !shot.rel) { S.toast('先勾一张照片再生成任务单', 'warn', 6000); return; }
+    try {
+      const r = await H.reveal(shot.rel);
+      if (r && r.ok !== false) return;
+      /* 路径失效 ⇒ 按指纹在同源列表里找那一张 */
+      const alt = shot.sha256 ? inboxFiles().find(f => f.sha256 === shot.sha256) : null;
+      if (alt && alt.rel !== shot.rel) {
+        const r2 = await H.reveal(alt.rel);
+        if (r2 && r2.ok !== false) {
+          st.shot = { rel: alt.rel, sha256: alt.sha256, name: alt.name };
+          S.toast('这张图现在叫「' + alt.name + '」—— 已按内容指纹找回并选中', 'ok', 8000);
+          return;
+        }
+        S.toast('按指纹找到了，但资源管理器打不开：' + (r2.error || '未知原因'), 'warn', 7000);
+        return;
+      }
+      S.toast('打不开这张图：' + (r.error || '未知原因') +
+        '（多半是照片被移走或改过名 —— 点上面「⟳ 刷新」重读收件箱，再重新勾一次）', 'bad', 9000);
+    } catch (e) {
+      S.toast('打不开这张图：' + String(e && e.message || e), 'warn', 6000);
+    }
+  }
+
   async function paintInbox() {
     const box = U.$id('igInboxBox');
     if (!box) return;
@@ -206,6 +246,10 @@
       box.innerHTML = '<div class="ig-warn">先在「1」里勾一张照片。没有照片也能看提示词，但任务单会缺溯源字段（校验会拒收）。</div>';
     }
     btn.disabled = true; btn.textContent = '⏳ 生成中…';
+    /* ★ 记住"这一张"到底是哪张（含内容指纹），供「定位这张图」按钮指认。
+       指纹来自收件箱列表（每次读列表时已算好），不额外起进程。 */
+    const shotInfo = picked.length ? (inboxFiles().find(f => f.rel === picked[0]) || null) : null;
+    st.shot = (picked.length && shotInfo) ? { rel: shotInfo.rel, sha256: shotInfo.sha256, name: shotInfo.name } : null;
     try {
       const flags = { recipe: st.recipe, subject: st.subject };
       if (picked.length) flags.image = picked[0];
@@ -230,13 +274,20 @@
         '<div class="ig-ok">✔ 任务单已生成（' + st.task.length + ' 字符 / ' + lines + ' 行）' +
         (picked.length ? '' : '　<b>⚠ 未选照片：AI 拿不到 sourceImageSha256，回传会被拒收</b>') + '</div>' +
         '<div class="row" style="margin:8px 0"><button class="btn sm primary" id="igCopy">📋 复制任务单</button>' +
+        (st.shot ? '<button class="btn sm primary" id="igReveal">📂 定位这张图</button>' : '') +
         '<button class="btn sm ghost" id="igToggle">展开 / 收起预览</button>' +
-        '<span class="small muted">复制后整段粘给你的 AI（连同那张照片一起发）</span></div>' +
+        '<span class="small muted">发给 AI 的是<b>两样</b>：照片用「📂 定位这张图」选中后发出去，文字用「复制任务单」。</span></div>' +
+        (st.shot
+          ? '<div class="small muted" style="margin-bottom:8px">要发的那一张：' + U.esc(st.shot.name) +
+            '　指纹 <b>' + U.esc(String(st.shot.sha256 || '').slice(0, 12)) + '</b>' +
+            '（照片后来被改名也没关系，这个按钮按指纹找，不按名字找）</div>'
+          : '') +
         '<pre class="ig-pre" id="igPre" hidden>' + U.esc(st.task) + '</pre>';
       U.$id('igCopy').onclick = async () => {
         const ok = await copyText(st.task);
         S.toast(ok ? '任务单已复制，去粘给你的 AI 吧' : '复制失败：请展开预览后手动全选复制', ok ? 'ok' : 'warn', 6000);
       };
+      const rv = U.$id('igReveal'); if (rv) rv.onclick = revealShot;
       U.$id('igToggle').onclick = () => { const p = U.$id('igPre'); p.hidden = !p.hidden; };
     } catch (e) {
       box.innerHTML = '<div class="ig-warn">✖ 生成失败：' + U.esc(String(e && e.message || e)) + '</div>';
