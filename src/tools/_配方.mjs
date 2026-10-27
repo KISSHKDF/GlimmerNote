@@ -457,38 +457,93 @@ function cmdCompose() {
   const c = compose(id, { subject: valOf('--subject', ''), textbook: valOf('--textbook', '') });
   for (const w of c.warnings) console.error('⚠ ' + w);
 
+  /* ══════════ 任务单结构（2026-10-27 重写）══════════
+   * 起因（用户拿第一版去问 WorkBuddy，对方直接拒绝做）：
+   *   ① **sha256 在「给 AI 的段落」之外** —— 用户被告知只复制「三、任务指令」，
+   *      而溯源锚写在「一、本次任务」表里 ⇒ AI 拿不到这个值，只能编或拒（对方拒了，拒得对）；
+   *   ② 交付要求里让 AI 跑 `node src\tools\_配方.mjs 校验` —— 对方在**另一个程序**里，
+   *      没有这个仓库、也没有这个命令，看到只会追问"你的仓库在哪"，整场跑偏；
+   *   ③ 「连同规定的原图」只是引用块里半句话，用户漏发附件，整单空转。
+   *
+   * 现在的结构原则：**「给 AI 的」与「给本机看的」彻底分开，且 AI 那段自带全部所需信息**。
+   *   一、你要做的两件事   ── 给人：先发图，再粘下面那段
+   *   二、任务指令         ── 给 AI：本次任务表（含 sha256）+ 止损指令 + 配方正文
+   *   三、回来之后         ── 给人：本机怎么校验、怎么入库
+   *   四、本机留痕         ── 只供排查，明确标注"不用发给 AI"
+   *
+   * 另外两条硬规矩：
+   *   · **不写任何本机绝对路径**（目录结构会带出孩子化名/年级/学科）；
+   *   · **不写任何要对方执行的命令**（它没有我们的仓库，写命令只会误导）。 */
+  const subject = valOf('--subject', '');
+  const fileName = imgSha ? path.basename(imgAbs) : '';
+
   const head = [];
   head.push('# 录题任务单');
   head.push('');
-  head.push('> 本文件由 `_配方.mjs 组装` 生成，**不要手工编辑**。');
-  head.push('> 用法：把下面「三、任务指令」整段交给你的 AI（连同规定的原图），把它的 JSON 输出存成 `cards.json`。');
+  head.push('> 由拾光小册程序生成 · 配方 `' + id + '` v' + c.meta.version + ' · 指纹 `' + c.hash + '`');
   head.push('');
-  head.push('## 一、本次任务');
+  head.push('## 一、你要做的两件事（照着做，别跳步）');
+  head.push('');
+  head.push('1. **先把这张照片作为附件发出去**：' + (fileName ? '`' + fileName + '`' : '（本次没选照片，见下方说明）'));
+  if (fileName) {
+    head.push('   - 在程序左侧「📥 录题」页点 **「📂 打开收件箱文件夹」** 就能找到它');
+    head.push('   - **要发原图**，不要发微信/相册里的缩略图（缩略图分辨率不够，AI 看不清笔下笔划）');
+  } else {
+    head.push('   - ⚠ 本次生成时没选照片，所以没有文件名可给。**没有照片，AI 无法判题**，请不要往下发。');
+  }
+  head.push('2. **再把下面「二、任务指令」整段复制**，和照片一起发给你的 AI。');
+  head.push('');
+  head.push('> ⚠ 这两件事必须**一起**做。只发文字不发照片，AI 看不到题目，只能拒绝——');
+  head.push('> **它拒绝是对的**：没有原图就编 `pageSummary`、编 sha256，等于给不可查证的数据盖章。');
+  head.push('> 如果你漏发了图，AI 按第二段里的止损指令会直接说"我没看到图片"，那是正常行为。');
+  head.push('');
+  head.push('## 二、任务指令（整段复制给你的 AI，含下面这张表）');
+  head.push('');
+  head.push('### 本次任务');
+  head.push('');
+  head.push('| 项 | 值 |');
+  head.push('|---|---|');
+  head.push('| 学科 | ' + (subject || '（未指定）') + ' |');
+  if (imgSha) {
+    head.push('| 原图文件名 | `' + fileName + '` |');
+    head.push('| **sourceImageSha256** | `' + imgSha + '` |');
+    head.push('');
+    head.push('> 上面这个 `sourceImageSha256` 是**本次这张原图的内容指纹**。你产出的**每一条**记录都必须');
+    head.push('> 原样回填它（一个字符都不许改）。这是"这条记录来自哪张图"的唯一凭据。');
+  } else {
+    head.push('| **sourceImageSha256** | ⚠ 缺（本次未选照片）—— 没有它，回传会被程序拒收 |');
+  }
+  head.push('');
+  head.push('### 止损指令（先看这条，再看下面的规则）');
+  head.push('');
+  head.push('**如果你没有在本次对话里收到那张图片，就直接回答「我没有看到图片」，然后停下。**');
+  head.push('不要根据文件名猜内容，不要用别的图顶替，不要编 `pageSummary`，也不要追问仓库路径——');
+  head.push('这只是录题，你不需要访问任何文件或命令，全部输入都在上面和附件里。');
+  head.push('');
+  head.push('你会看到的所有规则都写在下面，**不需要运行任何命令、不需要访问任何本地路径、不需要保存文件**。');
+  head.push('直接把结果以 JSON 文本回给我即可。');
+  head.push('');
+  head.push('---');
+  head.push('');
+  head.push(c.text);
+  head.push('');
+  head.push('---');
+  head.push('');
+  head.push('## 三、回来之后（这一步在本机做，**不用发给 AI**）');
+  head.push('');
+  head.push('1. 把 AI 回的 JSON **原样**粘回程序「📥 录题」页第 3 步的输入框');
+  head.push('2. 点「校验」→ 程序按契约逐条检查（结构、枚举、必填、溯源锚）');
+  head.push('3. 校验通过后，按 `docs\\作答契约.md` 建卡入库（程序不自动入库，要过三道门禁）');
+  head.push('');
+  head.push('## 四、本机留痕（仅供排查，**不用发给 AI**）');
   head.push('');
   head.push('| 项 | 值 |');
   head.push('|---|---|');
   head.push('| 配方 | `' + id + '` v' + c.meta.version + ' |');
   head.push('| 配方指纹 | `' + c.hash + '`（提示词任何一字改动都会变） |');
-  head.push('| 学科 | ' + (valOf('--subject', '') || '（未指定）') + ' |');
   head.push('| 装载层 | ' + c.layerFiles.join(' → ') + ' → `' + id + '/prompt.md` → `' + id + '/anti-patterns.md` |');
-  if (imgSha) {
-    /* ⚠ 只写文件名 + 哈希，**不写本机绝对路径**。
-       任务单是要整段粘给 AI 的：把 `D:\...\某学生的库\...` 带进去，等于把目录结构
-       连同孩子的化名、年级、学科一起交给对方（本仓隐私红线的直接违反）。
-       溯源靠 sha256，不靠路径；本地要定位文件，用人自己看命令行参数即可。 */
-    head.push('| 原图 | `' + path.basename(imgAbs) + '`（本机完整路径不写入任务单，避免把目录结构带进 AI 会话） |');
-    head.push('| **sourceImageSha256** | `' + imgSha + '`（每条记录必须原样回填这个值） |');
-  } else {
-    head.push('| **sourceImageSha256** | ⚠ 本次未给 --image，AI 无法回填溯源字段，校验会拒收 |');
-  }
+  head.push('| 原图 | ' + (fileName ? '`' + fileName + '`（本机完整路径不写入任务单，避免目录结构进 AI 会话）' : '（未指定）'));
   head.push('');
-  head.push('## 二、交付要求');
-  head.push('');
-  head.push('1. 只输出 JSON，字段与取值遵守上文契约（尤其 `causeCode` 用 K/L/S 编码、`confidence` 必填）。');
-  head.push('2. 存成 `cards.json`，然后跑：`node src\\tools\\_配方.mjs 校验 --in cards.json --recipe ' + id + '`');
-  head.push('3. 校验过了再看 `checklist.md` 做人工抽查（那份清单不是给 AI 看的，是给你看的）。');
-  head.push('');
-  head.push('## 三、任务指令');
   head.push('');
   head.push(c.text);
   head.push('');

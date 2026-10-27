@@ -233,6 +233,33 @@ console.log('\n══ 五、组装：原图路径按库根解析（用户实测�
 
   /* 指纹里必须含 sha256（溯源锚），且两次一致 */
   A('组装产物带 sourceImageSha256', /[0-9a-f]{64}/.test(okRelSlash.stdout || ''), '');
+
+  /* ══ 任务单是「交给别人家 AI」的文档。2026-10-27 用户拿第一版去问 WorkBuddy，对方直接拒绝执行。
+     三处缺陷逐条钉住 —— 这些断言比「能生成」重要：生成得出来但交不出去，等于没有。 ══ */
+  const ticket = okRelSlash.stdout || '';
+  const iAiSec = ticket.indexOf('## 二、任务指令');
+  const iBack = ticket.indexOf('## 三、回来之后');
+  A('任务单分「给 AI 的」与「给人/本机的」两段', iAiSec > 0 && iBack > iAiSec, 'AI段@' + iAiSec + ' 回来之后@' + iBack);
+
+  /* 缺①：sha256 必须在「给 AI 的那一段」里 —— 否则用户只复制那一段，AI 拿不到值，只能编或拒 */
+  const iShaInTicket = ticket.indexOf('sourceImageSha256');
+  A('★ sha256 位于「任务指令」段内（AI 才拿得到）', iShaInTicket > iAiSec && iShaInTicket < iBack,
+    'sha@' + iShaInTicket + ' 区间[' + iAiSec + ',' + iBack + ')');
+
+  /* 缺②：不许让接收方 AI 执行我们的命令/访问路径（它在另一个程序里，没有这个仓库） */
+  A('★ 任务单不含要求对端执行的 node 命令', !/node\s+src[\\/]/i.test(ticket) && !/node\s+\S*_配方\.mjs/.test(ticket), '');
+  A('★ 任务单明确"不需要运行命令/访问路径"', /不需要运行任何命令/.test(ticket), '');
+
+  /* 缺③：附件必须被摆在第一位，且告诉用户去哪找 */
+  A('★ 任务单第一件事就是"把照片作为附件发出去"', /先把这张照片作为附件发出去/.test(ticket), '');
+  A('★ 任务单告诉用户去哪找这张图', /打开收件箱文件夹/.test(ticket), '');
+  A('★ 任务单提醒要发原图不要发缩略图', /不要发微信\/相册里的缩略图/.test(ticket), '');
+
+  /* 止损：漏发图时 AI 应当停手，而不是编造 */
+  A('★ 任务单含"没看到图片就停下"的止损指令', /我没有看到图片/.test(ticket) && /然后停下/.test(ticket), '');
+
+  /* 本机留痕段必须明确标注"不用发给 AI" */
+  A('本机留痕段标注"不用发给 AI"', /本机留痕[\s\S]{0,60}不用发给 AI/.test(ticket), '');
 }
 
 console.log('\n══ 六、指纹（改了内容必须变，否则无法追版本）══');{
