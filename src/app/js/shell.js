@@ -123,7 +123,7 @@
        现在的唯一生产者是 Node 的 生成状态.mjs（见该文件头注释）。照旧文案去修只会白跑一趟。
        影响描述也改成"分两档说清"：门禁类缺口才影响准入；原卷溯源缺了只影响溯源，不影响能不能入卷。 */
     const gateKeys = bad.filter(b => M.MISS_PARTITIONS.includes(b.key)).length;
-    el.innerHTML = '⚠ <b>数据源读取降级</b>，以下项目读不到（<b>不是通过了，是没读到</b>）：' +
+    el.innerHTML = '⚠ <b>数据源读取降级</b>，以下项目读不到（<b>不是通过了，是读不到</b>）：' +
       U.esc(M.healthText()) +
       '<div class="hb-sub">' +
       (gateKeys ? '影响：组卷/复习流的准入判定会退回兜底口径（比工具松），入账时可能被工具拒。' : '') +
