@@ -541,6 +541,10 @@ textarea{width:100%;resize:vertical;min-height:64px;line-height:1.7}
   html{font-size:14px}
   .sheet{page-break-after:always;break-after:page}
   .sheet:last-child{page-break-after:auto}
+  /* 2026-10-27 修（用户实测 P20261027-01：M0111 题干被劈成两页，下一页以半截题干「a 依次取…」开头）：
+     一题不许从中间断页——题头+题干+答题区是一个不可拆的阅读单元。
+     一题真高于一整页时浏览器会自然放弃 avoid，不会截尾。 */
+  .sheet .q{page-break-inside:avoid;break-inside:avoid}
   @page{margin:14mm 16mm}
 }
 /* 试卷纸面（屏幕上也预览成纸张样） */
@@ -563,8 +567,24 @@ textarea{width:100%;resize:vertical;min-height:64px;line-height:1.7}
    打印态不需要另写规则：屏幕这几条本就生效，@media print 里 .sheet 的内边距保持原样不动。 */
 .sheet .q-stem img,.sheet .stem img,.sheet .stem-figure img{max-width:100% !important;height:auto}
 .stembox img{max-width:100% !important;height:auto}
-.sheet .q-stem table{border-collapse:collapse}
+.sheet .q-stem table{border-collapse:collapse;max-width:100%}
 .sheet .q-stem th,.sheet .q-stem td{border:1px solid #333;padding:2px 12px;text-align:center}
+/* ⚠ 2026-10-27 修（用户实测 P20261027-01：M0111 生物园填表右侧两列被裁掉，孩子没格可填）——
+   headless 实测全库 452 张卡，纸面内容宽只有 635px，三类元素比纸宽：
+   ① 表格里的空位被 applySlotWidths 按答案撑到行内 min-width:14.3em（≈238px）×6 列
+      ⇒ 表格 1351px（M0111；答案带注解不违反答案册逐空口径——错的是把注解宽度修进卷面格）；
+   ② 无空位的宽表（M0066 乘方 8 列，757px）超出 122px，末列裁边；
+   ③ 题干内联 <svg> 自带像素 width（640~1120px，物理/化学 45 张卡）——10-12 修过 <img>，svg
+      没进那批选择器 ⇒ 右缘一律被裁 5~485px。
+   修法（都在渲染层，不碰任何卡片数据）：
+   ①② 表格封顶 max-width:100%（列宽由内容自行分配）；表内空位宽改由**格子**决定——
+      td 本身就是答题格，横线贴格子走：min-width 清零必须 !important 才压得过行内 style，
+      width 取格宽减去 .blank 自带 2×3px margin（含 2px 余量）。
+   ③ svg 与 img 同规：viewBox 提供内蕴比例，max-width:100% + height:auto 等比缩放；
+      .stembox（抽屉侧同一份 stemHtmlSafe 输出）按 F-26 同例补上。 */
+.sheet .q-stem table .blank{min-width:0 !important;max-width:100%;width:calc(100% - 8px)}
+.sheet .q-stem svg,.sheet .stem svg,.sheet .stem-figure svg{max-width:100% !important;height:auto}
+.stembox svg{max-width:100% !important;height:auto}
 .sheet .anszone{border:1px dashed #bbb;border-radius:6px;margin-top:3mm}
 .sheet .anszone.note{border:none}
 /* ---------- 填空空位（2026-10-16 修，C0008 实测「愣是没找到空在哪」）----------
