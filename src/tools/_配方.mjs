@@ -337,6 +337,14 @@ const INBOX_SKIP = new Set(['_任务单', '_已处理', '_probe']);
 function cmdInbox() {
   const root = libraryRoot();
   const inbox = path.join(root, '_收件箱');
+  /* ★ 2026-10-27：缺了就建。起因——发布包里只有 数据\先看这里.txt，**没有 _收件箱**，
+     而录题页告诉用户"把照片放进 _收件箱\<批次>\"，用户照着去找发现根本没有这个文件夹。
+     这个目录本来就归本工具管（只有它读它），由它负责建最合适。
+     只建一层空目录，不写任何数据文件，因此不违反"工具不写用户库"那条（没有任何真源被改动）。 */
+  let ensured = false;
+  if (!isDir(inbox)) {
+    try { fs.mkdirSync(inbox, { recursive: true }); ensured = true; } catch { /* 无权限就照常报空 */ }
+  }
   const batches = [];
   if (isDir(inbox)) {
     for (const name of fs.readdirSync(inbox).sort()) {
@@ -377,10 +385,10 @@ function cmdInbox() {
   const total = batches.reduce((n, b) => n + b.files.length, 0);
 
   if (JSON_OUT) {
-    process.stdout.write(JSON.stringify({ ok: true, root, inboxRel: '_收件箱', batches, total }) + '\n');
+    process.stdout.write(JSON.stringify({ ok: true, root, inboxRel: '_收件箱', batches, total, created: ensured }) + '\n');
     return 0;
   }
-  console.log('收件箱：' + inbox);
+  console.log('收件箱：' + inbox + (ensured ? '（刚为你建好）' : ''));
   if (!total) {
     console.log('（空）把错题照片按批次放进 _收件箱\\<批次名>\\，再回到程序里选它。');
     return 0;

@@ -47,6 +47,9 @@
   M.GATE_NAME = {
     admit: '组卷准入（盲解 + 答案来源）', blindFresh: '盲解指纹新鲜度',
     figState: '配图门禁', pending: '待办台账', data: '题库数据',
+    /* 2026-10-27 补：原卷溯源台账也会进 dataHealth，但这里原先没有中文名 ⇒
+       红条上直接显示英文键名（「origPage：…」），用户看不懂那是哪个门禁。 */
+    origPage: '原卷溯源台账', papers: '组卷台账',
   };
   M.MISS_PARTITIONS = ['blindFresh', 'figState', 'admit'];
   M.health = { raw: {}, bad: [], ok: true };

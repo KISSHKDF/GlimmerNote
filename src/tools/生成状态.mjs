@@ -220,9 +220,20 @@ const dataHealth = {
   admit: (admit && typeof admit.admit === 'object') ? 'ok' : '准入输出缺 .admit',
   pending: (pend && Array.isArray(pend.items)) ? 'ok' : '待办门禁输出缺 .items',
 };
-/* 原卷溯源台账：读不到就显式降级（否则界面会显示"全部未定位"，看着像数据丢了） */
+/* 原卷溯源台账：读不到就显式降级（否则界面会显示"全部未定位"，看着像数据丢了）
+ *
+ * ⚠ 2026-10-27 修（用户拿发布包在干净电脑上首次启动，第一眼就是一条红条）：
+ *   判据原先是"台账没内容就报降级"，于是**全新空库必然报红** —— 刚解压、还没录过一道题，
+ *   当然没有 _原卷台账.json。用户看到的是「数据源读取降级 / 门禁处于放行态」，
+ *   以为是数据坏了，实际是**还没开始用**。
+ *   降级的定义是「本该有、却读不到」，所以门槛必须挂在**有没有卡**上：
+ *     · 库里有卡 + 台账缺失 ⇒ 真降级（溯源链断了，界面会显示全部未定位）
+ *     · 库里有卡 + 台账解析失败 ⇒ 真降级（文件坏了）
+ *     · 库里没卡 ⇒ 正常（new install），不报
+ *   解析失败这一条不看卡数：文件存在却解析不了，任何时候都是问题。 */
+const totalCardsNow = data.reduce((n, s) => n + s.subjects.reduce((m, x) => m + x.items.length, 0), 0);
 if (ORIG === null) dataHealth.origPage = '_原卷台账.json 解析失败';
-else if (!Object.keys(ORIG).length) dataHealth.origPage = '缺 _原卷台账.json（原卷溯源不可用）';
+else if (!Object.keys(ORIG).length && totalCardsNow > 0) dataHealth.origPage = '缺 _原卷台账.json（原卷溯源不可用）';
 
 /* ══════════════ 4) 组卷台账 → papers[] ══════════════ */
 

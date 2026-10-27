@@ -119,10 +119,17 @@
     if (!bad.length) { el.hidden = true; el.innerHTML = ''; document.documentElement.removeAttribute('data-health-bad'); return; }
     el.hidden = false;
     document.documentElement.setAttribute('data-health-bad', '1');
-    el.innerHTML = '⚠ <b>数据源读取降级</b>，以下门禁当前处于「放行」态（<b>不是通过了，是读不到</b>）：' +
+    /* 2026-10-27 修：修法文案原先写「重跑 node _生成首页.ps1」—— 那是已退役的 PowerShell 生成器，
+       现在的唯一生产者是 Node 的 生成状态.mjs（见该文件头注释）。照旧文案去修只会白跑一趟。
+       影响描述也改成"分两档说清"：门禁类缺口才影响准入；原卷溯源缺了只影响溯源，不影响能不能入卷。 */
+    const gateKeys = bad.filter(b => M.MISS_PARTITIONS.includes(b.key)).length;
+    el.innerHTML = '⚠ <b>数据源读取降级</b>，以下项目读不到（<b>不是通过了，是没读到</b>）：' +
       U.esc(M.healthText()) +
-      '<div class="hb-sub">影响：组卷/复习流的准入判定会退回兜底口径（比工具松），入账时可能被工具拒。' +
-      '修法：重跑 <code>node _生成首页.ps1</code>；详见 <code>_状态.json</code> 的 <code>dataHealth</code>。</div>';
+      '<div class="hb-sub">' +
+      (gateKeys ? '影响：组卷/复习流的准入判定会退回兜底口径（比工具松），入账时可能被工具拒。' : '') +
+      (gateKeys ? '' : '影响：数据仍可用，但相关判据在界面上不生效，别把它当成"全部正常"。') +
+      '修法：在程序里点右上角「重读数据」，或重跑 <code>node 生成状态.mjs</code>；' +
+      '详见 <code>_状态.json</code> 的 <code>dataHealth</code>。</div>';
   }
 
   /* ================= 主题 ================= */
