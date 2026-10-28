@@ -127,6 +127,29 @@ powershell -File scripts\install-hooks.ps1
 **不触发任何钩子**，所以本地**无法**用钩子拦住历史改写——真正的不可改写保证只能来自
 托管平台的分支保护（见 `docs\治理与架构.md §三 N1`）。本地能做的只有：文档纪律 + `pre-push` 拦强推。
 
+### ⚠ 钩子的一个真实盲区（2026-10-29 踩到）
+
+**`pre-commit` 校验的是"工作区"，不是"将要提交的索引内容"。** 所以下面这个顺序会**把未校验的内容提交进去**：
+
+```powershell
+git add -A          # ← 此刻的内容进了索引
+# ……然后你又改了一个文件（比如修掉刚发现的敏感词）……
+git commit          # ← 钩子校验的是改好的工作区，提交的是索引里那份旧的
+```
+
+**实测后果**：一次内部根名脱敏回归就是这样漏进 HEAD 的——工作区已干净、钩子全绿，而 `HEAD` 那个文件里
+仍留着 4 处内部根名；只有把工作区改动 stash 掉再对 HEAD 跑 `tests\repo-hygiene.cjs`，才复现出红。
+
+**规矩**：**任何一次 `git add` 之后再改文件，必须再 `git add` 一次**（或提交前统一 `git add -A`）。
+自查办法（提交后立刻验 HEAD，而不是验工作区）：
+
+```powershell
+# 对 HEAD 而不是工作区跑门禁（stash 掉未提交改动即可）
+git stash push --quiet
+node tests\repo-hygiene.cjs
+git stash pop --quiet
+```
+
 ## 六、提交前自检
 
 ```powershell

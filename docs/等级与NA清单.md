@@ -142,21 +142,22 @@
 
 ```powershell
 # 0) 基线（应无输出 = 工作区干净）
-git -C <仓库根> status --porcelain
-git -C <仓库根> rev-parse HEAD
+git status --porcelain
+git rev-parse HEAD
 
-# 1) 这份声明的数字从哪来
-node <审计工作目录>\tally.mjs
-#    另可用逐条小节行正则交叉核对：
-#    Select-String -Path <报告> -Pattern '^#{2,3}\s+((?:[A-L]|SC|X)-\d+)\s*·\s*(PASS|FAIL|N/A|UNK)'
-
-# 2) 每条判据的原始证据
-#    <审计工作目录>\reports\R2-{A-repo,B-build,C-sec,D-docs,E-code}.md
-
-# 3) 本轮整改是否真的落地（见 CHANGELOG 对应条目）
+# 1) 本轮整改是否真的落地
 node tools\lint.mjs
 node tests\run.mjs fixture
 node tests\run.mjs quick
+
+# 2) 逐条判据的证据强度：看各域计数表与每条的"判定命令 + 逐字输出"是否都写全了
+#    （本表的来源是那轮审计的五份报告，见下方说明）
 ```
+
+**关于证据出处（诚实说明）**：上表的数字来自 2026-10-29 那轮工程审计的**五份域报告**
+（`R2-A-repo` / `R2-B-build` / `R2-C-sec` / `R2-D-docs` / `R2-E-code`）。
+那批报告与预注册判据表是**维护者本机的审计存档，不随本仓库分发**——公开仓库里只有这份**结论汇总**。
+所以本表的用法是：**当作待验证的清单，而不是当作权威**。要推翻其中任何一条，按 `CHANGELOG.md`
+里 `2026.10.29.01` 条目列出的命令自己去跑一遍；跑出来的结果与这里不符时，**以你跑出来的为准**。
 
 **诚实边界**：本声明只覆盖 2026-10-29 那一轮 138 条判据的实测结果。**L3 条款一律 N/A 不等于"没做"**——其中 B-08 与 J-08 实际已做。**任何一条 PASS 都可以被推翻**：请按上面第 2 步读原始输出，而不是相信本表的结论列。
