@@ -41,7 +41,8 @@
 并核对写出的值**真的过准入判据**，以及「同步双路」幂等（第二次跑文件逐字节不变）。
 **已做变异自证**：掏掉「不覆盖」那条规则 → 用例当场红 3 条，且工具逐字节还原
 （`work\gn-as-autofill-20261028\mutation-check.mjs`）。
-`node tests\run.mjs quick` → **门禁全绿（用时 173s）**。
+`node tests\run.mjs quick` → **门禁全绿**（代码改完那次 173s；`build-release.ps1` 修完再跑一次 159s，
+新用例两次都是 27/27）。
 
 ### 提示不再张冠李戴（`src\app\js\views\paper.js`）
 
