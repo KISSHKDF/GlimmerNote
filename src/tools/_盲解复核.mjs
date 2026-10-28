@@ -26,6 +26,11 @@
  *   本文件是**唯一写入入口**；_索引.json 的 blindStatus 存**合成后**的准入态，消费方（组卷门禁、
  *   首页徽章）零改动即可正确拦截「待双路」。
  *
+ *   2026-10-28 起：录入/批量 与 迁移双路/同步双路 落结论时**顺带补 answerSource**——
+ *   「两路都通过、两路指纹相等」在契约里就是「独立判卷」，而准入判据要的正是这个字段；
+ *   此前没人写它，导致不走配方建卡的批次永久欠账。只补字段缺失/空串的卡，
+ *   **已有非空值（人工判断）一律不覆盖**，详见 fillAnswerSource 的注释。
+ *
  * 用法（node _盲解复核.mjs <动作> [参数]）：
  *   清稿   [--student 学生B] [--subject 数学] [--all] [--ids M0001,M0002]
  *          → 生成无答案清稿 <库根>\_盲解\<学生>-<学科>-盲解清稿.md
@@ -86,6 +91,48 @@ function composeStatus(l) {
  *  v2（含图形）实现见下方 `fingerprint()`——那才是新记录使用的。 */
 const fingerprintV1Legacy = text => crypto.createHash('sha256').update(String(text).replace(/\s+/g, ' ').trim(), 'utf8').digest('hex').slice(0, 12);
 const blindVerified = it => VERIFIED.includes(it.blindStatus) && !!it.blindFingerprint;
+
+/* ---------- 答案来源顺带补录（2026-10-28） ----------
+ * 为什么放在这里：盲解两路都是「不带录入上下文、独立解题，结果与索引 answer 一致」，
+ * 这在取值契约 `recipes/_core/base.md` 的取值表里就是「独立判卷」。但本工具从建起只写
+ * blindStatus / blindSolver / blindNote / blindFingerprint，**从不碰 answerSource**；
+ * 而 `_标记复习.mjs` 的准入判据要求 answerSource 有非红笔第二来源
+ * （`_标记复习.mjs:426-430` 是该判定的唯一实现）⇒ 凡不走配方建卡、事后也没人工补的批次，
+ * 这笔账就永久挂着。2026-10-28 实测：一个学生库里 96 张被准入拦在组卷池外，
+ * 逐张查下来**盲解全部已过**，缺的只是没人把「独立判卷」这四个字写回去。
+ *
+ * 边界（**宁可不写，也不猜**）——任何一条不满足即返回 null：
+ *   ① 只补「字段不存在 或 值为空串」的卡。**已有非空值代表人工下过判断**
+ *      （实测样本：某卡 M0029 的「仅红笔」——卷面印刷数值无法辨认，人工刻意留待定案）。
+ *      它没过程序判据，不等于它错；机器无权静默推翻一个人的判断。
+ *   ② 必须**两路都通过**、且**两路指纹非空且相等**。只跑一路不写：那还可能是解题者自己错
+ *      （这正是本工具 v2.5 「双路才准入」那条铁律的由来）。
+ *   ③ 只写与准入判据同前缀的词。红笔不是来源（base.md 第 13 条），绝不臆造
+ *      「老师批改」这类会被门禁拒、又无法指着证据复核的值。
+ */
+const AS_PREFIX_OK = ['独立判卷', '老师定案', '官方答案'];
+const AS_EXACT_OK = ['红笔订正+官方答案页核对'];
+function answerSourceOk(it) {
+  const s = String((it && it.answerSource) || '').trim();
+  return !!s && (AS_PREFIX_OK.some(p => s.startsWith(p)) || AS_EXACT_OK.includes(s));
+}
+function fillAnswerSource(it, rec, { dry = false } = {}) {
+  if (!it || !rec) return null;
+  const l1 = rec.lane1, l2 = rec.lane2;
+  if (!l1 || !l2) return null;                                                                    // ② 只跑了一路
+  if (!VERIFIED.includes(l1.verdict) || !VERIFIED.includes(l2.verdict)) return null;
+  const fp1 = String(l1.fp || ''), fp2 = String(l2.fp || '');
+  if (!fp1 || !fp2 || fp1 !== fp2) return null;                                                   // ② 两路指纹
+  if (answerSourceOk(it)) return null;                                                            // 已是合法值
+  if (Object.prototype.hasOwnProperty.call(it, 'answerSource') && String(it.answerSource).trim() !== '') return null;   // ① 人工值
+  const hasThird = /第三路/.test(String(l1.solver || '') + String(l2.solver || ''));
+  const value = hasThird ? '独立判卷（双路盲解×2＋第三路独立复核一致）' : '独立判卷（双路盲解×2 一致）';
+  /* 注记要能指着它复核：两路各自的日期/解题者 + 指纹。solver 自带日期时不再前缀（免重复）。 */
+  const side = (l, n) => { const at = String(l.at || '?'), sv = String(l.solver || '?'); return sv.startsWith(at) ? sv : at + ' 第' + n + '路（' + sv + '）'; };
+  const note = (side(l1, 1) + ' 与 ' + side(l2, 2) + ' 无上下文独立解题，均与录入答案一致，指纹 ' + fp1).slice(0, 480);
+  if (!dry) { it.answerSource = value; it.answerSourceNote = note; }
+  return value;
+}
 
 const argv = process.argv.slice(2);
 const action = argv[0];
@@ -226,9 +273,9 @@ function originalFromRecord(dirAbs) {
   return out.join(' ').trim();
 }
 
-/** 台账（真源）→ 索引 blindStatus（派生缓存）的同步；返回 {changed, drift} */
+/** 台账（真源）→ 索引「盲解派生字段」（blindStatus 缓存 + answerSource 补录）；返回 {changed, drift, srcFilled} */
 function syncIndexFromLanes(lanes, { dry = false } = {}) {
-  let changed = 0, drift = 0;
+  let changed = 0, drift = 0, srcFilled = 0;
   for (const f of indexFiles(ROOT)) {
     const j = readJson(f);
     let touched = false;
@@ -242,10 +289,11 @@ function syncIndexFromLanes(lanes, { dry = false } = {}) {
         if (!dry) { item.blindStatus = want; touched = true; }
         changed++;
       }
+      if (fillAnswerSource(item, l, { dry })) { srcFilled++; if (!dry) touched = true; }
     }
     if (touched) { j.updatedAt = today(); writeJson(f, j); }
   }
-  return { changed, drift };
+  return { changed, drift, srcFilled };
 }
 
 /* ---------- 动作 ---------- */
@@ -381,7 +429,10 @@ switch (action) {
         + (composed === '待双路' ? ' ｜ 另一路未跑，禁止组卷' : '');
       it.blindFingerprint = fp;
       it.blindFingerprintVer = 2;
-      log.push(`   ${id} ${lane} → ${st} ｜ 合成=${composed}  fp=${fp}`);
+      /* 顺带补 answerSource（见 fillAnswerSource 注释）：只补字段缺失/空串的卡，已有值一律不动 */
+      const asVal = fillAnswerSource(it, rec);
+      log.push(`   ${id} ${lane} → ${st} ｜ 合成=${composed}  fp=${fp}` +
+        (asVal ? ` ｜ 顺带补 answerSource=${asVal}` : ''));
     }
     /* 2026-10-23：多索引下"哪些文件要回写"不再唯一 —— 只回写本次实际改到的卡所属文件，
        且必须写回**已解析的那个对象**（docs[f]），否则改动落在副本上、静默丢写。 */
@@ -446,7 +497,8 @@ switch (action) {
     if (opt.dry) { console.log(`[dry] 将迁移 ${n} 条（已存在 ${skipped} 条）`); break; }
     saveLanes(lanes);
     const sync = syncIndexFromLanes(lanes);
-    console.log(`已迁移 ${n} 条单路结论进 lane1（跳过 ${skipped} 条已存在）→ 索引态同步 ${sync.changed} 条，现为「待双路」`);
+    console.log(`已迁移 ${n} 条单路结论进 lane1（跳过 ${skipped} 条已存在）→ 索引态同步 ${sync.changed} 条，现为「待双路」` +
+      (sync.srcFilled ? `；顺带补 answerSource ${sync.srcFilled} 条` : ''));
     console.log('下一步：跑第 2 路（清稿 --lane 2 → 独立解题 → 批量 --lane 2），两路一致才恢复「已通过」');
     break;
   }
@@ -454,7 +506,8 @@ switch (action) {
   case '同步双路': {
     const lanes = loadLanes();
     const r = syncIndexFromLanes(lanes, { dry: !!opt.dry });
-    console.log(`${opt.dry ? '[dry] ' : ''}台账→索引同步：${r.changed} 条需要改（其中涉及"已通过↔其它"的漂移 ${r.drift} 条）`);
+    console.log(`${opt.dry ? '[dry] ' : ''}台账→索引同步：${r.changed} 条需要改（其中涉及"已通过↔其它"的漂移 ${r.drift} 条）` +
+      (r.srcFilled ? `；顺带补 answerSource ${r.srcFilled} 条（只补字段缺失/空串的卡，已有值不动）` : ''));
     break;
   }
 

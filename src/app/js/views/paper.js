@@ -92,7 +92,17 @@
         mode = 'preview'; S.render(); return;
       }
       const refs = now;
-      if (!refs.length) return S.toast('篮里没有可组卷的题（都未过盲解？）', 'warn');
+      /* ⚠ 2026-10-28：这里原先写死一句「（都未过盲解？）」——实测抓到打脸场景：某个学生库里
+         10 张卡**盲解全部已过**，被拦的是「答案来源」那道门，而用户只看到"盲解"两个字。
+         照着这句去逐题核对盲解，只会越核对越糊涂（与 2026-10-25 那次同族：把一类原因
+         说成另一类）。现在按真实构成分三种话说，并直接引用门禁给出的人话理由。 */
+      if (!refs.length) {
+        if (!basket.length) return S.toast('篮子是空的，先去「题库浏览」勾题', 'warn');
+        const why = M.admitWhy(blocked[0] && blocked[0].card);
+        const ids = blocked.map(x => x.card.id);
+        return S.toast('篮里 ' + basket.length + ' 题全没过准入' + (why ? '（' + why + '）' : '') +
+          '，见上方黄条 · ' + ids.slice(0, 6).join('、') + (ids.length > 6 ? '…' : ''), 'warn', 9000);
+      }
       if (U.$id('ppInter').checked) shuffleWithin(refs);
       sheet = { title: U.$id('ppTitle').value.trim() || defTitle, refs, form: U.$id('ppForm').value, ans: U.$id('ppAns').checked };
       mode = 'preview'; S.render();
