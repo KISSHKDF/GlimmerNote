@@ -90,9 +90,19 @@ if (fs.existsSync(idxPath)) {
     let updated = false;
     if (grade && String(cur.grade || '') !== grade) {
       /* 只补/改年级，绝不动 subjects（那是人家的题库） */
+      const prevGrade = String(cur.grade || '');
       cur.grade = grade;
       cur.updatedAt = new Date().toISOString();
-      try { writeJsonAtomic(idxPath, cur, { backup: false }); updated = true; } catch { /* 补年级失败不致命 */ }
+      /* ★ 2026-10-29（R2 审计 D-05）：写盘失败**必须说失败**，不许吞。
+         改前 catch 掉之后：① 人读文案说"无需重复创建"（读起来像本来就对）；
+         ② JSON 回 ok:true 且 grade 是**内存里改过、磁盘上没有**的值 ⇒ 自动化据此认为年级已生效；
+         ③ 退出码 0。三方一致地讲成功。写盘失败是真实可能的（Windows 上目标被占用正是
+         writeJsonAtomic 设计 renameWithRetry 的原因），所以这里退化为"如实报错 + 回滚内存值"。 */
+      try { writeJsonAtomic(idxPath, cur, { backup: false }); updated = true; }
+      catch (e) {
+        cur.grade = prevGrade;                    // 别把没落盘的值回显出去
+        die('补年级失败：' + e.message + '（磁盘上的年级仍是「' + prevGrade + '」，未改动）', 1);
+      }
     }
     if (JSON_OUT) {
       process.stdout.write(JSON.stringify({

@@ -1,6 +1,7 @@
 # 拾光小册（GlimmerNote）
 
-> **完全离线、数据全留在本机的错题本工具。** 不联网、不上传、不收集任何信息。
+> **完全离线、数据全留在本机的错题本工具。** 运行时不与任何外部服务通信：不上传、不收集、无遥测。
+> 联网的**精确边界**（含构建期与第三方运行时）见 [联网情况](#联网情况分阶段可对证)——说不清的地方不硬说。
 > 本仓库是**开发区**（唯一代码真源）。运行区另有目录，只装产物，不装源码。
 
 ## 它解决什么问题
@@ -36,7 +37,7 @@
 |---|---|---|
 | 操作系统 | **Windows 10 1809+ 或 Windows 11**（64 位） | 桌面壳依赖 WebView2 |
 | **WebView2 运行时** | **必须安装**：Evergreen Runtime | 多数 Win11 已内置；Win10 若提示缺组件，装 [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) 即可 |
-| 磁盘空间 | **≥ 2 GB** 可用 | 程序约 2 MB（内置 Node 后约 30 MB）；题库含扫描图，按每张 200 KB～1 MB 估算 |
+| 磁盘空间 | **≥ 2 GB** 可用 | 发行包约 **38 MiB**；解压后 `app\` 约 **102 MiB**，其中内置的 `node.exe` 占 **99.9 MiB**，程序本体（除 `node.exe` 外）约 **2 MiB**。题库含扫描图，按每张 200 KB～1 MB 估算 |
 | Node.js | **发行包内已内置** | 最终用户**不需要**安装 Node.js——包里的 `app\node.exe` 就是它。从源码构建或跑门禁才需要装 **≥ 18** |
 | 浏览器 | 不需要 | 程序自带桌面壳，不依赖系统浏览器 |
 
@@ -44,10 +45,14 @@
 
 ## 获取
 
+> ⚠ **本仓尚未发布到公共托管**（`git remote -v` 为空即表示这一点）。发行包目前只由维护者在本机用
+> `scripts\build-release.ps1` 产出到 `release\`（该目录按 `.gitignore` 不入 git）。
+> 下面的下载方式在**发布之后**成立；发布流程与前置清单一并写在 `scripts\setup-remote.ps1` 的收尾提示里。
+
 发行包通过 **GitHub Releases** 提供。本仓**不含**打包产物（`release\` 被 `.gitignore` 挡住），
 要从源码自己出包见下文「常用命令」：
 
-- 每个版本一个文件：`GlimmerNote-<版本>-win-x64.zip`（版本形如 `2026.10.24.02`）
+- 每个版本一个文件：`GlimmerNote-<版本>-win-x64.zip`（版本形如 `2026.10.28.01`）
 - 同目录有 `.sha256` 校验文件，**下载后请先校验再解压**：
 
 ```powershell
@@ -59,13 +64,17 @@ Get-Content .\GlimmerNote-<版本>-win-x64.zip.sha256
 
 解压后运行 `app\` 目录里的 **`拾光小册.exe`** 即可，**绿色免安装**，无需管理员权限。
 
-> **为什么包有 38 MB**：程序本体只有 0.2 MB，另 38 MB 是**内置的 Node.js**（`app\node.exe`）。
+> **为什么包这么大**：`app\node.exe` 一个文件解压后就有 **99.9 MiB**（压缩后构成发行包的主体）；
+> 桌面壳 `拾光小册.exe` 本体只有 **0.2 MB** 量级，`app\` 里除 `node.exe` 之外的全部文件合计约 **2 MiB**。
 > 本程序的写盘动作（新建学生／组卷／批改／待办办结）由 `app\tools\` 里的 .mjs 工具完成，
 > 桌面壳按名字调用 `node.exe`。把它放在程序同目录，程序就能自己找到——**你不用装 Node，也不用联网**。
 > 内置版本与 SHA256 见包内 `内置Node说明.txt`，许可见 `node-LICENSE.txt`。
-> 想自己检查这一点：任何一个 19 个工具都只用 Node 内置模块，没有 `node_modules`。
+> 想自己检查这一点：`src\tools\` 下的所有 `.mjs` 工具都只用 Node 内置模块，没有 `node_modules`。
 
 ## 反馈
+
+> ⚠ 与「获取」同因：本仓尚未发布到公共托管，**下面的入口在发布之后才可达**。
+> 发布前如需报告问题，请直接在维护者可见的渠道说明（本仓不公布个人邮箱，理由见 `docs\治理与架构.md §一`）。
 
 - **发现 BUG / 想提需求**：请开 [Issue](../../issues)，按模板填（模板会问版本号、复现步骤、期望结果）。
 - 提问前建议先看 [常见问题](#常见问题faq)。
@@ -98,7 +107,7 @@ node tests\run.mjs fixture
 powershell -File scripts\build-release.ps1
 
 # 部署到运行区（只替换 app\，数据\ 全程不碰）
-powershell -File scripts\deploy.ps1 -Zip release\GlimmerNote-2026.10.24.02-win-x64.zip
+powershell -File scripts\deploy.ps1 -Zip release\GlimmerNote-<版本>-win-x64.zip
 
 # 看部署历史
 powershell -File scripts\rollback.ps1 -List
@@ -107,7 +116,7 @@ powershell -File scripts\rollback.ps1 -List
 powershell -File scripts\rollback.ps1
 
 # 退回指定版本
-powershell -File scripts\rollback.ps1 -Version 2026.10.24.01
+powershell -File scripts\rollback.ps1 -Version <版本>
 
 # 流水线自检（回滚演练，不动真实运行区）
 powershell -File scripts\selftest-pipeline.ps1
@@ -138,13 +147,16 @@ node src\tools\_配方.mjs 自检 --recipe ingest-single --in cards.json
 
 | 档 | 命令 | 需要什么 | 干净克隆能跑吗 |
 |---|---|---|---|
-| **零依赖自检** | `node tests\run.mjs fixture` | 只要 Node ≥18 | **能，约 3 秒 exit 0** |
-| 全量单元+界面 | `node tests\run.mjs quick` | 已构建的 `src\app\拾光小册.exe` + 真实题库影像 | 不能，要先补齐 |
+| **零依赖自检** | `node tests\run.mjs fixture` | 只要 Node ≥18 | **能**，数秒内 exit 0（本机实测约 6 s；数字随机器变，别当硬指标） |
+| 全量单元+界面 | `node tests\run.mjs quick` | 已构建的 `src\app\拾光小册.exe` + 一个题库 | 不能，要先补齐 |
 | 发版前 | `node tests\run.mjs full` | quick + 重编 + 带调试口重启 | 不能，要先补齐 |
 
 **三步补齐**：
 
 ```powershell
+# 0) 让 git 用版本化钩子（克隆不会带钩子，所以这一步不能省）
+powershell -File scripts\install-hooks.ps1
+
 # 1) 零依赖自检（立刻可跑）
 node tests\run.mjs fixture
 
@@ -156,6 +168,11 @@ powershell -File src\shell\build.ps1
 $env:CTB_TEST_LIB = 'D:\你的题库目录'
 node tests\run.mjs quick
 ```
+
+> **关于第 0 步**：`.git/hooks/` 天生不入库，所以"开发机上有钩子"不等于"新克隆有钩子"。
+> `.githooks\` 是钩子的**版本化真源**（`pre-commit` 跑 lint + fixture + 运行区漂移检查；`commit-msg` 校验提交信息格式；
+> `pre-push` 拦对 `main` 的强制推送），`install-hooks.ps1` 做的事是设 `git config core.hooksPath .githooks`
+> ——**不往 `.git/hooks/` 拷贝任何文件**（幂等，重复跑无副作用）。
 
 > 没有题库也能跑一部分：仓库自带合成库 `fixtures\库-最小\`，
 > 当检测不到真库时会自动用它（`tests\_测试环境.cjs` 的第三个候选）。
@@ -175,19 +192,31 @@ node tests\run.mjs quick
 
 ## 发版检查单
 
+**前置（只需一次）**：`powershell -File scripts\install-hooks.ps1`（把 `core.hooksPath` 指向 `.githooks\`）。
+
 1. 改 `VERSION.json` 的 `version`
-2. `CHANGELOG.md` 顶部加条目（含**升级影响**一行）
-3. 跑门禁：`node tests\run.mjs quick`（发版前 `full`）+ `node tools\lint.mjs`
+2. `CHANGELOG.md` 顶部加条目，**必须含两行**：`**变更分类**：…` 与 `**升级影响**：…`（门禁会逐版校验）
+3. 跑门禁：`node tests\run.mjs full` + `node tools\lint.mjs`（`quick` 是底线，`full` 才覆盖重编与打印链路）
 4. `powershell -File scripts\build-release.ps1`
 5. `powershell -File scripts\deploy.ps1 -Zip <刚出的包>`
 6. 自用 1~2 天
 7. `git tag -a v<版本> -m "<版本> release point"` + 推 GitHub Release
 
+**第 7 步不是可选项**：铁律 3 要求"每次发布留三样（tag / zip / SHA256）"，而本轮审计实测
+`release\` 有 30 个包、git tag 只有 2 个——**"打过包"不等于"发过版"**。查漏命令：
+
+```powershell
+# 有包但没 tag 的版本（应为空）
+$tags = git tag | ForEach-Object { $_ -replace '^v', '' }
+Get-ChildItem release\*.zip | ForEach-Object { ($_.BaseName -split '-')[1] } |
+  Where-Object { $tags -notcontains $_ } | Sort-Object -Unique
+```
+
 ## 常见问题（FAQ）
 
 **Q：数据存在哪？会上传吗？**
-A：全部在运行区的 `数据\` 目录。程序**不联网**，
-没有任何上传代码。备份就是复制这个目录。
+A：全部在运行区的 `数据\` 目录。运行时**不与任何外部服务通信**，没有任何上传代码。
+联网的完整边界（含构建期与第三方运行时）见 [联网情况](#联网情况分阶段可对证)。备份就是复制这个目录。
 
 **Q：升级会不会弄坏我的题库？**
 A：不会。部署脚本只替换 `app\`，`数据\` 在脚本层面被排除。
@@ -203,7 +232,42 @@ A：`powershell -File scripts\rollback.ps1`。回滚用的是 `release\` 里的*
 
 **Q：为什么杀毒软件报警？**
 A：程序用的是**自签证书**（不是花钱买的正规代码签名证书），所以 Windows 仍会提示"未知发布者"。
-这属预期行为；请核对 SHA256 与 Release 页面公布的一致后再放行。
+这属预期行为；请核对 SHA256 与发布页公布的一致后再放行（**发布前该页面尚不存在**，见「获取」节的状态说明）。
+
+## 联网情况（分阶段可对证）
+
+> 一句话说不清的事不硬说：**"完全离线"是运行时的性质，不是整个仓库每一行代码的性质。**
+> 下面把联网按**阶段**切开，每段给出可自己复算的检查命令。**哪一段说了假话，用命令就能抓到。**
+
+| 阶段 | 会不会出网 | 出到哪 | 怎么自己验 |
+|---|---|---|---|
+| **① 运行时**（终端用户双击 `拾光小册.exe` 使用） | **不出网**。只与本机 `127.0.0.1` 上的服务端通信（端口见 `src\tools\_服务端.mjs`） | 无 | `git grep -n -E "fetch\(|XMLHttpRequest|https?\.request|WebSocket|EventSource|sendBeacon|net\.connect|dns\." -- src` → 命中应只有 `host.js` 指向 `127.0.0.1` 的本地 fetch 与 `_服务端.mjs` 的 `listen('127.0.0.1')` |
+| **② 运行时·渲染数据里的图片路径** | **不出网**。配图路径一律按**本地相对路径**解析；渲染层对 `http(s):` 开头的路径**直接拒绝**（不加载） | 无 | `git grep -n "https\?:" -- src/app/js/host.js` 看 `H.asset` 的白名单分支；另见 `_配图门禁.mjs` 对远程路径的检查 |
+| **③ 点外部链接** | **会**。壳把 `http(s)` 链接交给**系统浏览器**打开（不是程序自己去请求） | 系统默认浏览器 | `src\shell\CTBShellV2.cs` 里 `OpenWithSystem` 的调用点 |
+| **④ 构建/发版**（只有开发者会跑） | **会**。`fetch-deps.ps1` 从 `api.nuget.org` 下载 WebView2（HTTPS）；`src\shell\build.ps1` 访问 DigiCert 取代码签名**时间戳**（HTTPS） | nuget.org / digicert.com | 两个脚本头注释各自写明；`git grep -n "https\?://" -- scripts src/shell` |
+| **⑤ 第三方运行时**（Microsoft Edge WebView2） | **不受本程序控制**。桌面壳内嵌 WebView2 渲染引擎，其自身行为由微软组件决定；本程序未对其加网络抑制开关 | 未知（微软组件自身策略） | `src\shell\CTBShellV2.cs` 里的 WebView2 初始化段 |
+
+**明确承诺（这几条是实测的，不是口号）**：
+
+- **不上传**：全仓零上传代码。
+- **不收集**：无遥测、无分析、无错误上报（`git grep -n -E "telemetry|analytics|sentry|report" -- src` 无相关命中）。
+- **数据只在本机**：唯一真源在运行区 `数据\`，写入走 `src\tools\_安全写.mjs`（临时文件 + fsync + rename）。
+
+**明确不承诺**：WebView2 运行时自身的网络行为（第 ⑤ 段）本程序管不了。若你要绝对断网，用系统防火墙/断网运行——**功能不受影响**（除第 ③ 段的外部链接）。
+
+## 严格性自评（GSE-STD v1.0）
+
+本项目的工程严格性按 [`GSE-STD 通用软件工程标准 v1.0`](docs\等级与NA清单.md) 自评：
+
+- **目标等级 = L1 + L2**（依据：公开发布给陌生人使用、单人维护）
+- **L3 非目标**：单人、无监管场景；条款逐条 N/A 并写明理由
+- **上一轮全量实测**：138 条判据 → PASS 67 / FAIL 47 / N/A 22 / UNK 2
+
+**完整声明、N/A 清单、当前阻断项、以及"标准自身的缺陷"在哪里** → [`docs\等级与NA清单.md`](docs\等级与NA清单.md)。
+**维护者与决策机制、路线（含"不做"清单）、架构高层视图** → [`docs\治理与架构.md`](docs\治理与架构.md)。
+
+> ⚠ 本仓 `L1/L2/L3` 在**配方文本**里另有含义（错因代码：分类不全 / 推理断链 / 转化不等价，见 `src\recipes\_core\cause.md`），
+> 与上面的严格性等级**无关**。看到 `L2` 先确认是哪一套——这条歧义警告本身是 GSE-STD §3 的要求。
 
 ## 铁律
 
@@ -224,13 +288,16 @@ GlimmerNotedev\
 ├─ fixtures\     假数据（测试专用，绝不含真实用户数据）
 ├─ release\      打包产物（不入 git）
 ├─ scripts\      build-release / deploy / rollback / fetch-deps / selftest-pipeline
+│                + verify-deploy（部署一致性校验）/ setup-remote（首次发布）/ install-hooks（挂门禁钩子）
+│                + make-fixture-lib / make-demo-lib / make-doc-shots / make-png（素材与截图生成）
 ├─ tests\        门禁（run.mjs 是唯一入口）
 ├─ tools\        lint 等开发工具
 ├─ docs\         文档 + docs\images\ 界面截图
-├─ 归档\          过时物料的去处（不入 git 的除外）
 ├─ VERSION.json  版本号唯一真源
 └─ CHANGELOG.md
 ```
+
+> `归档\` 只在维护者本机存在（过时物料的去处，按 `.gitignore` 不入 git），**新克隆里没有它**——这是预期，不是缺件。
 
 ### 三层各管一件事
 

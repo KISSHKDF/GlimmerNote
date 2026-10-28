@@ -1,0 +1,60 @@
+# 托管 CI：每次推送 / 每个 PR 跑"零依赖"那部分门禁
+#
+# 为什么只跑 fixture 档：
+#   quick / full 需要**已构建的桌面壳 exe** 与**一个真实题库**，托管 runner 上都没有
+#   （exe 要先联网拉 WebView2 再编壳，题库是用户私有数据）。fixture 档是专门为
+#   "干净环境、无 exe、无真库"设计的，正好是 CI 能稳定跑的那一半。
+#
+# 为什么这条 CI 值得存在（而不是仪式）：
+#   审计实测过两类缺陷**只在干净克隆里暴露、作者本机永远看不见**：
+#   ① `*.ps1` 编码与 `.gitattributes` 冲突 → 新克隆拿到的脚本语法错（21+10 个解析错）；
+#   ② `quick` 依赖真实题库的用例在无库环境下必红。
+#   本机门禁管不了这两类，因为它们的前提是"干净环境"。
+#
+# 权限：只读。本工作流不写仓库、不评论、不用 secrets、不 checkout 不可信代码。
+
+name: gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  zero-dependency-gate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 语法 / 编码 / 行尾 / 调试残留
+        run: node tools/lint.mjs
+
+      - name: 零依赖自检（不需要 exe、不需要真实题库）
+        run: node tests/run.mjs fixture
+
+      - name: 可移植性（源码里有没有写死本机路径）
+        run: node tests/portability.cjs
+
+      - name: 干净树上这些 .ps1 必须能被 PowerShell 解析
+        shell: pwsh
+        run: |
+          $bad = 0
+          Get-ChildItem -Recurse -Filter *.ps1 | ForEach-Object {
+            $err = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$err)
+            if ($err.Count -gt 0) {
+              Write-Host "::error file=$($_.FullName)::解析失败 $($err.Count) 处：$($err[0].Message)"
+              $bad++
+            }
+          }
+          if ($bad -gt 0) { throw "$bad 个 .ps1 解析失败（编码/行尾被检出环节破坏？见 CONTRIBUTING.md §五）" }
+          Write-Host "全部 .ps1 解析通过"

@@ -1,0 +1,5 @@
+{
+  "why": "本机服务端端口的唯一真源（2026-10-29 R2 SC-09/SC-07 收敛）。C# 壳读它（CTBShellV2.cs 的 ResolveSrvPort），壳再把值注入页面（window.__ctbPortDefault）与 hello 回执，前端 host.js 据此组装 serverOrigin。改端口只改这一个文件。",
+  "override": "CTB_PORT 环境变量优先于本文件 —— 只为回归用例起独立端口的实例用（tests/_测试环境.cjs），日常不要设。",
+  "default": 7187
+}

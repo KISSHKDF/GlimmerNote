@@ -1,0 +1,70 @@
+#!/bin/sh
+# 拾光小册 · commit-msg 门禁（真源：.githooks/commit-msg）
+#
+# 两件事，都是历史故障的机械化拦阻：
+#   ① 剥掉提交信息首部的 UTF-8 BOM。
+#      故障现场：用 `git commit -F <文件>` 提交带 BOM 的草稿，BOM（EF BB BF）被当成
+#      正文写进提交对象，`git log --oneline` 每条标题前都多一个不可见字符 ——
+#      检索、对账、按 subject 生成的脚本全部对不上，肉眼还看不出来。
+#   ② 校验首行形态 `type(scope): subject`，且首行 ≤ 72 个**字符**（不是字节：
+#      本项目 subject 多含中文，按字节算会把正常中文标题全判红）。
+#
+# 豁免：Merge / Revert / fixup! / squash! 开头的自动提交（git 自己生成，不适用本规约）。
+#
+# 逃生阀（仅在确有必要时人工执行，务必留痕）：
+#   git commit --no-verify
+set -eu
+
+MSG_FILE="${1:-}"
+if [ -z "$MSG_FILE" ] || [ ! -f "$MSG_FILE" ]; then
+  echo "[commit-msg] 用法：commit-msg <提交信息文件>（git 会自动传入）" >&2
+  exit 1
+fi
+
+# ── ① 剥 BOM ──
+# 用 head/od 判字节，比依赖 GNU sed 的 '\xEF' 扩展更可移植。
+if [ "$(head -c 3 "$MSG_FILE" | od -An -tx1 | tr -d ' \n')" = "efbbbf" ]; then
+  tail -c +4 "$MSG_FILE" > "$MSG_FILE.gn-nobom.$$"
+  mv "$MSG_FILE.gn-nobom.$$" "$MSG_FILE"
+  echo "[commit-msg] ① 已剥除提交信息首部的 UTF-8 BOM"
+fi
+
+# ── 取首条非空、非注释行作为 subject ──
+subject="$(sed -e '/^#/d' -e '/^[[:space:]]*$/d' "$MSG_FILE" | head -n 1 | tr -d '\r')"
+
+if [ -z "$subject" ]; then
+  echo "[commit-msg] ✖ 提交信息为空" >&2
+  exit 1
+fi
+
+case "$subject" in
+  Merge\ *|Revert\ *|fixup!\ *|squash!\ *)
+    echo "[commit-msg] ② 合并/回退/自动折叠提交，跳过形态与长度校验：$subject"
+    exit 0
+    ;;
+esac
+
+# ── ② 形态校验：type(scope): subject ──
+TYPES='feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert'
+if ! printf '%s\n' "$subject" | grep -Eq "^($TYPES)\([^()]+\)!?: .+$"; then
+  echo "[commit-msg] ✖ 首行不符合 \`type(scope): subject\`：" >&2
+  echo "             $subject" >&2
+  echo "             type ∈ {$TYPES}；scope 非空且不含括号；冒号后必须有一个空格与正文。" >&2
+  exit 1
+fi
+
+# ── ② 长度校验：按 UTF-8 码位数（字节数减去续字节 0x80–0xBF 的个数）──
+subject_tmp="$MSG_FILE.gn-subject.$$"
+trap 'rm -f "$subject_tmp"' EXIT INT TERM
+printf '%s' "$subject" > "$subject_tmp"
+bytes=$(LC_ALL=C wc -c < "$subject_tmp" | tr -d ' ')
+cont=$(LC_ALL=C tr -cd '\200-\277' < "$subject_tmp" | LC_ALL=C wc -c | tr -d ' ')
+chars=$((bytes - cont))
+if [ "$chars" -gt 72 ]; then
+  echo "[commit-msg] ✖ 首行 $chars 个字符，超过上限 72：" >&2
+  echo "             $subject" >&2
+  exit 1
+fi
+
+echo "[commit-msg] ✔ 通过（subject $chars 字符）：$subject"
+exit 0

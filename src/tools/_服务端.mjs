@@ -20,6 +20,26 @@
  *       无独立写盘（全委托既有工具）；写操作（pending/rebuild）串行化防多会话并发互踩。
  *       `GET /api/state` **只读**：pending 分区按 `_待确认.json` 的 mtime/size 判断，没变就不 spawn、不写盘（BUG-16）。
  *
+ * ★ 2026-10-29 R2 安全整改（审计 H-08，两条都是审计员用**原始 socket** 独立复现的，
+ *   逐字证据见 work\std-check\R2-20261029\reports\R2-C-sec.md §H-08）：
+ *   ① 请求入口整体进 try/catch：改前 `new URL(req.url, …)`（连同 Origin / OPTIONS 两段）在 try
+ *      **之外** ⇒ `GET //[` 这类畸形 request-target 抛 ERR_INVALID_URL，在 async handler 里就是一次
+ *      **unhandled rejection** ⇒ **整个服务进程 exit=1**（审计实测 8 种 target 全部打挂；浏览器侧
+ *      `new URL("http://127.0.0.1:7187//[")` 是**合法**的，pathname 正是 `//[`，所以本机网页能构造）。
+ *      现在畸形 target 回 400；另加 `process.on('unhandledRejection')` 作第二道网（只记日志，不掩盖）。
+ *   ② 静态文件在读盘**前**解析重解析点：改前判据是纯字符串前缀比较（`path.normalize` **不解析**
+ *      NTFS junction / symlink），而 `fs.readFile` **会跟随**它 ⇒ 库内 `link → C:\Windows` 时
+ *      `GET /link/win.ini` 返回 200 读出库外文件。现在对 `fs.realpathSync(abs)` 的结果**重跑**同一套判据。
+ *   ③ 写操作（`POST /api/pending`、`POST /api/state`，含它们的 OPTIONS 预检）不再回显
+ *      `Access-Control-Allow-Origin: null`：改前不透明源（`<iframe sandbox>` 的 Origin 就是 `null`）
+ *      能穿过来源门禁 + 宽松预检 + "只收 JSON"三道，直达 doResolve 落库。读路径不变（file:// 取数仍可用）。
+ *      **取舍**：file:// 页面在 server 模式下的**写**路径会被浏览器 CORS 拦下（它要 ACAO=null）；
+ *      桌面壳走 postMessage 直连、`http://127.0.0.1:PORT` 同源页面都不受影响。彻底解法是给写路径加
+ *      一次性 token 握手（本轮不做，属后续工作）。
+ *   ④ 失败必须说失败（两处原静默降级）：`doRebuild` 在"生成器成功但新状态包读不出"时不再吞异常回
+ *      `ok:true`；`GET /api/state` 在读不到 `_待确认.json` 时不再静默返回过期 pending，改带
+ *      `degraded` / `pendingStale` 标记。
+ *
  * 替换关系：本文件取代 _办结监听.mjs（计划任务 CTB-PendingSync 已改指本文件）。
  */
 import http from 'http';
@@ -34,9 +54,48 @@ import { readJsonStrict } from './_安全写.mjs';
 /* ★ 2026-10-23 程序与数据分家：ROOT 现在是**用户库根**，不再是"本脚本所在目录"。
    兄弟工具一律用 toolPath(...)，见 _库根.mjs。 */
 const ROOT = libraryRoot();
-/* 端口默认 7187（计划任务与页面都指这里）。`CTB_PORT` 只为回归用例起**独立实例**用：
+/* 端口真源（2026-10-29 R2 SC-09）：程序根 `端口.json` 的 `default` —— 与 C# 壳的
+   `CTBShellV2.cs::ResolveSrvPort`（读 `AppRoot\端口.json`）**同源**；前端由壳注入
+   `window.__ctbPortDefault` + hello 回执拿到同一个值。`CTB_PORT` 环境变量**优先**，
+   它只为回归用例起独立实例用（`tests\_测试环境.cjs`），日常不要设。
+   ⚠ "程序根"在两种布局下**不是同一个 JS 常量**，所以按候选序找：
+     · 发布包：`<AppRoot>\index.html` + `<AppRoot>\tools\*.mjs` ⇒ APP_ROOT = WEB_ROOT = AppRoot；
+     · 开发区：`<仓库>\src\app\index.html` + `<仓库>\src\tools\*.mjs` ⇒ WEB_ROOT = `src\app`
+       （**这才等于 C# 的 AppRoot** —— 壳 exe 就在 `src\app\` 下），而 APP_ROOT = `src`。
+   所以主候选是 WEB_ROOT、APP_ROOT 兜底。（照抄成 `path.join(APP_ROOT, …)` 会让开发区
+   去 `src\端口.json` 找一个不存在的文件 —— 我实测过，那会让服务端起不来。）
+   读不到 ⇒ **exit 2**，绝不静默回退 7187："各处各写一份默认值"正是 SC-09 这条缺陷的根因。 */
+const PORT_FILE_CANDS = [path.join(WEB_ROOT, '端口.json'), path.join(APP_ROOT, '端口.json')]
+  .filter((p, i, a) => a.indexOf(p) === i);
+function resolvePort() {
+  const env = String(process.env.CTB_PORT == null ? '' : process.env.CTB_PORT).trim();
+  if (env) {
+    if (!/^[0-9]{1,5}$/.test(env) || Number(env) < 1 || Number(env) > 65535) {
+      console.error('[ctb-server] ✖ CTB_PORT 不是合法端口号：' + JSON.stringify(env) + '（期望 1~65535 的十进制整数）');
+      process.exit(2);
+    }
+    return Number(env);
+  }
+  const tried = [];
+  for (const p of PORT_FILE_CANDS) {
+    if (!fs.existsSync(p)) { tried.push(p + ' —— 不存在'); continue; }
+    let j;
+    try { j = readJsonStrict(p, { label: '端口.json' }); }
+    catch (e) { tried.push(p + ' —— 读不出：' + e.message); continue; }
+    const n = Number(j && j.default);
+    if (!Number.isInteger(n) || n < 1 || n > 65535) {
+      tried.push(p + ' —— default 不是 1~65535 的整数：' + JSON.stringify(j && j.default));
+      continue;
+    }
+    return n;
+  }
+  console.error('[ctb-server] ✖ 端口真源读不到，**拒绝启动**（不猜默认端口）：\n  ' + tried.join('\n  ') +
+    '\n  修法：在程序根放一份 端口.json（形状见 src\\app\\端口.json），或用 CTB_PORT 显式指定。');
+  process.exit(2);
+}
+/* 端口默认 7187 由 `端口.json` 提供（不再写死在这里）。`CTB_PORT` 只为回归用例起**独立实例**用：
    本文件不负责重启用户正在跑的服务端，断言必须能另起一个进程、另用一个端口。 */
-const PORT = Number(process.env.CTB_PORT) || 7187;
+const PORT = resolvePort();
 const TOOL = toolPath('_待确认.mjs');
 const REFRESH = toolPath('_状态刷新.mjs');
 const GEN_MJS = toolPath('生成状态.mjs');
@@ -71,18 +130,32 @@ try { state = readStateFile(); } catch (e) { state = null; }
    再按 **`ROOT + path.sep`** 前缀比较（盘符/大小写不敏感，与 Windows 文件系统一致），并允许恰好等于 ROOT。
    ⚠ 刻意不用 `path.resolve(ROOT, rel)`：Windows 上 `resolve('D:\…\错题本', '/首页.html')` = `D:\首页.html`，
    会把**正常**请求判成越界（实测），等于把整站静态文件打掉。 */
-const ROOT_BASE = ROOT.endsWith(path.sep) ? ROOT : ROOT + path.sep;
-function insideRoot(abs) {
-  const a = path.normalize(String(abs)).toLowerCase();
-  return a === path.normalize(ROOT).toLowerCase() || a.startsWith(ROOT_BASE.toLowerCase());
+/* 一个根 = 一个判据工厂：`path.normalize` 归一化 + **带尾分隔符**的前缀比较
+   （盘符/大小写不敏感，与 Windows 文件系统一致），并允许恰好等于根本身。 */
+function makeInside(base) {
+  const b = path.normalize(String(base)).toLowerCase();
+  const bs = b.endsWith(path.sep) ? b : b + path.sep;
+  return abs => { const a = path.normalize(String(abs)).toLowerCase(); return a === b || a.startsWith(bs); };
 }
+const insideRoot = makeInside(ROOT);
 /* ★ 2026-10-23：程序目录的包含性判据（与库根**各判各的**，互不放行）。
    静态服务先查程序目录（index.html / css / js），再查库根（原卷截图 / 题干.html 等用户数据）。 */
-const APP_BASE = APP.endsWith(path.sep) ? APP : APP + path.sep;
-function insideApp(abs) {
-  const a = path.normalize(String(abs)).toLowerCase();
-  return a === path.normalize(APP).toLowerCase() || a.startsWith(APP_BASE.toLowerCase());
-}
+const insideApp = makeInside(APP);
+/* ★ R2 H-08-B（2026-10-29）：上面两条判据**都是纯字符串**比较，而 `path.normalize` **不解析**
+   NTFS 重解析点（junction / symlink），`fs.readFile` 却**会跟随**它 ⇒ "路径字符串在库内"与
+   "实际读到的文件在库外"可以同时成立（审计实测：库内 `mklink /J link C:\Windows` 后
+   `GET /link/win.ini` 返回 200 并读出库外内容）。
+   现在多一道：读盘前 `fs.realpathSync(abs)`，再对**解析后的真实路径**重跑同一套判据。
+   ⚠ 两个坑必须一起处理，否则会修出更坏的 bug：
+     ① realpath 对**不存在**的路径会抛 ⇒ 调用方先 try，抛了按 404 处理（与旧行为一致，
+        "缺文件"与"越界"不能混为一谈）；
+     ② realpath 会把**根自己**也解析掉 —— 迁移期库根很可能就是个 junction（`<AppRoot>\..\数据`
+        就常是），只比 `insideRoot(real)` 会把**所有正常请求**判成越界、整站静态文件全 403。
+        所以真值判据是：落在 {ROOT, APP, realpath(ROOT), realpath(APP)} **任一根**之内。
+        （这一条是审计给的最小修法里没有的，本机布局必须补。） */
+const realOr = p => { try { return fs.realpathSync(p); } catch (e) { return p; } };
+const insideRealRoot = makeInside(realOr(ROOT));
+const insideRealApp = makeInside(realOr(APP));
 
 /* ---------- 写操作串行化 ---------- */
 let chain = Promise.resolve();
@@ -125,17 +198,19 @@ function runGen(timeoutMs = 180000) {
    把 1.35 MB 的 `_状态.json` **整体重写一遍**（连页面刷新都在放大 BUG-01 的中断窗口）。
    现在：先比 `_待确认.json` 的 mtime/size 与状态包里记录的 `_pendingSrc`（`_状态刷新.mjs` 落的指纹），
    没变就不 spawn、不写盘；变了才刷（`pending-if-stale` 子支再用内容哈希复核一次，杜绝"只改了 mtime"的假刷新）。 */
-function pendingStat() {
-  try { const st = fs.statSync(PENDING); return { mtimeMs: st.mtimeMs, size: st.size }; }
-  catch (e) { return null; }
-}
-function pendingNeedsRefresh() {
-  const cur = pendingStat();
-  if (!cur) return false;                        // 台账读不到（异常）→ 不去折腾状态包
+/* ★ R2 H-08-D（2026-10-29）：改前 `pendingStat()` 返回 null（台账 stat 不到）时让
+   `pendingNeedsRefresh()` 直接 `return false` ⇒ 响应是 **200 + 旧的 pending 分区**，
+   调用方完全看不出这是降级（"失败必须说失败"被违反）。现在把三态显式化，
+   `unreadable` 一路带到响应体（`GET /api/state` 的 `degraded` / `pendingStale` 标记）。 */
+function pendingFreshness() {
+  let st;
+  try { st = fs.statSync(PENDING); }
+  catch (e) { return { status: 'unreadable', error: String((e && e.message) || e) }; }
   const rec = state && state._pendingSrc;
-  if (rec && rec.mtimeMs === cur.mtimeMs && rec.size === cur.size) return false;
-  return true;                                   // 无记录（生成器刚重写过状态包）一律算过期：宁可多刷一次，绝不漏
+  if (rec && rec.mtimeMs === st.mtimeMs && rec.size === st.size) return { status: 'fresh' };
+  return { status: 'stale' };   // 无记录（生成器刚重写过状态包）一律算过期：宁可多刷一次，绝不漏
 }
+function pendingNeedsRefresh() { return pendingFreshness().status === 'stale'; }
 function refreshPendingSection() {
   // `pending-if-stale`：重跑门禁 --json，替换 _状态.json 的 pending 分区，stdout=新状态包（未变则原样回）
   const out = execFileSync(process.execPath, [REFRESH, 'pending-if-stale'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 120000 });
@@ -165,7 +240,23 @@ async function doRebuild() {
   return serialized(async () => {
     const r = await runGen();
     if (r.code !== 0) return { ok: false, toolOut: String(r.out || '').slice(-800), toolErr: String(r.err || '').slice(-400) };
-    try { state = readStateFile(); } catch (e) {}
+    /* ★ R2 H-08-D（2026-10-29）：改前这里是 `try { state = readStateFile(); } catch (e) {}`
+       —— 生成器**明明跑成功了**，但新的状态包读不出（半截 JSON / BOM 之外的损坏 / 权限）时
+       异常被静默吞掉，然后 `return { ok:true, state }` 把**旧的内存快照**当成功结果交出去：
+       前端收到 ok:true + 一份**过期**状态包，界面上看不出任何异常（"失败必须说失败"被违反）。
+       现在读不出就是失败，并明确区分"磁盘已重建好"与"服务端读不出来"。 */
+    let fresh;
+    try { fresh = readStateFile(); }
+    catch (e) {
+      return {
+        ok: false, degraded: 'state-unreadable',
+        error: '生成器已重跑成功，但新的状态包读不出来：' + String((e && e.message) || e),
+        toolOut: String(r.out || '').slice(-800), toolErr: String(r.err || '').slice(-400),
+      };
+    }
+    state = fresh;
+    /* 重建后内存快照就是磁盘那份 ⇒ 顺手记下 mtime，免得紧接着的 GET 又白读一次（BUG-16 同一口径） */
+    try { state._diskM = fs.statSync(STATE).mtimeMs; } catch (e) {}
     return { ok: true, state };
   });
 }
@@ -218,33 +309,91 @@ function serveStatic(req, res, urlPath, origin) {
   if (insideApp(absApp) && fs.existsSync(absApp)) abs = absApp;
   else if (insideRoot(absLib)) abs = absLib;
   else return sendJson(res, 403, { ok: false, error: 'forbidden' }, origin);
-  fs.readFile(abs, (err, buf) => {
+  /* ★ R2 H-08-B：读盘**之前**解析重解析点，并对解析后的真实路径重跑包含性判据。
+     顺序很关键：realpath 必须早于 readFile —— `fs.readFile` 会跟着 junction/symlink 走，
+     而 `path.normalize` 不会，两者之间的落差就是漏洞本身。 */
+  let real;
+  try { real = fs.realpathSync(abs); }
+  catch (e) {
+    /* realpath 对不存在的路径抛 ENOENT；语义与旧代码的 readFile→404 一致（"缺文件"≠"越界"） */
+    return sendJson(res, 404, { ok: false, error: 'not found: ' + rel }, origin);
+  }
+  if (!insideApp(real) && !insideRoot(real) && !insideRealApp(real) && !insideRealRoot(real)) {
+    return sendJson(res, 403, { ok: false, error: 'forbidden (link outside root)' }, origin);
+  }
+  fs.readFile(real, (err, buf) => {
     if (err) return sendJson(res, 404, { ok: false, error: 'not found: ' + rel }, origin);
-    send(res, 200, buf, MIME[path.extname(abs).toLowerCase()] || 'application/octet-stream', origin);
+    send(res, 200, buf, MIME[path.extname(real).toLowerCase()] || 'application/octet-stream', origin);
   });
 }
 
-function readBody(req, limit = 2e6) {
+/* ★ R2 H-08-E（2026-10-29）：改前 `readBody` 超限一律 `req.destroy()` ⇒ 客户端看到的是
+   **ECONNRESET**（审计逐字：`3MB body -> ERR read ECONNRESET`），而不是一个能读的 413；
+   而且没有 `Content-Length` 预检 —— 必须先把 body 缓冲到 200 万才发现，而那个 200 万是
+   字符串 `.length`（**UTF-16 码元数**），中文下与真实字节数不等（2 万汉字 ≈ 6 万字节却只算 2 万）。
+   现在：① 先看 `Content-Length`，明知超限**立刻**回 413（不吃 body）；
+        ② 边收边按 **Buffer.length（字节）** 计；
+        ③ 超限时不再 destroy —— 把错误交给调用方，由它回 413（响应先落盘，客户端就不会只看到断连）。 */
+const MAX_BODY = 2 * 1024 * 1024;   // 2 MiB，按**字节**
+function tooLargeError(limit, got) {
+  const e = new Error('payload too large（上限 ' + limit + ' 字节' + (got == null ? '' : '，实际 ' + got + ' 字节') + '）');
+  e.code = 'ETOOLARGE'; e.limit = limit; e.got = got;
+  return e;
+}
+function readBody(req, limit = MAX_BODY) {
   return new Promise((resolve, reject) => {
-    let b = '';
-    req.on('data', d => { b += d; if (b.length > limit) { req.destroy(); reject(new Error('too large')); } });
-    req.on('end', () => resolve(b));
+    const cl = Number(req.headers['content-length']);
+    if (Number.isFinite(cl) && cl > limit) { reject(tooLargeError(limit, cl)); return; }
+    const chunks = [];
+    let n = 0;
+    req.on('data', d => {
+      n += d.length;                                   // Buffer.length = 字节
+      if (n > limit) { try { req.pause(); } catch (e) {} reject(tooLargeError(limit, n)); return; }
+      chunks.push(d);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
     req.on('error', reject);
   });
 }
 
+/* ★ R2 H-08-A（2026-10-29）：畸形 request-target 的**第二道网**。
+   第一道网是下面 handler 里把整段入口放进 try（畸形 target 回 400，进程不受影响）；
+   这一道只保证"将来某个未知的 rejection 不会把用户正在用的服务整体打挂"，并**大声记日志**。
+   为什么必须有它：审计实测改前 `GET //[`（原始 socket）让进程 `exited=1` —— 一个坏请求 = 整站下线。 */
+process.on('unhandledRejection', (e) => {
+  console.error('[ctb-server] ⚠ unhandledRejection（第二道网接住，服务继续；但这条必须查）:',
+    (e && (e.stack || e.message)) || e);
+});
+
+/* ★ R2 H-08-C：写路径集合。这些路径上的**非 GET** 操作（含 OPTIONS 预检）不再回显
+   `Access-Control-Allow-Origin: null` —— 否则不透明源（`<iframe sandbox>` 的 Origin 就是 null）
+   能在预检阶段拿到放行，然后带着 `application/json` 穿过来源门禁直达 doResolve 落库。
+   按"路径 + 方法"分而不是只按路径：`GET /api/state`（file:// 客户端取数）必须保持原样。 */
+const WRITE_PATHS = new Set(['/api/pending', '/api/state']);
+
 const server = http.createServer(async (req, res) => {
   const origin = req.headers.origin || '';
-  if (origin && corsOrigin(origin) === null) {
-    return sendJson(res, 403, { ok: false, error: 'forbidden origin' }, origin);
-  }
-  if (req.method === 'OPTIONS') {
-    addCommonHeaders(res, origin);
-    res.writeHead(204, { 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Max-Age': '86400' });
-    return res.end();
-  }
-  const u = new URL(req.url, 'http://127.0.0.1');
+  /* ★ R2 H-08-A：**整段入口**都在 try 里。改前 `new URL(req.url, …)`（连同上面这两段）在 try
+     之外，而 async handler 里抛出的异常 = unhandled rejection = Node 默认**终止进程**。 */
   try {
+    if (origin && corsOrigin(origin) === null) {
+      return sendJson(res, 403, { ok: false, error: 'forbidden origin' }, origin);
+    }
+    /* ★ R2 H-08-A：URL 解析就是被畸形 request-target 打爆的那一步
+       （`new URL('//[','http://127.0.0.1')` 抛 ERR_INVALID_URL；而浏览器侧
+        `new URL('http://127.0.0.1:7187//[')` 是**合法**的、pathname 正是 `//[`，所以本机网页构造得出来）。 */
+    let u;
+    try { u = new URL(String(req.url == null ? '' : req.url), 'http://127.0.0.1'); }
+    catch (e) {
+      return sendJson(res, 400, { ok: false, error: 'bad request target', target: String(req.url || '').slice(0, 120) }, origin);
+    }
+    const isWriteOp = WRITE_PATHS.has(u.pathname) && req.method !== 'GET';
+    const wOrigin = (origin === 'null' && isWriteOp) ? '' : origin;   // '' → corsOrigin 返回 null → 不发 ACAO
+    if (req.method === 'OPTIONS') {
+      addCommonHeaders(res, wOrigin);
+      res.writeHead(204, { 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Max-Age': '86400' });
+      return res.end();
+    }
     if (req.method === 'GET' && u.pathname === '/health') return sendJson(res, 200, { ok: true, port: PORT, version: 3, hasState: !!state, generatedAt: state && state.generatedAt }, origin);
     if (req.method === 'GET' && u.pathname === '/api/state') {
       /* BUG-16 修：GET **只读**。
@@ -259,28 +408,44 @@ const server = http.createServer(async (req, res) => {
           state._diskM = diskM;
         }
       } catch (e) {}
-      if (pendingNeedsRefresh()) {
+      /* ★ R2 H-08-D：刷新决策与"降级标记"**一起**算 —— 台账 stat 不到时不再静默返回旧 pending。 */
+      const fr = pendingFreshness();
+      if (fr.status === 'stale') {
         await serialized(async () => { if (pendingNeedsRefresh()) refreshPendingSection(); });
       }
-      return sendJson(res, 200, state || { error: 'no state' }, origin);
+      const body = Object.assign({}, state || { error: 'no state' });
+      if (fr.status === 'unreadable') {
+        body.degraded = 'pending-ledger-unreadable';
+        body.pendingStale = true;
+        body.degradedDetail = '读不到台账 ' + PENDING + '：' + fr.error + '（本次返回的 pending 分区可能已过期）';
+        console.error('[ctb-server] ⚠ ' + body.degradedDetail);
+      }
+      return sendJson(res, 200, body, origin);
     }
     if (req.method === 'POST' && u.pathname === '/api/state') {
       const r = await doRebuild();
-      return sendJson(res, r.ok ? 200 : 500, r.ok ? r.state : r, origin);
+      return sendJson(res, r.ok ? 200 : 500, r.ok ? r.state : r, wOrigin);
     }
     if (req.method === 'POST' && u.pathname === '/api/pending') {
       /* 最小可行鉴别（BUG-17）：只收 JSON 体。表单/`<img>` 之类的"简单请求"跨源伪造没有预检，
          这条能挡住；`fetch` 默认的 text/plain 也挡住。现有客户端两个都带 application/json，不受影响。 */
       const ctype = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
       if (ctype !== 'application/json') {
-        return sendJson(res, 415, { ok: false, error: 'unsupported media type（POST /api/pending 只收 application/json）' }, origin);
+        return sendJson(res, 415, { ok: false, error: 'unsupported media type（POST /api/pending 只收 application/json）' }, wOrigin);
       }
       let body;
-      try { body = parseJsonText(await readBody(req), '请求体'); } catch (e) { return sendJson(res, 400, { ok: false, error: 'bad json' }, origin); }
+      try { body = parseJsonText(await readBody(req), '请求体'); }
+      catch (e) {
+        /* ★ R2 H-08-E：超限单独给 413（改前客户端只看到 ECONNRESET，读不到任何原因） */
+        if (e && e.code === 'ETOOLARGE') {
+          return sendJson(res, 413, { ok: false, error: String(e.message), limit: e.limit, got: e.got == null ? null : e.got }, wOrigin);
+        }
+        return sendJson(res, 400, { ok: false, error: 'bad json' }, wOrigin);
+      }
       const list = (Array.isArray(body && body.resolves) ? body.resolves : []).filter(r => r && r.id && (r.action === '答' || r.action === '作废'));
-      if (!list.length) return sendJson(res, 400, { ok: false, error: 'resolves empty or malformed' }, origin);
+      if (!list.length) return sendJson(res, 400, { ok: false, error: 'resolves empty or malformed' }, wOrigin);
       const r = await doResolve(list);
-      return sendJson(res, r.ok ? 200 : 500, r, origin);
+      return sendJson(res, r.ok ? 200 : 500, r, wOrigin);
     }
     if (req.method === 'GET') return serveStatic(req, res, u.pathname, origin);
     return sendJson(res, 404, { ok: false, error: 'not found' }, origin);

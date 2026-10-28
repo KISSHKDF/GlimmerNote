@@ -22,6 +22,8 @@
  *   批量 --file <figure-ledger.json>   从 JSON 批量登记（[{"card":"学生A|P0001","need":true,...}]）
  *   清单 [--json]             只读：逐题配图状态（首页生成器调用 --json）
  *   门禁 [--json]             在册题里 need=true 却拿不出图 → 退出码 1；有"提到图但未登记"的卡 → 退出码 1
+ *                             配图路径出现 http(s):（远程图）→ 退出码 1（2026-10-29 R2：离线工具的
+ *                             网络出口不许被数据打开；前端 H.asset 已拒 http(s)，这里补 fail-loud）
  *                             输出 { ok, problems:[键[原因]], archivedSkipped:[...], cards:{...} }
  *                             人类模式与 --json **同一次判定、同一退出码**（2026-10-09 修：原先 --json
  *                             在判定之前 break，机器通道永远 exit 0，调用方拿到的是假绿灯）
@@ -250,6 +252,24 @@ switch (action) {
       const e = led.cards[x.key];
       const r = figState(x, e);
       map[x.key] = { state: r.state, ok: r.state !== '缺图', hasAsset: r.hasAsset, hasStemHtml: r.a.hasStemHtml, inline: r.a.hasInlineFig, files: r.a.files, need: r.need };
+      /* ★ 2026-10-29（R2 I-02/I-03 代码半边）：**远程图即报红**。
+         前端 `host.js` 的 H.asset 现在对 http(s) 一律返回 '' —— 那是渲染层 fail-safe
+         （离线工具的网络出口不该被数据打开），但"只返回空串"本身又是一种静默失败：
+         一张本该有图的卡会静默变成没图。所以这里补 **fail-loud**：配图路径出现 http(s):
+         就判红，逼数据层改回库内相对路径。三处源头一起查：
+           ① 索引卡字段 img / stem / fig（都经 H.asset 进 <img src>）
+           ② 题干.html 里的内联 `<img ... src="http…">`（题干是**直接渲染进页面**的，会真发请求）
+           ③ 配图台账的 ref 字段
+         ⚠ 正则只看 `<img … src=`，不看 `xmlns="http://www.w3.org/2000/svg"` —— svg 命名空间
+         不是资源请求，合成库里每张 svg 都带它（fixtures\库-形状 实测），误伤会让门禁天天假红。 */
+      const rem = [];
+      for (const f of ['img', 'stem', 'fig']) {
+        const v = String(x.item[f] || '').trim();
+        if (/^https?:/i.test(v)) rem.push(f + '=' + v.slice(0, 50));
+      }
+      if (r.a.stem && r.a.stem.raw && /<img\b[^>]*\bsrc\s*=\s*["']?\s*https?:/i.test(r.a.stem.raw)) rem.push('题干.html 内联远程 <img src>');
+      if (e && /^https?:/i.test(String(e.ref || '').trim())) rem.push('台账 ref=' + String(e.ref).slice(0, 50));
+      if (rem.length) problems.push(`${x.key}[远程图 ${rem.join(' / ')}]`);
       /* 台账字段类型校验（2026-10-09）：need 必须是布尔。写成 "true"/1 时旧代码 `entry.need === true`
          判定为 false —— 静默降级成「无需图」，门禁就再也不管这张卡了。 */
       if (e && typeof e.need !== 'boolean') problems.push(`${x.key}[need 字段非法：${JSON.stringify(e.need)}，应为 true/false]`);

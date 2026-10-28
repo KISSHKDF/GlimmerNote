@@ -343,9 +343,25 @@ function cmdInbox() {
      而录题页告诉用户"把照片放进 _收件箱\<批次>\"，用户照着去找发现根本没有这个文件夹。
      这个目录本来就归本工具管（只有它读它），由它负责建最合适。
      只建一层空目录，不写任何数据文件，因此不违反"工具不写用户库"那条（没有任何真源被改动）。 */
-  let ensured = false;
+  /* ★ 2026-10-29（R2 审计 D-04）：建目录失败不许被讲成"空收件箱"。
+     改前 `ensured=false` **一个值同时表示**"本来就有、不用建"与"建失败了"，
+     于是权限/只读故障（库目录只读挂载、ACL 拒绝、盘符不可用）被讲成"你还没丢照片"，
+     用户会一直往一个根本没建出来的目录里丢东西。现在三态，且建失败**响亮退 2**：
+       'none'  本来就有，不用建
+       'made'  这次刚建好
+       'fail'  建不出来 ⇒ 报 JSON/人读错误 + 退出码 2（参数/环境错误档，与"校验拒收=1"分开） */
+  let ensured = 'none';
   if (!isDir(inbox)) {
-    try { fs.mkdirSync(inbox, { recursive: true }); ensured = true; } catch { /* 无权限就照常报空 */ }
+    try { fs.mkdirSync(inbox, { recursive: true }); ensured = 'made'; }
+    catch (e) {
+      ensured = 'fail';
+      const msg = '收件箱目录建不出来：' + inbox + '（' + e.message + '）';
+      if (JSON_OUT) process.stdout.write(JSON.stringify({ ok: false, root, inboxRel: '_收件箱', batches: [], total: 0, created: ensured, error: msg }) + '\n');
+      process.stderr.write('✖ ' + msg + '\n' +
+        '  常见原因：库目录只读 / 当前账户对该目录无写权限 / 盘符不可用。\n' +
+        '  这不是"收件箱空着"——请先把 _收件箱 目录建出来（或修权限）再重试。\n');
+      return 2;
+    }
   }
   const batches = [];
   if (isDir(inbox)) {
@@ -390,7 +406,7 @@ function cmdInbox() {
     process.stdout.write(JSON.stringify({ ok: true, root, inboxRel: '_收件箱', batches, total, created: ensured }) + '\n');
     return 0;
   }
-  console.log('收件箱：' + inbox + (ensured ? '（刚为你建好）' : ''));
+  console.log('收件箱：' + inbox + (ensured === 'made' ? '（刚为你建好）' : ''));
   if (!total) {
     console.log('（空）把错题照片按批次放进 _收件箱\\<批次名>\\，再回到程序里选它。');
     return 0;

@@ -80,6 +80,12 @@ const qnoOf = s => { const m = String(s || '').match(/第(\d+)题/); return m ? 
    用 source 猜会同时匹配到 P0036（印刷第29页第2题）与 P0046（扫描 p41 第2题），题号还都是 2 —— 直接错配。
    `_task.json.page` 无歧义，故以它为准；缺 _task.json 的卡退回 source 双口径匹配。 */
 const cardScan = new Map();     // '学生|卡号' -> { scan, qno }
+/* ★ 2026-10-29（R2 审计 D-06）：降级必须可见。
+   改前 `catch (e) {}` 把「`_task.json` 存在但读坏/解析失败」与「卡目录里根本没有 _task.json」
+   合并成同一条路径，然后静默走下面那行 source 页码猜测 —— 而本文件 77-81 行的注释**自己写明**
+   "用 source 猜会同时匹配到两张卡，直接错配"。于是稽核结论（撤卡/补建卡）可能错配，
+   而输出里查不出"本次有几张卡降级了"。现在逐张记进 degraded[]，两种输出都报出来。 */
+const degraded = [];
 for (const c of allCards) {
   /* 卡片目录的真实位置是 <索引基目录>/<学科>/<dir>（如 九年级/物理/P0046-…），
      不是 <索引基目录>/<dir>。漏掉学科这一层 → _task.json 找不到 → 退回用 source 猜页码 →
@@ -96,7 +102,7 @@ for (const c of allCards) {
       const t = readJson(tp);
       scan = t.page || null;
       qno = String(t.no || '').match(/^\d+/)?.[0] || null;
-    } catch (e) {}
+    } catch (e) { degraded.push({ key: c._stu + '|' + c.id, why: String((e && e.message) || e) }); }
     if (scan) break;
   }
   if (!scan) { const m = String(c.source || '').match(/第(\d+)页/); if (m) scan = 'p' + Number(m[1]); }
@@ -248,10 +254,16 @@ for (const it of items) {
 
 /* ---------- 7. 输出 ---------- */
 const by = s => rows.filter(r => r.state === s);
-if (JSON_OUT) { console.log(JSON.stringify({ rows, summary: { total: rows.length, green: by('GREEN').length, red: by('RED').length, blocked: by('BLOCKED').length, open: by('OPEN').length, void: by('VOID').length } }, null, 1)); process.exit(by('RED').length ? 1 : 0); }
+if (JSON_OUT) { console.log(JSON.stringify({ rows, degraded, summary: { total: rows.length, green: by('GREEN').length, red: by('RED').length, blocked: by('BLOCKED').length, open: by('OPEN').length, void: by('VOID').length, degraded: degraded.length } }, null, 1)); process.exit(by('RED').length ? 1 : 0); }
 
 const g = by('GREEN'), rd = by('RED'), op = by('OPEN'), vd = by('VOID'), bl = by('BLOCKED');
-console.log(`待办闭环稽核：${rows.length} 条  ｜  闭环 ${g.length} / 未闭环 ${rd.length} / 待外部 ${bl.length} / 待结论 ${op.length} / 已作废 ${vd.length}\n`);
+/* 降级先说（R2 D-06）：不让"结论不可信"被埋在最后一行汇总里 */
+if (degraded.length) {
+  console.log(`ⓘ ${degraded.length} 张卡的 _task.json 读不出（文件坏了/被占用），已退回 source 页码口径 ——`);
+  console.log(`  这些卡的「撤卡 / 补建卡」结论**不可信**（本文件注释已写明该口径会错配）：`);
+  console.log('   ' + degraded.map(d => d.key).join('  ') + '\n');
+}
+console.log(`待办闭环稽核：${rows.length} 条  ｜  闭环 ${g.length} / 未闭环 ${rd.length} / 待外部 ${bl.length} / 待结论 ${op.length} / 已作废 ${vd.length}` + (degraded.length ? ` / 口径降级 ${degraded.length}` : '') + '\n');
 if (bl.length) { console.log(`── 待外部条件（${bl.length}）`); for (const r of bl) console.log(`  ${r.id}  ${r.student}/${r.subject} ${r.cardId}  ${r.why}`); console.log(''); }
 if (rd.length) {
   console.log(`── 未闭环（${rd.length}）`);

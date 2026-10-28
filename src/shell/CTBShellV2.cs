@@ -10,6 +10,8 @@
 //   pendingResolve → payload.resolves=[{id,action,answer}] → _待确认.mjs 同步 + 刷 pending → {ok,results,state}
 //   pendingAdd     → payload 扁平字符串 → _待确认.mjs 加 + 刷 pending → {ok,newId,state,toolOut}
 //   mark           → payload.action∈{组卷,批改,撤批,归档,撤归档,状态} + 扁平 flag → _标记复习.mjs → {ok,code,out,err}
+//   recipe         → payload.action∈{清单,收件箱,组装,校验,自检,指纹} + 扁平 flag → _配方.mjs → {ok,code,out,err}
+//                    （code 是工具的**真实退出码**：校验通过=0 / 拒收=1 / 参数错=2；2026-10-29 R2 修）
 //   readFile       → payload.path（题库根内相对路径）→ {ok,text}
 //   openFile       → payload.path → 交内置阅读器/系统程序 → {ok:true}
 //   quit           → 退出
@@ -231,6 +233,43 @@ namespace CTBShell2
             catch { }
             return "dev";
         }
+
+        /* 端口真源（2026-10-29 R2 SC-09 / SC-07）：程序根 `端口.json` 的 default 字段。
+           为什么选"一处 JSON + 各方读取"而不是共享一个模块：
+             · C# 壳读不了 .mjs 常量；前端（file:// 打开的页面）既不能 import Node 模块、
+               也不能 fetch 本地 json（跨源被禁）⇒ 三端唯一共同可读的介质就是**程序目录下的一份 json**
+               （本仓已有同款先例：`版本.json`，同样由 C# 读、由打包脚本生成）。
+             · 前端那一端由壳注入（AddScriptToExecuteOnDocumentCreatedAsync 的
+               window.__ctbPortDefault）与 hello 回执两条路带过去，见 ResolveSrvPort 的调用点。
+           口径：CTB_PORT 环境变量**优先**（回归用例要起独立端口实例，这是唯一合法的临时覆盖）；
+           真源读不到 ⇒ **不猜**，返回 null（http 导航白名单随之整个关掉：fail-loud 记日志 + fail-safe 拒绝）。
+           ⚠ 这里绝不再写一个"默认 7187"的兜底 —— 各处各写一份默认值正是本条缺陷的根因。 */
+        static string _srvPortCache = null;
+        static bool _srvPortResolved = false;
+        public static string ResolveSrvPort()
+        {
+            if (_srvPortResolved) return _srvPortCache;
+            _srvPortResolved = true;
+            _srvPortCache = ReadSrvPort();
+            return _srvPortCache;
+        }
+        static string ReadSrvPort()
+        {
+            string env = Environment.GetEnvironmentVariable("CTB_PORT");
+            if (!string.IsNullOrEmpty(env) && Regex.IsMatch(env, "^[0-9]{1,5}$")) return env;
+            string p = Path.Combine(AppRoot, "端口.json");
+            try
+            {
+                if (!File.Exists(p)) { Log("端口真源缺失：" + p + "（http 导航白名单关闭，本机服务端通道不可用）"); return null; }
+                string tj = File.ReadAllText(p, Encoding.UTF8).TrimStart('\uFEFF');
+                Match m = Regex.Match(tj, "\"default\"\\s*:\\s*([0-9]{1,5})");
+                if (m.Success) return m.Groups[1].Value;
+                Log("端口真源形状异常（读不到 default 数字）：" + p);
+            }
+            catch (Exception ex) { Log("端口真源读取失败：" + p + " ← " + ex.Message); }
+            return null;
+        }
+
         public static string EmptyState()
         {
             string ts = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:sszzz");
@@ -492,7 +531,12 @@ namespace CTBShell2
                         stderr = (stderr ?? "") + "\n[超时] 子进程 180s 未退出，已强制结束（写闸即将释放）";
                     }
                     else code = p.ExitCode.ToString();
-                    code = p.ExitCode.ToString();
+                    /* ⚠ 2026-10-29（R2 SC-02 / D-09）：这里原有 `code = p.ExitCode.ToString();`
+                       一行**无条件覆盖**了上面两个分支，于是超时分支刚设的 "124" 永远作废：
+                       ① 上面注释宣告的"超时码 124"不可达；② 若子进程恰在 WaitForExit 超时与 Kill
+                       之间以 0 正常结束（工具其实已写完盘），code 变成 "0" ⇒ 前端 paper.js 的
+                       `r.code !== 0` 判据放行 ⇒ 界面报"已入账"，而壳的结论是"超时已强制结束"
+                       （重复入账方向的错）。删掉它，让两个分支各自的结果生效。 */
                 }
                 HostBridge.Log("mark " + action + " exit=" + code + " out=" + SliceForLog((stdout ?? "").Replace("\r\n", " | ")));
                 return "{\"ok\":true,\"code\":" + code + ",\"out\":\"" + Esc(stdout) + "\",\"err\":\"" + Esc(stderr) + "\"}";
@@ -559,16 +603,22 @@ namespace CTBShell2
                 args.Add("--data"); args.Add(DataRoot);
                 if (ExtractString(payload, "json") == "1") args.Add("--json");
 
-                string so = RunNode(args.ToArray(), 60000);
-                Log("recipe " + action + " out=" + SliceForLog((so ?? "").Replace("\r\n", " | ")));
-                return "{\"ok\":true,\"code\":0,\"out\":\"" + Esc(so ?? "") + "\",\"err\":\"\"}";
+                /* ★ 2026-10-29（R2 SC-02 / D-01）：回**真实退出码**，不再硬编码 code:0。
+                   与同文件 Mark() 同口径（ok = 通道成功；code = 工具退出码），也与
+                   tests\neg-recipe-contract.cjs 钉住的契约一致：校验通过=0 / 拒收=1 / 参数错=2。
+                   改前：无论工具退出 0 还是 1，这里都回 {"ok":true,"code":0,...} ⇒
+                   ingest.js:313 按 code===0 判 ⇒ 「✖ 校验未通过」被渲染成绿色「✔ 校验通过」。 */
+                int exit; string se;
+                string so = RunNodeRaw(args.ToArray(), 60000, out exit, out se);
+                Log("recipe " + action + " exit=" + exit + " out=" + SliceForLog((so ?? "").Replace("\r\n", " | ")));
+                return "{\"ok\":true,\"code\":" + exit + ",\"out\":\"" + Esc(so ?? "") + "\",\"err\":\"" + Esc(se ?? "") + "\"}";
             }
             catch (Exception ex)
             {
-                /* 校验不通过时工具 exit=1 —— RunNode 把 1 当正常返回，所以走到这里的是真错误。
-                   但如果是 exit 2（参数/环境错误），异常文本里带着工具的原文，页面直接显示即可。 */
+                /* 走到这里只剩"进程起不来/参数非法"这类真错误（exit 2 已由上面的 code 如实带回，
+                   不再是异常）⇒ ok:false + code:-1，页面走"请求失败"分支并显示原文。 */
                 Log("recipe " + action + " FAILED: " + ex.Message);
-                return "{\"ok\":false,\"code\":1,\"out\":\"\",\"err\":\"" + Esc(ex.Message) + "\"}";
+                return "{\"ok\":false,\"code\":-1,\"out\":\"\",\"err\":\"" + Esc(ex.Message) + "\"}";
             }
             finally { if (tmp != null) { try { File.Delete(tmp); } catch { } } }
         }
@@ -641,7 +691,13 @@ namespace CTBShell2
             return parts;
         }
 
-        string RunNode(string[] args, int timeoutMs)
+        /* 跑 node 的**唯一底座**：返回值仍是 stdout，但退出码与 stderr 一并带出。
+           为什么要有 outCode（2026-10-29 R2 SC-02 / D-01）：原实现把退出码在**返回处就丢掉了**，
+           而 `_配方.mjs 校验` 的退出码是被测试钉死的契约（tests\neg-recipe-contract.cjs:141/160：
+           通过=0 / 拒收=1 / 参数错=2）。丢掉它 ⇒ Recipe() 只能硬编码 code:0 ⇒
+           页面把"拒收"渲染成绿色「✔ 校验通过」（失败被讲成成功，L1 阻断项）。
+           outCode = 进程真实退出码；超时被杀记 124（与 Mark 同码）且**不抛**，由包装决定怎么报。 */
+        string RunNodeRaw(string[] args, int timeoutMs, out int outCode, out string outErr)
         {
             var psi = new ProcessStartInfo
             {
@@ -659,12 +715,31 @@ namespace CTBShell2
                 string so = p.StandardOutput.ReadToEnd();
                 string se = p.StandardError.ReadToEnd();
                 /* ⚠ BUG-14：同 Mark —— 超时必须可判并杀进程。 */
-                if (!p.WaitForExit(timeoutMs)) { try { p.Kill(); } catch { } try { p.WaitForExit(5000); } catch { } throw new Exception("node 子进程 " + (timeoutMs / 1000) + "s 未退出，已强制结束"); }
-                // 门禁语义：0/1 均正常（1=有未确认项）；其他=失败（stderr 回显给页面）
-                if (p.ExitCode != 0 && p.ExitCode != 1)
-                    throw new Exception("node 退出码 " + p.ExitCode + "：" + (se.Trim().Length > 0 ? se.Trim() : so.Trim()));
+                if (!p.WaitForExit(timeoutMs))
+                {
+                    try { p.Kill(); } catch { }
+                    try { p.WaitForExit(5000); } catch { }
+                    outCode = 124;
+                    outErr = (se ?? "") + "\n[超时] node 子进程 " + (timeoutMs / 1000) + "s 未退出，已强制结束";
+                    return so;
+                }
+                outCode = p.ExitCode;
+                outErr = se;
                 return so;
             }
+        }
+
+        /* 门禁语义包装（既有调用方的口径**不变**）：0/1 均正常（1=有未通过项）；其他=失败（抛错）。
+           需要真实退出码的调用方（Recipe）直接用 RunNodeRaw —— 不要在这里加分支，
+           也不要再复制一份进程代码（同一事实两个实现正是 SC-07 要收敛的东西）。 */
+        string RunNode(string[] args, int timeoutMs)
+        {
+            int code; string se;
+            string so = RunNodeRaw(args, timeoutMs, out code, out se);
+            if (code == 124) throw new Exception("node 子进程 " + (timeoutMs / 1000) + "s 未退出，已强制结束");
+            if (code != 0 && code != 1)
+                throw new Exception("node 退出码 " + code + "：" + ((se ?? "").Trim().Length > 0 ? se.Trim() : (so ?? "").Trim()));
+            return so;
         }
 /// <summary>真正懂 JSON 字符串转义的取值器（唯一实现，两个 ExtractString 共用）。
         /// 逐字符扫描：找 "key"，跳到冒号后必须是引号，再按 JSON 规则读到闭合引号
@@ -780,42 +855,10 @@ namespace CTBShell2
             string v;
             return TryReadJsonString(json, key, out v) ? v : "";
         }
-        // 页面传来的字符串里可能有 \" \n 转义（如 note/q 文本），还原后再当 CLI 参数用
-        static string UnescapeSimple(string s)
-        {
-            if (s.IndexOf('\\') < 0) return s;
-            var sb = new StringBuilder();
-            for (int i = 0; i < s.Length; i++)
-            {
-                char c = s[i];
-                if (c == '\\' && i + 1 < s.Length)
-                {
-                    char n = s[++i];
-                    switch (n)
-                    {
-                        case '"': sb.Append('"'); break;
-                        case '\\': sb.Append('\\'); break;
-                        case '/': sb.Append('/'); break;
-                        case 'n': sb.Append('\n'); break;
-                        case 'r': sb.Append('\r'); break;
-                        case 't': sb.Append('\t'); break;
-                        case 'u':
-                            if (i + 4 < s.Length)
-                            {
-                                int code;
-                                if (int.TryParse(s.Substring(i + 1, 4), System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out code))
-                                { sb.Append((char)code); i += 4; }
-                                else sb.Append(c);
-                            }
-                            else sb.Append(c);
-                            break;
-                        default: sb.Append(n); break;
-                    }
-                }
-                else sb.Append(c);
-            }
-            return sb.ToString();
-        }
+        /* ⚠ 2026-10-29（R2 审计 SC-01(5)）：这里原有那个「按字符还原转义」的静态方法（35 行）。
+           它已被 TryReadJsonString 取代（上面 ExtractString 的注释就是那次修复写的），
+           全仓零引用（只有定义行本身命中）—— 死代码删掉。
+           留着的代价是维护者以为"转义还原还有第二条路"，而那条路从来没被走过。 */
         static string ExtractArray(string json, string key)
         {
             if (json == null) return "[]";
@@ -940,23 +983,32 @@ namespace CTBShell2
                 wv.CoreWebView2.WebMessageReceived += OnWebMessage;
                 await wv.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(
                     "window.ctbHost={postMessage:function(s){window.chrome.webview.postMessage(s);}};");
+                /* ★ 2026-10-29（R2 SC-09）：把端口真源解析出来的值**注入页面**。
+                   为什么必须由壳注入：页面是 file:// 打开的 —— 不能 fetch 本地 json、不能 import
+                   Node 模块，只能靠注入（与本仓 `版本.js` 注入 window.__GNOTE_VERSION__ 同一手法）。
+                   覆盖顺序仍是：?ctbPort= → localStorage → 这里的注入值 → location.port（服务端模式）。 */
+                string srvPort = HostBridge.ResolveSrvPort();
+                if (!string.IsNullOrEmpty(srvPort))
+                    await wv.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(
+                        "window.__ctbPortDefault='" + srvPort + "';");
                 /* 前端入口：新布局就在程序根（app\index.html）；老布局在 app\v2\index.html，一并兼容。 */
                 string homePath = Path.Combine(HostBridge.AppRoot, "index.html");
                 if (!File.Exists(homePath)) homePath = Path.Combine(HostBridge.AppRoot, "v2", "index.html");
                 if (!File.Exists(homePath)) throw new Exception("找不到界面文件：期望 " + Path.Combine(HostBridge.AppRoot, "index.html") + "（程序目录不完整？）");
                 string home = new Uri(homePath).AbsoluteUri;
-                /* ★ 端口配置化（2026-10-12）：原写死 http://127.0.0.1:7187。
-                   现在与 _服务端.mjs 的 CTB_PORT、前端 host.js 的 ?ctbPort 三处同源：
-                   都读 CTB_PORT 环境变量 ⇒ 改端口只改一个地方，不会"前端认新端口、壳拦旧端口"。 */
-                string srvPort = Environment.GetEnvironmentVariable("CTB_PORT");
-                if (string.IsNullOrEmpty(srvPort)) srvPort = "7187";
-                string srvPrefix = "http://127.0.0.1:" + srvPort;
-                HostBridge.Log("navigation whitelist = " + srvPrefix);
+                /* ★ 2026-10-29（R2 SC-09/SC-07 端口真源收敛）：端口不再在本文件写死。
+                   真源 = 程序根 `端口.json` 的 default，CTB_PORT 环境变量优先（见 ResolveSrvPort）。
+                   C# 不能 import 前端/Node 的模块 ⇒ 走"一处 JSON 真源 + 各方读取"。
+                   真源读不到 ⇒ **不猜**：srvPrefix 置空 ⇒ 下方 NavigationStarting 关掉整个 http 白名单
+                   （fail-loud 记日志 + fail-safe 拒绝），而不是退回一个写死的默认端口。 */
+                string srvPrefix = string.IsNullOrEmpty(srvPort) ? null : "http://127.0.0.1:" + srvPort;
+                HostBridge.Log("navigation whitelist = " + (srvPrefix ?? "(关闭：端口真源不可读)"));
                 wv.CoreWebView2.NavigationStarting += (s, e) =>
                 {
                     string u = e.Uri;
                     if (u.StartsWith("http", StringComparison.OrdinalIgnoreCase))
                     {
+                        if (srvPrefix == null) { HostBridge.Log("REJECT http nav（端口真源不可读）：" + u); e.Cancel = true; return; }
                         if (!u.StartsWith(srvPrefix, StringComparison.OrdinalIgnoreCase)) e.Cancel = true;
                         return;
                     }
@@ -1013,7 +1065,7 @@ namespace CTBShell2
             System.Threading.Tasks.Task.Run(() =>
             {
                 string resp = null;
-                if (op == "hello") resp = "{\"version\":\"" + EscJs(HostBridge.AppVersionString()) + "\",\"appRoot\":\"" + EscJs(HostBridge.AppRoot) + "\",\"dataRoot\":\"" + EscJs(HostBridge.DataRoot) + "\"}";
+                if (op == "hello") resp = "{\"version\":\"" + EscJs(HostBridge.AppVersionString()) + "\",\"appRoot\":\"" + EscJs(HostBridge.AppRoot) + "\",\"dataRoot\":\"" + EscJs(HostBridge.DataRoot) + "\",\"port\":\"" + EscJs(HostBridge.ResolveSrvPort() ?? "") + "\"}";
                 else if (op == "state") { string s = bridge.ReadState(); resp = s != null ? s : bridge.Rebuild(); }
                 else if (op == "regen") resp = bridge.Rebuild();
                 else if (op == "pendingResolve") resp = bridge.PendingResolve(payload);

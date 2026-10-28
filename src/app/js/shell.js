@@ -85,7 +85,9 @@
 
   /* ================= 状态条 ================= */
   function statusbar(extra) {
-    const modeTxt = { shell: ['ok', '桌面壳直连'], server: ['ok', '本机服务端 ' + (H.port || '7187')], offline: ['off', '离线（无数据）'], boot: ['off', '连接中'] }[H.mode] || ['', H.mode];
+    /* 端口不在前端写默认值（2026-10-29 R2 SC-09）：真源是 src\app\端口.json，
+       由壳注入后经 H.port 带进来。拿不到就显示 "—"，不去猜一个可能错的默认端口。 */
+    const modeTxt = { shell: ['ok', '桌面壳直连'], server: ['ok', '本机服务端 ' + (H.port || '—')], offline: ['off', '离线（无数据）'], boot: ['off', '连接中'] }[H.mode] || ['', H.mode];
     const gen = M.state && M.state.generatedAt ? new Date(M.state.generatedAt).toLocaleString('zh-CN', { hour12: false }) : '—';
     const bad = M.healthBad();
     U.$id('statusbar').innerHTML =

@@ -1,0 +1,82 @@
+#!/bin/sh
+# 拾光小册 · pre-commit 门禁（真源：.githooks/pre-commit，随仓库版本化）
+#
+# 2026-10-29 从 .git\hooks\pre-commit 迁入 .githooks\ 并纳管：
+#   .git\hooks\ 不进版本库 ⇒ 干净克隆里门禁根本不存在（L-02 根因）。
+#   仓库根推导随之改为 `git rev-parse --show-toplevel`：原来的 "$0/../.."
+#   是 .git/hooks 的位置假设，搬到 .githooks/ 后会多退一级、cd 到仓库外。
+#   安装方式：powershell -NoProfile -File scripts\install-hooks.ps1
+#
+# 2026-10-25 用户定规：「我需要你以后只能走正确链路：dev 改 → dev 测 →
+# build-release.ps1 打包 → deploy.ps1 部署（自动写部署记录）。如何设置，
+# 确保以后只能走这条路？」
+#
+# 三道机械检查（任何一道红就不许提交）：
+#   1) tools\lint.mjs           —— 语法/死代码/硬编码路径
+#   2) tests\run.mjs fixture    —— 零依赖自检（不需要 exe、不需要真实题库影像）
+#   3) scripts\verify-deploy.mjs —— 运行区是否被人绕过 deploy.ps1 直接改过
+#
+# 为什么第 3 条要放在提交时：
+#   绕过部署改运行区的人，通常会在几分钟内顺手提交。把"运行区漂移"在**提交关口**
+#   抓出来，是最省事的阻断点 —— 提交后才发现，就得回溯是谁、改了什么、要不要重发。
+#
+# 逃生阀（仅在确有必要时人工执行，务必留痕）：
+#   git commit --no-verify      # 跳过全部检查（会被 git 记录为跳过，慎用）
+set -e
+
+REPO="$(git rev-parse --show-toplevel)"
+cd "$REPO"
+
+# ── 1) lint ──
+if [ -f tools/lint.mjs ]; then
+  echo "[pre-commit] ① lint ..."
+  if ! node tools/lint.mjs > /tmp/gn-lint.log 2>&1; then
+    echo "  ✖ tools/lint.mjs 未通过（详情：/tmp/gn-lint.log 末尾）"
+    tail -n 20 /tmp/gn-lint.log
+    exit 1
+  fi
+  echo "  ✔ lint 通过"
+fi
+
+# ── 2) 零依赖自检 ──
+if [ -f tests/run.mjs ]; then
+  echo "[pre-commit] ② fixture 自检 ..."
+  if ! node tests/run.mjs fixture > /tmp/gn-fixture.log 2>&1; then
+    echo "  ✖ tests/run.mjs fixture 未通过（详情：/tmp/gn-fixture.log 末尾）"
+    tail -n 25 /tmp/gn-fixture.log
+    exit 1
+  fi
+  echo "  ✔ fixture 自检通过"
+fi
+
+# ── 3) 运行区漂移 ──
+if [ -f scripts/verify-deploy.mjs ]; then
+  echo "[pre-commit] ③ 运行区部署一致性 ..."
+  set +e
+  node scripts/verify-deploy.mjs --quiet
+  rc=$?
+  set -e
+  case "$rc" in
+    0) echo "  ✔ 运行区与部署清单一致" ;;
+    3)
+      echo "  ⚠ 运行区尚无部署清单（建立本机制之前部署的历史状态）"
+      echo "    下一步走一次正规链路即可建立基线：build-release.ps1 → deploy.ps1"
+      ;;
+    2)
+      # 2026-10-29 补：verify-deploy 的 exit 2 是"环境/用法错误"——最常见的就是
+      # **干净克隆里根本没有运行区**（默认 <仓库上一级>\GlimmerNote 不存在）。
+      # 旧钩子把它并进 *) 当"被绕过部署改动过"拦下 ⇒ 新克隆第一次提交就被误拦，
+      # 报的还是一句错误诊断。无法评估 ≠ 有漂移，这里降级为可见告警。
+      echo "  ⚠ 无法评估运行区一致性（verify-deploy exit 2：运行区不存在或环境/用法错误）"
+      echo "    干净克隆里这是预期状态；本机有运行区时再跑一次即可验证。"
+      ;;
+    *)
+      echo "  ✖ 运行区被绕过 deploy.ps1 改动过（详见上面清单）"
+      echo "    正确链路：dev 改 → dev 测 → build-release.ps1 → deploy.ps1"
+      exit 1
+      ;;
+  esac
+fi
+
+echo "[pre-commit] 全部通过"
+exit 0

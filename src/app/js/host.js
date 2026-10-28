@@ -56,21 +56,41 @@
   }
   H.fileUrlOfDir = fileUrlOfDir;
 
-  /* 端口：原写死 7187。壳的导航白名单也写死同一个值，改一处必须改两处 ⇒ 做成可覆盖。
-     覆盖顺序：?ctbPort= 查询参数 → localStorage（界面设置一次就记住）→ 默认 7187。 */
+  /* 端口：唯一真源是**程序根 `端口.json`**（C# 壳读它，再由两条路给到页面：
+     ① 壳注入的 window.__ctbPortDefault（首屏就有）；② hello 回执的 port（见 H.init））。
+     页面的覆盖顺序（与壳同口径）：?ctbPort= → localStorage → 壳注入/回执值 → location.port（服务端直连）。
+     ★ 2026-10-29 R2 SC-09：这里**不再写死 7187**。原来 5 处各写一份默认值，改端口要动 5 个文件；
+     现在前端一个默认值都不留 —— 拿不到就返回 ''，probeServer() 直接判"没有服务端"（**不猜**，
+     宁可落离线模式，也不去连一个自己臆想的端口）。 */
   H.port = (function () {
     try {
       const q = new URLSearchParams(location.search).get('ctbPort');
       if (q && /^\d+$/.test(q)) { try { localStorage.setItem('ctb.port', q); } catch (e) { } return q; }
       const saved = localStorage.getItem('ctb.port');
       if (saved && /^\d+$/.test(saved)) return saved;
+      const inj = window.__ctbPortDefault;
+      if (inj && /^\d+$/.test(String(inj))) return String(inj);
+      /* 服务端/浏览器直连：当前页面的端口就是服务端端口（http://127.0.0.1:<port>/index.html） */
+      if (location.port && /^\d+$/.test(location.port)) return location.port;
     } catch (e) { }
-    return '7187';
+    return '';
   })();
-  H.serverOrigin = 'http://127.0.0.1:' + H.port;
+  H.serverOrigin = H.port ? ('http://127.0.0.1:' + H.port) : '';
+  /* 端口来源的自我说明（状态条/排障用；只描述"这个值是从哪来的"，不参与逻辑）。 */
+  H.portSource = (function () {
+    try {
+      const q = new URLSearchParams(location.search).get('ctbPort');
+      if (q && /^\d+$/.test(q)) return '?ctbPort=';
+      if (localStorage.getItem('ctb.port')) return 'localStorage';
+      if (window.__ctbPortDefault) return '端口.json（壳注入）';
+      if (location.port && /^\d+$/.test(location.port)) return '页面端口';
+    } catch (e) { }
+    return '未取得';
+  })();
 
   /* ---------- 通道探测 ---------- */
   async function probeServer() {
+    if (!H.serverOrigin) return false;   /* 端口未知（端口真源没读到）⇒ 不猜、不试（R2 SC-09） */
     try {
       const r = await fetch(H.serverOrigin + '/health', { cache: 'no-store' });
       return r.ok;
@@ -104,6 +124,10 @@
         /* 壳报回来的库目录 = 用户数据真正所在。有它就用它，没有才退回页面推出来的前缀。 */
         if (r && r.dataRoot) { H.dataRoot = r.dataRoot; H.dataRootUrl = fileUrlOfDir(r.dataRoot); }
         if (r && r.appRoot) H.appRoot = r.appRoot;
+        /* 端口真源（2026-10-29 R2 SC-09）：壳读程序根 `端口.json` 得到的端口是权威值，
+           页面不再自带默认值。壳模式下它只用于状态条显示与"服务端直连"探测，
+           但值必须与壳一致 —— 否则"页面认新端口、壳拦旧端口"的老毛病会复现。 */
+        if (r && r.port) { H.port = String(r.port); H.serverOrigin = 'http://127.0.0.1:' + H.port; H.portSource = '端口.json（壳 hello）'; }
       } catch (e) { }
       return;
     }
@@ -123,9 +147,18 @@
       const t = setTimeout(() => { if (pending[id]) { delete pending[id]; reject(new Error('桌面壳响应超时（op=' + op + '）')); } }, timeoutMs || 120000);
       pending[id] = function (m) {
         clearTimeout(t);
-        const data = m.ok ? m.data : null;
-        if (!m.ok) return reject(new Error('壳通道失败 op=' + op));
-        /* 壳把工具失败包在 data.ok=false 里也当业务失败 */
+        /* ① 通道层失败：带上壳给的原因，别再只回一句"壳通道失败 op=X"
+              （R2 SC-03：壳早就算出根因放在 error/err 里，桥在最后一步把它丢了 ⇒
+               所有壳侧失败到界面都没有 file:line 或数据坐标，只能猜）。 */
+        if (!m.ok) return reject(new Error((m && (m.error || m.err)) || ('壳通道失败 op=' + op)));
+        const data = m.data;
+        /* ② 业务层失败：壳把工具失败包在 data.ok=false 里（readFile/regen/openFile/revealFile/recipe…）
+              —— 以前只有这句注释、代码没做（R2 SC-11 观察 1），于是唯一按注释信任它的消费点
+              （ingest.js 的 loadInbox）把失败当成了成功。现在照注释执行：也 reject，并带上壳的原文。 */
+        if (data && data.ok === false) {
+          const why = data.error || data.err || data.regenError || ('壳返回失败 op=' + op);
+          return reject(new Error(String(why)));
+        }
         resolve(data);
       };
       window.ctbHost.postMessage(JSON.stringify({ id, op, payload: payload || {} }));
@@ -133,9 +166,17 @@
   }
 
   /* ---------- 资产 URL（img/md 字段可能已百分号编码；pending.evidence 是原始相对路径） ---------- */
+  /* ★ 2026-10-29（R2 I-02/I-03 代码半边）：**拒绝 http(s) 资产**。
+     改前这一分支把数据里的远程 URL 原样当 `<img src>`（本文件 15 处渲染点都走 H.asset）⇒
+     只要库里出现一条 `img: "https://…"`，打开题库页就会向外部服务器发请求（离线工具的
+     网络出口被数据打开）。当前导入流程只写本地相对路径，所以这一分支**本来就没有数据产出者**
+     —— 保住它等于留一条无人看守的出网口。
+     现在：返回 ''（fail-safe：`<img src="">` 不会发请求），**并且**由门禁层 fail-loud
+     （`_配图门禁.mjs 门禁` 里对配图路径出现 `http(s):` 直接报红，见该文件 `远程图` 判据）
+     —— 只在渲染层静默返回空串会变成新的静默失败。 */
   H.asset = function (rel) {
     if (!rel) return '';
-    if (/^https?:/i.test(rel)) return rel;
+    if (/^https?:/i.test(rel)) return '';
     let r = String(rel).replace(/^\.?\//, '');
     /* 含 %-两位十六进制 视为已编码，原样拼接；否则整段 encodeURI（保留 / 与非 ASCII 转义） */
     const encoded = /%[0-9a-fA-F]{2}/.test(r);

@@ -70,20 +70,62 @@ git revert -m 1 <merge-sha>
 
 | 文件类型 | 要求 | 为什么 |
 |---|---|---|
-| **`.ps1` / `.psm1`** | **UTF-8 带 BOM**，CRLF 换行 | Windows PowerShell 5.1 读**无 BOM** 的 UTF-8 会按 **GBK** 解码：中文注释变成乱码，`'`/`"` 的配对被打断，脚本直接语法报错。本项目所有 `.ps1` 都是带 BOM 的（7/7 实测），新增的必须一致 |
-| `.psm1` 之外的 `*.go / *.js / *.mjs / *.cjs / *.json / *.md` | UTF-8 **无 BOM**，LF 换行 | 这些由 Go/Node 读，无 BOM 更干净；BOM 会被某些解析器当成内容 |
+| **`.ps1` / `.psm1`** | **UTF-8 带 BOM**，CRLF 换行。**禁止 UTF-16（LE/BE）** | Windows PowerShell 5.1 读**无 BOM** 的 UTF-8 会按 **GBK** 解码：中文注释变成乱码，`'`/`"` 的配对被打断，脚本直接语法报错。**UTF-16 虽然 PS 5.1 也读得对，但它会被 git 当成二进制**——见下方「为什么禁止 UTF-16」 |
+| `*.go / *.js / *.mjs / *.cjs /*.json / *.md` | UTF-8 **无 BOM**，LF 换行 | 这些由 Go/Node 读，无 BOM 更干净；BOM 会被某些解析器当成内容 |
 | `*.bat / *.cmd` | CRLF | cmd.exe 对 LF 支持不稳定 |
 
 **自查**（PowerShell）：
 
 ```powershell
-# 前 3 字节是 239,187,191 就是有 BOM
+# 前 3 字节：239,187,191 = UTF-8 带 BOM（✅ 本项目 .ps1 要的就是这个）
+#           255,254 / 254,255 = UTF-16LE / BE（❌ 见下）
+#           其它 = 无 BOM（❌ .ps1 不许）
 [System.IO.File]::ReadAllBytes('scripts\你的脚本.ps1')[0..2] -join ','
+
+# 一眼看全仓：凡是显示 -text 的，就是被 git 当成二进制的
+git ls-files --eol -- '*.ps1'
 ```
 
 **这条规矩是 2026-10-24 踩了两次才写下的**：新建 `tools\lint.mjs` 与 `scripts\setup-remote.ps1`
 时都忘了加 BOM，前者导致我的复测脚本把中文判据全读成乱码、结果整片回退，
 后者导致 `ParseFile` 报三个假语法错。两次都是"看起来像代码写错了，其实是编码"。
+
+### 为什么禁止 UTF-16（2026-10-29 补，这条是真事故）
+
+`.gitattributes` 把 `*.ps1` 声明为 `text eol=crlf`。**git 对"文本"文件会在检出时把 LF 换成 CRLF**——
+而 UTF-16 的码流里**每个 ASCII 字符后面都跟着一个 `00` 字节**，其中就包含 `0A`。
+于是 git 往 UTF-16 码流里插入游离的 `0D`，**打断 16 位码元对齐**：
+
+| | 源工作区 | 新鲜克隆 |
+|---|---|---|
+| `scripts\build-release.ps1` | 38764 B（UTF-16LE，`ParseFile` **0 错**） | 39223 B（**21 个语法错**） |
+| `scripts\deploy.ps1` | 12864 B（UTF-16LE，`ParseFile` **0 错**） | 13034 B（**10 个语法错**） |
+
+**最阴的地方**：克隆里 `git status` 显示**干净**，`tools\lint.mjs` 与 `git diff --check` 都查不出来
+（它们不看 `.ps1` 的编码）。所以 **作者本机永远看不见这个坑，只有别人克隆后才能撞上**——
+而 `build-release.ps1` 与 `deploy.ps1` 正是 README 里的发布命令与部署/回退主链路。
+
+**防线（已机械化，不要再靠记忆）**：`tools\lint.mjs` 现在有**编码断言**（`*.ps1` 必须 UTF-8+BOM，
+其余文本必须 UTF-8 无 BOM）与**行尾断言**（与 `.gitattributes` 一致）。违反会直接红在提交前。
+
+## 五之二、门禁钩子（新克隆必须装一次）
+
+`.git/hooks/` **天生不入库**，所以"我机器上有钩子"不等于"克隆里有钩子"。钩子的版本化真源是 `.githooks\`：
+
+```powershell
+# 克隆后跑一次（幂等，重复跑无副作用）
+powershell -File scripts\install-hooks.ps1
+```
+
+| 钩子 | 拦什么 |
+|---|---|
+| `pre-commit` | `tools\lint.mjs` + `tests\run.mjs fixture` + `scripts\verify-deploy.mjs`（运行区有没有被绕过 `deploy.ps1` 直接改过） |
+| `commit-msg` | 剥掉 UTF-8 BOM + 校验 `type(scope): subject` 格式与首行 ≤72 字符 |
+| `pre-push` | 对 `refs/heads/main` 的**非快进**推送（= 拦强推） |
+
+**诚实说明这条防线管不到什么**：`git reset --hard` 与 `git checkout -- <file>` 在 git 实现里
+**不触发任何钩子**，所以本地**无法**用钩子拦住历史改写——真正的不可改写保证只能来自
+托管平台的分支保护（见 `docs\治理与架构.md §三 N1`）。本地能做的只有：文档纪律 + `pre-push` 拦强推。
 
 ## 六、提交前自检
 

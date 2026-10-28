@@ -64,12 +64,23 @@
   }
 
   /* ---------- 取收件箱 ---------- */
+  /* ⚠ 2026-10-29 修（R2 审计 D-02，与下面 :261 的「组装」同族）：
+     原代码只看 `r.out` —— 工具/壳失败时 stdout 是空的，于是**空字符串被当成"收件箱还是空的"**，
+     页面显示"把错题照片放进去"，用户会一直去反复丢照片，永远看不到真因（配方目录缺失 / node 报错 /
+     壳通道失败）。判据与同文件 `onGenerate` 的 `okFlag` **逐字同口径**（同一族只许一个判据）：
+     失败必须 throw ⇒ 由 catch 落进 `st.inbox.error` ⇒ paintInbox 渲染"读不到收件箱"+ 原因。 */
   async function loadInbox(force) {
     if (st.inbox && !force) return st.inbox;
     try {
       const r = await H.recipe('收件箱', { json: '1' });
+      const okFlag = !(r && r.ok === false) && !(r && r.code && r.code !== 0);
+      if (!okFlag) {
+        throw new Error(String((r && (r.err || r.out)) || '').trim() ||
+          ('读收件箱失败（工具退出码 ' + ((r && r.code) || '?') + '）'));
+      }
       const t = String((r && r.out) || '').replace(/^\uFEFF/, '').trim();
-      st.inbox = t ? JSON.parse(t) : { batches: [], total: 0 };
+      if (!t) throw new Error('读收件箱失败：工具没有返回内容（退出码 ' + ((r && r.code) || '?') + '）');
+      st.inbox = JSON.parse(t);
     } catch (e) {
       st.inbox = { batches: [], total: 0, error: String(e && e.message || e) };
     }

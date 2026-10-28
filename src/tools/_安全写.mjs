@@ -60,12 +60,6 @@ function describe(v) {
   return typeof v;
 }
 
-/** 目录里有无「看起来像这次写坏的」残留临时文件（供自检/体检用） */
-export function findStaleTemps(dir) {
-  try { return fs.readdirSync(dir).filter(n => /\.tmp-\d+-\d+$/.test(n)); }
-  catch { return []; }
-}
-
 /** 写前备份：把旧文件复制到 `_备份-真源\<名>-<时间戳>.json`，同名只留最近 keep 份 */
 export function backupJson(file, { keep = DEFAULT_KEEP, dir } = {}) {
   if (!fs.existsSync(file)) return null;

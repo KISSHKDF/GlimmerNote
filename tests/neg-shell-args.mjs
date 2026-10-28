@@ -118,5 +118,17 @@ A('QuoteArgs 已换成 CRT 规则（bs*2 翻倍）', /bs \* 2/.test(CS));
 A('两个 ExtractString 都委托 TryReadJsonString', (CS.match(/TryReadJsonString\(json, key, out v\)/g) || []).length >= 2);
 A('TryReadJsonString 是 public（跨类可调）', /public static bool TryReadJsonString/.test(CS));
 
+console.log('\n═══ 源码级：壳必须回工具的**真实退出码**（R2 SC-02 / D-01）═══');
+/* 现象（R2 审计 D-01，L1 阻断）：`_配方.mjs 校验` 拒收时退出 1，而壳的 Recipe() 硬编码
+   `{"ok":true,"code":0}` ⇒ 录题页据 code===0 渲染绿色「✔ 校验通过」，其下却印着「✖ 校验未通过：10 处」。
+   工具侧的契约由 `tests\neg-recipe-contract.cjs:141/160` 钉住（通过=0 / 拒收=1 / 参数错=2），
+   但"壳有没有把它透出来"在 fixture 模式下**没有 exe、跑不了真桥**，只能源码级断言。
+   真正的端到端实跑证据在稿 `work\std-check\R2-20261029\reports\R2-FIX3-silent-failures.md`（TEMP 副本重编壳 + CDP）。 */
+A('RunNode 底座把退出码带出来（RunNodeRaw(..., out int outCode, ...)）', /RunNodeRaw\([\s\S]{0,160}?out int outCode/.test(CS));
+A('Recipe 用真实退出码拼 code（不再硬编码 code:0）', /"\{\\"ok\\":true,\\"code\\":\"\s*\+\s*exit/.test(CS));
+A('Recipe 里已无 {"ok":true,"code":0 硬编码', !/\{\\"ok\\":true,\\"code\\":0/.test(CS));
+A('Mark 那行无条件覆盖退出码已删除（D-09：超时 124 不再被抹成被杀进程的码）',
+  !/else code = p\.ExitCode\.ToString\(\);\s*\r?\n\s*code = p\.ExitCode\.ToString\(\);/.test(CS));
+
 console.log('\nRESULT=' + (fail ? 'FAIL' : 'PASS') + ' 断言=' + (pass + fail));
 process.exit(fail ? 1 : 0);

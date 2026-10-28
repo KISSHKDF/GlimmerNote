@@ -17,6 +17,9 @@
  * 退出码 0=全绿；非 0=有 FAIL（发版检查单第 2 步必须 full 全绿）。
  */
 import { spawnSync, spawn } from 'child_process';
+import fs from 'fs';
+import crypto from 'crypto';
+import os from 'os';
 import path from 'path';
 import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
@@ -70,6 +73,79 @@ function run(script, args = []) {
   } else {
     console.log('\n✔ 运行区与部署清单一致（' + String(r.stdout || '').trim().split('\n')[0] + '）');
   }
+}
+
+/* ════════ 真库零写入断言（2026-10-29 R2 新增）════════
+ * 红线 2：`数据\` 是用户的，任何脚本都不得写它。本轮审计实测：`_状态.json` 在**门禁运行中**
+ *   被 `生成状态.mjs` 重写（属派生缓存，但违反红线的字面口径）。"没人报"的原因是没人验 ——
+ *   所以把它变成**每次 quick 都会结账**的机器结论：
+ *     ① 跑之前给真库（`_测试环境.cjs` 解析出的库根）每个文件记 size+mtime，文本类再算 sha256；
+ *     ② 跑完复算，**任何变化都打印是哪个文件**；文件消失/新增同样报；
+ *     ③ 派生缓存（`_状态.json`）被重写 → **显式打印告警 + 派生写入清单**，不判红。
+ *        依据两条：它是可再生的派生件；且 `tests\neg-server-get-readonly.cjs` 会**故意**改它
+ *        （删掉 `_pendingSrc` 再验证"变了才刷"）—— 判红会让 quick 永久红。**"允许"不等于"静默"**：
+ *        清单打在屏幕上，结论也写进本轮报告。
+ *     ④ 其余任何文件变化（真源/索引/台账/题干/图片…）→ 判红并列出文件。
+ * ⚠ 用 `process.on('exit')` 兜底：门禁中段有多处 `process.exit(worst)`，只有挂 exit 钩子才能
+ *   保证**每条退出路径**都结账；同时又在最终汇总前显式结账一次，好让违反并进退出码。 */
+const SNAP_TEXT_EXT = new Set(['.json', '.md', '.txt', '.html', '.htm', '.svg', '.css', '.js', '.mjs', '.cjs']);
+const DERIVED_CACHE = new Set(['_状态.json']);
+function libSnapshot(dir) {
+  const out = new Map();
+  (function walk(d, rel) {
+    let ents; try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      const full = path.join(d, e.name);
+      const r = rel ? rel + '/' + e.name : e.name;
+      if (e.isSymbolicLink()) { out.set(r, { size: -2, mtimeMs: -2, sha: null }); continue; }   // 不跟随重解析点
+      if (e.isDirectory()) { walk(full, r); continue; }
+      let st; try { st = fs.statSync(full); } catch { out.set(r, { size: -1, mtimeMs: -1, sha: null }); continue; }
+      let sha = null;
+      if (SNAP_TEXT_EXT.has(path.extname(e.name).toLowerCase()) && st.size <= 16 * 1024 * 1024) {
+        try { sha = crypto.createHash('sha256').update(fs.readFileSync(full)).digest('hex'); } catch { }
+      }
+      out.set(r, { size: st.size, mtimeMs: st.mtimeMs, sha });
+    }
+  })(dir, '');
+  return out;
+}
+let LIB0 = null, libChecked = false;
+function checkLibZeroWrite() {
+  if (libChecked || !LIB0) return 0;
+  libChecked = true;
+  const after = libSnapshot(E.LIB);
+  const changed = [], derived = [], gone = [], added = [];
+  for (const [rel, a] of LIB0) {
+    const b = after.get(rel);
+    if (!b) { gone.push(rel); continue; }
+    if (a.size !== b.size || a.mtimeMs !== b.mtimeMs || (a.sha && b.sha && a.sha !== b.sha)) {
+      (DERIVED_CACHE.has(rel) ? derived : changed).push(rel + '（' + a.size + 'B → ' + b.size + 'B' + (a.sha && b.sha && a.sha !== b.sha ? '，内容也变了' : '') + '）');
+    }
+  }
+  for (const rel of after.keys()) if (!LIB0.has(rel)) added.push(rel);
+  console.log('\n────────── 真库零写入断言（记录 ' + LIB0.size + ' 个文件）──────────');
+  if (derived.length) {
+    console.log('⚠ 派生缓存被重写（**允许**，但必须可见，故不判红）：' + derived.join('、'));
+    console.log('  依据：_状态.json 是可再生的派生件；且 tests\\neg-server-get-readonly.cjs 会故意删它的');
+    console.log('        _pendingSrc 指纹来验证"台账没变就不刷"。**"允许"不等于"静默"** —— 这就是那份清单。');
+  } else {
+    console.log('✔ 派生缓存（_状态.json）也未被重写');
+  }
+  if (changed.length || gone.length || added.length) {
+    console.log('✖ 真库出现**非派生**变化（红线 2：任何脚本都不得写 数据\\）：');
+    for (const x of changed) console.log('   · 内容/时间戳变了：' + x);
+    for (const x of gone) console.log('   · 文件消失了：' + x);
+    for (const x of added) console.log('   · 多出了文件：' + x);
+    console.log('   合法情形：该测试必须先把库复制到临时目录（见 tests\\_测试环境.cjs 的 assertWritableLib/makeTempLib）。');
+    return changed.length + gone.length + added.length;
+  }
+  console.log('✔ 真库零写入：除上面列出的派生缓存外，' + LIB0.size + ' 个文件全部零变化');
+  return 0;
+}
+if (mode !== 'fixture') {
+  LIB0 = libSnapshot(E.LIB);
+  console.log('\n真库零写入断言：已记录 ' + LIB0.size + ' 个文件的 size+mtime（文本类另算 sha256）—— ' + E.LIB);
+  process.on('exit', () => { checkLibZeroWrite(); });
 }
 
 /* ════════ fixture 模式：零依赖自检（新克隆第一步）════════
@@ -203,6 +279,16 @@ const unitTests = [
   ['neg-server-get-readonly.cjs'],    // GET /api/state 不得写盘
   ['neg-server-origin.cjs'],          // Origin 加固 + POST 只收 json
   ['neg-server-static-path.cjs'],     // 静态服务路径包含（同前缀兄弟目录必须 403）
+  /* ★ 2026-10-29 R2（审计 H-08，两条都是原始 socket 独立复现的）：
+     ① 畸形 request-target 打挂进程（8 种 target 全部 exit=1）—— 用**原始 socket** 复现，
+        并含"掏掉修复必须复现崩溃"的阴性自证；
+     ② 库内 junction/symlink 读到库外文件（GET /link/win.ini → 200）—— 含"掏掉 realpath
+        判据必须读到库外原文"的阴性自证，外加"库根本身是 junction 时不许误伤"的回归
+        （审计给的最小修法漏了这条，会把整站静态文件全判 403）。
+     两个文件还各自守住同批次的服务端加固：413（按字节计）、写路径不回显 ACAO:null、
+     降级必须带 degraded 标记、端口真源 端口.json（读不到 exit 2，不回退 7187）。 */
+  ['neg-server-bad-target.cjs'],      // ★ H-08-A/C/D/E + SC-09：服务端入口加固（73 断言）
+  ['neg-server-junction.cjs'],        // ★ H-08-B：重解析点包含性（29 断言）
   ['neg-v2-smoke.cjs'],                // ★ v2 纯函数回归（2026-10-12 补 process.exit，此前"红了也不红"）
   ['neg-v1-admit-consumption.cjs'],   // ★ v1 JS 必须真的引用 ADMIT/HEALTH（注入了没人读 = 等于没注入）
   ['verify-stem-13.cjs'],             // 13 张补出的题干.html 与盲解所据文本等价
@@ -351,6 +437,8 @@ if (mode === 'full') {
   p.unref();
   await sleep(2500);
 }
+/* 真库零写入断言结账：放在最终汇总**之前**，好让违反并进退出码（早退路径由 exit 钩子兜底） */
+worst = Math.max(worst, checkLibZeroWrite() ? 1 : 0);
 console.log('\n──────────────────────────────');
 console.log(worst === 0 ? `✔ 门禁全绿（${mode}，用时 ${((Date.now() - t0) / 1000).toFixed(0)}s）` : `✖ 门禁未过（exit ${worst}）`);
 process.exit(worst === 0 ? 0 : 1);

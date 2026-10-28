@@ -108,7 +108,11 @@ for (const [si, stu] of STUDENTS.entries()) {
       allCards.push({ stu: stu.name, id: c.id, it });
       const cardDir = path.join(gradeDir, sj, it.dir);
       fs.mkdirSync(cardDir, { recursive: true });
-      fs.writeFileSync(path.join(cardDir, '题干.html'), '\uFEFF' + c.stem + '\n', 'utf8');
+      /* 不写 BOM（2026-10-29）：这里原来显式拼了 '\uFEFF'，是全仓**唯一**故意写 BOM 的
+         生产点 —— 而本仓红线 7 要求非 .ps1 文本一律 UTF-8 无 BOM。BOM 进题干会让
+         "题干首字符"变成 U+FEFF（工具用 readFileSync(p,'utf8') 时会留在字符串里），
+         且已由 tools\lint.mjs 的编码检查判红。 */
+      fs.writeFileSync(path.join(cardDir, '题干.html'), c.stem + '\n', 'utf8');
     }
     idx.subjects[sj] = { items };
   }

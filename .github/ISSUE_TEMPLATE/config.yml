@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 使用问题 / 怎么用
+    url: ../../blob/main/README.md#常见问题faq
+    about: 先看 README 的常见问题（数据在哪、升级会不会弄坏题库、怎么卸载、怎么退回上一版）。
+  - name: 安全漏洞（请不要开公开 issue）
+    url: ../../security/advisories/new
+    about: 漏洞请走私密渠道，详见 SECURITY.md。

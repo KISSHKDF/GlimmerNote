@@ -526,33 +526,6 @@
       ? '已送入打印视图：只有答案册（家长批改用，别给孩子）'
       : '已送入打印视图：只有试卷（不含答案册）');
   }
-  /* 直接打印（2026-10-11 新增，用户要求「像 Word/WPS 点一下就出纸」）：
-     走宿主 `PrintAsync` —— 不弹对话框，直接打到系统默认打印机。
-     与"打印预览"的区别：预览那条要用户在 Edge 预览里再点一次「打印」；
-     这条点一下就走纸，正是用户期望的体验（Word/WPS 就是调打印 API，不是弹预览）。
-     ⚠ 只在**注入完成后**才调 PrintAsync，且**等它返回**再清空打印区（PrintAsync 是 await 的，
-     内容此时已被渲染进作业，清空安全）——这与 `printHtml` 里"绝不提前清空"是两回事，别混。 */
-  async function doPrintDirect(kind) {
-    if (H.mode !== 'shell' || typeof H.printDirect !== 'function') { S.toast('直接打印需要桌面壳', 'warn'); return; }
-    const btn = U.$id('pvPrintNow');
-    const old = btn ? btn.textContent : '';
-    if (btn) { btn.disabled = true; btn.textContent = '🖨 正在送往打印机…'; }
-    try {
-      V.fillPrintArea(kind);
-      const r = await H.printDirect();
-      if (!r || r.ok === false) throw new Error((r && r.error) || '壳返回失败');
-      const st = String(r.status || '');
-      if (/Unavailable/i.test(st)) S.toast('打印机不可用（离线/无纸/驱动异常）——已交给系统，请检查打印机', 'warn', 12000);
-      else if (/OtherError|Abort/i.test(st)) S.toast('打印失败：' + st + '——可改用「📄 存为 PDF」再打印', 'bad', 12000);
-      else S.toast('已送往打印机（' + st + '）。没出纸就看打印队列，或用「📄 存为 PDF」', 'ok', 12000);
-    } catch (e) {
-      S.toast('直接打印失败：' + ((e && e.message) || e) + '——可改用「📄 存为 PDF」', 'bad', 12000);
-      try { console.error('[printDirect] 失败：', e); } catch (_) { }
-    } finally {
-      if (btn) { btn.disabled = false; btn.textContent = old; }
-      setTimeout(() => { const a = U.$id('printArea'); if (a) a.innerHTML = ''; }, 600);
-    }
-  }
   /* 存为 PDF（2026-10-11 新增）：**不依赖打印机** —— 直接把当前卷面写成 PDF 落到 组卷\ 下。
      起因：用户报「点打印没反应」，修好对话框后仍可能因打印机/驱动失败（实测这台机器的 HP 打印作业
      在队列里 `Printing, Retained`、总页数 0，而绕过应用直接用 Windows 打印同样卡住 ⇒ 问题在打印子系统）。

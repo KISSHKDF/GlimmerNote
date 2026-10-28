@@ -15,18 +15,26 @@
 4. **不写死本机路径**（`D:\…`、`C:\Users\…`）。前端由 `src\app\js\host.js` 自推导，脚本用 `$PSScriptRoot`；`tests\portability.cjs` 会拦。
 5. **测试不依赖真实用户数据**，一律走 `fixtures\`。
 6. **不改写历史**：禁 `git reset --hard`、禁 `push --force` 到 `main`、禁 amend 已打 tag 的提交，回退只 `git revert`。
-7. **文件编码 UTF-8 无 BOM、换行 LF**。带 BOM 会直接打断运行（判据见 `CONTRIBUTING.md §五`）。
+7. **文件编码与换行按类型分**（判据见 `CONTRIBUTING.md §五`）：
+   `*.ps1`/`*.psm1` = **UTF-8 带 BOM + CRLF**（PS 5.1 读无 BOM 的 UTF-8 会按 GBK 解码 ⇒ 中文乱码 + 假语法错）；
+   其余文本（`.js/.mjs/.cjs/.json/.md/.html/.css/.yml`）= **UTF-8 无 BOM + LF**。
+   **禁止 UTF-16**——它会被 git 当二进制，而 `.gitattributes` 的 `text eol=crlf` 会往 UTF-16 码流里插游离 `0D`，
+   导致**新克隆拿到的脚本语法错、而你本机永远看不见**（本轮真实事故，21+10 个解析错）。
+   `node tools\lint.mjs` 已有编码/行尾断言，违反会红在提交前。
 8. **一份事实只住一个家**：用户用法 → `README.md`；开发者流程 → `CONTRIBUTING.md`；契约规则 → `docs\作答契约.md`；历史 → `CHANGELOG.md`。同一句规则不在两处各写一份。
 9. **不写会过期的当前状态**（"目前支持 X 版本""已修复"）。这类内容进 `CHANGELOG.md`，不进正文——它是文档最容易被写坏的一类。
 
 ## 每次改完必须跑（少一条就不算完成）
 
 ```powershell
-node tools\lint.mjs                 # 语法/风格门禁
+powershell -File scripts\install-hooks.ps1   # 只需一次：把钩子路径指向 .githooks（core.hooksPath）
+node tools\lint.mjs                 # 语法/编码/行尾/硬编码路径/调试残留
 node tests\run.mjs quick            # 门禁主体（约 3 分钟；发版前跑 full）
 node tests\portability.cjs          # 有没有写死本机路径
 git diff --check                    # 行尾空白/换行污染
 ```
+
+改了 `CHANGELOG.md`：每个版本条目**必须**有 `**变更分类**：…` 与 `**升级影响**：…` 两行（`tools\lint.mjs` 逐版校验）。
 
 改了作答契约相关（`_作答门禁.mjs` / `_空位.mjs` / `answerSlots` 消费方）**另加**：
 
