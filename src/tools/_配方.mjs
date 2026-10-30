@@ -336,6 +336,48 @@ function selfTest(recipeId, actual) {
 const IMG_RE = /\.(jpe?g|png|webp|bmp|tiff?)$/i;
 const INBOX_SKIP = new Set(['_任务单', '_已处理', '_probe']);
 
+/* ══════════════ 「已处理」判定：收件箱里哪些照片**不该再占待处理清单** ══════════════
+ * 用户原话（2026-10-30）：「这个收件箱，把所有的照片都显示出来，又长又多，显示还慢，这个设置明显不合理。
+ *   应该把已处理过的照片全部归档，不要在这个窗口显示了」。
+ * 实测现场：256 张里 184 张早就变成过错题卡，列表却一张不落地全列，还对每张都算 sha256。
+ *
+ * 判据只有一个、且可查证：**照片被 `_原卷台账.json` 里某张卡引用**（page=整页 / import=导入原件）。
+ *   那本台账是"卡 ↔ 原图"的唯一真源（`_原卷台账.mjs` 头部就这么写），
+ *   所以"被它引用过"= 这张照片已经用掉、不再是待处理件。不猜、不看文件名、不看日期。
+ *
+ * 为什么不顺手扫一遍库找"同内容副本"（更彻底）：库里 1000+ 张图 ≈ 10 秒，而这是**每次打开录题页**都会跑的列表；
+ *   宁可少归档几张（保守 = 多显示），也不能让列表变慢 —— 用户抱怨的正是"慢"。
+ * 为什么不把文件真的搬进 `_收件箱\_已处理\`：台账里现有 56 条 `page` 指向 `_收件箱\…`，
+ *   挪文件会让 `_原卷台账.mjs 门禁` 当场整片报红（"整页不在盘"）。归档要动真源，得连台账一起改，
+ *   那是另一件事（要单独批准、可回滚）。本函数**只读**：不动任何文件、不写任何东西。 */
+const LEDGER_NAME = '_原卷台账.json';
+function inboxArchivedSet(root) {
+  const set = new Set();
+  const p = path.join(root, LEDGER_NAME);
+  if (!isFile(p)) return { set, note: '' };          // 新库/空库：正常的"还没有台账"，不是异常
+  let doc;
+  try { doc = readJson(p); }
+  catch (e) {
+    /* 台账坏了 ⇒ **宁可多显示**：退回"全部待处理"，并把原因说出来（不许静默把待处理件藏掉）。 */
+    return { set, note: '原卷台账读不动（' + String((e && e.message) || e).split('\n')[0] + '），已按"全部待处理"显示' };
+  }
+  const cards = (doc && doc.cards && typeof doc.cards === 'object' && !Array.isArray(doc.cards)) ? doc.cards : {};
+  for (const key of Object.keys(cards)) {
+    const c = cards[key] || {};
+    for (const field of ['page', 'import']) {
+      const v = c[field];
+      if (typeof v !== 'string' || !v.trim()) continue;
+      set.add(inboxRelKey(v));
+    }
+  }
+  return { set, note: '' };
+}
+/* 台账里的路径是库根相对的 posix 形态，但老数据里也可能出现反斜杠 / ./ 前缀 / 大小写差异。
+   收件箱侧同样用这个口径归一，两边必须走**同一个函数**，否则"明明登记过却还显示"这种假阴性查不出来。 */
+function inboxRelKey(rel) {
+  return String(rel).replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '').toLowerCase();
+}
+
 function cmdInbox() {
   const root = libraryRoot();
   const inbox = path.join(root, '_收件箱');
@@ -363,7 +405,9 @@ function cmdInbox() {
       return 2;
     }
   }
+  const arch = inboxArchivedSet(root);
   const batches = [];
+  const archived = [];
   if (isDir(inbox)) {
     for (const name of fs.readdirSync(inbox).sort()) {
       if (name.startsWith('.') || INBOX_SKIP.has(name)) continue;
@@ -373,15 +417,16 @@ function cmdInbox() {
       const scanDir = isB ? dir : inbox;
       if (!isB && !IMG_RE.test(name)) continue;
       const files = [];
-      const pushFile = (abs, relBase) => {
+      const archHere = [];
+      const pushFile = (abs) => {
         let st; try { st = fs.statSync(abs); } catch { return; }
         if (!st.isFile() || !IMG_RE.test(path.basename(abs))) return;
-        files.push({
-          name: path.basename(abs),
-          rel: path.relative(root, abs).split(path.sep).join('/'),
-          bytes: st.size,
-          sha256: crypto.createHash('sha256').update(fs.readFileSync(abs)).digest('hex'),
-        });
+        const rel = path.relative(root, abs).split(path.sep).join('/');
+        const base = { name: path.basename(abs), rel, bytes: st.size };
+        /* 已处理 ⇒ 只报个名字/大小（页面用），**不算哈希**。
+           这一条就是"显示还慢"的正面修法：慢的那部分 IO 只花在真正待办的照片上。 */
+        if (arch.set.has(inboxRelKey(rel))) { archHere.push(base); return; }
+        files.push({ ...base, sha256: crypto.createHash('sha256').update(fs.readFileSync(abs)).digest('hex') });
       };
       if (isB) {
         for (const f of fs.readdirSync(dir).sort()) {
@@ -393,28 +438,45 @@ function cmdInbox() {
       } else {
         pushFile(dir);
       }
-      if (!files.length) continue;
-      const bucketName = isB ? name : '（未分批）';
-      let bucket = batches.find((b) => b.name === bucketName);
-      if (!bucket) { bucket = { name: bucketName, files: [] }; batches.push(bucket); }
-      bucket.files.push(...files);
+      if (files.length) {
+        const bucketName = isB ? name : '（未分批）';
+        let bucket = batches.find((b) => b.name === bucketName);
+        if (!bucket) { bucket = { name: bucketName, files: [] }; batches.push(bucket); }
+        bucket.files.push(...files);
+      }
+      archived.push(...archHere);
     }
   }
   const total = batches.reduce((n, b) => n + b.files.length, 0);
+  const archivedCount = archived.length;
 
   if (JSON_OUT) {
-    process.stdout.write(JSON.stringify({ ok: true, root, inboxRel: '_收件箱', batches, total, created: ensured }) + '\n');
+    process.stdout.write(JSON.stringify({
+      ok: true, root, inboxRel: '_收件箱', batches, total,
+      archivedCount, archived, archivedNote: arch.note, created: ensured,
+    }) + '\n');
     return 0;
   }
   console.log('收件箱：' + inbox + (ensured === 'made' ? '（刚为你建好）' : ''));
-  if (!total) {
+  if (arch.note) console.log('  ⚠ ' + arch.note);
+  if (!total && !archivedCount) {
     console.log('（空）把错题照片按批次放进 _收件箱\\<批次名>\\，再回到程序里选它。');
     return 0;
   }
-  console.log('共 ' + batches.length + ' 批 / ' + total + ' 张待处理：');
+  if (!total) {
+    console.log('收件箱里的 ' + archivedCount + ' 张照片都已处理完（已归档，不再列出；文件一张没动）。');
+    return 0;
+  }
+  console.log('共 ' + batches.length + ' 批 / ' + total + ' 张待处理' +
+    (archivedCount ? '（另有 ' + archivedCount + ' 张已处理，已归档不再显示）' : '') + '：');
   for (const b of batches) {
     console.log('  ▸ ' + b.name + '（' + b.files.length + ' 张）');
     for (const f of b.files) console.log('      ' + f.name + '  ' + (f.bytes / 1024).toFixed(0) + ' KB  ' + f.sha256.slice(0, 12));
+  }
+  /* CLI 自查用：--all 才把已归档的名字也打出来（页面通道没有这个 flag，壳的白名单不含它） */
+  if (archivedCount && has('--all')) {
+    console.log('\n  已归档（已处理，不再列出；仍在 _收件箱 里）：' + archivedCount + ' 张');
+    for (const f of archived) console.log('      ' + f.rel);
   }
   return 0;
 }

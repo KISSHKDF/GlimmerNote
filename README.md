@@ -126,9 +126,18 @@ node src\tools\_配方.mjs 组装 --recipe ingest-page --subject 数学 --image 
 # 校验 AI 回传的 cards.json（schema 真校验，不合格逐条指出）
 node src\tools\_配方.mjs 校验 --in cards.json
 
+# 看收件箱还剩哪些没处理（已处理的不再列；--all 连已归档的一起列）
+node src\tools\_配方.mjs 收件箱
+node src\tools\_配方.mjs 收件箱 --all
+
 # 给「换了自己的 AI」打分：拿黄金样本比一比
 node src\tools\_配方.mjs 自检 --recipe ingest-single --in cards.json
 ```
+
+> 收件箱里「已处理」的判据只有一条、可查证：那张照片在 `数据\_原卷台账.json` 里被某张错题卡引用过
+> （`page` 或 `import`）。这类照片不再出现在待处理清单里，也不再为它算内容哈希——列表因此又短又快。
+> **文件不会被移动或删除**；没有台账（新库）或台账读不动时一律退回"全部待处理"并给出原因，
+> 宁可多显示也不许把没做的照片藏起来。
 
 > 配方怎么改、怎么加反例、发现新坑怎么回流，见 [`docs\配方规范.md`](docs/配方规范.md)。
 > 一句话：**改正文要极慎重，加反例随便加**——反例是安全的那一半。

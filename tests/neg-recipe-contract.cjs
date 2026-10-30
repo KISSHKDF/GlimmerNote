@@ -300,6 +300,79 @@ console.log('\n══ 五、组装：原图路径按库根解析（用户实测�
   }
 }
 
+console.log('\n══ 五·补、收件箱「已处理归档」（2026-10-30：不再把所有照片一股脑列出来）══');
+/* 用户原话：「这个收件箱，把所有的照片都显示出来，又长又多，显示还慢…已处理过的照片全部归档，
+   不要在这个窗口显示了」。现场 256 张里 184 张早就建过卡，列表却全列，还对每张算 sha256。
+   这里钉的是**判据本身**与**退化方向**：判错成"藏起来"比判错成"多显示"严重得多，
+   所以任何不确定（没有台账 / 台账坏了）都必须退回"全部待处理"，且原因要说出口。 */
+{
+  const run3 = (args) => spawnSync(process.execPath, [ENGINE, ...args], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  const L2 = path.join(TMP, 'lib-archive');
+  const inb = path.join(L2, '_收件箱');
+  fs.mkdirSync(path.join(inb, '批次乙'), { recursive: true });
+  fs.mkdirSync(path.join(inb, '_已处理'), { recursive: true });
+  /* 内容各不相同（否则 sha 撞车会让"同内容不同件"的判据失真） */
+  const mk = (p, tag) => fs.writeFileSync(p, Buffer.concat([Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]), Buffer.from(tag, 'utf8')]));
+  mk(path.join(inb, '待处理1.png'), 'A');
+  mk(path.join(inb, '批次乙', '待处理2.png'), 'B');
+  mk(path.join(inb, '批次乙', '已建卡-page.png'), 'C');
+  mk(path.join(inb, '已建卡-import.png'), 'D');
+  mk(path.join(inb, '_已处理', '老归档.png'), 'E');
+  const LED = path.join(L2, '_原卷台账.json');
+  fs.writeFileSync(LED, JSON.stringify({
+    version: 1,
+    cards: { '甲|K1': { page: '_收件箱/批次乙/已建卡-page.png', import: '_收件箱/已建卡-import.png' } },
+  }, null, 1), 'utf8');
+
+  const list = run3(['收件箱', '--json', '--data', L2]);
+  const J = list.status === 0 ? JSON.parse(list.stdout) : { batches: [], archived: [], total: -1, archivedCount: -1 };
+  const flat = [];
+  for (const b of (J.batches || [])) for (const f of (b.files || [])) flat.push(f);
+  const names = flat.map(f => f.name).sort();
+  const archNames = (J.archived || []).map(f => f.name).sort();
+
+  A('待处理清单只剩没建过卡的两张', JSON.stringify(names) === JSON.stringify(['待处理1.png', '待处理2.png']), JSON.stringify(names));
+  A('total 只数待处理（侧栏角标/标题都用它）', J.total === 2, 'total=' + J.total);
+  A('archivedCount 数到台账引用的两张（page 与 import 都算）', J.archivedCount === 2, 'archivedCount=' + J.archivedCount);
+  A('archived 带出这两张的名字（页面"显示已归档"要用）', JSON.stringify(archNames) === JSON.stringify(['已建卡-import.png', '已建卡-page.png']), JSON.stringify(archNames));
+  A('★ 已归档件不再算哈希（"显示慢"的正面修法：IO 只花在真待办上）', (J.archived || []).length === 2 && (J.archived || []).every(f => f.sha256 === undefined), JSON.stringify((J.archived || [])[0] || null));
+  A('待处理件仍有 64 位内容指纹（找图/任务单还要靠它）', flat.length === 2 && flat.every(f => /^[0-9a-f]{64}$/.test(f.sha256 || '')), '');
+  A('★ _收件箱/_已处理 下的照片两边都不列（物理归档位，永不回到待办）', !names.includes('老归档.png') && !archNames.includes('老归档.png'), JSON.stringify(names.concat(archNames)));
+
+  const human = run3(['收件箱', '--data', L2]);
+  A('人读输出说清"另有 N 张已处理、已归档不显示"', /已处理/.test(human.stdout) && /2 张/.test(human.stdout), (human.stdout || '').split('\n').filter(l => /待处理/.test(l))[0] || '');
+  A('--all 才列出已归档的名字（CLI 自查用，页面通道没有这个 flag）', /已建卡-page\.png/.test(run3(['收件箱', '--all', '--data', L2]).stdout), '');
+  A('不加 --all 时人读输出不列已归档件（列表要短）', !/已建卡-page\.png/.test(human.stdout), '');
+
+  /* 退化方向①：没有台账（新克隆/空库）⇒ 全部按待处理显示，不许"借机藏起来" */
+  fs.renameSync(LED, LED + '.bak');
+  const noLed = run3(['收件箱', '--json', '--data', L2]);
+  const J2 = noLed.status === 0 ? JSON.parse(noLed.stdout) : { total: -1, archivedCount: -1 };
+  A('没有台账 → 全部按待处理显示（新库不许误藏）', J2.total === 4 && J2.archivedCount === 0, 'total=' + J2.total + ' archived=' + J2.archivedCount);
+
+  /* 退化方向②：台账坏了 ⇒ 仍按待处理显示，且**把原因说出来**（静默藏 = 用户以为照片丢了） */
+  fs.writeFileSync(LED, '{ 这不是 JSON', 'utf8');
+  const badLed = run3(['收件箱', '--json', '--data', L2]);
+  const J3 = badLed.status === 0 ? JSON.parse(badLed.stdout) : { total: -1, archivedNote: '' };
+  A('★ 台账坏了 → 退回"全部待处理"并说明原因（不许静默藏照片）',
+    J3.total === 4 && /台账/.test(String(J3.archivedNote || '')),
+    'total=' + J3.total + ' note=' + String(J3.archivedNote || '').slice(0, 60));
+
+  /* 退化方向③：台账形状不对（cards 是数组，PowerShell 往返就会这样）⇒ 同上，不许抛异常 */
+  fs.writeFileSync(LED, JSON.stringify({ cards: [{ page: '_收件箱/待处理1.png' }] }), 'utf8');
+  const shapeBad = run3(['收件箱', '--json', '--data', L2]);
+  const J4 = shapeBad.status === 0 ? JSON.parse(shapeBad.stdout) : { total: -1 };
+  A('cards 是数组（错形状）→ 退化成全部待处理，不抛异常', J4.total === 4, 'total=' + J4.total);
+
+  /* 路径写法容错：台账里用反斜杠/大小写不同也算已处理（Windows 路径大小写不敏感） */
+  fs.writeFileSync(LED, JSON.stringify({
+    cards: { '甲|K1': { page: '_收件箱\\批次乙\\已建卡-page.png', import: '_收件箱/已建卡-IMPORT.png' } },
+  }), 'utf8');
+  const norm = run3(['收件箱', '--json', '--data', L2]);
+  const J5 = norm.status === 0 ? JSON.parse(norm.stdout) : { archivedCount: -1 };
+  A('★ 台账里的反斜杠/大小写不同也算已处理（不做假阴性）', J5.archivedCount === 2, 'archivedCount=' + J5.archivedCount);
+}
+
 console.log('\n══ 六、指纹（改了内容必须变，否则无法追版本）══');{
   const r1 = engine(['指纹', '--recipe', 'ingest-single', '--json']);
   const r2 = engine(['指纹', '--recipe', 'ingest-single', '--json']);
