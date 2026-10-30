@@ -172,6 +172,12 @@ if (mode === 'fixture') {
     ['chunk-roundtrip.cjs', 'C# 分片往返逐字符相等（源码级断言）'],
     ['safe-write.test.mjs', '原子写底座自检（自带临时目录）'],
     ['neg-recipe-contract.cjs', '配方层契约（五件套/学科分派/schema 真校验/指纹/自检，纯文本资产，不需要任何库）'],
+    /* ★ 2026-10-30 外部安全审计整改的护栏，全部零库依赖（只读本仓源码 / 自建 %TEMP% 夹具）：
+       「加新条目必须先在干净克隆上实测」这条纪律本次**未做**（干净克隆需要重装环境），
+       所以只挂进 quick/full 的 unitTests，不擅自扩 HERMETIC 白名单 —— 要扩请先按规矩实跑。 */
+    ['neg-stem-sanitize.cjs', 'S01/S04 题干净化（尾部 fail-closed + CSS/SVG URL 型值全拦）'],
+    ['neg-shell-source-and-reparse.cjs', 'S03/S07 壳的导航/消息来源/重解析点判据（源码级 + 真 junction 同构）'],
+    ['neg-write-lock-and-txn.cjs', 'D01/D02 跨进程写锁与多文件事务（含崩溃恢复回滚）'],
   ];
   const SKIPPED = [
     ['portability.cjs', '需要已构建的 src\\app\\拾光小册.exe（gitignored）'],
@@ -364,6 +370,32 @@ const unitTests = [
      本用例守三条边界（只跑一路不写 / 两路指纹不等不写 / **已有非空值一律不覆盖**），
      在自建合成库上真跑工具，并已做变异自证（掏掉"不覆盖"规则 → 用例当场红）。 */
   ['neg-answer-source-autofill.cjs'],
+  /* ★ 2026-10-30 外部安全审计（Codex 那轮 11 项）的整改护栏。每条都自带"掏掉修复必红"的阴性自证，
+     所以它们是**真的会红**的门禁，不是"装个样子能绿"。 */
+  /* S03+S07：桌面壳导航白名单 / 消息桥来源 / 重解析点。
+     改前 NavigationStarting 用字符串前缀 `u.StartsWith("http://127.0.0.1:"+port)` ⇒
+     `http://127.0.0.1:7187@attacker.example/` 直接通过（userinfo 伪装另一端主机）；
+     OnWebMessage 处理 readFile/mark/openFile 前不核 e.Source；TryResolveInsideRoot 只做字符串包含性
+     ⇒ 库内一条 `mklink /J link C:\Windows` 就能读库外（HTTP 侧早已补 realpath，C# 桥一直漏着）。 */
+  ['neg-shell-source-and-reparse.cjs'],
+  /* S01+S04：题干净化。改前标签白名单循环结束后 `out += s.slice(last)` 把**未匹配原文**直通，
+     末尾不闭合的 `<img src=x onerror=…` 整段原样输出，再被模板补的 `</div>` 补上闭合 ⇒ 事件脚本执行
+     （审计在真 Edge 里复现过）；CSS 转义 `u\72l(...)` 与 SVG fill/stroke 的 url() 也一路放行。 */
+  ['neg-stem-sanitize.cjs'],
+  /* S02+S05+S06+B01：本机服务端。改前 `Origin: null` 被当可信来源（沙箱 iframe 的源就是 null）、
+     不校验 Host（DNS rebinding 的服务端必要条件）、POST /api/state 不收 JSON 也不拒不受信来源、
+     状态包读失败被空 catch 吞掉继续回旧数据。 */
+  ['neg-server-host-and-token.cjs'],
+  /* D01+D02：写入一致性。改前壳有 Global mutex、HTTP 只有进程内队列、CLI 连进程内锁都没有
+     ⇒ 两条通道"读同一份旧数据 → 各自改 → 各自原子覆盖"，后完成的把前一个的修改整段丢掉
+     （本用例用 6 个真进程跑，一次就抓到锁自身的抢锁竞态）；批改先写台账再写索引，
+     第二次写失败就留下"台账说批改了、索引没动"的半截状态。 */
+  ['neg-write-lock-and-txn.cjs'],
+  ['neg-concurrent-write-lock.cjs'],
+  /* P01：发行包夹带开发机日志。实测 release\GlimmerNote-2026.10.30.03 的 app\shell.log 有 480 字节，
+     内容是本机绝对路径；根因是打包脚本整目录复制界面目录。本用例从 build-release.ps1 里**读出真实
+     黑名单**在临时目录上实跑，并用"规则掏空"做阴性自证。 */
+  ['neg-release-package-hygiene.cjs'],
 ];
 for (const [name] of unitTests) {
   worst = Math.max(worst, run(name));

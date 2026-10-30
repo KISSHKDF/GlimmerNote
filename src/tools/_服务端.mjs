@@ -40,6 +40,25 @@
  *      `ok:true`；`GET /api/state` 在读不到 `_待确认.json` 时不再静默返回过期 pending，改带
  *      `degraded` / `pendingStale` 标记。
  *
+ * ★ 2026-10-30 S02/S05/S06/B01 加强（外部安全审计 4 条，每一条都先在 work\glimmer-audit-fix\_probe
+ *   用独立端口 + 临时库复现过，改前行为见各行"改前实测"）：
+ *   ① S02 **取消对 `Origin: null` 的信任**。`null` 不是"file:// 专用"标记，而是**所有不透明源**
+ *      （攻击者页面里的 `<iframe sandbox>`）共同的字符串，HTTP 层不可区分。改前实测：
+ *      `GET /api/state` 与 `GET /<库内文件>` 都 200 且回 `ACAO: null`，`POST /api/pending` 能穿过
+ *      来源门禁（400 而不是 403）。现在只认"无 Origin（同源/非浏览器）"与同端口白名单，
+ *      另加**每次启动的随机 token**做纵深（见 §Token 段）。取舍：file:// 直开的页面不再连服务端
+ *      —— 那条路本来是桌面壳 postMessage 的活；server 模式只服务自己的同源页面。
+ *   ② S05 **入口校验 Host/authority**（DNS rebinding 的服务端必要条件）。改前只看 Origin：
+ *      `Host: attacker.example:PORT` 且不带 Origin 的请求一路 200（审计用原始 socket 复现）。
+ *      现在只接受 127.0.0.1 / localhost（可带 `:PORT`，写了就必须等于本实例端口），其余 403 + 日志。
+ *   ③ S06 **有副作用的路径统一门禁**：`POST /api/state` 改前既不校验 Content-Type 也不看来源，
+ *      任何本机网页都能反复触发整库重建（分钟级、重写 1.35 MB 状态包）。现在与 `/api/pending`
+ *      同口径只收 `application/json`，并且同一来源 1 秒内重复触发 → 429（已有重建在跑也 429）。
+ *   ④ B01 **磁盘状态包读不出来时必须显式降级**：改前 `GET /api/state` 里刷新 `_状态.json` 的
+ *      `statSync`/`readStateFile` 异常被空 `catch (e) {}` 吞掉，磁盘 JSON 写坏时继续 `200` 返回
+ *      **旧内存快照**（改前实测：generatedAt 与改坏之前完全一样，响应里没有任何标记）。
+ *      现在带 `degraded:'state-unreadable'` + `stateStale:true` + 原因，前端状态条能看到。
+ *
  * 替换关系：本文件取代 _办结监听.mjs（计划任务 CTB-PendingSync 已改指本文件）。
  */
 import http from 'http';
@@ -47,6 +66,7 @@ import { spawn, execFileSync } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { libraryRoot, toolPath, TOOL_DIR, APP_ROOT, WEB_ROOT } from './_库根.mjs';
 import { readJsonStrict } from './_安全写.mjs';
@@ -156,6 +176,18 @@ const insideApp = makeInside(APP);
 const realOr = p => { try { return fs.realpathSync(p); } catch (e) { return p; } };
 const insideRealRoot = makeInside(realOr(ROOT));
 const insideRealApp = makeInside(realOr(APP));
+
+/* ★ 2026-10-30 S02：**给哪一份 index.html 注入 token** 的唯一判据（下面 serveStatic 与注入函数共用）。
+    为什么两个形态都要算：开发区 APP = `<仓库>\src\app`，如果这一级本身是 junction/软链
+    （本机就有把 app 目录做成链接的布局），realpath 之后的真实路径与 APP 拼出来的字符串不同，
+    只比其中一个会**漏注入** —— 漏注入的症状是"页面能打开但所有 /api/* 都是 403"，
+    而日志里只看到一串 forbidden token，很难归因。所以两条都判。 */
+const ROOT_INDEX = path.normalize(path.join(APP, 'index.html')).toLowerCase();
+const ROOT_INDEX_REAL = path.normalize(path.join(realOr(APP), 'index.html')).toLowerCase();
+const isRootIndex = abs => {
+  const a = path.normalize(String(abs)).toLowerCase();
+  return a === ROOT_INDEX || a === ROOT_INDEX_REAL;
+};
 
 /* ---------- 写操作串行化 ---------- */
 let chain = Promise.resolve();
@@ -270,14 +302,95 @@ async function doRebuild() {
      ② CORS 只回显白名单来源（`http://127.0.0.1:PORT` / `http://localhost:PORT`）与 file:// 客户端的 `null`，
         **绝不再发通配 `*`**；无 Origin 的同源/非浏览器客户端不需要 ACAO；
      ③ POST `/api/pending` 只收 `Content-Type: application/json`（实测现有两个客户端 v1 首页 `syncPend`、
-        v2 `host.js pendingResolve` 都带这个头），`fetch` 默认的 `text/plain` 与表单式跨源简单请求一律 415。 */
+        v2 `host.js pendingResolve` 都带这个头），`fetch` 默认的 `text/plain` 与表单式跨源简单请求一律 415。
+   ★ 2026-10-30 S02：上面 ② 里"与 file:// 客户端的 `null`"这一条**已作废**，见紧邻的说明。 */
 const ALLOWED_ORIGINS = new Set(['http://127.0.0.1:' + PORT, 'http://localhost:' + PORT]);
+/* ★ 2026-10-30 S02：**取消对 `Origin: null` 的信任**（改前这里有一行 `if (origin === 'null') return 'null';`）。
+   为什么必须取消：`null` 不是"file:// 专用"标记，它是**所有不透明源**共同的字符串 —— 攻击者页面里
+   一个 `<iframe sandbox>` 发出来的请求，`Origin` 也正是 `null`，两者在 HTTP 层不可区分。
+   改前实测（独立实例 + 临时库）：`GET /api/state` → 200 且 `ACAO: null`；`GET /<库内文件>` → 200
+   并读出文件原文；`POST /api/pending` → 400（**已经穿过来源门禁**，只是被载荷校验拦住）。
+   现在只认两种来源：① 无 Origin（同源请求 / curl 这类非浏览器客户端；浏览器对同源 GET 也不发 Origin）；
+   ② ALLOWED_ORIGINS 里的同端口 http 来源。其余（含 `null`）一律 403，且**不回显任何 ACAO**。
+   **取舍（确认可接受）**：file:// 直开的页面不能再连服务端 —— 它读数据必须靠 `ACAO: null`。
+   三形态里 file:// 走的是**桌面壳 postMessage** 通道；server 模式只服务 `http://127.0.0.1:PORT/`
+   这个同源页面。host.js 对应改成"没有服务端注入的 token 就根本不进 server 模式"（见该文件 §来源门禁）。 */
 function corsOrigin(origin) {
   if (!origin) return null;                            // 同源 / 非浏览器客户端：不需要 ACAO
   if (ALLOWED_ORIGINS.has(origin)) return origin;       // 回显具体来源（不用 '*'，也就不会带上 cookie 语义）
-  if (origin === 'null') return 'null';                 // file:// 客户端；⚠ 与 sandboxed iframe 的不透明源不可区分 → 残余风险
-  return null;
+  return null;                                          // 含 'null'（不透明源）与一切外部来源
 }
+/** 来源是否可信（入口门禁用；与 corsOrigin 同一份白名单，避免"发头一套、判据另一套"） */
+function originTrusted(origin) { return !origin || ALLOWED_ORIGINS.has(origin); }
+
+/* ---------- 请求身份门禁：Host / token（2026-10-30 S05 + S02 纵深） ---------- */
+/* ★ S05：**入口先校验 Host/authority**。改前整个 handler 只看 Origin：`Host: attacker.example:PORT`
+   且不带 Origin 的请求一路 200（审计用原始 socket 复现：`GET /api/state` 200、`GET /<库内文件>` 200
+   并吐出内容）。这正是 DNS rebinding 的服务端必要条件 —— 攻击者域名解析到 127.0.0.1 之后，
+   浏览器发出的就是"同源"请求，Origin 门禁形同虚设，唯一还能看出异常的就是 Host。
+   现在只接受"确实绑在这个端口上的本机名"：
+     · 主机名 127.0.0.1 / localhost；
+     · 端口可省（HTTP/1.1 的 Host 允许省端口，本仓 neg-server-* 的原始 socket 就是 `Host: 127.0.0.1`），
+       写了就必须**等于本实例实际监听的 PORT** —— 写别的端口同样不是我们。
+   ⚠ 刻意不做任何模糊匹配（不认 `127.0.0.1.evil.com`、不认 `localhost.`、不认 IPv6 形态）：
+   rebinding 靠的就是"域名看起来像本机"，放宽一条就等于门没关。IPv6 形态显式拒绝并记日志 ——
+   本服务只绑 127.0.0.1，那种请求本来也到不了，写死"不猜"比写一套半吊子解析安全。 */
+const ALLOWED_HOSTNAMES = new Set(['127.0.0.1', 'localhost']);
+function hostVerdict(rawHost) {
+  const h = String(rawHost == null ? '' : rawHost).trim().toLowerCase();
+  if (!h) return { ok: false, why: 'Host 头缺失（HTTP/1.1 必需）' };
+  const i = h.lastIndexOf(':');
+  const hostname = i < 0 ? h : h.slice(0, i);
+  const portStr = i < 0 ? '' : h.slice(i + 1);
+  if (!ALLOWED_HOSTNAMES.has(hostname)) return { ok: false, why: 'Host 主机名不在白名单：' + hostname };
+  if (portStr) {
+    if (!/^\d{1,5}$/.test(portStr)) return { ok: false, why: 'Host 端口不是十进制整数：' + portStr };
+    if (Number(portStr) !== PORT) return { ok: false, why: 'Host 端口不是本实例端口：' + portStr + '（实际 ' + PORT + '）' };
+  }
+  return { ok: true };
+}
+
+/* ★ S02 纵深：**每次启动一枚随机 token**（不是常量、不写盘、不跨进程共享）。
+   白名单已经收了，为什么还要加它：`Origin` 是**浏览器替我们填的自述**，本机任何程序都能自己造
+   请求行 —— 对"本机另一个进程 / 用户顺手开的调试工具 / 别的程序里内嵌的 WebView"这一类，
+   Origin 门禁没有鉴别力。token 的签发只走一条路：
+     服务**程序根那份 index.html** 时，把 `window.__ctbToken="…"` 注入到 `</head>` 前；
+     页面里的 host.js 再把它带回 `X-CTB-Token` 请求头（唯一出口 apiFetch，见该文件）。
+   强制范围**只限带 `Sec-Fetch-*` 的 `/api/*` 请求**（`Sec-Fetch-*` 是浏览器独占的一组头，
+   非浏览器客户端造不出来也不必造）：curl、本仓 tests\neg-server-*.cjs 的原始 socket/http.request
+   一律不强制 —— 否则所有既有回归装置都要改，而它们本来就不是"本机网页伪造"这条通道。
+   ⚠ 残余风险（必须写在明处）：同机任意进程 `GET /index.html` 就能拿到 token。这挡不住
+   "同机恶意进程"（那本来就不是 HTTP 层能解决的），它挡的是**本机网页**与 **DNS rebinding**
+   这两条真实可用的通道 —— 也就是审计 S02/S05 指的那两条。 */
+const TOKEN = crypto.randomBytes(24).toString('hex');
+const TOKEN_HEADER = 'x-ctb-token';
+/** 请求是否由浏览器发起（判据：带任一 `Sec-Fetch-*` 头）。 */
+function looksLikeBrowser(req) {
+  for (const k of Object.keys(req.headers)) if (k.startsWith('sec-fetch-')) return true;
+  return false;
+}
+/** token 是否匹配（定长比较 + timingSafeEqual：不给"按响应时间逐位猜"留便宜） */
+function tokenVerdict(req) {
+  const got = Buffer.from(String(req.headers[TOKEN_HEADER] || '').trim().toLowerCase(), 'utf8');
+  const want = Buffer.from(TOKEN, 'utf8');
+  if (got.length !== want.length) return false;
+  try { return crypto.timingSafeEqual(got, want); } catch (e) { return false; }
+}
+
+/* 拒绝日志：前 20 条 + 之后每 100 条打一次。为什么节流：本机端口被扫描时不能把 stderr 刷成灾
+   （stderr 会被 shell 的启动器/计划任务收集），但"记日志"这条要求不能因此变成不记。 */
+let rejectCount = 0;
+function logReject(what, req, extra) {
+  rejectCount++;
+  if (rejectCount <= 20 || rejectCount % 100 === 0) {
+    console.error('[ctb-server] ✖ 拒绝请求（累计 ' + rejectCount + '）：' + what +
+      '  method=' + req.method + ' url=' + String(req.url || '').slice(0, 120) +
+      ' host=' + JSON.stringify(req.headers.host || '') +
+      ' origin=' + JSON.stringify(req.headers.origin || '') +
+      (extra ? '  ' + extra : ''));
+  }
+}
+
 function addCommonHeaders(res, origin) {
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Content-Security-Policy', "frame-ancestors 'none'");
@@ -323,6 +436,22 @@ function serveStatic(req, res, urlPath, origin) {
   }
   fs.readFile(real, (err, buf) => {
     if (err) return sendJson(res, 404, { ok: false, error: 'not found: ' + rel }, origin);
+    /* ★ 2026-10-30 S02：**只**给程序根那份 index.html 注入本轮 token（见 isRootIndex 的说明）。
+       注入点选 `</head>` 之前：index.html 里所有 `<script src>` 都在 body 尾部，
+       注入语句早于 host.js 执行 ⇒ host.js 读 `window.__ctbToken` 时一定已经就位。
+       没有 `</head>`（改造过的极简页面）时退化为插到文档最前面，仍然早于任何脚本。 */
+    if (isRootIndex(real)) {
+      const html = buf.toString('utf8');
+      const snippet = '<script>window.__ctbToken=' + JSON.stringify(TOKEN) + ';</script>';
+      const i = html.search(/<\/head\s*>/i);
+      const out = i < 0 ? snippet + html : html.slice(0, i) + snippet + html.slice(i);
+      addCommonHeaders(res, origin);
+      /* token 每轮启动都变：这条响应**绝不能被缓存**，否则重启后页面拿旧 token，症状是
+         "页面能打开、所有 /api/* 全 403"（而且看起来像服务端坏了，极难归因）。 */
+      res.setHeader('Cache-Control', 'no-store');
+      res.writeHead(200, { 'Content-Type': MIME['.html'] });
+      return res.end(Buffer.from(out, 'utf8'));
+    }
     send(res, 200, buf, MIME[path.extname(real).toLowerCase()] || 'application/octet-stream', origin);
   });
 }
@@ -368,16 +497,33 @@ process.on('unhandledRejection', (e) => {
 /* ★ R2 H-08-C：写路径集合。这些路径上的**非 GET** 操作（含 OPTIONS 预检）不再回显
    `Access-Control-Allow-Origin: null` —— 否则不透明源（`<iframe sandbox>` 的 Origin 就是 null）
    能在预检阶段拿到放行，然后带着 `application/json` 穿过来源门禁直达 doResolve 落库。
-   按"路径 + 方法"分而不是只按路径：`GET /api/state`（file:// 客户端取数）必须保持原样。 */
-const WRITE_PATHS = new Set(['/api/pending', '/api/state']);
+   ★ 2026-10-30 S02：**这张表与配套的 wOrigin 补丁已删除** —— 不透明源现在在入口就被 403，
+   根本走不到这里；留着"按路径不发 ACAO"的补丁只会让人误以为 null 源还有别的门。 */
+/* ★ 2026-10-30 S06：重建限流。改前 `POST /api/state` 既不看 Content-Type 也不看来源（null 源直接
+   进 doRebuild），任何本机网页都能让服务端反复 spawn 生成器 —— 生成器重跑一次是**分钟级、整库重写**，
+   连点几次就把磁盘与 CPU 同时打满，而界面上只是"点了没反应"。
+   现在两道：① 同一来源（Origin；无 Origin 归到 'same-origin'）1 秒内重复触发 → 429；
+            ② 已有重建在跑时直接 429（不再往 serialized 队列里堆 —— 队列堆积的观感就是"卡死"）。 */
+const REBUILD_MIN_MS = 1000;
+const rebuildAt = new Map();
+let rebuildBusy = false;
 
 const server = http.createServer(async (req, res) => {
   const origin = req.headers.origin || '';
   /* ★ R2 H-08-A：**整段入口**都在 try 里。改前 `new URL(req.url, …)`（连同上面这两段）在 try
      之外，而 async handler 里抛出的异常 = unhandled rejection = Node 默认**终止进程**。 */
   try {
-    if (origin && corsOrigin(origin) === null) {
-      return sendJson(res, 403, { ok: false, error: 'forbidden origin' }, origin);
+    /* ★ 2026-10-30 S05：Host/authority 先于一切（连 OPTIONS 与静态文件都要过）。
+       不通过时**不带上 origin** 回 ACAO —— 被拒的来源没有任何理由再拿到放行头。 */
+    const hv = hostVerdict(req.headers.host);
+    if (!hv.ok) {
+      logReject('host', req, hv.why);
+      return sendJson(res, 403, { ok: false, error: 'forbidden host（本服务只接受 127.0.0.1/localhost:' + PORT + '）', why: hv.why }, '');
+    }
+    /* ★ 2026-10-30 S02：来源门禁（`Origin: null` 与其他一切外部来源都在这里被挡住，读与写一视同仁） */
+    if (!originTrusted(origin)) {
+      logReject('origin', req);
+      return sendJson(res, 403, { ok: false, error: 'forbidden origin（本服务只接受同源与本机白名单来源）' }, '');
     }
     /* ★ R2 H-08-A：URL 解析就是被畸形 request-target 打爆的那一步
        （`new URL('//[','http://127.0.0.1')` 抛 ERR_INVALID_URL；而浏览器侧
@@ -387,11 +533,25 @@ const server = http.createServer(async (req, res) => {
     catch (e) {
       return sendJson(res, 400, { ok: false, error: 'bad request target', target: String(req.url || '').slice(0, 120) }, origin);
     }
-    const isWriteOp = WRITE_PATHS.has(u.pathname) && req.method !== 'GET';
-    const wOrigin = (origin === 'null' && isWriteOp) ? '' : origin;   // '' → corsOrigin 返回 null → 不发 ACAO
+    /* ★ 2026-10-30 S02 纵深：token 门禁只落在 `/api/*` 上，且**只对浏览器发起的请求**强制
+       （判据 = 带 `Sec-Fetch-*`）。静态资源不强制：它们本来就在本机，且 `GET /index.html`
+       正是 token 的签发口。非浏览器客户端（curl / 原始 socket）不强制，见 TOKEN 段说明。 */
+    const isApi = u.pathname === '/api' || u.pathname.startsWith('/api/');
+    if (isApi && looksLikeBrowser(req) && !tokenVerdict(req)) {
+      logReject('token', req, '浏览器访问 ' + u.pathname + ' 未带有效 X-CTB-Token');
+      return sendJson(res, 403, {
+        ok: false,
+        error: 'forbidden：浏览器访问 /api/* 必须带 X-CTB-Token（token 由服务端注入程序根 index.html）',
+      }, origin);
+    }
     if (req.method === 'OPTIONS') {
-      addCommonHeaders(res, wOrigin);
-      res.writeHead(204, { 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Max-Age': '86400' });
+      addCommonHeaders(res, origin);
+      res.writeHead(204, {
+        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+        /* X-CTB-Token 必须列进允许头：跨源（真机上不会发生，但白名单来源仍可能带它）预检要过 */
+        'Access-Control-Allow-Headers': 'Content-Type, X-CTB-Token',
+        'Access-Control-Max-Age': '86400',
+      });
       return res.end();
     }
     if (req.method === 'GET' && u.pathname === '/health') return sendJson(res, 200, { ok: true, port: PORT, version: 3, hasState: !!state, generatedAt: state && state.generatedAt }, origin);
@@ -400,52 +560,106 @@ const server = http.createServer(async (req, res) => {
          ① 磁盘 `_状态.json` 比内存快照新（别的会话重跑了生成器）→ 纯读换内存，不写盘；
          ② pending 分区：只有 `_待确认.json` 的 mtime/size 变过才 spawn `_状态刷新.mjs pending-if-stale`
             （子支再用内容哈希复核），没变则连 node 进程都不起、更不重写 1.35 MB 状态包。
-         `?section=pending` 的调用方语义不变：台账变过就一定刷，拿到的是最新 pending。 */
+         `?section=pending` 的调用方语义不变：台账变过就一定刷，拿到的是最新 pending。
+         ★ 2026-10-30 B01：改前这里的 `try {…} catch (e) {}` 是**空 catch** —— 磁盘 `_状态.json`
+         被写坏（半截 JSON）、被删、被权限挡住时，异常被吞，紧接着仍 `200` 返回**旧的**内存快照，
+         响应里没有任何标记（实测：generatedAt 与改坏之前一模一样）。"失败必须说失败"在这一次
+         被彻底违反，而且症状最恶劣：用户看到的是"一切正常"，看到的数据可能早于磁盘上的最新改动。
+         现在把失败**显式**带进响应体（`degraded` / `stateStale` / `stateUnreadable` / `degradedDetail`），
+         并且**不更新** `_diskM` —— 下一次 GET 会重试，不会因为一次读失败就永久降级。 */
+      let stateFail = null;
       try {
         const diskM = fs.statSync(STATE).mtimeMs;
         if (diskM > (state?._diskM || 0)) {
-          state = readStateFile();
-          state._diskM = diskM;
+          try { state = readStateFile(); state._diskM = diskM; }
+          catch (e) {
+            stateFail = {
+              code: 'state-unreadable',
+              detail: '磁盘 _状态.json 比内存快照新（mtime=' + diskM + '），但读不出来：' +
+                String((e && e.message) || e) + ' —— 本次返回的是**上一份**内存快照，可能已过期',
+            };
+          }
         }
-      } catch (e) {}
+      } catch (e) {
+        /* stat 就失败：文件没了 / 权限变了。内存里还有快照时同样必须说"这是旧的"。 */
+        if (state) {
+          stateFail = {
+            code: 'state-unreadable',
+            detail: '读不到磁盘 _状态.json（' + STATE + '）：' + String((e && e.message) || e) +
+              ' —— 本次返回的是**上一份**内存快照，可能已过期',
+          };
+        }
+      }
       /* ★ R2 H-08-D：刷新决策与"降级标记"**一起**算 —— 台账 stat 不到时不再静默返回旧 pending。 */
       const fr = pendingFreshness();
       if (fr.status === 'stale') {
         await serialized(async () => { if (pendingNeedsRefresh()) refreshPendingSection(); });
       }
       const body = Object.assign({}, state || { error: 'no state' });
+      if (stateFail) {
+        body.degraded = stateFail.code;
+        body.stateStale = true;
+        body.stateUnreadable = true;
+        body.degradedDetail = stateFail.detail;
+        console.error('[ctb-server] ⚠ ' + stateFail.detail);
+      }
       if (fr.status === 'unreadable') {
-        body.degraded = 'pending-ledger-unreadable';
+        /* 两条降级可能同时发生（状态包坏 + 台账也没了）：**都要说**。`degraded` 只有一个位置，
+           所以状态包优先占它（更严重），台账的原因接在 detail 后面，并单列 pendingStale。 */
+        const pd = '读不到台账 ' + PENDING + '：' + fr.error + '（本次返回的 pending 分区可能已过期）';
         body.pendingStale = true;
-        body.degradedDetail = '读不到台账 ' + PENDING + '：' + fr.error + '（本次返回的 pending 分区可能已过期）';
-        console.error('[ctb-server] ⚠ ' + body.degradedDetail);
+        if (!body.degraded) { body.degraded = 'pending-ledger-unreadable'; body.degradedDetail = pd; }
+        else body.degradedDetail = body.degradedDetail + '；' + pd;
+        console.error('[ctb-server] ⚠ ' + pd);
       }
       return sendJson(res, 200, body, origin);
     }
     if (req.method === 'POST' && u.pathname === '/api/state') {
-      const r = await doRebuild();
-      return sendJson(res, r.ok ? 200 : 500, r.ok ? r.state : r, wOrigin);
+      /* ★ 2026-10-30 S06：与 `/api/pending` 同口径只收 JSON 体（改前是**直接** doRebuild）。
+         `fetch` 默认的 text/plain、表单、`<img>` 这类"简单请求"跨源伪造没有预检，这一条把它们挡在门外。 */
+      const ctype = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+      if (ctype !== 'application/json') {
+        return sendJson(res, 415, { ok: false, error: 'unsupported media type（POST /api/state 只收 application/json）' }, origin);
+      }
+      const key = origin || 'same-origin';
+      const now = Date.now();
+      const last = rebuildAt.get(key) || 0;
+      if (now - last < REBUILD_MIN_MS) {
+        return sendJson(res, 429, {
+          ok: false, error: '重建过于频繁：同一来源 ' + REBUILD_MIN_MS + 'ms 内只能触发一次',
+          retryAfterMs: REBUILD_MIN_MS - (now - last),
+        }, origin);
+      }
+      if (rebuildBusy) {
+        return sendJson(res, 429, { ok: false, error: '已有一次全量重建在进行中，等它结束再点' }, origin);
+      }
+      rebuildAt.set(key, now);
+      rebuildBusy = true;
+      try {
+        const r = await doRebuild();
+        return sendJson(res, r.ok ? 200 : 500, r.ok ? r.state : r, origin);
+      } finally { rebuildBusy = false; }
     }
     if (req.method === 'POST' && u.pathname === '/api/pending') {
       /* 最小可行鉴别（BUG-17）：只收 JSON 体。表单/`<img>` 之类的"简单请求"跨源伪造没有预检，
          这条能挡住；`fetch` 默认的 text/plain 也挡住。现有客户端两个都带 application/json，不受影响。 */
       const ctype = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
       if (ctype !== 'application/json') {
-        return sendJson(res, 415, { ok: false, error: 'unsupported media type（POST /api/pending 只收 application/json）' }, wOrigin);
+        return sendJson(res, 415, { ok: false, error: 'unsupported media type（POST /api/pending 只收 application/json）' }, origin);
       }
       let body;
       try { body = parseJsonText(await readBody(req), '请求体'); }
       catch (e) {
         /* ★ R2 H-08-E：超限单独给 413（改前客户端只看到 ECONNRESET，读不到任何原因） */
         if (e && e.code === 'ETOOLARGE') {
-          return sendJson(res, 413, { ok: false, error: String(e.message), limit: e.limit, got: e.got == null ? null : e.got }, wOrigin);
+          return sendJson(res, 413, { ok: false, error: String(e.message), limit: e.limit, got: e.got == null ? null : e.got }, origin);
         }
-        return sendJson(res, 400, { ok: false, error: 'bad json' }, wOrigin);
+        return sendJson(res, 400, { ok: false, error: 'bad json' }, origin);
       }
       const list = (Array.isArray(body && body.resolves) ? body.resolves : []).filter(r => r && r.id && (r.action === '答' || r.action === '作废'));
-      if (!list.length) return sendJson(res, 400, { ok: false, error: 'resolves empty or malformed' }, wOrigin);
+      if (!list.length) return sendJson(res, 400, { ok: false, error: 'resolves empty or malformed' }, origin);
       const r = await doResolve(list);
-      return sendJson(res, r.ok ? 200 : 500, r, wOrigin);
+      return sendJson(res, r.ok ? 200 : 500, r, origin);
     }
     if (req.method === 'GET') return serveStatic(req, res, u.pathname, origin);
     return sendJson(res, 404, { ok: false, error: 'not found' }, origin);
@@ -456,4 +670,8 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, '127.0.0.1', () => {
   console.log('[ctb-server] http://127.0.0.1:' + PORT + '  root=' + ROOT + '  state=' + (state ? state.generatedAt : 'MISSING(will rebuild on first /api/state)'));
+  /* token 全文不打印（会被启动器/计划任务收集进日志）：只报前 6 位以便按"同一轮"对账。
+     页面拿 token 的正规路径是服务端注入的 index.html，不是读这行日志。 */
+  console.log('[ctb-server] 门禁：Host 只认 127.0.0.1/localhost:' + PORT + '；Origin 只认同源与本机白名单；' +
+    '浏览器访问 /api/* 需 X-CTB-Token（token 前 6 位 ' + TOKEN.slice(0, 6) + '…，每轮启动随机）');
 });

@@ -505,6 +505,17 @@
     if (s.indexOf('/') >= 0) return s;                         // 自带目录 → 同上
     return dir ? dir + '/' + s : s;
   };
+  /* 净化出口的**尾部转义**（S01 的唯一实现；tests/neg-stem-sanitize.cjs 的阴性自证按名字
+     掏掉它，改名必须同步那一条用例）。
+     只转 `<`：它是"能形成一个标签"的唯一入口。`&`/`>` 必须原样留着，否则题干里既有的
+     实体引用（&nbsp;、&lt; 等）在末尾会被印成字面量，与中段正文的口径分叉。 */
+  M.escapeStemTail = function (tail) {
+    return String(tail == null ? '' : tail).replace(/</g, '&lt;');
+  };
+  /* 标签属性串里是否出现**引号外**的裸 `<`（= 标签边界不可信）。 */
+  M.hasBareLt = function (attrs) {
+    return String(attrs == null ? '' : attrs).replace(/"[^"]*"|'[^']*'/g, '').indexOf('<') >= 0;
+  };
   /* 净化 + 相对图重写（asset 由 host 提供：题库根相对路径 → 可加载 URL） */
   M.stemHtmlSafe = function (x) {
     /* ⚠ 2026-10-11 修（F-58 其实没修完）：原先 `if (!card || !card.stemHtml) return '';` 直接早退，
@@ -530,9 +541,31 @@
       const closing = m[0].charAt(1) === '/';
       const name = m[1].toLowerCase();
       if (M.STEM_TAGS.indexOf(name) < 0) continue;                 // 非白名单标签：丢标签留正文
+      /* ★ 2026-10-30（S01 配套）：属性串里出现**引号外的裸 `<`** ⇒ 这个标签的边界已不可信
+         （正则为了凑出结尾的 `>`，把后面的标签也吞进了属性串），整只标签丢弃，
+         不按"近似"重建 —— 从一个说不清边界的片段里凭空造标签，正是本类漏洞的形态。 */
+      if (!closing && M.hasBareLt(m[2])) continue;
       out += '<' + (closing ? '/' : '') + name + (closing ? '' : M.filterAttrs(m[2], dir, asset)) + (closing ? '' : (/\/\s*$/.test(m[3]) ? ' /' : '')) + '>';
     }
-    out += s.slice(last);
+    /* ★ 2026-10-30（审计 S01，高）：尾部残留必须**转义后**拼回，原来这里直接
+       `out += s.slice(last)` 把没被正则吃掉的原文原样贴进 HTML。
+       根因：上面的标签正则只匹配**完整标签**（结尾必须有一个 `>`），而浏览器的 HTML 解析器
+       不是这样 —— 末尾那截 `<img src=x onerror=…` 会被它当成"标签还没写完"，紧接着模板
+       追加的 `</div>` 恰好把缺失的 `>` 补上 ⇒ 残缺片段凭空变成一个带事件属性的**活标签**。
+       三个变体实测（修复前全部原样返回）：末尾无 `>` / 引号未闭合 / 末尾裸 `<`。
+       修法（fail-closed）：尾部按纯文本处理，见 M.escapeStemTail 段。
+       代价：残缺片段会以原文形式显示在题面上 —— AI 生成的题干坏了应当看得见，
+       而不是被静默丢掉、让用户以为"这题本来就没图"。
+       ── 为什么只修**末尾**、中段正文（上面的 `s.slice(last, m.index)`）不动 ──
+       中段的未匹配片段看着也一样可疑，但实测走不到执行：浏览器在标签状态下对引号的消费
+       规则与上面那个正则**逐个字符同序**（成对的引号整段跳过、其余字符逐个吃），因此凡是
+       浏览器能拼成"带 on* 属性的标签"的片段，正则也一定能匹配到它 —— 要么被 filterAttrs
+       摘掉 on*，要么因标签不在白名单里整只丢掉。两者唯一的真差异在**边界**：浏览器遇到
+       输入结束会丢弃未完成的标签，而本模块的输出总是被模板拼进容器
+       （`'<div class="q-stem">' + … + '</div>'`），容器自带的 `>` 把尾部那截补全成标签。
+       所以可执行面只在末尾；中段残留的后果是"后面的标记被吞掉"（内容缺失，修复前就存在，
+       与注入无关），不在本次改动范围内。 */
+    out += M.escapeStemTail(s.slice(last));
     /* fig 兜底（F-58）：题干里既无 <img> 也无 <svg> 时才补，避免与内联图重复 */
     if (card.fig && !/<(img|svg)\b/i.test(out)) out += '<div class="stem-figure"><img src="' + U.esc(H.asset(card.fig)) + '" alt="题图"></div>';
     /* 填空空位（2026-10-16）：转 .blank 的实现唯一化到 M.stemBlankify（纯文本兜底同用）。
@@ -744,7 +777,62 @@
     return out;
   };
 
-  /* 属性级白名单（`on*` 一律剔除；src 重写到卡片目录；style 值过危险函数） */
+  /* ══════════════════════════════════════════════════════════════════════════
+     CSS / SVG 值安全（2026-10-30 审计 S04 的唯一实现）
+     ══════════════════════════════════════════════════════════════════════════
+     缺陷（两个变体，同一个根因）：
+       ① style 的判据是"在**原文**里找字面 `url(`"，而 CSS 允许反斜杠转义：
+          `u\72l(`、`\75rl(`、`\000075 rl(` 解析后都是 url()（Edge 的 getComputedStyle
+          实测会把它当远程 URL 去取）⇒ 判据比的是**写法**，浏览器执行的是**解析结果**。
+       ② fill/stroke/marker-* 等 SVG 呈现属性**整条原值直通**：`fill="url(https://…)"`
+          （SVG 的 paint 值本来就是 url() 的合法用法，指向远程图片）⇒ 题面一渲染就出网。
+     修法：先把 CSS 转义还原成字符，再对**归一化后的值**判危险形态；URL 型值一律拒绝
+     （本库的题干样式只有布局用途：width/display/text-align/max-width…，没有一条合法题干
+     需要 url()，所以"一律拒"不会误伤存量）；SVG 的 URL 型属性另立一条白名单：
+     none / 颜色值 / url(#本地id)。
+     ⚠ 判据表只有一份（M.CSS_DANGER_RE），style 与 SVG paint 共用 —— 两处各写一份必然漂移。 */
+
+  /* CSS 反斜杠转义 → 字符：十六进制形态最多 6 位、其后**一个**空白被吃掉（CSS 规范）；
+     其余 `\<字符>` 取字符本身（`\\` → `\` 也走这条）。 */
+  M.cssUnescape = function (v) {
+    return String(v == null ? '' : v)
+      .replace(/\\([0-9a-fA-F]{1,6})\s?/g, (m, hex) => {
+        const cp = parseInt(hex, 16);
+        if (!(cp > 0 && cp <= 0x10ffff)) return '';        // \0 / 越界码点：CSS 里本就无意义，直接丢
+        return String.fromCodePoint(cp);
+      })
+      .replace(/\\([\s\S])/g, '$1');
+  };
+  /* 危险函数/值的唯一判据表：URL 型一律拒（含 ie 时代的 expression / behavior / -moz-binding） */
+  M.CSS_DANGER_RE = /url\s*\(|image-set\s*\(|@import|expression\s*\(|-moz-binding|\bbehaviou?r\s*:|javascript\s*:|vbscript\s*:/i;
+  /* style 值是否安全（true = 可保留）。顺序：先还原转义，再剥注释 ——
+     注释剥离在 CSS 里发生在分词**之前**，所以"把 url 拆成两半"的写法同样会被还原出来：
+     在 url 的两个字母之间插一段 CSS 注释，归一化后仍然是 url( （第三种攻击写法）。 */
+  M.styleSafe = function (raw) {
+    const s = M.cssUnescape(raw).replace(/\/\*[\s\S]*?\*\//g, '');
+    return !M.CSS_DANGER_RE.test(s);
+  };
+  /* SVG 里"值可以是 URL"的呈现属性。白名单内当前可达的是 fill/stroke/marker-*；
+     clip-path/mask/filter 暂时不在 STEM_ATTRS 里，列进来是为了将来放开时不必再想一遍
+     （它们若被放行，这条判据必须已经生效，否则就是第二个 fill 漏洞）。 */
+  M.PAINT_ATTRS = ['fill', 'stroke', 'marker-start', 'marker-mid', 'marker-end', 'clip-path', 'mask', 'filter'];
+  /* SVG 呈现属性值是否安全：只认 none / 颜色 / 本地 #id 引用，其余（含远程 url()）一律拒 */
+  M.paintSafe = function (raw) {
+    const s = M.cssUnescape(raw).trim();
+    if (!s) return true;
+    if (/^(?:none|currentcolor|transparent|inherit|initial|unset|context-fill|context-stroke)$/i.test(s)) return true;
+    if (/^#[0-9a-f]{3,8}$/i.test(s)) return true;                       // #f00 / #00ff00 / #aabbccdd
+    if (/^(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\s*\([^()]*\)$/i.test(s)) return true;  // 颜色函数
+    if (/^[a-z]+$/i.test(s)) return true;                               // 命名颜色（red / steelblue …）
+    /* 唯一允许的 url()：本地 #id 引用（题干里 pattern / marker 都是这个用法）；
+       末尾允许一个 fallback 颜色（`url(#p1) none` 是 SVG 的合法写法）。
+       ⚠ `#` 后面**不限字符集**（只排除引号/括号/空白）：题干里 id 可能是中文（`url(#图案)`），
+         写窄成 ASCII 会把存量的纹理填充整块拒掉 —— 那是把安全修复变成版面回归。 */
+    if (/^url\s*\(\s*(['"]?)#[^()'"\s]+['"]?\s*\)(?:\s+(?:none|#[0-9a-f]{3,8}|[a-z]+))?$/i.test(s)) return true;
+    return false;
+  };
+
+  /* 属性级白名单（`on*` 一律剔除；src 重写到卡片目录；style / SVG paint 值过 URL 型判据） */
   M.filterAttrs = function (raw, dir, asset) {
     const re = /([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g;
     let m, out = '';
@@ -759,7 +847,13 @@
         if (/^\s*javascript:/i.test(v)) continue;
         v = asset(M.qualifyRel(dir, v));                           // ← F-57 的修复点
       } else if (name === 'style') {
-        if (/url\s*\(|expression\s*\(|javascript:|behavio[u]?r\s*:|-moz-binding/i.test(v)) continue;
+        /* ★ 2026-10-30（S04）：判据换成 M.styleSafe —— CSS 转义归一化后再判、URL 型一律拒。
+           旧判据只在原文里找字面 url(，`u\72l(` 这类写法整条漏过（见本文件 M.CSS_DANGER_RE 段）。 */
+        if (!M.styleSafe(v)) continue;
+      } else if (M.PAINT_ATTRS.indexOf(name) >= 0) {
+        /* ★ 2026-10-30（S04）：fill/stroke/marker-* 的 URL 型值同罪（远程 url() 一渲染就出网）。
+           只丢这个属性，元素与图形本身保留 —— 颜色坏了大不了黑白，整块图没了题就不可解。 */
+        if (!M.paintSafe(v)) continue;
       } else if (name === 'href') {
         if (!/^(https?:|data:image\/|#|\.{0,2}\/)/i.test(v)) continue;
       }

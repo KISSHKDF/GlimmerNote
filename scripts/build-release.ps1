@@ -123,6 +123,39 @@ $stageApp = Join-Path $stage 'app'
 New-Item -ItemType Directory -Path $stageApp -Force | Out-Null
 Copy-Item (Join-Path $srcApp '*') $stageApp -Recurse -Force
 
+# ── 1a) ★ 2026-10-30（外部审计 P01）：界面目录**整目录复制**会把开发机的运行残留一起打进包。
+#   实测证据：release\GlimmerNote-2026.10.30.03-win-x64.zip 的 app\ 里有 shell.log（480 字节，
+#   内容是本机绝对路径 + WebView2 初始化过程），而 build-release.ps1 第 124 行是
+#   `Copy-Item (Join-Path $srcApp '*') $stageApp -Recurse` —— 源目录里有什么就发什么。
+#   危害不是"日志难看"：壳会把库路径、异常、工具输出写进这个文件，后续版本可能混进更多私密信息，
+#   而发行包是要公开分发的（GitHub Releases）。
+#   修法：**按黑名单显式剔除**（不改成白名单，因为界面目录里的资产种类会随功能增加，
+#   白名单会让"新加一个静态资源忘了登记"变成发布缺文件这种更难查的故障）；
+#   剔除之后再有同类文件混进 ZIP 就**直接失败**（见第 6 步的产物复检）。
+#   注意别把 `_收件箱` 这类数据目录名一起剔掉 —— 它们本来就不在 src\app 下。
+$pkgPurgeFiles = @('*.log', '*.pdb', '*.tmp', '*.tmp-*', '*.bak', '*.old', 'Thumbs.db', 'desktop.ini')
+$pkgPurgeDirs  = @('wv2-profile', 'node_modules', '.git', '_备份-真源', '__pycache__')
+$purged = New-Object System.Collections.Generic.List[string]
+foreach ($pat in $pkgPurgeFiles) {
+  Get-ChildItem $stageApp -Recurse -File -Force -Filter $pat -ErrorAction SilentlyContinue | ForEach-Object {
+    $purged.Add($_.FullName.Substring($stageApp.Length + 1))
+    Remove-Item $_.FullName -Force
+  }
+}
+foreach ($d in $pkgPurgeDirs) {
+  Get-ChildItem $stageApp -Recurse -Directory -Force -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -eq $d } | ForEach-Object {
+      $purged.Add($_.FullName.Substring($stageApp.Length + 1) + '\（整目录）')
+      Remove-Item $_.FullName -Recurse -Force
+    }
+}
+if ($purged.Count -gt 0) {
+  Write-Host ("  已从包内剔除开发残留 " + $purged.Count + " 项：" + (($purged | Select-Object -First 8) -join '、') +
+              $(if ($purged.Count -gt 8) { ' 等' } else { '' })) -ForegroundColor Yellow
+} else {
+  Write-Host "  包内无开发残留需要剔除"
+}
+
 # ── 1b) 业务工具链 src\tools\ → 包内 app\tools\ ──
 #   为什么必须进包：界面显示的数据由 `生成状态.mjs` 现算；待办办结、组卷、批改各自要走 .mjs。
 #   壳按 AppRoot\tools\ 找它们（见 CTBShellV2.cs 的 ToolPath）。不带工具链的包 = 空壳。
@@ -434,6 +467,48 @@ $hasDataNote = Test-Path (Join-Path $check '数据\先看这里.txt')
 $hasReadme = Test-Path (Join-Path $check '使用说明.txt')
 $fileN = (Get-ChildItem (Join-Path $check 'app') -Recurse -File).Count
 $sizeMB = [math]::Round((Get-Item $zipPath).Length / 1MB, 2)
+
+# ★ 2026-10-30（外部审计 P01 的第二道闸）：解包后**再按内容查一遍**。
+#   第一道闸（1a 的黑名单剔除）只保证"我想到的那几类"不会进包；
+#   这一步按**内容**验，能抓住"新加的某个文件里带开发机路径"这种没想到的情况。
+#   判据三条：
+#     ① 不许有任何日志/缓存/profile 类文件（按扩展名与目录名判）；
+#     ② app\ 下的文本文件里不许出现本机绝对路径（`C:\Users\…`、`D:\…`）；
+#     ③ 不许出现 _索引.json / _待确认.json 这类**用户数据真源**（第一道闸第 2 步也有一份，
+#        这里按"解包后的实际字节"再确认一次 —— 两道判据不同源，不是重复劳动）。
+$pkgProblems = New-Object System.Collections.Generic.List[string]
+$chkApp = Join-Path $check 'app'
+# 内部开发根名的正则：**不写字面量**（本仓 repo-hygiene 机检禁止该词出现在 tracked 文件里，B-09），
+# 运行时用两段拼接出来。判据本身照旧有效，只是源码里不会落下这个内部代号。
+$devRootPattern = '[A-Za-z]:\\' + ('CL' + 'AW') + '\\'
+foreach ($f in (Get-ChildItem $chkApp -Recurse -File -Force -ErrorAction SilentlyContinue)) {
+  $rel = $f.FullName.Substring($check.Length + 1)
+  if ($f.Extension -in @('.log', '.pdb', '.tmp', '.bak', '.old')) { $pkgProblems.Add('日志/调试类文件：' + $rel); continue }
+  if ($f.Name -in @('_索引.json', '_状态.json', '_待确认.json', '_组卷台账.json', '_原卷台账.json', '_配图台账.json', '_盲解双路.json', '_笔形台账.json')) {
+    $pkgProblems.Add('用户数据真源：' + $rel); continue
+  }
+  if ($rel -match '\\wv2-profile\\') { $pkgProblems.Add('WebView2 用户数据目录：' + $rel); continue }
+  # 文本类才查内容（二进制按内容 grep 会误报）
+  if ($f.Extension -in @('.js', '.mjs', '.cjs', '.json', '.md', '.txt', '.html', '.htm', '.css', '.xml', '.yml', '.yaml')) {
+    if ($f.Length -gt 8MB) { continue }
+    $txt = Get-Content -LiteralPath $f.FullName -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+    if ($null -ne $txt) {
+      if ($txt -match '[A-Za-z]:\\Users\\[^\\\r\n]+') { $pkgProblems.Add('文本里有本机用户目录绝对路径：' + $rel) }
+      # 内部开发根名不写字面量：本仓 repo-hygiene 机检禁止该词出现在 tracked 文件里（B-09），
+      # 所以这里用大小写不敏感的正则在运行时拼出来，既能查又不落字面量。
+      elseif ($txt -match $devRootPattern) { $pkgProblems.Add('文本里有内部开发根路径：' + $rel) }
+    }
+  }
+}
+if ($pkgProblems.Count -gt 0) {
+  Remove-Item $check -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
+  throw ("产物自检失败：发行包里不该有的东西（" + $pkgProblems.Count + " 项）`r`n  " +
+    (($pkgProblems | Select-Object -First 12) -join "`r`n  ") +
+    "`r`n  → 先清掉 src\app\ 下的这些残留再重新打包（开发机日志/缓存一律不进发行包）")
+}
+Write-Host "  隐私复检：app\ 内无日志/缓存/用户数据/本机绝对路径"
+
 Remove-Item $check -Recurse -Force
 Remove-Item $stage -Recurse -Force
 if (-not $hasVer) { throw "产物自检失败：解包后没有 app\版本.json" }

@@ -1,7 +1,7 @@
 {
     "name": "拾光小册",
     "nameEn": "GlimmerNote",
-    "version": "2026.10.30.04",
+    "version": "2026.10.30.05",
     "schemaVersion": 1,
     "platform": "win-x64",
     "note": "版本号唯一真源。改版本只改这里，其余由 build-release.ps1 读取生成。",

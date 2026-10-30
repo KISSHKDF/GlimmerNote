@@ -15,7 +15,83 @@
 
 版本号遵循日期制 `YYYY.MM.DD.NN`。版本号唯一真源：`VERSION.json`。
 
-## [2026.10.30.04] - 2026-10-30 · 顶栏副标题停在"收件箱空着"：派生数字取早了一帧
+## [2026.10.30.05] - 2026-10-30 · 外部安全审计整改：11 项漏洞/隐私/一致性缺陷全部修掉并变成门禁
+
+**变更分类**：Security / Fixed
+**升级影响**：只换程序目录 `app\`；`数据\` 与数据格式**一个字节都不动**。三条**用户可感知的行为变化**：
+
+1. **浏览器备用通道不再接受 `file://` 直开的页面**：本机服务端取消了不透明源（`Origin: null`）信任。
+   桌面壳（双击「拾光小册.exe」）走 postMessage 直连，**完全不受影响**；浏览器方式请开
+   `http://127.0.0.1:<端口>/`（同源，正常可用）。直接双击 `index.html` 的旧用法会显示「离线（无数据）」，
+   而不是像以前那样悄悄读到库。
+2. **「重建数据」按钮 1 秒内连点第二次会返回 429**（防止一次误连点排出一长串重建）。
+3. 服务端读不出磁盘状态包时，状态条会多一条红字「⚠ 数据可能不是最新」，不再静默显示旧数据。
+
+### 这版在修什么（外部审计报告 11 项，逐项复现后才动手）
+
+审计由一个外部模型在**真 Edge + 独立端口实例 + 合成库**上做过复现，本版对每条都先自己复现、
+再改、再写成会红的门禁用例。原报告不在本仓库内（外部审查产物），其 11 项结论已逐条落到下表的修法与门禁里。
+
+| 编号 | 缺陷 | 复现 | 修法要点 |
+|---|---|---|---|
+| S01 | 题干 HTML 净化被**不完整标签**绕过，能在真浏览器里执行脚本 | 已复现 | 净化出口不再直通"未匹配原文"，末尾残留按纯文本转义；属性串里出现引号外裸 `<` 整只标签丢弃 |
+| S02 | `Origin: null` 被当可信来源 ⇒ 沙箱 iframe / 攻击者网页能读库内文件 | 已复现 | 取消 null 信任；改为「每次启动随机 token + 同源白名单」双判据，token 只注入程序根那份 index.html |
+| S03 | 导航白名单是字符串前缀判据（`http://127.0.0.1:7187@attacker.example/` 能过）；消息桥不验来源 | 源码确认 | 改 `Uri` 严格解析（scheme/userinfo/host/port 逐项）；`OnWebMessage` 入口先核 `e.Source` |
+| S04 | CSS 转义（`u\72l(...)`）与 SVG `fill/stroke` 的 `url()` 能绕过远程资源过滤 ⇒ 出网 | 已复现 | 先还原 CSS 转义再判；URL 型值一律拒（只留 `none`/颜色/本地 `url(#id)`，中文 id 也认） |
+| S05 | 不校验 `Host` ⇒ DNS rebinding 的服务端必要条件 | 已复现 | 入口只接受 `127.0.0.1`/`localhost` 且端口必须等于本实例端口 |
+| S06 | `POST /api/state` 不收 JSON、不拒不受信来源，跨源简单请求能触发重建 | 源码确认 | 统一来源门禁 + 只收 `application/json` + 同来源限流 429 |
+| S07 | 桌面壳路径护栏只比字符串，不解析 junction/symlink ⇒ 库内一条链接就能读库外 | 源码确认 | 先解析重解析点再比；**库根本身是 junction 时不误伤**（审计给的最小修法会踩这个坑） |
+| P01 | 发行 ZIP 里夹带 `app\shell.log`（480 字节，含本机绝对路径） | 直接解包确认 | 打包按黑名单剔除日志/缓存/profile；解包后**再按内容**复检，发现即拒绝出包 |
+| D01 | 批改先写台账再写索引，第二次写失败就留下"台账已批改、索引没动" | 源码确认 | 多文件动作开**事务**：要么全成、要么全退；进程被杀时下次启动自动回滚 |
+| D02 | 壳/HTTP/CLI 三条通道写锁不统一 ⇒ 后完成的把前一个的修改整段丢掉 | 源码确认 | 工具层统一取**跨进程写锁**（僵尸锁自愈、子进程继承防自死锁） |
+| B01 | 状态包读失败被空 catch 吞掉，继续 200 回旧数据 | 源码确认 | 显式降级标记 `state-unreadable` + 状态条红字，且不永久降级（下次 GET 重试） |
+
+### 顺带修掉的一个自造缺陷（并发用例抓到的）
+
+跨进程写锁第一版在 `openSync(...,'wx')` 与 `writeFileSync` 之间有空窗：锁文件**存在但内容为空**时，
+另一个进程把它当"半截锁文件"直接抢走 ⇒ 两个进程同时认为自己在持锁 ⇒ 又变成丢更新。
+6 进程并发组卷用例第一次就抓到（6 个都报成功、台账只多 4 条）。现在空锁文件按"正在创建中"等待，
+持续 2 秒读不出才判定为残留。
+
+### 回归断言（这版新增 6 个门禁用例，全部带"掏掉修复必红"的阴性自证）
+
+| 用例 | 断言 | 守什么 |
+|---|---|---|
+| `tests\neg-stem-sanitize.cjs` | 75 | S01 五变体 + S04 十四变体 + 13 条承重对照（正常 style/svg/空位/相对图/fig 兜底不许被误伤） |
+| `tests\neg-server-host-and-token.cjs` | 78 | 伪造 Host / null 源 / token 三态 / 415+429 / B01 四种磁盘态 |
+| `tests\neg-shell-source-and-reparse.cjs` | 89 | Uri 判据 + `e.Source` 校验 + 真 junction 同构（含"库根是 junction 不误伤"） |
+| `tests\neg-write-lock-and-txn.cjs` | 22 | 互斥 / 僵尸锁自愈 / 子进程继承 / 提交 / 回滚 / **崩溃恢复** |
+| `tests\neg-concurrent-write-lock.cjs` | 6 | 6 个真进程同时组卷 ⇒ 6 条全在、批次号不撞 |
+| `tests\neg-release-package-hygiene.cjs` | 20 | 从 `build-release.ps1` 读出真实黑名单实跑 + 内容复检判据 |
+
+六个用例已挂进 `tests\run.mjs` 的 `unitTests`（quick/full 都跑）。另：`neg-server-origin`（22）、
+`neg-server-bad-target`（73）里有几条断言 pin 的正是"`Origin: null` 仍可用"这个**要修掉的旧行为**，
+已按新判据改写并写清原因 —— 不是放宽断言蒙混过关。
+
+### 改法（文件对照）
+
+| 文件 | 改动 |
+|---|---|
+| `src\app\js\model.js` | `stemHtmlSafe` 出口 fail-closed；新增 `cssUnescape` / `styleSafe` / `paintSafe` / `PAINT_ATTRS` |
+| `src\tools\_服务端.mjs` | Host 白名单、取消 null 信任、token 签发与注入、写路径 JSON+429、状态包降级三态 |
+| `src\app\js\host.js` | server 模式统一走 `apiFetch`（集中带 `X-CTB-Token`）；无 token 判"无服务端"落 offline；`H.degraded` |
+| `src\app\js\shell.js` | 状态条渲染 `H.degraded`（红字） |
+| `src\shell\CTBShellV2.cs` | 新增 `NavGuard`（唯一判据实现）+ `TryResolveRealPath`（GetFinalPathNameByHandle） + `OnWebMessage` 来源校验 |
+| `src\tools\_安全写.mjs` | 新增 `acquireLibLock` / `openTransaction` / `recoverTransactions` / `withLibWrite` |
+| 8 个写盘工具 | 进程启动即取跨进程写锁；`_标记复习.mjs` 另开事务（组卷/批改/撤批/归档/撤归档全部事务化） |
+| `scripts\build-release.ps1` | 打包黑名单剔除 + 解包后按内容复检（日志/用户真源/本机绝对路径 → 拒绝出包） |
+| `tests\run.mjs` | 挂 6 个新用例 |
+
+### 未修 / 已知残余风险（写清，不装"已全好"）
+
+- **同机任意进程仍能 `GET /index.html` 拿到 token**：token 挡的是"本机网页 / DNS rebinding"两条真实通道，
+  挡不住同机恶意进程（那超出 HTTP 层能力，需要 OS 级隔离）。
+- **非浏览器本机程序（curl / 计划任务）仍可读写 `/api/*`**：token 只强制浏览器发起的请求，
+  否则既有回归装置与外部脚本全红。这是有意取舍。
+- 审计提到但本次**未做**的：完整依赖 CVE 核查、GitHub 已公开历史发行包的重新打包、
+  全程抓包验证第三方运行时零通信。这三条不在本轮范围。
+
+
 
 **变更分类**：Fixed
 **升级影响**：只换程序目录 `app\`；`数据\` 与数据格式均不变。与 `.03` 是同一件事的收尾

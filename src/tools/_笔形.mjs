@@ -30,13 +30,19 @@
  */
 import fs from 'fs';
 import path from 'path';
-import { readJsonStrict, writeJsonAtomic } from './_安全写.mjs';
+import { readJsonStrict, writeJsonAtomic, acquireLibLock } from './_安全写.mjs';
 import { libraryRoot } from './_库根.mjs';
 
 /* ★ 2026-10-23 程序与数据分家：ROOT 是**库根**（数据），不是工具目录。
    原先是 `path.dirname(fileURLToPath(import.meta.url))`，工具搬进 <AppRoot>\tools\ 之后
    那样算出来是程序目录 ⇒ _笔形台账.json / _笔形\ 全落到程序目录里去。统一走 _库根.mjs。 */
 const ROOT = libraryRoot();
+/* ★ 2026-10-30（外部审计 D02）：跨进程写锁（壳 / HTTP 服务端 / 命令行三条通道共用同一把，见 _安全写.mjs）。
+   本工具是「读出来 → 改内存 → 写回去」的模式：没有这把锁时，另一个通道可以在两者之间插进来，
+   两边各写一份原子文件，**后完成的那个把前一个的修改整段丢掉**（审计复现的现场）。
+   锁从进程启动持有到退出（工具都是短命进程，登记式持锁最省事也最少漏）。 */
+const __releaseLibLock = acquireLibLock(ROOT, { label: '_笔形' });
+process.on('exit', __releaseLibLock);
 const DB = path.join(ROOT, '_笔形台账.json');
 const DIR = path.join(ROOT, '_笔形');
 const TYPES = ['字形', '标定'];

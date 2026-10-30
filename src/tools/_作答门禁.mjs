@@ -41,10 +41,16 @@ import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { libraryRoot, toolPath } from './_库根.mjs';
-import { readJsonStrict, writeJsonAtomic, backupJson, writeTextAtomic } from './_安全写.mjs';
+import { readJsonStrict, writeJsonAtomic, backupJson, writeTextAtomic, acquireLibLock } from './_安全写.mjs';
 import { slotsOf, slotCount, needEm, blankWidthEm, alignedAnswers, fitSlots, applySlotWidths, BLANK_MAX_EM, CHILD_FACTOR } from './_空位.mjs';
 
 const ROOT = libraryRoot();
+/* ★ 2026-10-30（外部审计 D02）：跨进程写锁（壳 / HTTP 服务端 / 命令行三条通道共用同一把，见 _安全写.mjs）。
+   本工具是「读出来 → 改内存 → 写回去」的模式：没有这把锁时，另一个通道可以在两者之间插进来，
+   两边各写一份原子文件，**后完成的那个把前一个的修改整段丢掉**（审计复现的现场）。
+   锁从进程启动持有到退出（工具都是短命进程，登记式持锁最省事也最少漏）。 */
+const __releaseLibLock = acquireLibLock(ROOT, { label: '_作答门禁' });
+process.on('exit', __releaseLibLock);
 const STEM_HTML = '题干.html';
 const MODES = ['blank', 'figure', 'zone', 'none'];
 /* 图上作答的题面信号：动词出现在「题面」而不是「答案」里才说明要画/写在图上。

@@ -582,6 +582,20 @@ namespace CTBShell2
         // 为什么不用裸 StartsWith(root)：`…\错题本-X` 与 `…\错题本` 同前缀，兄弟目录会被漏放（F-04 同类语义）；
         // 为什么必须显式判越界：Path.Combine(root, "C:\Windows\System32\calc.exe") 会**直接返回第二参**（.NET 语义）。
         // 2026-10-23：边界从"一个 Root"改成 DataRoot（用户库）—— 程序目录不再允许页面随便读。
+        /* ★ 2026-10-30（审计 S07）：**重解析点**判据 —— 上面那版只做字符串前缀比较，而
+           `Path.GetFullPath` **不解析** NTFS 重解析点（junction / symlink），`File.ReadAllText` /
+           `Process.Start` 却**会跟随**它 ⇒ "路径字符串在库内"与"实际读到的东西在库外"可以同时成立。
+           审计实测：库内 `mklink /J link C:\Windows` 之后 readFile("link\\win.ini") 读到库外原文
+           （HTTP 侧 `_服务端.mjs` 早在 R2 H-08-B 补了 realpath，C# 桥这一侧一直缺对应保护）。
+           现在三段判据，**全部通过才放行**：
+             ① 未解析路径必须在**未解析的**库根内（老判据保留：它挡 `..` / 绝对路径 / 同前缀兄弟目录）；
+             ② 取"最近存在的祖先"的**真实路径**（`GetFinalPathNameByHandle`），把不存在的尾部按原名拼回；
+             ③ ②的结果对 **{未解析的库根, 库根的真实路径} 两个根各比一次**，任一命中即放行。
+           为什么必须有 ③：**库根本身可能就是 junction**（迁移期 `<AppRoot>\..\数据` 常是）——
+           只把 target 的真实路径与未解析的根比较，会把**所有正常路径**判成越界（审计给的最小修法就踩这个坑）；
+           反过来只与 root 的 realpath 比，则在"根是普通目录、库内有一条 junction"时放走越界读。
+           ⚠ 目标**不存在**时（写 PDF / 建目录是常态）绝不能跳过校验：上溯到最近存在的祖先再解析，
+             否则"写一个还不存在的库外文件"就绕过了重解析点判据。 */
         public bool TryResolveInsideRoot(string rel, out string abs, out string why)
         {
             abs = null; why = null;
@@ -589,11 +603,123 @@ namespace CTBShell2
             string rootFull;
             try { rootFull = Path.GetFullPath(DataRoot); }
             catch (Exception ex) { why = "库目录不可用：" + ex.Message; return false; }
-            try { abs = Path.GetFullPath(Path.Combine(rootFull, rel.Replace('/', Path.DirectorySeparatorChar))); }
+            string cand;
+            try { cand = Path.GetFullPath(Path.Combine(rootFull, rel.Replace('/', Path.DirectorySeparatorChar))); }
             catch (Exception ex) { abs = null; why = "路径非法：" + ex.Message; return false; }
-            if (!abs.StartsWith(rootFull + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            if (!IsUnderDir(cand, rootFull))
             { abs = null; why = "越界拒绝（只允许库目录内路径）：" + rel; return false; }
+
+            string candReal, rootReal, rpWhy;
+            if (!TryResolveRealPath(cand, out candReal, out rpWhy))
+            { abs = null; why = "无法校验（重解析点解析失败）：" + rel + " ← " + rpWhy; return false; }
+            if (!TryResolveRealPath(rootFull, out rootReal, out rpWhy))
+            { abs = null; why = "库目录无法校验（重解析点解析失败）：" + rootFull + " ← " + rpWhy; return false; }
+            if (!IsUnderDir(candReal, rootFull) && !IsUnderDir(candReal, rootReal))
+            { abs = null; why = "越界拒绝（经重解析点后落在库外）：" + rel + " → " + candReal; return false; }
+            abs = cand;
             return true;
+        }
+
+        /* 严格包含性：p 必须**在** root 之内（等于 root 本身算越界 —— 调用方要的是一个文件/子项）。
+           必须带分隔符比较：`…\错题本-X` 与 `…\错题本` 同前缀，裸 StartsWith 会放走兄弟目录。 */
+        static bool IsUnderDir(string p, string root)
+        {
+            if (string.IsNullOrEmpty(p) || string.IsNullOrEmpty(root)) return false;
+            string a = p.TrimEnd('\\', '/');
+            string b = root.TrimEnd('\\', '/');
+            if (a.Length == 0 || b.Length == 0 || a.Length <= b.Length) return false;
+            if (!a.StartsWith(b, StringComparison.OrdinalIgnoreCase)) return false;
+            return a[b.Length] == '\\' || a[b.Length] == '/';
+        }
+
+        /* 真实路径：对**存在**的目标问内核要最终路径（junction / symlink 一次解析到底，链式也认）；
+           目标不存在时（写操作的常态）上溯到**最近存在的祖先**解析，再把不存在的尾部按原名拼回；
+           于是"写一个还不存在的库外文件"同样会被 ②③ 判成越界。 */
+        static bool TryResolveRealPath(string full, out string real, out string why)
+        {
+            real = null; why = null;
+            try
+            {
+                string cur = Path.GetFullPath(full);
+                var tail = new List<string>();
+                while (true)
+                {
+                    if (File.Exists(cur) || Directory.Exists(cur))
+                    {
+                        string f, fwhy;
+                        if (!TryFinalPath(cur, out f, out fwhy)) { why = "祖先 " + cur + " ← " + fwhy; return false; }
+                        for (int i = tail.Count - 1; i >= 0; i--) f = Path.Combine(f, tail[i]);
+                        real = Path.GetFullPath(f);
+                        return true;
+                    }
+                    string up = Path.GetDirectoryName(cur);
+                    if (string.IsNullOrEmpty(up) || string.Equals(up, cur, StringComparison.OrdinalIgnoreCase))
+                    {
+                        /* 连根都不存在（未挂载的盘符等）：没有可解析的重解析点，按规范化路径返回 */
+                        real = Path.GetFullPath(full);
+                        return true;
+                    }
+                    tail.Add(Path.GetFileName(cur));
+                    cur = up;
+                }
+            }
+            catch (Exception ex) { why = ex.GetType().Name + ": " + ex.Message; return false; }
+        }
+
+        /* .NET Framework 4 没有 ResolveLinkTarget，只能问内核：开句柄 → GetFinalPathNameByHandle。
+           参数要点：access 只要 FILE_READ_ATTRIBUTES（拿不到退 0 再试，查路径不需要读数据权限）；
+           FILE_FLAG_BACKUP_SEMANTICS 才开得了**目录**；共享读写删，免得与资源管理器/杀软互锁。 */
+        const uint FILE_READ_ATTRIBUTES = 0x0080;
+        const uint FILE_SHARE_ALL = 0x0007;
+        const uint OPEN_EXISTING = 3;
+        const uint FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
+        const uint FILE_NAME_NORMALIZED_DOS = 0;
+        static readonly IntPtr INVALID_HANDLE = new IntPtr(-1);
+
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+        static extern IntPtr CreateFileW(string lpFileName, uint dwDesiredAccess, uint dwShareMode,
+            IntPtr lpSecurityAttributes, uint dwCreationDisposition, uint dwFlagsAndAttributes, IntPtr hTemplateFile);
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+        static extern uint GetFinalPathNameByHandleW(IntPtr hFile, StringBuilder lpszFilePath, uint cchFilePath, uint dwFlags);
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool CloseHandle(IntPtr hObject);
+
+        static bool TryFinalPath(string path, out string finalPath, out string why)
+        {
+            finalPath = null; why = null;
+            IntPtr h = INVALID_HANDLE;
+            try
+            {
+                h = CreateFileW(path, FILE_READ_ATTRIBUTES, FILE_SHARE_ALL, IntPtr.Zero, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, IntPtr.Zero);
+                if (h == INVALID_HANDLE)
+                    h = CreateFileW(path, 0, FILE_SHARE_ALL, IntPtr.Zero, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, IntPtr.Zero);
+                if (h == INVALID_HANDLE)
+                { why = "CreateFile 失败（Win32 " + System.Runtime.InteropServices.Marshal.GetLastWin32Error() + "）"; return false; }
+                var sb = new StringBuilder(1024);
+                uint n = GetFinalPathNameByHandleW(h, sb, (uint)sb.Capacity, FILE_NAME_NORMALIZED_DOS);
+                if (n == 0)
+                { why = "GetFinalPathNameByHandle 失败（Win32 " + System.Runtime.InteropServices.Marshal.GetLastWin32Error() + "）"; return false; }
+                if (n >= (uint)sb.Capacity)
+                {
+                    sb = new StringBuilder((int)n + 8);
+                    n = GetFinalPathNameByHandleW(h, sb, (uint)sb.Capacity, FILE_NAME_NORMALIZED_DOS);
+                    if (n == 0 || n >= (uint)sb.Capacity) { why = "GetFinalPathNameByHandle 二次读取失败"; return false; }
+                }
+                finalPath = StripExtendedPrefix(sb.ToString());
+                return true;
+            }
+            catch (Exception ex) { why = ex.GetType().Name + ": " + ex.Message; return false; }
+            finally { if (h != INVALID_HANDLE) { try { CloseHandle(h); } catch { } } }
+        }
+
+        /* GetFinalPathNameByHandle 返回 `\\?\D:\x`（UNC 形态 `\\?\UNC\server\share`）——
+           去掉扩展前缀才能与 Path.GetFullPath 的形态比较，否则**每个**路径都会被判越界。 */
+        static string StripExtendedPrefix(string p)
+        {
+            if (string.IsNullOrEmpty(p)) return p;
+            if (p.StartsWith("\\\\?\\UNC\\", StringComparison.OrdinalIgnoreCase)) return "\\\\" + p.Substring(8);
+            if (p.StartsWith("\\\\?\\", StringComparison.Ordinal)) return p.Substring(4);
+            return p;
         }
 
         // ---- op: recipe → _配方.mjs（动作白名单；壳不解释语义，只做透明转发）----
@@ -968,6 +1094,13 @@ namespace CTBShell2
         NotifyIcon tray;
         CoreWebView2Environment env;
         bool dueNotified = false;
+        /* ★ 2026-10-30（审计 S03）：入口页与端口真源的**运行期副本**。
+           导航白名单（NavigationStarting）与消息桥来源校验（OnWebMessage）读的是同一对字段，
+           不在两处各算一次 —— 否则两条判据迟早漂移成"一个放行、一个拒绝"。
+           homePagePath=null / srvPortValue=null 会**全部拒绝**（fail-safe：宁可不通，不可错放）。 */
+        string homePagePath = null;
+        string srvPortValue = null;
+        bool srcLogged = false;   // 只记一次"来源校验已生效"，免得每次消息都刷日志
 
         public ShellForm()
         {
@@ -1063,28 +1196,60 @@ namespace CTBShell2
                 /* ★ 2026-10-29（R2 SC-09/SC-07 端口真源收敛）：端口不再在本文件写死。
                    真源 = 程序根 `端口.json` 的 default，CTB_PORT 环境变量优先（见 ResolveSrvPort）。
                    C# 不能 import 前端/Node 的模块 ⇒ 走"一处 JSON 真源 + 各方读取"。
-                   真源读不到 ⇒ **不猜**：srvPrefix 置空 ⇒ 下方 NavigationStarting 关掉整个 http 白名单
+                   真源读不到 ⇒ **不猜**：端口置空 ⇒ 下方导航白名单关掉整个 http 一侧
                    （fail-loud 记日志 + fail-safe 拒绝），而不是退回一个写死的默认端口。 */
-                string srvPrefix = string.IsNullOrEmpty(srvPort) ? null : "http://127.0.0.1:" + srvPort;
-                HostBridge.Log("navigation whitelist = " + (srvPrefix ?? "(关闭：端口真源不可读)"));
+                /* ★ 2026-10-30（审计 S03 导航白名单）：
+                   改前判据是**字符串前缀** `u.StartsWith("http://127.0.0.1:"+srvPort)`，两个缺陷：
+                     ① `http://127.0.0.1:7187@attacker.example/` 会**通过**（userinfo 形态：真正的
+                        host 是 attacker.example，字符串却以白名单前缀开头）—— 审计实测；
+                     ② 只要**以该端口数字开头**的主机名也会误放（`http://127.0.0.1:71870/` 一类）。
+                   而且 file: 分支只有"等于入口就放行"、"其余一律 Dispatch 给系统程序"，
+                   **没有默认拒绝** ⇒ 任意 file: 链接都能触发外部程序。
+                   现在：判据统一走 `NavGuard`（Uri 严格解析 → scheme / userinfo / host / 真实端口），
+                   非 {本应用入口页, 本机服务端同源} 一律 Cancel；file: 只在**库根内**才转交
+                   内置阅读器/系统程序（历史产品行为），库外 file: 与其它 scheme 全部拒绝并留痕。 */
+                homePagePath = homePath;
+                srvPortValue = srvPort;
+                HostBridge.Log("navigation whitelist = file:" + NavGuard.EntryPath(homePath)
+                    + " + http://127.0.0.1:" + (string.IsNullOrEmpty(srvPort) ? "(关闭：端口真源不可读)" : srvPort) + "/");
                 wv.CoreWebView2.NavigationStarting += (s, e) =>
                 {
-                    string u = e.Uri;
-                    if (u.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+                    string u = e.Uri, nwhy;
+                    if (NavGuard.IsAllowedNavigation(u, homePagePath, srvPortValue, out nwhy)) return;
+                    HostBridge.Log("REJECT nav: " + u + " ← " + nwhy);
+                    e.Cancel = true;
+                    /* 库内 file:（题干.md / 原卷截图…）仍交内置阅读器或系统程序 —— 这是历史产品行为；
+                       库外 file: 与所有非白名单 scheme **一律不转发**（转发 = 白名单形同虚设）。 */
+                    Uri nu;
+                    string pwhy;
+                    if (NavGuard.TryParse(u, out nu, out pwhy) && nu.Scheme == Uri.UriSchemeFile)
                     {
-                        if (srvPrefix == null) { HostBridge.Log("REJECT http nav（端口真源不可读）：" + u); e.Cancel = true; return; }
-                        if (!u.StartsWith(srvPrefix, StringComparison.OrdinalIgnoreCase)) e.Cancel = true;
-                        return;
-                    }
-                    if (u.StartsWith("file:", StringComparison.OrdinalIgnoreCase))
-                    {
-                        string p = LocalLinks.FileUriToPath(u);
-                        if (p != null && LocalLinks.NormalizePath(p) == LocalLinks.NormalizePath(homePath)) return;
-                        e.Cancel = true;
-                        LocalLinks.Dispatch(this, env, u);
+                        string p = LocalLinks.FileUriToPath(u), abs, why2;
+                        if (p != null && bridge.TryResolveInsideRoot(p, out abs, out why2)) LocalLinks.Dispatch(this, env, u);
+                        else HostBridge.Log("nav: 库外 file: 链接不转发：" + u);
                     }
                 };
-                wv.CoreWebView2.NewWindowRequested += (s, e) => { e.Handled = true; LocalLinks.Dispatch(this, env, e.Uri); };
+                wv.CoreWebView2.NewWindowRequested += (s, e) =>
+                {
+                    /* ★ 2026-10-30（S03）：新窗口同样只允许"库内 file:"（内置阅读器/系统程序），
+                       其它 scheme 一律不转发 —— 改前这里对任意 URI 无条件 Dispatch。 */
+                    e.Handled = true;
+                    Uri nw;
+                    string pwhy;
+                    if (!NavGuard.TryParse(e.Uri, out nw, out pwhy))
+                    {
+                        HostBridge.Log("REJECT new-window: " + e.Uri + " ← " + pwhy);
+                        return;
+                    }
+                    if (nw.Scheme != Uri.UriSchemeFile)
+                    {
+                        HostBridge.Log("REJECT new-window（非 file: 不转发）：" + e.Uri);
+                        return;
+                    }
+                    string p = LocalLinks.FileUriToPath(e.Uri), abs, why2;
+                    if (p != null && bridge.TryResolveInsideRoot(p, out abs, out why2)) LocalLinks.Dispatch(this, env, e.Uri);
+                    else HostBridge.Log("REJECT new-window（库外 file:）：" + e.Uri);
+                };
 
                 /* ★ 2026-10-12 开发期禁用缓存（修"改了 JS 不生效"，实测踩到）。
                    起因：改了 v2\js\host.js 后重跑门禁，页面仍在用**旧脚本** ——
@@ -1140,6 +1305,36 @@ namespace CTBShell2
             try { raw = e.TryGetWebMessageAsString(); } catch { HostBridge.Log("webmessage: read failed"); return; }
             string id = HostBridge_Extract(raw, "id");
             string op = HostBridge_Extract(raw, "op");
+            /* ★ 2026-10-30（审计 S03 消息桥来源校验）：改前**没有**这道检查 ——
+               InitWeb 向文档注入 window.ctbHost（AddScriptToExecuteOnDocumentCreatedApi 无条件注入），
+               而 OnWebMessage 直接按 op 分发业务命令（readFile / regen / mark / pendingResolve /
+               createStudent / recipe / openFile / revealFile / pdf / print …）⇒ 只要有一刻
+               顶层文档不是你自己的页面（S01 注入成功、导航被绕过、链接带进来的外部页），
+               它就能以"本应用"的身份读写题库、起进程。现在每次处理前先核 e.Source：
+               必须是**本应用入口页**（file:，按规范化后的本地路径比）或**本机服务端同源**
+               （http + userinfo 为空 + host ∈ {127.0.0.1, localhost} + 端口 = 真源端口），
+               否则记日志 + 回 {"ok":false,"error":...}，**不进入任何业务分支**。
+               ⚠ 两个实测形态（一次性 C# 探针，file:// 页面 postMessage）决定了判据写法：
+                  · Source 会长成 `file:///D:/…/index.html`（LocalPath 已是解码后的本地路径，
+                    含中文/空格的百分号编码不用自己再解）；
+                  · 页面一旦 `history.replaceState(null,'','#bank')`（本仓 shell.js:28 就这条），
+                    Source 变成 `file:///D:/…/index.html#bank` —— 所以**不能拿整串比**，
+                    必须取 Uri.LocalPath（它天然丢掉 query 与 fragment），否则改一次 hash 后
+                    全站消息都会被判不受信任（那才是更坏的 bug）。 */
+            string src = null;
+            try { src = e.Source; } catch (Exception ex) { HostBridge.Log("webmessage: 读 e.Source 失败 " + ex.Message); }
+            string srcWhy;
+            if (!NavGuard.IsTrustedSource(src, homePagePath, srvPortValue, out srcWhy))
+            {
+                HostBridge.Log("webmessage REJECT id=" + id + " op=" + op + " source=" + (src == null ? "(null)" : src) + " ← " + srcWhy);
+                PostToWeb(id, "{\"ok\":false,\"error\":\"消息来源不受信任（已拒绝）：" + EscJs(srcWhy) + "\"}");
+                return;
+            }
+            if (!srcLogged)
+            {
+                srcLogged = true;
+                HostBridge.Log("webmessage 来源校验已生效，首个可信 source=" + src);
+            }
             int pk = raw.IndexOf("\"payload\"");
             string payload = pk < 0 ? "{}" : ExtractObjectRaw(raw, pk);
 
@@ -1657,6 +1852,132 @@ namespace CTBShell2
     }
 
     // ============================================================================
+    // ★ 2026-10-30（审计 S03）：**导航白名单 + 消息桥来源校验的唯一实现**
+    //
+    // 为什么要单列一个类：这两条判据（一处管"页面能导航到哪"，一处管"谁的话才算数"）
+    // 必须永不变形地一致 —— 各写一份，迟早一个放行一个拒绝。判据共用 IsAppOrigin。
+    //
+    // 允许的两个来源（其它一律拒，且**默认拒绝**）：
+    //   ① 本应用入口页：file: URI，且规范化后的本地路径 == 入口 index.html 的本地路径；
+    //   ② 本机服务端同源：scheme 必须是 http（不是 https）、userinfo 必须为空、
+    //      host ∈ {127.0.0.1, localhost}、port == 端口真源（读不到 ⇒ http 一侧整体关闭）。
+    //
+    // 为什么必须是 **Uri 严格解析**而不是字符串前缀（改前的写法）：
+    //   `http://127.0.0.1:7187@attacker.example/` —— 真正的 host 是 attacker.example，
+    //   但字符串以 `http://127.0.0.1:7187` 开头 ⇒ 裸 StartsWith 判据会**放行**（审计实测）；
+    //   `http://127.0.0.1:71870/` 一类"端口数字开头"的主机名同理。
+    //   Uri 解析后：Scheme=Host=Port 各是各的字段，userinfo 单列可查 ⇒ 这几种伪装的结构差异没法藏。
+    //
+    // 为什么入口页不能用"整串 URI 相等"：页面 `history.replaceState(null,'','#bank')` 之后
+    //   e.Source 会变成 `file:///D:/…/index.html#bank`（实测），整串比会判"来源不受信任" ⇒
+    //   改一次 hash 全站瘫痪。所以入口比较走 Uri.LocalPath（天然丢掉 query/fragment）。
+    // ============================================================================
+    public static class NavGuard
+    {
+        /* 解析 + scheme 白名单。file: / http: 之外一律拒（含 about:/data:/blob:/javascript:/ms-* 等）。 */
+        public static bool TryParse(string raw, out Uri u, out string why)
+        {
+            u = null; why = null;
+            if (string.IsNullOrEmpty(raw)) { why = "来源为空"; return false; }
+            Uri parsed;
+            if (!Uri.TryCreate(raw, UriKind.Absolute, out parsed) || parsed == null)
+            { why = "不是合法的绝对 URI：" + Trim(raw); return false; }
+            if (parsed.Scheme != Uri.UriSchemeFile && parsed.Scheme != Uri.UriSchemeHttp)
+            { why = "scheme 不在白名单（只允许 file/http）：" + parsed.Scheme; return false; }
+            if (parsed.Scheme == Uri.UriSchemeHttp && !string.IsNullOrEmpty(parsed.UserInfo))
+            { why = "URI 含 userinfo（`用户@主机` 是伪装端口的常见手法）：" + Trim(parsed.UserInfo); return false; }
+            u = parsed;
+            return true;
+        }
+
+        /* 入口页的规范化本地路径（比较基准；导航白名单与来源校验共用）。 */
+        public static string EntryPath(string homePath)
+        {
+            if (string.IsNullOrEmpty(homePath)) return null;
+            try { return Path.GetFullPath(homePath).TrimEnd('\\', '/'); }
+            catch { return homePath.TrimEnd('\\', '/'); }
+        }
+
+        public static bool IsEntryFile(Uri u, string homePath)
+        {
+            if (u == null || u.Scheme != Uri.UriSchemeFile) return false;
+            if (!string.IsNullOrEmpty(u.Host)) return false;   // file://host/share 形态（UNC）不认
+            string p = LocalPathOf(u);
+            if (string.IsNullOrEmpty(p)) return false;
+            string full, entry = EntryPath(homePath);
+            if (entry == null) return false;
+            try { full = Path.GetFullPath(p); } catch { return false; }
+            return string.Equals(full.TrimEnd('\\', '/'), entry, StringComparison.OrdinalIgnoreCase);
+        }
+
+        /* file: URI 的本地路径。**不能直接用 u.LocalPath**：.NET 对 file 方案会把 `?query` 留在
+           LocalPath 里（实测 `file:///C:/x/index.html?x=1#y` → LocalPath=`C:\x\index.html?x=1`，
+           片段反而被丢掉）。Windows 文件名不可能含 `?`，所以按首个 `?`/`#` 截断是安全的 ——
+           否则页面一旦带查询串（host.js 支持 `?ctbPort=`），入口页就会被判成"来源不受信任"。 */
+        public static string LocalPathOf(Uri u)
+        {
+            if (u == null) return null;
+            string p;
+            try { p = u.LocalPath; } catch { return null; }
+            if (string.IsNullOrEmpty(p)) return null;
+            int cut = p.IndexOf('?');
+            if (cut < 0) cut = p.IndexOf('#');
+            if (cut >= 0) p = p.Substring(0, cut);
+            return p;
+        }
+
+        public static bool IsSrvOrigin(Uri u, string srvPort)
+        {
+            if (u == null || u.Scheme != Uri.UriSchemeHttp) return false;
+            if (!string.IsNullOrEmpty(u.UserInfo)) return false;
+            if (!string.Equals(u.Host, "127.0.0.1", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(u.Host, "localhost", StringComparison.OrdinalIgnoreCase)) return false;
+            int want;
+            if (string.IsNullOrEmpty(srvPort) || !int.TryParse(srvPort, out want) || want <= 0) return false;
+            return u.Port == want;
+        }
+
+        /* 两个入口共同的判据：是本应用入口页，或本机服务端同源。 */
+        static bool IsAppOrigin(Uri u, string homePath, string srvPort, out string why)
+        {
+            if (u.Scheme == Uri.UriSchemeFile)
+            {
+                if (IsEntryFile(u, homePath)) { why = null; return true; }
+                why = "file: 只允许本应用入口页（" + (EntryPath(homePath) ?? "(入口未知)") + "），实际 " + u.LocalPath;
+                return false;
+            }
+            if (IsSrvOrigin(u, srvPort)) { why = null; return true; }
+            why = string.IsNullOrEmpty(srvPort)
+                ? "本机服务端端口真源不可读 ⇒ http 来源一律拒（实际 " + u.Host + ":" + u.Port + "）"
+                : "不是本机服务端同源（要求 host 为 127.0.0.1/localhost 且端口 " + srvPort + "，实际 " + u.Host + ":" + u.Port + "）";
+            return false;
+        }
+
+        /// <summary>导航白名单：允许否。仅这两类放行，其余 Cancel。</summary>
+        public static bool IsAllowedNavigation(string raw, string homePath, string srvPort, out string why)
+        {
+            why = null;
+            Uri u;
+            if (!TryParse(raw, out u, out why)) return false;
+            return IsAppOrigin(u, homePath, srvPort, out why);
+        }
+
+        /// <summary>消息桥来源校验：e.Source 必须是这两类之一。</summary>
+        public static bool IsTrustedSource(string raw, string homePath, string srvPort, out string why)
+        {
+            why = null;
+            Uri u;
+            if (!TryParse(raw, out u, out why)) return false;
+            return IsAppOrigin(u, homePath, srvPort, out why);
+        }
+
+        static string Trim(string s)
+        {
+            if (s == null) return "";
+            return s.Length > 120 ? s.Substring(0, 120) + "…" : s;
+        }
+    }
+
     // 本地文件分发 + 内置 md 阅读器（与 v1 同实现；v2 独立一份，互不影响）
     // ============================================================================
     public static class LocalLinks
