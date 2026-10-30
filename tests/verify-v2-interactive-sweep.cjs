@@ -268,6 +268,14 @@ window.__SWSTUB = { calls: [], n: 0, dl: 0, confirms: 0, prints: 0 };
      所以这两个通道也必须打桩：打印=记一次调用并假装成功；存 PDF=假装成功且不落盘。 */
   CTB.host.print = function (kind) { rec('print', kind || 'system'); return Promise.resolve({ ok: true, mode: 'showprintui', kind: kind || 'system' }); };
   CTB.host.pdf = function (rel) { rec('pdf', rel); return Promise.resolve({ ok: true, path: rel, bytes: 0 }); };
+  /* ⚠ 2026-10-31 补打桩（本用例"未归属 Runtime 异常"一直是红的根因）：
+     「🖨 打印试卷（直接出纸）」走的是 **H.printPdf** 这条通道（paper.js 里 open === 'print' 那个分支），
+     而上面的打桩清单只覆盖了 H.print / H.pdf，漏了它。于是扫描点到那个按钮时会**真打**壳通道，
+     壳回「PDF 不存在：组卷\\…pdf」⇒ console.error('[pdf] 失败：', e) ⇒ 被判成"未归属异常"。
+     后果：这一条自 2026-10-11 起就让 verify-v2-interactive-sweep 永远红，而 full 模式要求它全绿 ——
+     等于 full 检查单长期走不通（本仓"能绿但没人跑 / 一直红被无视"是记过的坑）。
+     桩语义与 H.pdf 一致：记一次调用、假装成功、不落盘、不弹框。 */
+  CTB.host.printPdf = function (rel) { rec('printPdf', rel); return Promise.resolve({ ok: true, status: 'Succeeded' }); };
   window.confirm = function (m) { S.confirms++; rec('confirm', String(m || '').slice(0, 40)); return true; };
   window.alert = function (m) { rec('alert', String(m || '').slice(0, 40)); };
   try { navigator.clipboard.writeText = function () { rec('clipboard'); return Promise.resolve(); }; } catch (e) { }
@@ -921,8 +929,14 @@ window.__SWSTUB = { calls: [], n: 0, dl: 0, confirms: 0, prints: 0 };
       if (p.err) { B('shot:' + v.id).problems++; findings.push({ scope: 'shot:' + v.id, label: '截图时页面报错', status: 'shot', err: p.err, msgs: [], len: p.len }); }
     }
   }
-  A('★ 12 张截图全部生成且非空（>20KB）', SHOTS.length === 12 && SHOTS.every(f => fs.statSync(path.join(OUT_SHOTS, f)).size > 20000),
-    SHOTS.map(f => f + ':' + fs.statSync(path.join(OUT_SHOTS, f)).size).join(' '));
+  /* ⚠ 2026-10-31：数量不再写死 12。判据必须跟着 VIEWS 走 ——
+     VIEWS 在 2026-10-27 加「录题」后从 6 页变 7 页（×2 主题 = 14 张），
+     而这里还写着 `SHOTS.length === 12` ⇒ 断言恒假 ⇒ 本用例从那天起必红。
+     这正是本仓记过的那类缺陷："把当时的事实写死成断言"（同 neg-stem-backfill 把动态基线写死的坑）。
+     现在按 `VIEWS.length * 2` 算，页面增减时不会再有维护缺口。 */
+  A('★ 每页每主题各一张截图、全部非空（>20KB）',
+    SHOTS.length === VIEWS.length * 2 && SHOTS.every(f => fs.statSync(path.join(OUT_SHOTS, f)).size > 20000),
+    SHOTS.length + '/' + (VIEWS.length * 2) + ' 张 · ' + SHOTS.map(f => f + ':' + fs.statSync(path.join(OUT_SHOTS, f)).size).join(' '));
 
   await c.evalJs(restoreLS);
   await c.send('Page.reload', { ignoreCache: true });

@@ -110,6 +110,17 @@ function libSnapshot(dir) {
   return out;
 }
 let LIB0 = null, libChecked = false;
+/* ★ 2026-10-31：`_备份-真源\` 按**派生件**对待（允许但可见），与 `_状态.json` 同口径。
+   为什么必须这样：`writeJsonAtomic(..., {backup:true})` 是**写入真源时的安全机制本身**——
+   任何一次合法真源写入都会在 `_备份-真源\` 留一份，轮转只留最近 8 份。
+   于是 `e2e-writepath.cjs`（它设计上就真写一次组卷+批改再撤批，用来验写路径闭环）
+   每跑一次就必然"多出几份备份、少掉几份最旧的" ⇒ 本断言判红 ⇒ **full 永久红**。
+   实测证据：2026-10-31 这次红之前，被删掉的是 10-25/10-27/10-28 的备份 —— 说明前面几轮
+   full 早就在做同样的事，只是没人跑到最后这一步（"一直红被无视"正是本仓记过的坑）。
+   注意口径：**只有 `_备份-真源\` 下的轮转算派生**；真源本身（_索引.json / 台账 / 题干…）
+   一个字节都不许动 —— 这条红线没有放宽（见下面 changed/gone/added 的判据）。 */
+const isBackupPath = rel => /(^|[\\/])_备份-真源[\\/]/.test(rel);
+const isDerivedPath = rel => DERIVED_CACHE.has(rel) || isBackupPath(rel);
 function checkLibZeroWrite() {
   if (libChecked || !LIB0) return 0;
   libChecked = true;
@@ -117,19 +128,21 @@ function checkLibZeroWrite() {
   const changed = [], derived = [], gone = [], added = [];
   for (const [rel, a] of LIB0) {
     const b = after.get(rel);
-    if (!b) { gone.push(rel); continue; }
+    if (!b) { (isBackupPath(rel) ? derived : gone).push(rel); continue; }
     if (a.size !== b.size || a.mtimeMs !== b.mtimeMs || (a.sha && b.sha && a.sha !== b.sha)) {
-      (DERIVED_CACHE.has(rel) ? derived : changed).push(rel + '（' + a.size + 'B → ' + b.size + 'B' + (a.sha && b.sha && a.sha !== b.sha ? '，内容也变了' : '') + '）');
+      (isDerivedPath(rel) ? derived : changed).push(rel + '（' + a.size + 'B → ' + b.size + 'B' + (a.sha && b.sha && a.sha !== b.sha ? '，内容也变了' : '') + '）');
     }
   }
-  for (const rel of after.keys()) if (!LIB0.has(rel)) added.push(rel);
+  for (const rel of after.keys()) if (!LIB0.has(rel)) (isBackupPath(rel) ? derived : added).push(rel + '（新增）');
   console.log('\n────────── 真库零写入断言（记录 ' + LIB0.size + ' 个文件）──────────');
   if (derived.length) {
-    console.log('⚠ 派生缓存被重写（**允许**，但必须可见，故不判红）：' + derived.join('、'));
-    console.log('  依据：_状态.json 是可再生的派生件；且 tests\\neg-server-get-readonly.cjs 会故意删它的');
-    console.log('        _pendingSrc 指纹来验证"台账没变就不刷"。**"允许"不等于"静默"** —— 这就是那份清单。');
+    console.log('⚠ 派生件被重写/轮转（**允许**，但必须可见，故不判红）：' + derived.join('、'));
+    console.log('  依据：① `_状态.json` 是可再生的派生件，且 tests\\neg-server-get-readonly.cjs 会故意删它的');
+    console.log('        _pendingSrc 指纹来验证"台账没变就不刷"；');
+    console.log('        ② `_备份-真源\\` 是"写真源时的安全机制本身"留下的副本（writeJsonAtomic backup:true），');
+    console.log('        轮转只留最近 8 份 ⇒ 任何合法真源写入都会让它增减。**"允许"不等于"静默"** —— 这就是清单。');
   } else {
-    console.log('✔ 派生缓存（_状态.json）也未被重写');
+    console.log('✔ 派生件（_状态.json / _备份-真源\\）也未被改写');
   }
   if (changed.length || gone.length || added.length) {
     console.log('✖ 真库出现**非派生**变化（红线 2：任何脚本都不得写 数据\\）：');

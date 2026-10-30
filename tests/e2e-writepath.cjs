@@ -80,31 +80,42 @@ process.on('unhandledRejection', async e => { await cleanup('rejection ' + (e &&
     var led = null;
     try { led = CTB.model.state && CTB.model.state.papers; } catch(e) {}
     var pending = {};
+    /* ⚠ 2026-10-31（本用例第 N 次被门禁正确拦下）：还要排除**近 7 天内印过**的卡。
+       防重复组卷门禁（默认 7 天，2026-10-24 用户要求加的）会拒绝把同一套题短期内重印，
+       于是本用例在"这些卡刚印过"的那几天必然 exit 2 ⇒ 变红，而库里/代码都没坏
+       （实测 M0001/M0002/M0004 都在 P20261025-06 里，7 天窗口正好罩住 10-25…11-01）。
+       这与上面那条"排除待批改批次"是**同一类**处理：把门禁的正确拒绝当成选卡前条件，
+       而不是去 --force 硬穿（硬穿等于把被测门禁自己关掉）。选不出就显式 SKIP，绝不写死卡号。 */
+    var REPEAT_DAYS = 7;
+    var cutoff = new Date(Date.now() - REPEAT_DAYS * 86400000).toISOString().slice(0,10);
+    var recent = {};
     try {
       /* 状态包顶层就是 papers（数组），model 把它挂在 M.state.papers。
          （我第一版写了 M.papers() —— 那个函数不存在；这类"猜 API 名"必须先核。） */
       ((CTB.model.state && CTB.model.state.papers) || []).forEach(function(b){
-        if (b && b.status === '待批改') (b.items||[]).forEach(function(id){ pending[b.student+'|'+id] = 1; });
+        if (!b) return;
+        if (b.status === '待批改') (b.items||[]).forEach(function(id){ pending[b.student+'|'+id] = 1; });
+        if (String(b.date||'') >= cutoff) (b.items||[]).forEach(function(id){ recent[b.student+'|'+id] = 1; });
       });
     } catch(e) {}
-    var xs=CTB.model.cardsOf().filter(function(x){return CTB.model.canGroup(x.card) && !pending[x.kid+'|'+x.card.id]});
+    var xs=CTB.model.cardsOf().filter(function(x){return CTB.model.canGroup(x.card) && !pending[x.kid+'|'+x.card.id] && !recent[x.kid+'|'+x.card.id]});
     /* ★ B-09：不再写死真实学生名——优先取可组卷卡最多的孩子（≥3 张才专注单孩子） */
     var byKid={};xs.forEach(function(x){(byKid[x.kid]=byKid[x.kid]||[]).push(x)});
     var ks=Object.keys(byKid).sort(function(a,b){return byKid[b].length-byKid[a].length});
     var use=(ks[0]&&byKid[ks[0]].length>=3)?byKid[ks[0]]:xs;
-    if(use.length<2)return JSON.stringify({err:'可组卷且不在待批改批次里的卡不足 2 张（共 '+use.length+'；pending='+Object.keys(pending).length+'）'});
+    if(use.length<2)return JSON.stringify({err:'可组卷、不在待批改批次、且近 '+REPEAT_DAYS+' 天没印过的卡不足 2 张（共 '+use.length+'；pending='+Object.keys(pending).length+' 近印过='+Object.keys(recent).length+'）'});
     var a=use[0];
     var same=use.filter(function(x){return x.subject===a.subject});
     var group=same.length>=3?same:use;
     var n=Math.min(4,group.length);
     /* ⚠ 这里给的是**工具的 ids**（_标记复习.mjs 组卷 --ids），不是组卷篮的键 ——
        篮子键 2026-10-12 起是 kid|id（BUG-11），但工具只认裸卡号，别搞混。 */
-    return JSON.stringify({ids:group.slice(0,n).map(function(x){return x.card.id}),student:a.kid,subject:a.subject,pendingExcluded:Object.keys(pending).length});
+    return JSON.stringify({ids:group.slice(0,n).map(function(x){return x.card.id}),student:a.kid,subject:a.subject,pendingExcluded:Object.keys(pending).length,recentExcluded:Object.keys(recent).length});
   })()`));
   if (pick.err) { console.log('RESULT=SKIP(环境不具备：' + pick.err + ')'); process.exit(0); }
   const IDS = pick.ids.join(',');
   const ST = `CTB.model.cards.find(function(x){return x.kid===${JSON.stringify(pick.student)}&&x.card.id===${JSON.stringify(pick.ids[0])}}).card`;
-  console.log(`--- [2] 组卷（运行时选卡：${pick.student}/${pick.subject} ${IDS}，均已过准入判定；已排除 ${pick.pendingExcluded} 张属于待批改批次的卡）---`);
+  console.log(`--- [2] 组卷（运行时选卡：${pick.student}/${pick.subject} ${IDS}，均已过准入判定；已排除 ${pick.pendingExcluded} 张属于待批改批次的卡、${pick.recentExcluded || 0} 张近 7 天已印过的卡）---`);
   const r2 = await ev(`CTB.host.mark('组卷',{student:${JSON.stringify(pick.student)},subject:${JSON.stringify(pick.subject)},ids:${JSON.stringify(IDS)},title:'E2E回归自动卷',date:new Date().toISOString().slice(0,10),note:'e2e 写路径回归，测毕撤批'})`);
   A('组卷 code=0', r2 && r2.code === 0, (r2.out || r2.err || '').slice(0, 200));
   const paper = (String(r2.out || '').match(/P\d{8}-\d{2}/) || [null])[0];
