@@ -1,4 +1,4 @@
-﻿# ═══════════════════════════════════════════════════════════
+﻿﻿# ═══════════════════════════════════════════════════════════
 # 拾光小册 · 部署到运行区
 #   铁律：只替换 app\，绝不触碰 数据\
 #   用法：
@@ -94,6 +94,25 @@ try {
   # ── 5) 校验落地版本 ──
   $landed = (Get-Content (Join-Path $appDir '版本.json') -Raw -Encoding UTF8 | ConvertFrom-Json).version
   if ([string]$landed -ne $newVer) { throw "落地版本号不符：期望 $newVer，实际 $landed" }
+
+  # ── 5b) 把 app\ 的「强制完整性标签」复位成中（否则部署完也起不来）──────
+  #  2026-10-30 实测事故：运行区（`<仓库上一级>\GlimmerNote`）整棵树带 Windows **低强制性完整性标签**
+  #  （S:AI(ML;OICIID;NW;;;LW)，DSH 文件沙箱授权的常驻副作用），而**新写入的文件会继承它**。
+  #  于是每次部署出来的 拾光小册.exe 都带低标签 ⇒ 进程以低完整性运行（实测令牌 IL=0x1000）
+  #  ⇒ 写不了中完整性的 %LOCALAPPDATA% ⇒ WebView2 建不出用户数据目录，双击报
+  #  「拾光小册 · 初始化失败 / 请求的资源在使用中 (0x800700AA)」，而且 shell.log 一个字都写不进去
+  #  （于是排查时连日志都没有）。低权限进程改不了自己的标签，只能在部署这一侧补这一步。
+  #  失败只告警不中断：标签本来就正常的机器上这条命令什么也不改。
+  try {
+    $ic = & icacls.exe $appDir /setintegritylevel '(OI)(CI)M' /T /C 2>&1
+    if ($LASTEXITCODE -ne 0) {
+      Write-Host "  ⚠ 完整性标签复位失败（不影响已落地的文件）：$($ic[-1])" -ForegroundColor Yellow
+    } else {
+      Write-Host "  完整性标签：app\ 已复位为中完整性"
+    }
+  } catch {
+    Write-Host "  ⚠ 完整性标签复位异常（已跳过）：$($_.Exception.Message)" -ForegroundColor Yellow
+  }
 
   # ── 6) 归档发布包 + 写部署记录 ──
   # 注意：从 _releases 重新部署时，源就是目标，直接 Copy-Item 会报"不能覆盖自己"

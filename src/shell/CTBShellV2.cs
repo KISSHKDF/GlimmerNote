@@ -144,26 +144,56 @@ namespace CTBShell2
         static readonly long LogMaxBytes = ComputeLogMaxBytes();
 
         static string LogPath { get { return Path.Combine(UserDataDir, "shell.log"); } }
+        /* ★ 2026-10-30 加：日志必须「写不进去也不静默」。
+           事件（用户报障「双击没反应 + 初始化失败」，2026-10-30）：查
+           %LOCALAPPDATA%\拾光小册\shell.log，**一条新记录都没有** —— 旧实现把写失败
+           整条吞进 `catch { }`，于是「日志缺失」本身把唯一的线索抹掉了，排查只能猜。
+           写失败的真实成因是程序跑在 Windows **低完整性**上下文里（详见 InitWeb 的注释），
+           但这不是唯一成因：权限、磁盘满、杀软独占句柄都会这样。所以按顺序试三个落点：
+             ① %LOCALAPPDATA%\拾光小册\shell.log   正常情况（程序自己的临时数据）
+             ② <程序目录>\shell.log                 程序目录可写时的退路
+             ③ %TEMP%\拾光小册-shell.log            全都写不进时的最后退路
+           三条全失败 ⇒ 原因进 LastLogError，由启动失败对话框带出来，不再无声。 */
+        public static string LastLogError = null;
+        static string LogTarget(int i)
+        {
+            if (i == 0) return LogPath;
+            if (i == 1) return Path.Combine(AppRoot, "shell.log");
+            return Path.Combine(Path.GetTempPath(), "拾光小册-shell.log");
+        }
         public static void Log(string s)
         {
-            try
+            string line = DateTime.Now.ToString("HH:mm:ss.fff ") + s + "\r\n";
+            var errs = new StringBuilder();
+            for (int i = 0; i < 3; i++)
             {
-                string p = LogPath;
-                Directory.CreateDirectory(Path.GetDirectoryName(p));
+                string p;
+                try { p = LogTarget(i); }
+                catch (Exception ex) { errs.Append("[").Append(i).Append("] ").Append(ex.Message).Append("; "); continue; }
                 try
                 {
-                    var fi = new FileInfo(p);
-                    if (fi.Exists && fi.Length > LogMaxBytes)
+                    Directory.CreateDirectory(Path.GetDirectoryName(p));
+                    try
                     {
-                        string old = p + ".1";
-                        try { if (File.Exists(old)) File.Delete(old); } catch { }
-                        File.Move(p, old);          // 只保留一代，避免轮转文件自己无限堆
+                        var fi = new FileInfo(p);
+                        if (fi.Exists && fi.Length > LogMaxBytes)
+                        {
+                            string old = p + ".1";
+                            try { if (File.Exists(old)) File.Delete(old); } catch { }
+                            File.Move(p, old);      // 只保留一代，避免轮转文件自己无限堆
+                        }
                     }
+                    catch { }
+                    File.AppendAllText(p, line, Encoding.UTF8);
+                    if (i > 0) LastLogError = "日志已降级写入：" + p + "（前面的落点写不进去：" + errs + "）";
+                    return;
                 }
-                catch { }
-                File.AppendAllText(p, DateTime.Now.ToString("HH:mm:ss.fff ") + s + "\r\n", Encoding.UTF8);
+                catch (Exception ex)
+                {
+                    errs.Append("[").Append(p).Append("] ").Append(ex.GetType().Name).Append(": ").Append(ex.Message).Append("; ");
+                }
             }
-            catch { }
+            LastLogError = "日志三个落点都写不进去：" + errs;
         }
 
         public string ReadState()
@@ -977,8 +1007,42 @@ namespace CTBShell2
                     ? null
                     : new CoreWebView2EnvironmentOptions { AdditionalBrowserArguments = extraArgs };
                 if (envOpts != null) HostBridge.Log("extra browser args: " + extraArgs);
-                env = await CoreWebView2Environment.CreateAsync(null, udf, envOpts);
-                await wv.EnsureCoreWebView2Async(env);
+                /* ★ 2026-10-30 加：用户数据目录「一个不行换下一个」，且每条失败都留痕。
+                   事件（用户 2026-10-30 报障，两张截图）：①双击先被 Windows SmartScreen 拦住
+                   （「Windows 已保护你的电脑…发行者 CTB Local Signer」）；②放行后弹
+                   「拾光小册 · 初始化失败 / 请求的资源在使用中。(异常来自 HRESULT:0x800700AA)」。
+                   实测根因**不是**"目录被别的进程锁着"（当时的排查第一反应，已排除：没有第二个
+                   实例、没有 msedgewebview2 子进程、profile 里也没有被独占的句柄）：
+                   运行区目录（程序根 `app\` 的上一级）整棵树被打了 Windows **低强制性完整性标签**
+                   （S:AI(ML;OICIID;NW;;;LW)，DSH 文件沙箱授权的常驻副作用，会继承给新写入文件），
+                   于是 拾光小册.exe 也带低标签 ⇒ 进程以**低完整性**跑（实测令牌 IL=0x1000）
+                   ⇒ 写不了中完整性的 %LOCALAPPDATA% ⇒ WebView2 建不出用户数据目录，
+                   报出来的就是 0x800700AA/ERROR_BUSY。同一原因也让 shell.log 写不进去。
+                   对照实验：把同一份 app 复制到不带标签的目录、标签置 Medium，进程 IL=0x2000，
+                   WebView2 正常 ready ⇒ 单一根因、两个症状。
+                   所以这里加的是**可诊断性**而不是"绕过"：候选目录逐个试，每次失败把路径 +
+                   异常类型 + HRESULT 写进日志，再用最后一条异常走原有失败弹窗。 */
+                var udfCandidates = new List<string> { udf, Path.Combine(HostBridge.AppRoot, "wv2-profile") };
+                Exception lastEnvErr = null;
+                foreach (string cand in udfCandidates)
+                {
+                    try
+                    {
+                        if (cand != udf) HostBridge.Log("creating env（降级重试）, udf=" + cand);
+                        env = await CoreWebView2Environment.CreateAsync(null, cand, envOpts);
+                        await wv.EnsureCoreWebView2Async(env);
+                        if (cand != udf) HostBridge.Log("已降级到备用用户数据目录：" + cand);
+                        lastEnvErr = null;
+                        break;
+                    }
+                    catch (Exception ex)
+                    {
+                        lastEnvErr = ex;
+                        HostBridge.Log("creating env FAILED at " + cand + " : " + ex.GetType().Name + ": " + ex.Message
+                            + " (HRESULT=0x" + (ex.HResult & 0xFFFFFFFF).ToString("X8") + ")");
+                    }
+                }
+                if (lastEnvErr != null) throw lastEnvErr;
                 HostBridge.Log("webview ready");
                 wv.CoreWebView2.WebMessageReceived += OnWebMessage;
                 await wv.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(
@@ -1048,7 +1112,24 @@ namespace CTBShell2
             catch (Exception ex)
             {
                 HostBridge.Log("InitWeb FAILED: " + ex);
-                MessageBox.Show(ex.Message + "\r\n\r\n若反复失败：删除 %LOCALAPPDATA%\\拾光小册\\wv2-profile 后重开。", "拾光小册 · 初始化失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                /* ★ 2026-10-30 加：失败提示要能直接指向"最可能的那种原因"，而不是只说删目录。
+                   成因与实测过程见上面 CreateAsync 前那段注释（低完整性标签导致 0x800700AA）。
+                   提示里同时带出「日志降级到哪」和「三个落点都写不进去时的原因」——
+                   2026-10-30 那次排查最大的坑就是日志本身静默消失。 */
+                var lines = new List<string>();
+                lines.Add(ex.Message);
+                lines.Add("");
+                lines.Add("常见原因与处置：");
+                lines.Add("· 请求的资源在使用中 / 0x800700AA：微信/浏览器等正在或曾经占用同一个数据目录，");
+                lines.Add("  或本程序所在目录被 Windows 打上了「低强制性完整性标签」（这时进程权限不足，");
+                lines.Add("  既建不了数据目录也写不了日志）。命令提示符里执行");
+                lines.Add("     icacls \"<程序目录>\" /setintegritylevel (OI)(CI)M /T");
+                lines.Add("  把整棵树恢复成中完整性即可；先确认路径再执行。");
+                lines.Add("· 若反复失败：删除 %LOCALAPPDATA%\\拾光小册\\wv2-profile 后重开。");
+                lines.Add("");
+                lines.Add("日志：%LOCALAPPDATA%\\拾光小册\\shell.log（也可能降级写到程序目录）。");
+                if (!string.IsNullOrEmpty(HostBridge.LastLogError)) lines.Add("日志状态：" + HostBridge.LastLogError);
+                MessageBox.Show(string.Join("\r\n", lines.ToArray()), "拾光小册 · 初始化失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 Close();
             }
         }
