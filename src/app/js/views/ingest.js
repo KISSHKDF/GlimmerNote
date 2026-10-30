@@ -308,6 +308,9 @@
       rf.disabled = true; rf.textContent = '⟳ 刷新中…';
       await loadInbox(true);
       await paintInbox();
+      /* 顶栏那句「收件箱 N 张待处理」是 S.render 里取的派生值；
+         刷新后数字变了得让它重算，否则又是"列表已更新、标题还停在旧数字"（2026-10-30 实机抓到过）。 */
+      if (S.refreshSub) S.refreshSub();
     };
   }
 
@@ -402,4 +405,4 @@
   }
 
   /* 切到本页时重新读一次收件箱（用户刚丢完照片就切回来是最常见的动作） */
-  V.onShow = function () { loadInbox(true).then(paintInbox); };})();
+  V.onShow = function () { loadInbox(true).then(paintInbox).then(() => { if (S.refreshSub) S.refreshSub(); }); };})();

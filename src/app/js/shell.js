@@ -210,9 +210,21 @@
     }
     renderHealth();
     try { statusbar(); } catch (e) { console.error(e); }
-    const tbs = U.$id('tbSub');
-    if (tbs) { const sub = v.sub; tbs.textContent = sub ? (typeof sub === 'function' ? sub() : sub) : ''; }
+    refreshSub();
   };
+
+  /* 顶栏副标题（2026-10-30 抽出成函数，供视图在**数据异步到位之后**再刷一次）。
+   * 起因：录题页的收件箱是 onShow 里异步读的，而 S.render() 在这一步之前就把 sub() 求了值 ⇒
+   *   副标题永远停在初始态「收件箱空着」，哪怕列表里明明有 80 张待处理（真机截图里一眼可见）。
+   *   这类"派生数字取早了一帧"的错，光看代码看不出，只能靠界面回归。 */
+  function refreshSub() {
+    const tbs = U.$id('tbSub');
+    if (!tbs) return;
+    const v = CTB.views[route] || CTB.views.dash;
+    const sub = v && v.sub;
+    tbs.textContent = sub ? (typeof sub === 'function' ? sub() : sub) : '';
+  }
+  S.refreshSub = refreshSub;
 
   /* ================= 数据重载 ================= */
   S.reload = async function (silent) {
