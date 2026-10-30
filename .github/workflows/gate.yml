@@ -42,7 +42,11 @@ jobs:
         run: node tests/run.mjs fixture
 
       - name: 可移植性（源码里有没有写死本机路径）
-        run: node tests/portability.cjs
+        # --allow-no-exe：干净克隆 / 托管 runner 上 src\app\拾光小册.exe 被 .gitignore 挡着，
+        # 本来就不存在。不带这个参数时脚本会因缺 exe 判红（本机开发要的就是这个牙齿）；
+        # 带上它，②③ 两段（查二进制）降级为可见的 SKIP，①「运行时代码零硬编码路径」与
+        # ④（查 .cs 源码）照跑照判。不给成"缺 exe 就静默放行"，否则本机门禁会失去牙齿。
+        run: node tests/portability.cjs --allow-no-exe
 
       - name: 干净树上这些 .ps1 必须能被 PowerShell 解析
         shell: pwsh

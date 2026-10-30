@@ -44,37 +44,50 @@ console.log('  [信息] tests/ 历史脚本仍含根名词量 ' + testHits + ' �
 
 console.log('\n═══ ② exe 二进制里是否还嵌着绝对路径 ═══');
 /* ★ 2026-10-23：exe 位置改到 src\app\拾光小册.exe（新布局：exe 与界面同目录）。
-   老路径 src\app\拾光小册.exe 已不存在 —— 找不到就**响亮报红**，不许静默跳过。 */
+   老路径 src\app\拾光小册.exe 已不存在 —— 找不到就**响亮报红**，不许静默跳过。
+   ★ 2026-10-30（托管 CI 事故）：本脚本被 .github/workflows/gate.yml 当作"源码里有没有
+   写死本机路径"的检查调用，但干净克隆里 exe 被 .gitignore 挡着、必然不存在 ⇒ 第一推
+   上去 CI 就红。修法**不是**把缺 exe 改成静默放行（那会削掉本机门禁的牙齿），而是：
+     · 默认（不带参数）：缺 exe 仍然判红 —— 本机跑必须要求 exe，因为 ②③ 查的就是二进制；
+     · `--allow-no-exe`：只有 CI 显式要求时才降级为**可见的 SKIP**，① 与 ④ 照跑照判。 */
 const EXE = path.join(ROOT, 'src', 'app', '拾光小册.exe');
-if (!fs.existsSync(EXE)) {
+const HAS_EXE = fs.existsSync(EXE);
+const ALLOW_NO_EXE = process.argv.includes('--allow-no-exe');
+if (!HAS_EXE && !ALLOW_NO_EXE) {
   A('exe 存在（' + EXE + '）', false, '先跑 src\\shell\\build.ps1');
   console.log('\n✖ 可搬移性静态检查未通过（缺 exe，后续断言无从谈起）');
   process.exit(1);
 }
-const exe = fs.readFileSync(EXE);
-/* ★ 2026-10-24 B-09：样本表从词表构造（本文件零字面量）。错题本是产品品类词，允许出现。 */
-const ROOTNAME = HY.INTERNAL_ROOTS[0], OLDNAME = HY.INTERNAL_ROOTS[1];
-const exeSamples = [
-  'D:\\' + ROOTNAME + '\\错题本',   // 老冻结区库根
-  'D:\\' + ROOTNAME,                // 工作区根
-  OLDNAME + '\\' + ROOTNAME,        // 更早的老库路径人名段
-  'D:/' + ROOTNAME,                 // 正斜杠形态
-];
-for (const s of exeSamples) {
-  A('exe 不含 ' + s + '（UTF-16LE）', exe.indexOf(Buffer.from(s, 'utf16le')) === -1, '');
-  A('exe 不含 ' + s + '（ASCII）', exe.indexOf(Buffer.from(s, 'utf8')) === -1, '');
-}
+if (!HAS_EXE) {
+  console.log('  [SKIP] ②③ 需要已构建的 exe（它被 .gitignore 挡住，干净克隆本来就没有）');
+  console.log('         干净环境请先跑 src\\shell\\build.ps1 再跑本脚本（不带参数）以恢复这两段');
+  console.log('         的判定；本参数只供托管 CI 使用。');
+} else {
+  const exe = fs.readFileSync(EXE);
+  /* ★ 2026-10-24 B-09：样本表从词表构造（本文件零字面量）。错题本是产品品类词，允许出现。 */
+  const ROOTNAME = HY.INTERNAL_ROOTS[0], OLDNAME = HY.INTERNAL_ROOTS[1];
+  const exeSamples = [
+    'D:\\' + ROOTNAME + '\\错题本',   // 老冻结区库根
+    'D:\\' + ROOTNAME,                // 工作区根
+    OLDNAME + '\\' + ROOTNAME,        // 更早的老库路径人名段
+    'D:/' + ROOTNAME,                 // 正斜杠形态
+  ];
+  for (const s of exeSamples) {
+    A('exe 不含 ' + s + '（UTF-16LE）', exe.indexOf(Buffer.from(s, 'utf16le')) === -1, '');
+    A('exe 不含 ' + s + '（ASCII）', exe.indexOf(Buffer.from(s, 'utf8')) === -1, '');
+  }
 
-console.log('\n═══ ③ 版本资源（exe 属性不再是 0.0.0.0）═══');
-// 用 PE 目录里找 VS_VERSION_INFO 的 UTF-16 字符串（简单可靠）
-const s2 = exe.toString('utf16le');
-/* ★ 2026-10-23：版本号改成日期制（VERSION.json 唯一真源），产品名改 GlimmerNote。
-   断言从"写死 2.0.0.0 / CuotiBen"改成"与 VERSION.json 一致"—— 否则每发一版都要改测试。 */
-const V = JSON.parse(fs.readFileSync(path.join(ROOT, 'VERSION.json'), 'utf8'));
-const seg = String(V.version).split('.');
-const asmVer = seg[0] + '.' + parseInt(seg[1], 10) + '.' + parseInt(seg[2], 10) + '.' + parseInt(seg[3], 10);
-A('exe 含 FileVersion ' + asmVer + '（= VERSION.json ' + V.version + '）', s2.includes(asmVer), '');
-A('exe 含 ProductName GlimmerNote', /GlimmerNote/.test(s2), '');
+  console.log('\n═══ ③ 版本资源（exe 属性不再是 0.0.0.0）═══');
+  // 用 PE 目录里找 VS_VERSION_INFO 的 UTF-16 字符串（简单可靠）
+  const s2 = exe.toString('utf16le');
+  /* ★ 2026-10-23：版本号改成日期制（VERSION.json 唯一真源），产品名改 GlimmerNote。
+     断言从"写死 2.0.0.0 / CuotiBen"改成"与 VERSION.json 一致"—— 否则每发一版都要改测试。 */
+  const V = JSON.parse(fs.readFileSync(path.join(ROOT, 'VERSION.json'), 'utf8'));
+  const seg = String(V.version).split('.');
+  const asmVer = seg[0] + '.' + parseInt(seg[1], 10) + '.' + parseInt(seg[2], 10) + '.' + parseInt(seg[3], 10);
+  A('exe 含 FileVersion ' + asmVer + '（= VERSION.json ' + V.version + '）', s2.includes(asmVer), '');
+  A('exe 含 ProductName GlimmerNote', /GlimmerNote/.test(s2), '');
+}
 
 console.log('\n═══ ④ 崩溃兜底与日志轮转已在二进制里 ═══');
 const cs = fs.readFileSync(path.join(ROOT, 'src', 'shell', 'CTBShellV2.cs'), 'utf8');
