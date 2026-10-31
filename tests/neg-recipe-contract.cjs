@@ -417,7 +417,7 @@ console.log('\n══ 六·补、收件箱「内容判据」（2026-10-31：路�
   const names = flat.map(f => f.name).sort();
   const archNames = (J.archived || []).map(f => f.name).sort();
 
-  A('★ 内容判据：路径对不上但字节相同 ⇒ 判为已处理（真库 56 张这样漏判）',
+  A('★ 内容判据：路径对不上但字节相同 ⇒ 判为已处理（真库 4 张这样漏判）',
     archNames.includes('p08-src61.png'), 'archived=' + JSON.stringify(archNames));
   A('★ 内容判据不误藏：台账指向的是**内容不同**的另一张 ⇒ 仍是待办',
     names.includes('p09-src62.png'), '待办=' + JSON.stringify(names));
@@ -462,6 +462,67 @@ console.log('\n══ 六·补、收件箱「内容判据」（2026-10-31：路�
   const JD = withData.status === 0 ? JSON.parse(withData.stdout) : { root: '' };
   A('★ --data 参数真的生效（root 就是它指的库，不是仓库目录）',
     path.resolve(JD.root || '') === path.resolve(L3), 'root=' + JD.root);
+}
+
+/* ══════════════ 六·补二·卡片裁图判据 + 健壮性（2026-10-31 复核补上）══════════════
+ * 复核发现的三个问题，各补一条会红的断言：
+ *  ① P1 漏判：有一批卡的 `page` 指向**另一张整页**，而"这张照片本身"被裁成了卡片里的
+ *     `原卷截图.jpg` —— 那张裁图**不在台账引用集合里** ⇒ 只用台账做候选源会漏判。
+ *     真库实测 5 张（错题卷 图3~图7 → M0021~M0025）已建卡却仍挂在待办清单。
+ *  ② P2 越界：收件箱里的 junction/符号链接指向库外时，库外文件会被读进来算指纹。
+ *  ③ P3 崩溃：单个文件读不动（权限/占用）会让**整个收件箱列表挂掉**（EPERM 直接退出）。
+ */
+console.log('\n══ 六·补二、卡片裁图判据 + 健壮性（2026-10-31 复核）══');
+{
+  const run3 = (args) => spawnSync(process.execPath, [ENGINE, ...args], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  const L4 = path.join(TMP, 'lib-card');
+  const inb = path.join(L4, '_收件箱', '批次丁');
+  const cardDir = path.join(L4, '甲班', '数学', 'M0001-测试卡');
+  fs.mkdirSync(inb, { recursive: true });
+  fs.mkdirSync(cardDir, { recursive: true });
+  fs.mkdirSync(path.join(L4, '原卷库'), { recursive: true });
+  const mk = (p, tag) => fs.writeFileSync(p, Buffer.concat([Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]), Buffer.from(tag, 'utf8')]));
+  /* 这张收件箱照片 == 卡片里的题图（裁图），而卡的 page 指向**另一张整页** */
+  mk(path.join(inb, '题图.png'), 'CROP');
+  mk(path.join(cardDir, '原卷截图.jpg'), 'CROP');
+  fs.writeFileSync(path.join(cardDir, '错题记录.md'), '# M0001\n', 'utf8');
+  mk(path.join(L4, '原卷库', '另一张整页.jpg'), 'PAGE');
+  mk(path.join(inb, '真待办.png'), 'PENDING');
+  const LED4 = path.join(L4, '_原卷台账.json');
+  fs.writeFileSync(LED4, JSON.stringify({
+    version: 1,
+    cards: { '甲|M0001': { page: '原卷库/另一张整页.jpg' } },
+  }, null, 1), 'utf8');
+
+  const r = run3(['收件箱', '--json', '--data', L4]);
+  const J = r.status === 0 ? JSON.parse(r.stdout) : { batches: [], archived: [], total: -1, archivedCount: -1 };
+  const flat = [];
+  for (const b of (J.batches || [])) for (const f of (b.files || [])) flat.push(f);
+  const names = flat.map(f => f.name).sort();
+  const archNames = (J.archived || []).map(f => f.name).sort();
+
+  A('★ 卡片裁图判据：收件箱那张 == 卡片里的 原卷截图.jpg ⇒ 判为已处理（真库 5 张这样漏判）',
+    archNames.includes('题图.png') && !names.includes('题图.png'),
+    'archived=' + JSON.stringify(archNames) + ' 待办=' + JSON.stringify(names));
+  A('★ 卡片裁图判据不误藏：不是同一张的那张仍在待办',
+    names.includes('真待办.png'), '待办=' + JSON.stringify(names));
+  A('待处理清单只剩该剩的一张', JSON.stringify(names) === JSON.stringify(['真待办.png']), JSON.stringify(names));
+
+  /* P3：一个读不动的文件不许拖垮整个列表 */
+  const locked = path.join(inb, '锁住.png');
+  mk(locked, 'LOCKED');
+  try {
+    /* 用"目录当文件"制造一个必然读不动的条目：把它换成目录，readFileSync 会抛 EISDIR */
+    fs.unlinkSync(locked);
+    fs.mkdirSync(locked, { recursive: true });
+    const r2 = run3(['收件箱', '--json', '--data', L4]);
+    const J2 = r2.status === 0 ? JSON.parse(r2.stdout) : { total: -1 };
+    A('★ 收件箱里有读不动的项 ⇒ 整个列表照常列出（不许整列表崩掉）',
+      r2.status === 0 && J2.total === 1, 'exit=' + r2.status + ' total=' + J2.total);
+    fs.rmSync(locked, { recursive: true, force: true });
+  } catch (e) {
+    A('★ 收件箱里有读不动的项 ⇒ 整个列表照常列出（不许整列表崩掉）', false, 'setup 失败：' + e.message);
+  }
 }
 
 console.log('\n══ 六、指纹（改了内容必须变，否则无法追版本）══');{

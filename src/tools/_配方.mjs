@@ -364,23 +364,26 @@ const INBOX_SKIP = new Set(['_任务单', '_已处理', '_probe']);
  *   台账里同一张照片的 `page`/`import` 有时被记成**收件箱原路径**，
  *   有时被记成**原卷库里重命名后的路径**（例：收件箱 `.../p08-src61.jpg`
  *   ↔ 台账 `九年级/英语/原卷/课课练9上-p08-src61.jpg`）——**内容同一张，路径两套**。
- *   纯路径判据 ⇒ 这类件永远判不出来。真库实测：256 张里 176 张路径命中，
- *   另有 **56 张内容完全相同（sha256 一致）却因路径对不上而漏判**。
+ *   纯路径判据 ⇒ 这类件永远判不出来。真库实测：256 张里 **176 张路径命中**
+ *   （page 命中 56 + 只被 import 命中 120），**内容判据额外命中 4 张**。
  *
  *   ⇒ 判据升级为**两条并行**：
  *     ① 路径命中（快，零 IO）：台账 page/import 的路径集合；
- *     ② 内容命中（慢，要读文件）：收件箱该件的 sha256 ∈ 台账引用文件的 sha256 集合。
- *   ② 只在 ① 不命中时才算指纹 ⇒ 已归档的 176 张**仍然一次字节都不读**，
+ *     ② 内容命中（慢，要读文件）：收件箱该件的 sha256 ∈ 候选文件的 sha256 集合。
+ *       候选源两处：台账 page/import 点名的文件 **+ 各卡片目录里的 `原卷截图.jpg`**。
+ *       加后者是因为有一批卡（错题卷图3~图7 → M0021~M0025）的 `page` 指向**另一张整页**，
+ *       "这张照片本身"被裁成了卡片题图，而那张裁图不在台账引用集合里 ⇒ 只用台账会漏判这 5 张。
+ *   ② 只在 ① 不命中时才算指纹 ⇒ **路径命中的 176 张仍然一次字节都不读**，
  *     2026-10-30 那次性能优化（256→80 张、502→214ms）**不被这次修复推翻**。
+ *     （内容命中的那几张要读自己的字节才能算指纹，这是物理上躲不掉的，不是退化。）
  *
- *   为什么 ② 不会把没做过的照片藏起来：台账 `page`/`import` 指的就是**这张照片本身**
- *   （整页母本或导入原件），不是别的图；内容指纹相同 ⇒ 字节级同一张 ⇒ 确实用过。
- *   反向风险：台账 `page` 也可能是裁图/单题图——但裁图是从母本裁出来的，
- *   **字节必然不同**，指纹相同仍等价于"同一张母图被用过"，判定方向一致。
+ *   为什么 ② 不会把没做过的照片藏起来：候选源里的文件要么就是**这张照片本身**
+ *   （整页母本或导入原件），要么是**从它裁出来的题图**（裁图与母图字节必然不同，
+ *   指纹相同仍等价于"同一张母图被用过"），判定方向一致。
  *
  *   退化方向（宁可多显示，绝不藏掉没做的）：台账缺失/损坏/cards 不是对象
  *     ⇒ 一律退回"全部待处理"并把原因说出来。
- *   为什么不把文件真的搬进 `_收件箱\_已处理\`：台账里现有 56 条 `page` 指向 `_收件箱\…`，
+ *   为什么不把文件真的搬进 `_收件箱\_已处理\`：台账里现有 176 个不同路径指向 `_收件箱\…`，
  *   挪文件会让 `_原卷台账.mjs 门禁` 当场整片报红（"整页不在盘"）。归档要动真源，得连台账一起改，
  *   那是另一件事（要单独批准、可回滚）。本函数**只读**：不动任何文件、不写任何东西。 */
 const LEDGER_NAME = '_原卷台账.json';
@@ -419,8 +422,16 @@ function inboxArchivedSet(root) {
    *      · 收件箱那张件算完自己的 sha256 后，只有**大小相同**的引用文件才可能是同一张
    *        （sha 相同 ⇒ 大小必然相同 ⇒ 大小不同的候选直接排除）；
    *      · 且这些候选的 sha256 **用到才算**，同一进程内算一次就缓存。
-   *    实测：真库上列收件箱回到 0.2 秒量级，已归档的 180 张仍然一次字节都不读。 */
+   *    实测：真库上列收件箱回到 0.2 秒量级。 */
   const bySize = new Map();              // size → [绝对路径]
+  const addCand = (abs) => {
+    if (!insideLib(root, abs)) return;    // 库外一律不读（见下方注释）
+    let st; try { st = fs.statSync(abs); } catch { return; }
+    if (!st.isFile()) return;
+    if (!bySize.has(st.size)) bySize.set(st.size, []);
+    const arr = bySize.get(st.size);
+    if (!arr.includes(abs)) arr.push(abs);
+  };
   for (const abs of refs) {
     /* ⚠ 库外路径一律不读（2026-10-31 加固）。
        台账里的 page/import 若写成 `../..\老库\…` 或绝对路径，`path.resolve` 会把它解析到
@@ -428,11 +439,17 @@ function inboxArchivedSet(root) {
        也等于让一个只读工具碰了库外文件）。用 `insideLib()` 判（零 IO 纯字符串判据，
        与 `_路径护栏.mjs` 的 `isInsideRoot` 逐条同族：归一化 + 带尾分隔符前缀比较 + 小写）。
        库外引用 ⇒ 不参与内容判据（退回"多显示"方向，与整体退化策略一致）。 */
-    if (!insideLib(root, abs)) continue;
-    let st; try { st = fs.statSync(abs); } catch { continue; }
-    if (!st.isFile()) continue;
-    if (!bySize.has(st.size)) bySize.set(st.size, []);
-    bySize.get(st.size).push(abs);
+    addCand(abs);
+  }
+  /* ②b 卡片目录里的 **原卷截图.jpg** 也纳入候选源（2026-10-31 复核补上）。
+   *    为什么必须加：有一批卡（例：错题卷图3~图7 → M0021~M0025），
+   *    它的 `page` 指向**另一张整页**，而"这张照片本身"是被裁成卡片题图的（`原卷截图.jpg`）。
+   *    那张裁图**不在台账的 page/import 引用集合里** ⇒ 只用台账做候选源会漏判这 5 张，
+   *    用户仍会看到"已经建过卡的照片"挂在待办清单上。
+   *    实测：加入卡片裁图候选源后，这 5 张从待处理清单消失（76 → 71）。
+   *    代价：候选源从 351 涨到约 800 个文件；仍靠 size 分桶把实际读盘压到很小。 */
+  for (const cd of inboxCardDirs(root)) {
+    addCand(path.join(cd, '原卷截图.jpg'));
   }
   const shaCache = new Map();            // 绝对路径 → sha256（惰性填充）
   function seen(sha, size) {
@@ -450,6 +467,27 @@ function inboxArchivedSet(root) {
     return false;
   }
   return { set, seen, note: '' };
+}
+/* 找出库里所有"卡片目录"（含 `错题记录.md` 的目录）的绝对路径。
+ * 判据与卡片目录的既有定义一致（`错题记录.md` 存在即算一张卡），
+ * 只取**两层深**（学生/学科/卡号），与 `_原卷台账.mjs` 的 loadCards 口径同族。
+ * 排除 `_` / `.` 开头的目录（`_收件箱`、`_probe`、`_备份-*` 等都不是卡）。 */
+function inboxCardDirs(root) {
+  const out = [];
+  const walk = (dir, depth) => {
+    if (depth > 2) return;
+    let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      if (!e.isDirectory()) continue;
+      if (e.name.startsWith('_') || e.name.startsWith('.')) continue;
+      const abs = path.join(dir, e.name);
+      let kids; try { kids = fs.readdirSync(abs); } catch { continue; }
+      if (kids.some(k => k.endsWith('错题记录.md'))) out.push(abs);
+      else walk(abs, depth + 1);
+    }
+  };
+  walk(root, 0);
+  return out;
 }
 /* 台账里的路径是库根相对的 posix 形态，但老数据里也可能出现反斜杠 / ./ 前缀 / 大小写差异。
    收件箱侧同样用这个口径归一，两边必须走**同一个函数**，否则"明明登记过却还显示"这种假阴性查不出来。 */
@@ -487,6 +525,8 @@ function cmdInbox() {
   const arch = inboxArchivedSet(root);
   const batches = [];
   const archived = [];
+  let nUnreadable = 0;                  // 读不动而跳过的文件数（跨批次累计）
+  let nOutside = 0;                     // 越出库根而跳过的文件数（跨批次累计）
   if (isDir(inbox)) {
     for (const name of fs.readdirSync(inbox).sort()) {
       if (name.startsWith('.') || INBOX_SKIP.has(name)) continue;
@@ -500,6 +540,10 @@ function cmdInbox() {
       const pushFile = (abs) => {
         let st; try { st = fs.statSync(abs); } catch { return; }
         if (!st.isFile() || !IMG_RE.test(path.basename(abs))) return;
+        /* ⚠ 库外文件一律不读（2026-10-31 复核补上，与台账侧同一个判据）。
+           若 `_收件箱\<批次>` 是指向库外的 junction / 符号链接，
+           下面的文件会被当成本库的照片读进来算指纹 —— 违反"只碰用户库"的边界。 */
+        if (!insideLib(root, abs)) { nOutside++; return; }
         const rel = path.relative(root, abs).split(path.sep).join('/');
         const base = { name: path.basename(abs), rel, bytes: st.size };
         /* 判据①：路径命中（零 IO）⇒ 已处理 ⇒ 只报名字/大小，**不算哈希**。
@@ -509,7 +553,15 @@ function cmdInbox() {
            所以这里**顺手**用它比一次内容指纹 —— 判据②零额外 IO。
            ⚠ 2026-10-31：路径对不上但内容同一张的件（台账记的是重命名后的原卷路径）
               以前就是这么漏判的。 */
-        const h = crypto.createHash('sha256').update(fs.readFileSync(abs)).digest('hex');
+        let h;
+        try { h = crypto.createHash('sha256').update(fs.readFileSync(abs)).digest('hex'); }
+        catch (e) {
+          /* ⚠ 单个文件读不动（权限/占用/损坏）**不许拖垮整个列表**（2026-10-31 复核补上）。
+             旧实现这里没有 try ⇒ 一张坏照片就让整个收件箱读不出来（EPERM 直接退出 2），
+             用户连别的照片都看不到。改成：跳过这一张、记个数、继续。 */
+          nUnreadable++;
+          return;
+        }
         if (arch.seen && arch.seen(h, st.size)) { archHere.push(base); return; }
         files.push({ ...base, sha256: h });
       };
@@ -534,16 +586,23 @@ function cmdInbox() {
   }
   const total = batches.reduce((n, b) => n + b.files.length, 0);
   const archivedCount = archived.length;
+  /* 跳过项要说出口：读不动 / 越出库根的文件**没有**出现在任何清单里，
+     用户看不到就以为照片丢了。宁可显式报出来，也不静默少列。 */
+  const skipNote = (nUnreadable ? nUnreadable + ' 张读不动（权限或文件占用）' : '') +
+    (nOutside ? (nUnreadable ? '；' : '') + nOutside + ' 张越出库根（已跳过，不读）' : '');
 
   if (JSON_OUT) {
     process.stdout.write(JSON.stringify({
       ok: true, root, inboxRel: '_收件箱', batches, total,
       archivedCount, archived, archivedNote: arch.note, created: ensured,
+      skipped: { unreadable: nUnreadable, outside: nOutside },
+      skipNote,
     }) + '\n');
     return 0;
   }
   console.log('收件箱：' + inbox + (ensured === 'made' ? '（刚为你建好）' : ''));
   if (arch.note) console.log('  ⚠ ' + arch.note);
+  if (skipNote) console.log('  ⚠ 已跳过：' + skipNote);
   if (!total && !archivedCount) {
     console.log('（空）把错题照片按批次放进 _收件箱\\<批次名>\\，再回到程序里选它。');
     return 0;
