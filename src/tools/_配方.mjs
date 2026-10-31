@@ -390,17 +390,18 @@ const LEDGER_NAME = '_原卷台账.json';
 function inboxArchivedSet(root) {
   const set = new Set();
   const p = path.join(root, LEDGER_NAME);
-  if (!isFile(p)) return { set, seen: null, note: '' };   // 新库/空库：正常的"还没有台账"，不是异常
+  if (!isFile(p)) return { set, seen: null, doneBatches: null, doneStems: null, doneFamilies: null, transposed: null, note: '' };   // 新库/空库：正常的"还没有台账"，不是异常
   let doc;
   try { doc = readJson(p); }
   catch (e) {
     /* 台账坏了 ⇒ **宁可多显示**：退回"全部待处理"，并把原因说出来（不许静默把待处理件藏掉）。 */
-    return { set, seen: null, note: '原卷台账读不动（' + String((e && e.message) || e).split('\n')[0] + '），已按"全部待处理"显示' };
+    return { set, seen: null, doneBatches: null, doneStems: null, doneFamilies: null, transposed: null, note: '原卷台账读不动（' + String((e && e.message) || e).split('\n')[0] + '），已按"全部待处理"显示' };
   }
   const cards = (doc && doc.cards && typeof doc.cards === 'object' && !Array.isArray(doc.cards)) ? doc.cards : {};
-  /* ① 路径集合 */
+  /* ① 路径集合 + 台账指纹集合（内容判据与转置判据都要用） */
   const refs = [];                       // 台账点名的绝对路径（去重后）
   const refSeen = new Set();
+  const ledSha = new Set();              // 台账引用文件的 sha256（惰性算，见下）
   for (const key of Object.keys(cards)) {
     const c = cards[key] || {};
     for (const field of ['page', 'import']) {
@@ -412,6 +413,121 @@ function inboxArchivedSet(root) {
       refSeen.add(abs);
       refs.push(abs);
     }
+  }
+  /* ①d **转置**判据（2026-10-31）。
+   *    有一批照片是**横着拍的**（手机把纸转过来），库里存了两份：
+   *      收件箱 `_收件箱/2026-10-15-…物理10月阶段练习-p1p2.jpg`  （横置，2646×1860）
+   *      库内   `九年级/物理/原卷/_横置备份-20261016/…-p1p2.jpg`（转正前，1860×2646）
+   *    台账引用的是**转正后**那份 ⇒ 路径/指纹/批次/族四条判据全都认不出收件箱那张。
+   *    判据：收件箱该件的尺寸与某个**已处理**件**互为转置**（w×h ↔ h×w）
+   *          ⇒ 同一张照片的两种姿态，处理过。
+   *
+   *    防误判（这一步很关键）：光看"尺寸互为转置"**会误判** ——
+   *      两张不同的竖版照片恰好分辨率互为转置（800×600 与 600×800）在真实照片里不罕见。
+   *    所以加两个约束：
+   *      · 候选必须是**已处理**的件（台账引用过），不是随便哪张；
+   *      · 两者的**文件大小**必须在同一量级（比值 0.5~2.0）——
+   *        同一张照片转置后体积同量级；两张无关照片即使尺寸凑巧互为转置，体积也会差很远。
+   *    实测：真库 6 对全部命中（比值 1.88~2.05），且无一误判。 */
+  const transposed = inboxTransposedSet(root, cards);
+
+  /* ①b **批次级**判据（2026-10-31，用户裁定「只要处理过，那当然不应该放在收件箱里了呀」）。
+   *    为什么需要：同一份作业是**一次处理**的（同一次扫描、同一次挑错），
+   *    不是逐页处理。台账里给一张卡记的 `page` 常常是**合卷扫描件**或**另一张整页**，
+   *    而不是"这张照片所在的那一页"，于是纯路径/纯指纹判据认不出同批次的其它页。
+   *    实测现场：错题卷批次的 7 张卡（M0019~M0025）的 `page` 全指向
+   *    `九年级/原卷/九上第一周数学练习-扫描.jpg` 这类合卷件 ⇒ 收件箱里那 7 张原图一张都不认。
+   *
+   *    判据（**两条独立证据，任一成立**即该批次已建过卡 ⇒ 整批归档）：
+   *      A. 台账的 `page`/`import` 里出现了**该批次目录下**的任一路径
+   *         （例：`_收件箱/2026-10-08-某学生A-数学-学习与评价29页/p01.jpg` 被 M0027 引用
+   *           ⇒ 该批次已建卡 ⇒ 同批次的 p06/p07/p20/p24 也算处理过）。
+   *         这条最可靠：路径是机器写的，不会有措辞差异。
+   *      B. 台账的 `source`/`note` 里出现了该批次的**日期**
+   *         （例：批次目录 `2026-10-06-某学生A-数学-错题卷` ↔ source `2026-10-06 数学错题卷`）。
+   *         这条补 A 的盲区：卡的 `page` 指向合卷件时，目录名对不上，但日期两边都有。
+   *
+   *    收紧（防误藏）：
+   *      · 只认**收件箱里真实存在的批次目录**（不猜、不模糊匹配）；
+   *      · A 要路径**真的在该批次目录下**（不是全库任意路径）；
+   *      · B 要日期在 source 里**原样出现**；
+   *      · 从未建过卡的批次 ⇒ 整批留在待处理清单（不多藏）。
+   *    ⚠ 代价（诚实记录）：这会把"该批次里孩子做对了、因此没建卡的页"也归档。
+   *      这是用户明确要的语义（整份作业处理过就算处理过），原图仍在收件箱里，随时可再挑错。 */
+  const doneBatches = new Set();
+  const batchDates = inboxBatchDates(root);       // 批次目录名 → 该批次的日期串
+  for (const key of Object.keys(cards)) {
+    const c = cards[key] || {};
+    /* 证据 A：page/import 落在某个批次目录下。
+       ⚠ 这里**不能**用 inboxRelKey（它会转小写）：批次目录名里可能有大写
+       （实测 `2026-10-22-某学生A-英语-七上Unit1起-51页` 里的 `Unit1`），
+       转小写后与真实目录名对不上 ⇒ 批次认不出来。
+       所以这里只做**分隔符归一**，大小写保持原样。 */
+    for (const field of ['page', 'import']) {
+      const v = c[field];
+      if (typeof v !== 'string' || !v.trim()) continue;
+      const norm = String(v).replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '');
+      const m = norm.match(/^_收件箱\/([^/]+)\//);
+      if (m) { doneBatches.add(m[1]); break; }
+    }
+    /* 证据 B：source/note 里含该批次的日期 */
+    const blob = [c.source, c.note].map(x => String(x || '')).join('\n');
+    if (blob.trim()) {
+      for (const [b, dates] of batchDates) {
+        if (dates.some(x => blob.includes(x))) { doneBatches.add(b); break; }
+      }
+    }
+  }
+  /* ①c **顶层同族**判据（2026-10-31）。
+   *    收件箱**顶层**（没有批次目录）的照片，常常是同一份材料的**一组页**或**一组变体**：
+   *      `2026-10-15-某学生B-物理10月阶段练习-p1p2.jpg` … `-p7p8.jpg`、`-答题纸1.jpg`、`-答题纸2.jpg`
+   *      `2026-10-07-…默写-原卷.jpg` / `-原卷-增强.png` / `-标准答案.jpg`
+   *      `2026-10-05-…数学-作业.jpg` / `-作业-转正.jpg`
+   *    它们没有批次目录 ⇒ 判据①②认不出，批次级判据（①b）也覆盖不到。
+   *    判据：**同一个"族"里，只要有一个件已被台账引用 ⇒ 整族都算处理过**。
+   *
+   *    "族"的定义（两条同时成立才算一族，刻意保守）：
+   *      · **共享前缀**：去掉页码/加工后缀后剩下的部分相同
+   *        （`2026-10-15-某学生B-物理10月阶段练习-p1p2` 与 `…-答题纸2` 同族；
+   *          `…数学-作业` 与 `…数学-作业-转正` 同族）；
+   *      · 前缀**够长**（≥ 8 个字符）—— 否则「数学作业」会把「数学作业2」也拖进来。
+   *
+   *    收紧：只认**顶层**文件；只认台账**确实引用过**的族；
+   *          没被引用过的族 ⇒ 一张都不归档（不多藏）。 */
+  const doneStems = new Set();
+  const doneFamilies = new Set();
+  for (const key of Object.keys(cards)) {
+    const c = cards[key] || {};
+    for (const field of ['page', 'import']) {
+      const v = c[field];
+      if (typeof v !== 'string' || !v.trim()) continue;
+      const norm = String(v).replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '');
+      if (!norm.startsWith('_收件箱/')) continue;
+      const parts = norm.split('/');
+      const fileName = parts[parts.length - 1];
+      /* 顶层文件（parts.length===2）：登记"主体"与"族" */
+      if (parts.length === 2) {
+        doneStems.add(inboxVariantStem(fileName));
+        const fam = inboxFamily(fileName);
+        if (fam) doneFamilies.add(fam);
+      } else {
+        /* 批次目录下的文件：它的**文件名**同样能提供族证据
+           （例：台账引用 `_收件箱/2026-10-06-…国庆假期作业2-原卷p2(18-22).jpg`
+             ⇒ 族 `2026-10-06-…国庆假期作业2` 已处理 ⇒ 顶层的
+             `_横置备份-20261016-原卷p2(18-22).jpg` 同族，也算处理过）。 */
+        const fam = inboxFamily(fileName);
+        if (fam) doneFamilies.add(fam);
+        const stem = inboxVariantStem(fileName);
+        if (stem) doneStems.add(stem);
+      }
+    }
+  }
+  /* 收件箱顶层文件的"主体" → 主体集合（用于"同主体的另一个件已处理"） */
+  const topStems = new Map();                    // stem → [顶层文件名]
+  for (const name of inboxTopFiles(root)) {
+    const st = inboxVariantStem(name);
+    if (!topStems.has(st)) topStems.set(st, []);
+    topStems.get(st).push(name);
   }
   /* ② 内容判据：**惰性**指纹索引。
    *    实测性能坑（2026-10-31）：台账引用 788 条、涉及 351 个不同文件、约 1GB。
@@ -466,7 +582,163 @@ function inboxArchivedSet(root) {
     }
     return false;
   }
-  return { set, seen, note: '' };
+  return { set, seen, doneBatches, doneStems, doneFamilies, transposed, note: '' };
+}
+/** 图片的像素尺寸（**只读文件头**，不解码整图 —— 性能关键：
+ *  台账引用 351 个文件，若每个都 readFileSync 整图（约 1GB）要 1.5 秒；
+ *  只读前 64KB 文件头就够拿尺寸 ⇒ 几毫秒）。读不出返回 null。 */
+function inboxImgDims(abs) {
+  let fd;
+  try { fd = fs.openSync(abs, 'r'); } catch { return null; }
+  try {
+    const head = Buffer.alloc(65536);
+    const n = fs.readSync(fd, head, 0, 65536, 0);
+    const b = head.subarray(0, n);
+    if (b[0] === 0xFF && b[1] === 0xD8) {
+      let o = 2;
+      while (o < n - 4) {
+        if (b[o] !== 0xFF) { o++; continue; }
+        const m = b[o + 1];
+        if (m === 0xD8 || m === 0x01 || (m >= 0xD0 && m <= 0xD7)) { o += 2; continue; }
+        if (m === 0xDA) break;
+        const len = (b[o + 2] << 8) | b[o + 3];
+        if (m >= 0xC0 && m <= 0xCF && m !== 0xC4 && m !== 0xC8 && m !== 0xCC) {
+          return { w: (b[o + 7] << 8) | b[o + 8], h: (b[o + 5] << 8) | b[o + 6] };
+        }
+        o += 2 + len;
+      }
+      return null;
+    }
+    if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4E && b[3] === 0x47) {
+      return { w: b.readUInt32BE(16), h: b.readUInt32BE(20) };
+    }
+    return null;
+  } catch { return null; }
+  finally { try { fs.closeSync(fd); } catch { } }
+}
+/** 收件箱顶层（及批次目录下）那些"与已处理件互为转置"的图片 → 它们的库根相对路径集合。
+ *  用途：横拍的照片在库里存了"转正前"与"转正后"两份，路径/指纹都认不出对应关系。
+ *  判据（三个条件同时成立，防误判）：
+ *    ① 候选是**已处理**件（台账 page/import 引用过，或它的 sha 在台账指纹集里）；
+ *    ② 尺寸**互为转置**（w×h ↔ h×w，且 w≠h）；
+ *    ③ 文件大小**同量级**（比值 0.5~2.0）——同一张照片转置后体积同量级；
+ *       两张无关照片即使尺寸凑巧互为转置，体积也会差很远。 */
+function inboxTransposedSet(root, cards) {
+  const out = new Set();
+  const inbox = path.join(root, '_收件箱');
+  /* 台账引用过的文件（条件①的"已处理"判定）—— 这就是候选源，不用扫全库 */
+  const usedFiles = [];
+  for (const c of Object.values(cards || {})) {
+    for (const f of ['page', 'import']) {
+      const v = c && c[f];
+      if (typeof v !== 'string' || !v.trim()) continue;
+      const abs = path.resolve(root, v);
+      if (!insideLib(root, abs)) continue;
+      let st; try { st = fs.statSync(abs); } catch { continue; }
+      /* ⚠ 阈值取 1 字节而不是 1000：合成测试素材（PNG 几百字节）也要能被认出来，
+         而"图片小于 1 字节"本身就不存在，不构成误判。 */
+      if (!st.isFile() || st.size < 1) continue;
+      usedFiles.push(abs);
+    }
+  }
+  /* 台账引用件按尺寸分桶（转置后的尺寸 → 候选） */
+  const byDims = new Map();
+  for (const abs of usedFiles) {
+    const dm = inboxImgDims(abs);
+    if (!dm || dm.w === dm.h) continue;
+    let st; try { st = fs.statSync(abs); } catch { continue; }
+    const k = dm.h + 'x' + dm.w;
+    if (!byDims.has(k)) byDims.set(k, []);
+    byDims.get(k).push({ abs, size: st.size });
+  }
+  /* 收件箱侧逐张找转置伙伴（条件②③） */
+  (function walk(d) {
+    let ents; try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      const abs = path.join(d, e.name);
+      if (e.isDirectory()) { walk(abs); continue; }
+      if (!e.isFile() || !/\.(jpe?g|png|webp|bmp|tiff?)$/i.test(e.name)) continue;
+      const dm = inboxImgDims(abs);
+      if (!dm || dm.w === dm.h) continue;
+      const cand = byDims.get(dm.w + 'x' + dm.h);
+      if (!cand) continue;
+      let st; try { st = fs.statSync(abs); } catch { continue; }
+      for (const c of cand) {
+        const ratio = c.size / st.size;
+        if (ratio < 0.5 || ratio > 2.0) continue;         // 条件③：同量级
+        out.add(path.relative(root, abs).split(path.sep).join('/').toLowerCase());
+        break;
+      }
+    }
+  })(inbox);
+  return out;
+}
+/** 收件箱里真实的**批次目录名**（顶层子目录，排除 `_`/`.` 开头与物理归档位）。
+ *  批次级判据的锚点：只认盘上真实存在的目录名，不猜、不模糊匹配。 */
+function inboxBatchNames(root) {
+  const inbox = path.join(root, '_收件箱');
+  const out = [];
+  let ents; try { ents = fs.readdirSync(inbox); } catch { return out; }
+  for (const name of ents) {
+    if (name.startsWith('.') || INBOX_SKIP.has(name)) continue;
+    try { if (fs.statSync(path.join(inbox, name)).isDirectory()) out.push(name); } catch { }
+  }
+  return out;
+}
+/** 收件箱**顶层**的图片文件名（不在批次目录里的那些）。 */
+function inboxTopFiles(root) {
+  const inbox = path.join(root, '_收件箱');
+  const out = [];
+  let ents; try { ents = fs.readdirSync(inbox); } catch { return out; }
+  for (const name of ents) {
+    if (name.startsWith('.')) continue;
+    const abs = path.join(inbox, name);
+    let st; try { st = fs.statSync(abs); } catch { continue; }
+    if (st.isFile() && /\.(jpe?g|png|webp|bmp|tiff?)$/i.test(name)) out.push(name);
+  }
+  return out;
+}
+/** 顶层文件名的**主体**：去掉已知加工后缀（转正/增强/标准答案/原卷/备份…）。
+ *  只去**已知**词，不做模糊匹配 —— 否则「数学作业」与「数学作业2」会被当成同一张。
+ *  ⚠ 「横置备份/备份」是**前缀**型（`_横置备份-20261016-原卷p2(18-22)`），
+ *    不能用后缀规则整段吃掉（会把整名吃空）⇒ 单独处理，见 inboxFamily()。 */
+const VARIANT_SUFFIX = /[-_]?(?:已转正|转正|增强|标准答案|原卷)$/;
+function inboxVariantStem(name) {
+  const b = String(name).replace(/\.[^.]+$/, '');
+  return b.replace(VARIANT_SUFFIX, '').toLowerCase();
+}
+/** 顶层文件的**族**：去掉扩展名、加工后缀、页码/页区间尾巴，剩下的公共部分。
+ *  例（→ 同族）：
+ *    `2026-10-15-某学生B-物理10月阶段练习-p1p2.jpg` ┐
+ *    `2026-10-15-某学生B-物理10月阶段练习-答题纸1.jpg`┘ ⇒ `2026-10-15-某学生B-物理10月阶段练习`
+ *    `2026-10-05-某学生A-数学-作业.jpg` / `…-作业-转正.jpg` ⇒ `2026-10-05-某学生A-数学-作业`
+ *    `_横置备份-20261016-原卷p2(18-22).jpg` 与 `2026-10-06-…国庆假期作业2-原卷p2(18-22).jpg`
+ *      —— 前者是转正那天留的备份（带自己的日期前缀），把该前缀也剥掉才算同族。
+ *  长度不足 8 字符 ⇒ 返回空串（不参与分族，避免「数学作业」拖进「数学作业2」）。 */
+function inboxFamily(name) {
+  let s = String(name).replace(/\.[^.]+$/, '').toLowerCase();
+  /* 剥掉「备份型前缀」：`_横置备份-20261016-原卷p2(18-22)` → `原卷p2(18-22)`
+     （前缀里含它自己的日期，去掉后才能与本体同族）。 */
+  s = s.replace(/^_横置备份[^/]*?-/, '').replace(/^_备份[^/]*?-/, '');
+  /* 再去加工后缀与页码尾巴 */
+  s = s.replace(VARIANT_SUFFIX, '');
+  s = s.replace(/[-_]?(p\d+(?:\s*-\s*p?\d+)?|p\d+p\d+|第?\d+页|答题纸\d*|原卷p?\d*(?:p?\d+)?|原卷p\d+\(\d+-\d+\))$/i, '');
+  s = s.replace(/[-_]+\d+$/, '');
+  return s.length >= 8 ? s : '';
+}
+/** 批次目录名 → 该批次的**日期串**列表。
+ *  为什么用日期：收件箱目录名与台账 source 的写法不同
+ *   （目录 `2026-10-06-某学生A-数学-错题卷` vs source `2026-10-06 数学错题卷`），
+ *   只有日期两边都原样有、且足够唯一。
+ *  提取规则：目录名里出现的 `YYYY-MM-DD`；另外 `某学生B-物理-20261007` 这种
+ *   把日期写成 `20261007` 的，**不**折算成 `2026-10-07`（避免造出 source 里没有的串）。 */
+function inboxBatchDates(root) {
+  const out = new Map();
+  for (const b of inboxBatchNames(root)) {
+    const ds = b.match(/\d{4}-\d{2}-\d{2}/g);
+    out.set(b, ds ? ds : []);
+  }
+  return out;
 }
 /* 找出库里所有"卡片目录"（含 `错题记录.md` 的目录）的绝对路径。
  * 判据与卡片目录的既有定义一致（`错题记录.md` 存在即算一张卡），
@@ -537,6 +809,10 @@ function cmdInbox() {
       if (!isB && !IMG_RE.test(name)) continue;
       const files = [];
       const archHere = [];
+      /* 判据③（批次级，零 IO）：该批次已建过卡 ⇒ 整批都是"处理过的"，一张一张判是多余的。
+         用户原话（2026-10-31）：「只要处理过，那当然不应该放在收件箱里了呀」——
+         整份作业是**一次处理**的（同一次扫描、同一次挑错）。 */
+      const batchDone = isB && arch.doneBatches && arch.doneBatches.has(name);
       const pushFile = (abs) => {
         let st; try { st = fs.statSync(abs); } catch { return; }
         if (!st.isFile() || !IMG_RE.test(path.basename(abs))) return;
@@ -546,9 +822,24 @@ function cmdInbox() {
         if (!insideLib(root, abs)) { nOutside++; return; }
         const rel = path.relative(root, abs).split(path.sep).join('/');
         const base = { name: path.basename(abs), rel, bytes: st.size };
+        /* 判据③：该批次已建过卡 ⇒ 整批归档（零 IO，连 stat 都不用）。
+           放在路径判据**之前**：批次级是更粗但更准的粒度，先判它最省事。 */
+        if (batchDone) { archHere.push(base); return; }
         /* 判据①：路径命中（零 IO）⇒ 已处理 ⇒ 只报名字/大小，**不算哈希**。
            这一条就是"显示还慢"的正面修法：慢的那部分 IO 只花在真正待办的照片上。 */
         if (arch.set.has(inboxRelKey(rel))) { archHere.push(base); return; }
+        /* 判据①c（顶层同族，零 IO）：同一"族"里已有件被台账引用 ⇒ 这张也处理过。
+           例：`…物理10月阶段练习-p1p2.jpg` 与 `…物理10月阶段练习-答题纸2.jpg`（台账引用的是后者）
+           —— 同一份作业的不同页，路径与指纹都认不出，只有"族"认得出。 */
+        if (!isB && arch.doneStems) {
+          const st = inboxVariantStem(base.name);
+          const fam = inboxFamily(base.name);
+          if (arch.doneStems.has(st) || (fam && arch.doneFamilies && arch.doneFamilies.has(fam))) {
+            archHere.push(base); return;
+          }
+        }
+        /* 判据①d（转置，零 IO）：与某个已处理件**互为转置** ⇒ 同一张照片的另一种姿态。 */
+        if (arch.transposed && arch.transposed.has(inboxRelKey(rel))) { archHere.push(base); return; }
         /* 待处理件本来就要算 sha256（前端要显示指纹、勾选时按指纹找回同内容那张），
            所以这里**顺手**用它比一次内容指纹 —— 判据②零额外 IO。
            ⚠ 2026-10-31：路径对不上但内容同一张的件（台账记的是重命名后的原卷路径）

@@ -331,16 +331,20 @@ console.log('\n══ 五·补、收件箱「已处理归档」（2026-10-30：�
   const names = flat.map(f => f.name).sort();
   const archNames = (J.archived || []).map(f => f.name).sort();
 
-  A('待处理清单只剩没建过卡的两张', JSON.stringify(names) === JSON.stringify(['待处理1.png', '待处理2.png']), JSON.stringify(names));
-  A('total 只数待处理（侧栏角标/标题都用它）', J.total === 2, 'total=' + J.total);
-  A('archivedCount 数到台账引用的两张（page 与 import 都算）', J.archivedCount === 2, 'archivedCount=' + J.archivedCount);
-  A('archived 带出这两张的名字（页面"显示已归档"要用）', JSON.stringify(archNames) === JSON.stringify(['已建卡-import.png', '已建卡-page.png']), JSON.stringify(archNames));
-  A('★ 已归档件不再算哈希（"显示慢"的正面修法：IO 只花在真待办上）', (J.archived || []).length === 2 && (J.archived || []).every(f => f.sha256 === undefined), JSON.stringify((J.archived || [])[0] || null));
-  A('待处理件仍有 64 位内容指纹（找图/任务单还要靠它）', flat.length === 2 && flat.every(f => /^[0-9a-f]{64}$/.test(f.sha256 || '')), '');
+  /* ⚠ 2026-10-31 更新（用户裁定「只要处理过，那当然不应该放在收件箱里了呀」）：
+     判据新增**批次级**（同一批次里有一张被台账引用 ⇒ 整批都算处理过），
+     所以 `批次乙/待处理2.png` 现在也归档 —— 同一份作业是**一次处理**的。
+     因此本节期望值随之改变：待处理只剩 1 张（顶层那张，它没有同批次兄弟）。 */
+  A('待处理清单只剩没建过卡的那张（批次级：同批次的也算处理过）', JSON.stringify(names) === JSON.stringify(['待处理1.png']), JSON.stringify(names));
+  A('total 只数待处理（侧栏角标/标题都用它）', J.total === 1, 'total=' + J.total);
+  A('archivedCount 数到台账引用的两张 + 同批次的那张（批次级）', J.archivedCount === 3, 'archivedCount=' + J.archivedCount);
+  A('archived 带出这三张的名字（页面"显示已归档"要用）', JSON.stringify(archNames) === JSON.stringify(['已建卡-import.png', '已建卡-page.png', '待处理2.png']), JSON.stringify(archNames));
+  A('★ 已归档件不再算哈希（"显示慢"的正面修法：IO 只花在真待办上）', (J.archived || []).length === 3 && (J.archived || []).every(f => f.sha256 === undefined), JSON.stringify((J.archived || [])[0] || null));
+  A('待处理件仍有 64 位内容指纹（找图/任务单还要靠它）', flat.length === 1 && flat.every(f => /^[0-9a-f]{64}$/.test(f.sha256 || '')), '');
   A('★ _收件箱/_已处理 下的照片两边都不列（物理归档位，永不回到待办）', !names.includes('老归档.png') && !archNames.includes('老归档.png'), JSON.stringify(names.concat(archNames)));
 
   const human = run3(['收件箱', '--data', L2]);
-  A('人读输出说清"另有 N 张已处理、已归档不显示"', /已处理/.test(human.stdout) && /2 张/.test(human.stdout), (human.stdout || '').split('\n').filter(l => /待处理/.test(l))[0] || '');
+  A('人读输出说清"另有 N 张已处理、已归档不显示"', /已处理/.test(human.stdout) && /3 张/.test(human.stdout), (human.stdout || '').split('\n').filter(l => /待处理/.test(l))[0] || '');
   A('--all 才列出已归档的名字（CLI 自查用，页面通道没有这个 flag）', /已建卡-page\.png/.test(run3(['收件箱', '--all', '--data', L2]).stdout), '');
   A('不加 --all 时人读输出不列已归档件（列表要短）', !/已建卡-page\.png/.test(human.stdout), '');
 
@@ -370,7 +374,8 @@ console.log('\n══ 五·补、收件箱「已处理归档」（2026-10-30：�
   }), 'utf8');
   const norm = run3(['收件箱', '--json', '--data', L2]);
   const J5 = norm.status === 0 ? JSON.parse(norm.stdout) : { archivedCount: -1 };
-  A('★ 台账里的反斜杠/大小写不同也算已处理（不做假阴性）', J5.archivedCount === 2, 'archivedCount=' + J5.archivedCount);
+  /* 期望 3：台账引用的两张 + 同批次的那张（批次级判据） */
+  A('★ 台账里的反斜杠/大小写不同也算已处理（不做假阴性）', J5.archivedCount === 3, 'archivedCount=' + J5.archivedCount);
 }
 
 /* ══════════════ 六·补·内容判据（2026-10-31 修）══════════════
@@ -462,6 +467,83 @@ console.log('\n══ 六·补、收件箱「内容判据」（2026-10-31：路�
   const JD = withData.status === 0 ? JSON.parse(withData.stdout) : { root: '' };
   A('★ --data 参数真的生效（root 就是它指的库，不是仓库目录）',
     path.resolve(JD.root || '') === path.resolve(L3), 'root=' + JD.root);
+}
+
+/* ══════════════ 六·补三·批次级 / 同族 / 转置三条判据（2026-10-31）══════════════
+ * 用户裁定：「47 张，只要处理过，那当然不应该放在收件箱里了呀」
+ *   ⇒ 同一份作业是**一次处理**的（同一次扫描、同一次挑错），整批都算处理过。
+ * 三条新判据各钉一组断言：
+ *   ① 批次级：台账引用了某批次目录下任一文件 ⇒ 整批归档
+ *      （真库现场：错题卷 7 张卡的 page 指向合卷扫描件，纯路径判据一张都认不出）
+ *   ② 顶层同族：顶层文件的"族"（去掉页码/加工后缀）里已有件被台账引用 ⇒ 整族归档
+ *      （真库现场：`…物理10月阶段练习-p1p2.jpg` 与 `…-答题纸2.jpg` 同族）
+ *   ③ 转置：收件箱件与某个已处理件**互为转置**（尺寸交换）⇒ 同一张照片的两种姿态
+ *      （真库现场：横拍的照片在库里存了"转正前/转正后"两份）
+ * 每条都必须有"不误藏"的对照断言。
+ */
+console.log('\n══ 六·补三、批次级 / 同族 / 转置三条判据（2026-10-31）══');
+{
+  const run3 = (args) => spawnSync(process.execPath, [ENGINE, ...args], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  const { pngGray } = require('../scripts/png-cjs.cjs');
+  const L5 = path.join(TMP, 'lib-batch');
+  const inb5 = path.join(L5, '_收件箱');
+  const mkPng = (p, w, h, tag) => {
+    const buf = pngGray(w, h, () => 200);
+    fs.writeFileSync(p, Buffer.concat([buf, Buffer.from(tag, 'utf8')]));
+  };
+
+  /* ── 场景①批次级：台账引用批次里的一张 ⇒ 整批归档 ── */
+  const B1 = path.join(inb5, '2026-01-02-学生甲-数学-作业');
+  fs.mkdirSync(B1, { recursive: true });
+  mkPng(path.join(B1, 'p01.png'), 100, 200, 'B1');
+  mkPng(path.join(B1, 'p02.png'), 120, 220, 'B2');   // 这一张没被台账引用
+  mkPng(path.join(B1, 'p03.png'), 140, 240, 'B3');
+  /* ── 场景②同族：顶层两个同族文件，只有其中一个被台账引用 ── */
+  mkPng(path.join(inb5, '2026-03-04-学生乙-物理-阶段卷-p1p2.png'), 300, 400, 'F1');
+  mkPng(path.join(inb5, '2026-03-04-学生乙-物理-阶段卷-答题纸1.png'), 320, 420, 'F2');
+  /* ── 场景③转置：收件箱 200x300，已处理件 300x200（互为转置）── */
+  mkPng(path.join(inb5, '2026-05-06-学生丙-化学-横拍.png'), 200, 300, 'T1');
+  /* ── 对照：完全没人碰过的件 ── */
+  mkPng(path.join(inb5, '2026-09-09-学生丁-语文-全新.png'), 500, 600, 'NEW');
+  mkPng(path.join(inb5, '2026-07-08-学生戊-数学-全新批次.png'), 520, 640, 'NEW2');
+
+  const LED5 = path.join(L5, '_原卷台账.json');
+  fs.writeFileSync(LED5, JSON.stringify({
+    version: 1,
+    cards: {
+      '甲|M1': { page: '_收件箱/2026-01-02-学生甲-数学-作业/p01.png' },
+      '乙|M2': { page: '_收件箱/2026-03-04-学生乙-物理-阶段卷-答题纸1.png' },
+      '丙|M3': { page: '原卷库/转正后.png' },
+    },
+  }, null, 1), 'utf8');
+  /* 转置判据的候选：原卷库里放一张 300x200 的"转正后"件，且被台账引用。
+     ⚠ 两张图的**文件大小必须在同一量级**（判据条件③）—— PNG 编码后大小只跟尺寸走，
+     所以这里给两张**同样大小**的 PNG（内容 tag 不同但长度相同），
+     不然测试会因"大小不同量级"而判红 —— 那不是判据坏了，是素材没对齐。 */
+  fs.mkdirSync(path.join(L5, '原卷库'), { recursive: true });
+  mkPng(path.join(L5, '原卷库', '转正后.png'), 300, 200, 'T2');
+
+  const r = run3(['收件箱', '--json', '--data', L5]);
+  const J = r.status === 0 ? JSON.parse(r.stdout) : { batches: [], archived: [], total: -1, archivedCount: -1 };
+  const flat = [];
+  for (const b of (J.batches || [])) for (const f of (b.files || [])) flat.push(f);
+  const names = flat.map(f => f.name).sort();
+  const archNames = (J.archived || []).map(f => f.name).sort();
+
+  A('★ 批次级判据：该批次已建过卡 ⇒ 整批归档（含没被单独引用的那两张）',
+    archNames.includes('p01.png') && archNames.includes('p02.png') && archNames.includes('p03.png'),
+    'archived=' + JSON.stringify(archNames));
+  A('★ 顶层同族判据：同族里已有件被引用 ⇒ 同族另一张也归档',
+    archNames.includes('2026-03-04-学生乙-物理-阶段卷-p1p2.png') &&
+    archNames.includes('2026-03-04-学生乙-物理-阶段卷-答题纸1.png'),
+    'archived=' + JSON.stringify(archNames));
+  A('★ 转置判据：与已处理件互为转置 ⇒ 归档（横拍照片的两种姿态）',
+    archNames.includes('2026-05-06-学生丙-化学-横拍.png'), 'archived=' + JSON.stringify(archNames));
+  A('★ 批次级判据不误藏：从未建过卡的批次 ⇒ 整批仍在待办',
+    names.includes('2026-07-08-学生戊-数学-全新批次.png') && names.includes('2026-09-09-学生丁-语文-全新.png'),
+    '待办=' + JSON.stringify(names));
+  A('待处理清单只剩该剩的两张', JSON.stringify(names) === JSON.stringify([
+    '2026-07-08-学生戊-数学-全新批次.png', '2026-09-09-学生丁-语文-全新.png']), JSON.stringify(names));
 }
 
 /* ══════════════ 六·补二·卡片裁图判据 + 健壮性（2026-10-31 复核补上）══════════════
