@@ -25,6 +25,7 @@ import path from 'path';
 import { execFileSync } from 'child_process';
 import { libraryRoot, toolPath } from './_库根.mjs';
 import { writeJsonAtomic, acquireLibLock } from './_安全写.mjs';
+import { resolver } from './_原图寻址.mjs';
 
 const argv = process.argv.slice(2);
 const has = (k) => argv.includes(k);
@@ -117,6 +118,26 @@ try {
   ORIG = null;   // 交给 dataHealth 报红
 }
 
+/* ══════════════ 原图兜底寻址（2026-10-31）══════════════
+ * 台账记的是**路径字符串**。路径会被改名、被搬、被清空（收件箱清空就是）。
+ * 这里把路径解析成"当前真正能用的路径"：
+ *   · 原路径还在 → 直接用（零 IO，行为与从前完全一致）
+ *   · 原路径没了 → 用 `_原图台账.json` 的反查表换成 sha，再从 `_原图\`
+ *     里找到**字节完全相同**的那一份（内容寻址库里它永不被改写 ⇒ 不会认错）
+ *   · 都没有 → null（真的断了，如实报 lost，不静默）
+ * 副作用：`pageVia`/`impVia` 记下每次解析走的是哪条路，供界面提示与门禁判红用。 */
+const ORIG_RESOLVER = resolver();
+let pageVia = null, impVia = null;
+function resolveOrig(rel) {
+  const r = ORIG_RESOLVER.resolve(rel);
+  return r ? r.path : null;
+}
+/** 取路径 + 记录走法（一处解析，两处用：page 与 import） */
+function resolveOrigWithVia(rel) {
+  const r = ORIG_RESOLVER.resolve(rel);
+  return { path: r ? r.path : null, via: r ? r.via : null };
+}
+
 function cardsOf(idx, idxDir, subjectName) {
   /* 两种索引形态：
      ① 多学科：{student, grade, subjects:{ 数学:{items:[]}, … }}   文件在  库\九年级\_索引.json
@@ -150,13 +171,27 @@ function cardsOf(idx, idxDir, subjectName) {
     /* 原卷溯源四字段：**从 _原卷台账.json 并回来**（不是 null）。
        台账键是「学生|卡号」；page=整页原卷、box=归一化红框、import=原件、by=定位方式。
        ⚠ 路径口径与老生成器一致：**百分号编码**（前端拿 decodeURIComponent 还原后再取图；
-         写成原文也能显示，但会与历史状态包/断言口径不一致，实测会假红）。 */
+         写成原文也能显示，但会与历史状态包/断言口径不一致，实测会假红）。
+       ★ 2026-10-31：加了**兜底寻址**（`_原图寻址.mjs`）。
+         台账里记的是**路径字符串**，而路径会被改名/被搬/被清空（收件箱清空就是这种情况）。
+         原路径还在 ⇒ 行为与从前完全一致（零 IO）；原路径没了 ⇒ 用保全库的反查表把
+         路径换成 sha，再从 `_原图\` 里找到**字节完全相同**的那一份。
+         ⇒ **清空收件箱不会让卡片断链**，而台账一个字节都不用改。 */
     const og = (ORIG && ORIG[stu + '|' + c.id]) || null;
     o.pdf = null;
-    o.origPage = og && og.page ? enc(String(og.page)) : null;
+    /* 兜底寻址：只在原路径失效时才去找（常态零成本） */
+    const rp = og && og.page ? resolveOrigWithVia(og.page) : null;
+    const ri = og && og.import ? resolveOrigWithVia(og.import) : null;
+    pageVia = rp ? rp.via : null;
+    impVia = ri ? ri.via : null;
+    o.origPage = rp ? enc(String(rp.path)) : null;
     o.origBox = og && og.box ? og.box : null;
-    o.origImport = og && og.import ? enc(String(og.import)) : null;
+    o.origImport = ri ? enc(String(ri.path)) : null;
     o.origBy = og && og.by ? og.by : null;
+    /* 溯源状态：'direct'=原路径还在；'store'=原路径没了、从保全库按内容找回；
+       null=真的断了（保全库里也没有匹配内容）。界面据此提示，不静默。 */
+    o.origResolve = og && og.page ? (rp ? rp.via : 'lost') : null;
+    o.origImportResolve = og && og.import ? (ri ? ri.via : 'lost') : null;
     /* 复习/盲解字段给默认值：老索引里可能整体缺这些键，界面读到 undefined 会显示怪东西 */
     o.reviews = Array.isArray(c.reviews) ? c.reviews : [];
     o.reviewStatus = c.reviewStatus || '未复习';
