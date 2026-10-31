@@ -227,19 +227,111 @@ function ruleCardPage(c) {
  *  ★ 2026-10-24 B-09 整改：原实现绑定某次真实建卡的工作目录（含真实学生名/真实收件箱名）。
  *    机制保留、数据脱敏：按**通用约定**找清单——库根下以「_work-建卡清单」开头的目录里的
  *    `cards-g*.json`（元素含 {id, pageFile, bbox?, inbox?}）。真实库要复用某个具体清单，
- *    把目录改成这个命名即可，规则代码不再认识任何具体学生。 */
-let _buildList = null;
-function ruleBuildList(c, shaCache) {
-  if (!_buildList) {
-    _buildList = new Map();
-    for (const d of listDir('.').filter(x => /^_work-建卡清单/.test(x))) {
-      for (const f of listDir(d).filter(x => /^cards-g.*\.json$/.test(x))) {
-        let t; try { t = readJson(toAbs(d + '/' + f)); } catch { continue; }
-        for (const card of (t.cards || [])) if (card.id) _buildList.set(card.id, { card, dir: d });
+ *    把目录改成这个命名即可，规则代码不再认识任何具体学生。
+ *
+ *  ★★ 2026-10-31 修（C01 · P1，外部审查复核后升级）：**缓存键必须是「学生|卡号」**。
+ *    缺陷原形（原实现 `_buildList.set(card.id, …)` + `_buildList.get(c.id)`）：
+ *    卡号跨学生会撞号（真库现场：两名学生同号卡 96 个），而清单是**全库一份**的——
+ *      · 只有一份清单、里面只有一条 M0001 ⇒ 两名学生都命中同一条，**一开始就串号**
+ *        （学生A|M0001 与 学生B|M0001 指向同一张 pA.jpg）；
+ *      · 有两份清单 ⇒ 后枚举的 `set` 覆盖前一条，学生A 自己的卡被指到学生B 的页。
+ *    最要命的是**没有纠正机会**：命中本规则后，build() 的规则链就不再走 reconcilePage 兜底，
+ *    错页会被当成"有证据"直接写进真源（而真库眼下恰好没有 `_work-建卡清单*` 目录，
+ *    所以这颗雷还没爆——一旦有人按这个约定放清单，96 张同号卡当场串）。
+ *    修法三条（缺一条都会留下串号通道）：
+ *      ① 清单条目自带 `student`（或清单文件顶层 `student`）⇒ 以它为准，按 `学生|卡号` 精确命中；
+ *      ② 清单**没有**学生归属时（老清单只有 {id, pageFile, bbox}）⇒ 只有「该卡号在全库只属于
+ *         一个学生」才敢回退按卡号匹配；出现在 N(>1) 个学生名下 ⇒ 返回**歧义**（不猜、不覆盖）；
+ *      ③ 不靠"文件存在"判归属——跨学生时两边的页文件都存在，存在性没有任何区分能力。 */
+
+/** 建卡清单索引：`byKey` 只装**有学生归属**的条目；未标注学生的条目只进 `byId`。
+ *  （把它们也塞进 byKey 就等于恢复了"裸卡号匹配"，那正是 C01 的根因。） */
+let _buildList = null;        // { byKey: Map('学生|卡号' → 条目[]), byId: Map(卡号 → 条目[]) }
+let _cardOwners = null;       // Map(卡号 → Set(学生))：跨学生撞号的唯一判据
+let _allCards = null;         // build() 传进来的全库卡清单；不传则退回 loadCards()
+
+/** 卡号 → 出现在哪些学生名下。懒建一次。
+ *  ⚠ 必须用**全库卡清单**算，不能用清单文件里的记录：老清单只有 {id,pageFile,bbox}，
+ *    它自己根本不知道属于谁；能回答"这个卡号在几个学生名下"的只有卡索引。
+ *  ⚠ 不能用"页文件是否存在"代替：跨学生时两边的页文件都在盘上，存在性零区分能力。 */
+function cardOwners() {
+  if (_cardOwners) return _cardOwners;
+  const m = new Map();
+  for (const c of (_allCards || loadCards())) {
+    if (!m.has(c.id)) m.set(c.id, new Set());
+    m.get(c.id).add(c.student);
+  }
+  _cardOwners = m;
+  return _cardOwners;
+}
+
+/** 重建两个缓存（build 每次进来自愈一次：同进程里换库/换磁盘内容也不吃旧索引）。 */
+function resetCardCaches(cards) { _allCards = cards || null; _cardOwners = null; _buildList = null; }
+
+function buildListIndex() {
+  if (_buildList) return _buildList;
+  const byKey = new Map(), byId = new Map();
+  for (const d of listDir('.').filter(x => /^_work-建卡清单/.test(x))) {
+    for (const f of listDir(d).filter(x => /^cards-g.*\.json$/.test(x))) {
+      let t; try { t = readJson(toAbs(d + '/' + f)); } catch { continue; }
+      const fileStudent = (typeof t.student === 'string' && t.student.trim()) ? t.student.trim() : '';
+      for (const card of (t.cards || [])) {
+        if (!card || !card.id) continue;
+        const ent = { card, dir: d, file: d + '/' + f, student: fileStudent };
+        /* 条目级 student 优先：同一份清单可以混装多个学生的卡 */
+        if (typeof card.student === 'string' && card.student.trim()) ent.student = card.student.trim();
+        if (!byId.has(card.id)) byId.set(card.id, []);
+        byId.get(card.id).push(ent);
+        if (ent.student) {
+          const k = ent.student + '|' + card.id;
+          if (!byKey.has(k)) byKey.set(k, []);
+          byKey.get(k).push(ent);
+        }
       }
     }
   }
-  const hit = _buildList.get(c.id);
+  _buildList = { byKey, byId };
+  return _buildList;
+}
+
+/** 清单证据**不足以区分学生** ⇒ 拒绝自动匹配（page=null + 把原因写清楚）。
+ *  为什么返回对象而不是 null：返回 null 会让规则链继续往 reconcilePage 走、最后落成
+ *  「无任何清单线索」——排查的人看不出"这里其实有清单，只是它认不出是谁的卡"。 */
+function ambiguousBuildList(c, why) {
+  return {
+    page: null, box: null, need: true, by: '歧义·建卡清单',
+    note: `建卡清单歧义：卡「${c.student}|${c.id}」${why} ⇒ 拒绝自动匹配（宁可留待定位，不许跨学生串页）。` +
+      `修法：在清单条目或清单文件顶层写 student 字段后重跑；或人工 \`回填 --key "${c.student}|${c.id}" --page …\`。`,
+  };
+}
+
+function ruleBuildList(c, shaCache) {
+  const { byKey, byId } = buildListIndex();
+  const keyed = byKey.get(c.student + '|' + c.id) || [];
+  const unlabeled = (byId.get(c.id) || []).filter(e => !e.student);
+  let hit = null, how = '';
+  if (keyed.length) {
+    /* ① 清单标注了学生：按「学生|卡号」精确命中（同一条目重名多次且指向不同页也算歧义） */
+    const pages = [...new Set(keyed.map(e => String(e.card.pageFile || '')))];
+    if (keyed.length > 1 && pages.length > 1) {
+      return ambiguousBuildList(c, `同一「${c.student}|${c.id}」在 ${keyed.length} 条清单记录里指向不同页（${pages.join(' | ')}）`);
+    }
+    hit = keyed[0];
+    how = `清单标注了学生（student=${hit.student}）`;
+  } else if (unlabeled.length) {
+    /* ② 清单没标学生（老清单形态）：先把"同一 id 出现在多个学生名下"这条歧义判死 */
+    const pages = [...new Set(unlabeled.map(e => String(e.card.pageFile || '')))];
+    if (pages.length > 1) {
+      return ambiguousBuildList(c, `${unlabeled.length} 条清单记录（均未标注学生）指向不同页（${pages.join(' | ')}）`);
+    }
+    const owners = cardOwners().get(c.id) || new Set();
+    /* ★ 阴性自证锚点（tests\neg-orig-ledger-ambiguity.cjs）：把下一行的 `owners.size > 1`
+       改成 `false`（= 旧行为：只看裸卡号、谁后枚举谁生效）必须复现跨学生串号，
+       用例的第一个断言必须当场变红。 */
+    if (owners.size > 1) return ambiguousBuildList(c, `清单未标注学生，且该卡号「${c.id}」在 ${owners.size} 个学生下重复（${[...owners].join('、')}）`);
+    hit = unlabeled[0];
+    how = '清单未标注学生（该卡号全库只属于一个学生 ⇒ 才允许回退按卡号匹配）';
+  }
   if (!hit) return null;
   const k = hit.card;
   if (!k.pageFile) return null;
@@ -252,7 +344,10 @@ function ruleBuildList(c, shaCache) {
   if (!page) return null;
   const b = k.bbox;
   const box = b && boxOk([b.x, b.y, b.w, b.h]) ? [b.x, b.y, b.w, b.h] : null;
-  return { page, box, by: '建卡清单', note: `${hit.dir}/cards-g* pageFile=${k.pageFile}${box ? ' +归一化bbox' : '（无bbox）'}` };
+  return {
+    page, box, by: '建卡清单',
+    note: `${hit.dir}/cards-g* pageFile=${k.pageFile}${box ? ' +归一化bbox' : '（无bbox）'}；${how}`,
+  };
 }
 
 /** 批次表列页 */
@@ -388,6 +483,9 @@ function build({ dry, force }) {
     : {};
   const shaCache = fs.existsSync(SHA_CACHE) ? readJson(SHA_CACHE) : {};
   const cards = loadCards();
+  /* ★ C01 配套：建卡清单/卡号归属两个缓存都在这里**自愈重建**，并用本次的卡清单算
+     「该卡号在几个学生名下重复」——不重跑 loadCards()（它要走一遍目录树）。 */
+  resetCardCaches(cards);
   const out = {};
   let n = 0;
   for (const c of cards) {

@@ -414,21 +414,17 @@ function inboxArchivedSet(root) {
       refs.push(abs);
     }
   }
-  /* ①d **转置**判据（2026-10-31）。
+  /* ①d **转置**判据（2026-10-31，同日按外部审查 C02 收紧）。
    *    有一批照片是**横着拍的**（手机把纸转过来），库里存了两份：
    *      收件箱 `_收件箱/2026-10-15-…物理10月阶段练习-p1p2.jpg`  （横置，2646×1860）
    *      库内   `九年级/物理/原卷/_横置备份-20261016/…-p1p2.jpg`（转正前，1860×2646）
    *    台账引用的是**转正后**那份 ⇒ 路径/指纹/批次/族四条判据全都认不出收件箱那张。
-   *    判据：收件箱该件的尺寸与某个**已处理**件**互为转置**（w×h ↔ h×w）
-   *          ⇒ 同一张照片的两种姿态，处理过。
    *
-   *    防误判（这一步很关键）：光看"尺寸互为转置"**会误判** ——
-   *      两张不同的竖版照片恰好分辨率互为转置（800×600 与 600×800）在真实照片里不罕见。
-   *    所以加两个约束：
-   *      · 候选必须是**已处理**的件（台账引用过），不是随便哪张；
-   *      · 两者的**文件大小**必须在同一量级（比值 0.5~2.0）——
-   *        同一张照片转置后体积同量级；两张无关照片即使尺寸凑巧互为转置，体积也会差很远。
-   *    实测：真库 6 对全部命中（比值 1.88~2.05），且无一误判。 */
+   *    ⚠ 收紧原因（外部审查实测）：只比"尺寸互为转置 + 体积同量级"**不足以**下"已处理"结论——
+   *      台账引用 1200×1600 的 A，收件箱放一张内容无关、恰好 1600×1200、体积比 1.000 的 B，
+   *      B 就从待处理清单消失了。尺寸/体积只能当**候选筛选**，结论必须另有**内容证据**
+   *      （sha256 相等），见 inboxTransposedSet() 的条件④与那里的取舍说明。
+   *    代价：真正的"转正"件（重新编码过）从此留在待处理清单 —— 宁可多列，不可误藏。 */
   const transposed = inboxTransposedSet(root, cards);
 
   /* ①b **批次级**判据（2026-10-31，用户裁定「只要处理过，那当然不应该放在收件箱里了呀」）。
@@ -616,13 +612,40 @@ function inboxImgDims(abs) {
   } catch { return null; }
   finally { try { fs.closeSync(fd); } catch { } }
 }
+/** 转置候选的**内容证据**：必须拿到"这两个文件是同一张照片"的客观凭据。
+ *  本仓台账里**没有**"转置副本"这类字段（`_原卷台账.json` 的条目字段只有
+ *  page/box/import/by/note/pagePx/cropPx/lost/locFile/need/key/student/subject/cardDir/source），
+ *  所以这里只认一条：两个文件的 **sha256 相等**（同一份字节的两次拷贝）。
+ *  拿不到 ⇒ 返回 false，调用方据此把该件**留在待处理清单**（宁可多列，不可误藏）。
+ *  ★ 阴性自证锚点（tests\neg-inbox-transposed-evidence.cjs）：把调用点那一行摘掉
+ *    （= 旧行为：尺寸互为转置 + 体积同量级就判已处理）必须复现"无关照片被贴上已处理标签"。 */
+function transposedContentEvidence(shaA, absB, shaOf) {
+  const hb = shaOf(absB);
+  return !!shaA && !!hb && shaA === hb;
+}
+
 /** 收件箱顶层（及批次目录下）那些"与已处理件互为转置"的图片 → 它们的库根相对路径集合。
  *  用途：横拍的照片在库里存了"转正前"与"转正后"两份，路径/指纹都认不出对应关系。
- *  判据（三个条件同时成立，防误判）：
- *    ① 候选是**已处理**件（台账 page/import 引用过，或它的 sha 在台账指纹集里）；
- *    ② 尺寸**互为转置**（w×h ↔ h×w，且 w≠h）；
- *    ③ 文件大小**同量级**（比值 0.5~2.0）——同一张照片转置后体积同量级；
- *       两张无关照片即使尺寸凑巧互为转置，体积也会差很远。 */
+ *
+ *  ⚠ 2026-10-31 修（C02 · P2，外部审查复核）：**尺寸/体积只能当候选筛选，不许单独下
+ *    "已处理"结论**。缺陷原形（只比条件②③）：台账引用过 1200×1600 的 A，收件箱里放一张
+ *    **内容无关**、恰好 1600×1200、体积比 1.000 的 B ⇒ B 从待处理清单消失；
+ *    尺寸改成 1600×1201 或体积比 0.002 就不消失 —— 说明判据当时确实只看了尺寸与体积。
+ *    性质是"贴错标签"而不是"文件被吞"（界面有「显示已归档的 N 张」可展开、文件没搬没删），
+ *    但方向错了：本仓纪律是"宁可多列，不可误藏"。
+ *  修法：①②③ 三条原样保留为**候选筛选**（零内容 IO，先把范围压到极少数），
+ *    通过筛选后**必须再拿到内容证据（条件④）**才进归档集合；拿不到就留在待处理清单。
+ *
+ *  取舍（诚实记录，别当注释噪音删掉）：
+ *    · 真正的"转正"是重新编码，字节必变 ⇒ sha256 必然不同 ⇒ 这类件**从此不再自动归档**，
+ *      会留在待处理清单里。这是刻意的：误藏一张没做过的照片（用户以为丢件）比多列一张
+ *      已经做过的照片（用户划过去即可）代价大得多。
+ *    · 推论：同一份字节 ⇒ 尺寸必然相同 ⇒ 与"尺寸互为转置"在物理上互斥，**本判据的实际效果
+ *      是"转置件一律留在待处理"**。保留这条链是为了：① 判据结构完整（将来台账若记录
+ *      "转置副本"关系，直接接在条件④上即可）；② 阴性自证需要一个"能摘掉的门"——
+ *      tests\neg-inbox-transposed-evidence.cjs 摘掉条件④必须复现误藏。
+ *    · 性能：条件④的 sha256 **只对已经通过①②③筛选的极少数候选**算（不是扫全库）；
+ *      原先"零 IO"的口径因此失效，但代价被候选筛选限制住了，收件箱列表仍是"只读文件头"。 */
 function inboxTransposedSet(root, cards) {
   const out = new Set();
   const inbox = path.join(root, '_收件箱');
@@ -641,6 +664,16 @@ function inboxTransposedSet(root, cards) {
       usedFiles.push(abs);
     }
   }
+  /* 条件④ 的指纹：同一进程内同一文件只算一次（候选很少，但别重复读同一份大图） */
+  const shaCache = new Map();
+  function shaOf(abs) {
+    const key = String(abs).toLowerCase();
+    if (shaCache.has(key)) return shaCache.get(key);
+    let h = '';
+    try { h = crypto.createHash('sha256').update(fs.readFileSync(abs)).digest('hex'); } catch { h = ''; }
+    shaCache.set(key, h);
+    return h;
+  }
   /* 台账引用件按尺寸分桶（转置后的尺寸 → 候选） */
   const byDims = new Map();
   for (const abs of usedFiles) {
@@ -651,7 +684,7 @@ function inboxTransposedSet(root, cards) {
     if (!byDims.has(k)) byDims.set(k, []);
     byDims.get(k).push({ abs, size: st.size });
   }
-  /* 收件箱侧逐张找转置伙伴（条件②③） */
+  /* 收件箱侧逐张找转置伙伴（条件②③是候选筛选，④才是结论） */
   (function walk(d) {
     let ents; try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
     for (const e of ents) {
@@ -665,7 +698,10 @@ function inboxTransposedSet(root, cards) {
       let st; try { st = fs.statSync(abs); } catch { continue; }
       for (const c of cand) {
         const ratio = c.size / st.size;
-        if (ratio < 0.5 || ratio > 2.0) continue;         // 条件③：同量级
+        if (ratio < 0.5 || ratio > 2.0) continue;         // 条件③：同量级（候选筛选）
+        /* ★ 阴性自证锚点（tests\neg-inbox-transposed-evidence.cjs）：把下面这行改成
+           `if (false) continue;` = 回到"尺寸+体积即判已处理"的旧行为，用例第一个断言必须变红。 */
+        if (!transposedContentEvidence(shaOf(abs), c.abs, shaOf)) continue;   // 条件④：内容证据（必须有）
         out.add(path.relative(root, abs).split(path.sep).join('/').toLowerCase());
         break;
       }
@@ -838,7 +874,9 @@ function cmdInbox() {
             archHere.push(base); return;
           }
         }
-        /* 判据①d（转置，零 IO）：与某个已处理件**互为转置** ⇒ 同一张照片的另一种姿态。 */
+        /* 判据①d（转置）：与某个已处理件**互为转置**且**内容证据成立**（sha256 相等）。
+           ⚠ 不是"零 IO"了：sha256 只在通过尺寸/体积候选筛选的少数件上算（见 inboxTransposedSet）。
+           只满足尺寸/体积的件**刻意不进这里** —— 宁可留在待处理清单，不可误藏。 */
         if (arch.transposed && arch.transposed.has(inboxRelKey(rel))) { archHere.push(base); return; }
         /* 待处理件本来就要算 sha256（前端要显示指纹、勾选时按指纹找回同内容那张），
            所以这里**顺手**用它比一次内容指纹 —— 判据②零额外 IO。

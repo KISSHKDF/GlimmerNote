@@ -391,16 +391,27 @@ function logReject(what, req, extra) {
   }
 }
 
-function addCommonHeaders(res, origin) {
+function addCommonHeaders(res, origin, opts) {
+  const o = opts || {};
   res.setHeader('X-Frame-Options', 'DENY');
-  res.setHeader('Content-Security-Policy', "frame-ancestors 'none'");
+  /* ★ 2026-10-31（codex A02，已实测复现）：**库内文件一律按"不信任文档"处理**，
+     必须加 CSP `sandbox`（不带 allow-scripts / allow-same-origin）。
+     根因：用户库里的 .html/.svg 是"外部 AI 的产物 + 用户自己存的网页"，不属于程序代码；
+     而本服务端与程序页面**同源**（同一 127.0.0.1:端口）—— 直接打开库内 HTML 时，
+     它会以应用同源身份执行脚本、fetch('/index.html') 读到注入的 `window.__ctbToken`，
+     再带 token 打 /api/*（实测：无 token 403、带 token 200）。这不是净化器被绕过，是权限给错了。
+     `sandbox` 让文档变成唯一不透明源：脚本不执行、读不到同源资源；图片/PDF 等非文档响应不受影响
+     （CSP 只对文档生效，`<img src>` 照常显示）。
+     为什么不对 index.html 加：那是程序入口，host.js 必须能执行（它本身就是应用代码）。 */
+  const csp = o.sandbox ? "sandbox; frame-ancestors 'none'" : "frame-ancestors 'none'";
+  res.setHeader('Content-Security-Policy', csp);
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'no-referrer');
   const ao = corsOrigin(origin);
   if (ao) { res.setHeader('Access-Control-Allow-Origin', ao); res.setHeader('Vary', 'Origin'); }
 }
-function send(res, code, body, type, origin) {
-  addCommonHeaders(res, origin);
+function send(res, code, body, type, origin, opts) {
+  addCommonHeaders(res, origin, opts);
   res.writeHead(code, { 'Content-Type': type || 'application/json; charset=utf-8' });
   res.end(body);
 }
@@ -452,7 +463,12 @@ function serveStatic(req, res, urlPath, origin) {
       res.writeHead(200, { 'Content-Type': MIME['.html'] });
       return res.end(Buffer.from(out, 'utf8'));
     }
-    send(res, 200, buf, MIME[path.extname(real).toLowerCase()] || 'application/octet-stream', origin);
+    /* ★ 2026-10-31（codex A02）：**库内文件一律 sandbox**（见 addCommonHeaders 的注释）。
+       判据用 realpath 之后的位置：程序目录（AppRoot）里的东西才是应用代码；库里的都是用户数据。
+       index.html 例外（上面那条分支先 return 了），它需要执行 host.js。 */
+    const fromApp = insideApp(real) || insideRealApp(real);
+    send(res, 200, buf, MIME[path.extname(real).toLowerCase()] || 'application/octet-stream', origin,
+      fromApp ? undefined : { sandbox: true });
   });
 }
 

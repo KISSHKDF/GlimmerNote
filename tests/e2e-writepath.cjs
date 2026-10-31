@@ -32,6 +32,43 @@ process.on('uncaughtException', async e => { await cleanup('uncaught ' + (e && e
 process.on('unhandledRejection', async e => { await cleanup('rejection ' + (e && e.message)); console.error('EXC', e && e.stack || e); process.exit(3); });
 
 (async () => {
+  /* ══════════════════════════════════════════════════════════════════════
+     写盘准入（2026-10-31 E01 整改，**先于任何 CDP 动作**）
+     事故（外部复核已证实）：本用例设计上就真跑一次 组卷→批改→撤批，通过运行中的壳
+     （launch-dev.cjs 把 `CTB_DATA: E.LIB` 传给壳）写下去。而开发机上 `E.LIB` 就是用户真库
+     `…\GlimmerNote\数据`（`isFrozen()` 为 true）⇒ 每跑一次 `full` 就往真库写一次，
+     `_安全写.mjs` 的 `backupJson` 轮转只留 8 份 ⇒ **吃掉真库的历史备份**
+     （实测：三个目录各被删 8 份已跟踪备份，共 24 份）。而 run.mjs 当时还把
+     `_备份-真源\` 的轮转记为 derived 无条件放行 ⇒ 门禁照样全绿。
+     ──────────────────────────────────────────────────────────────────────
+     修法选择（**二选一里的 a，明确 SKIP**），以及为什么**不**自动落副本：
+       自动落副本有两条硬阻碍，任一条都不是"改一行"能解决的：
+         ① 壳的 `CTB_DATA` 是 launch-dev 在 spawn 那一刻定死的，测试进程改不了它；
+            要改就得动 launch-dev/run.mjs 的库选择，等于把**整条 full 门禁**从"在真库上跑"
+            变成"在副本上跑"——"真库零写入"这条断言会被悄悄换成"副本零写入"，
+            风险变成假绿（本仓最忌的静默降级）。
+         ② 更硬的一条：副本**必须含影像**。组卷入口要过盲解/答案来源/配图/作答契约四道门禁，
+            而 `makeTempLib()` 默认只复制文本（影像 1.4 GB 不进临时目录）⇒ 副本上选不出可组卷的卡，
+            用例会退化成 `RESULT=SKIP(可选卡不足)` 或 exit 2 —— 那是"看着跑了、其实没验"。
+       所以宁可在真库上**显式 SKIP** 并写清怎么真跑，也不做半截的自动改写。
+       要真跑这条闭环（换机/CI/专测写路径时）：把**整个库目录（含影像）**复制到副本，然后
+         set CTB_TEST_LIB=<副本目录>   →   node tests\run.mjs full
+       此时 `E.LIB` = 副本 ⇒ isFrozen=false ⇒ 本用例照常真跑（launch-dev 也会把副本传给壳）。
+     ──────────────────────────────────────────────────────────────────────
+     为什么"不能只在测试里 assert 一下"：assert 抛错 = 门禁变红 = 有人会去"临时放宽"它；
+     而"环境不具备"的正确形态是本仓一贯的**可见 SKIP**（打印理由 + exit 0）。
+     两个形态各司其职：SKIP 用于"环境不具备"，`E.assertWritableLib()`（下一步那次）用于
+     "已经走到组卷门口了，此刻目标还指向真库就绝对是事故"——那一处是真会抛错的硬点。
+     ══════════════════════════════════════════════════════════════════════ */
+  const gate = E.guardWriteTest('e2e-writepath.cjs');
+  if (gate.skip) {
+    console.log('RESULT=SKIP(' + gate.reason + ')');
+    console.log('  说明：本用例验的是"真写一次组卷+批改+撤批"的闭环，在冻结区上跑就等于用用户真库做实验，');
+    console.log('        并且会通过 backupJson 轮转**吃掉真库的历史备份**（每跑一次 8 份/目录）。');
+    console.log('        这不是"通过"，是"没跑"——所以打印 SKIP 而不是 PASS。');
+    process.exit(0);
+  }
+
   const r = await fetch('http://127.0.0.1:9223/json/list');
   const ts = await r.json();
   const t = ts.find(x => E.isAppUrl(decodeURIComponent(x.url || '')));
@@ -114,6 +151,10 @@ process.on('unhandledRejection', async e => { await cleanup('rejection ' + (e &&
   })()`));
   if (pick.err) { console.log('RESULT=SKIP(环境不具备：' + pick.err + ')'); process.exit(0); }
   const IDS = pick.ids.join(',');
+  /* ★ 2026-10-31 E01-c：`assertWritableLib` 从"零调用点的死代码"变成**真调用点**。
+     位置就在组卷之前（写盘的第一步）：走到这里说明上面的 SKIP 闸没拦住（例如有人把闸掏了、
+     或壳的库根被别处改成了真库），此刻若目标仍是冻结区，**抛错**是唯一正确的结论。 */
+  E.assertWritableLib('e2e-writepath 组卷（写 _组卷台账.json 与索引 reviews[]）');
   const ST = `CTB.model.cards.find(function(x){return x.kid===${JSON.stringify(pick.student)}&&x.card.id===${JSON.stringify(pick.ids[0])}}).card`;
   console.log(`--- [2] 组卷（运行时选卡：${pick.student}/${pick.subject} ${IDS}，均已过准入判定；已排除 ${pick.pendingExcluded} 张属于待批改批次的卡、${pick.recentExcluded || 0} 张近 7 天已印过的卡）---`);
   const r2 = await ev(`CTB.host.mark('组卷',{student:${JSON.stringify(pick.student)},subject:${JSON.stringify(pick.subject)},ids:${JSON.stringify(IDS)},title:'E2E回归自动卷',date:new Date().toISOString().slice(0,10),note:'e2e 写路径回归，测毕撤批'})`);

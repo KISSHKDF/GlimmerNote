@@ -619,9 +619,20 @@
      ⚠ 2026-10-25 实测踩到：早一版 `<span class="blank"[^>]*>` 会把空位内部编号标签
      `<span class="blank-no">3</span>` 也当成一个空位，8 空渲染后又被数成 16 空。 */
   M.BLANK_SPAN_RE = /<\s*span\b([^>]*)>/gi;
+  /* ★ 2026-10-31（codex C03，已实测复现）：class 属性必须认**三种合法写法**
+     —— 双引号 / 单引号 / 无引号。旧实现只认双引号，于是 `class='blank'` 在门禁里数到 0 个空，
+     而净化器（M.filterAttrs 按 HTML 规则认三种、并统一重写）渲染出 1 个空位
+     ⇒ 纸面出现一个没登记答案的空位，门禁却是绿的。
+     与 Node 侧 `_空位.mjs` 的 ATTR_CLASS_RE/classValOf **逐字同判**（P 段对拍）。 */
+  M.ATTR_CLASS_RE = /class\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/i;
+  M.classValOf = function (attrs) {
+    const m = M.ATTR_CLASS_RE.exec(String(attrs || ''));
+    if (!m) return null;
+    return m[1] != null ? m[1] : (m[2] != null ? m[2] : m[3]);
+  };
   M.hasBlankClass = function (attrs) {
-    const m = /class\s*=\s*"([^"]*)"/i.exec(String(attrs || ''));
-    return !!m && m[1].split(/\s+/).indexOf('blank') >= 0;
+    const v = M.classValOf(attrs);
+    return v != null && v.split(/\s+/).indexOf('blank') >= 0;
   };
   M.NUMBERED_UNDERSCORE_RE = /(?:_{2,}|＿{2,})\s*[0-9０-９]{1,3}\s*(?:_{2,}|＿{2,})/g;
   M.UNDERSCORE_RE = /_{2,}|＿{2,}/g;
@@ -751,8 +762,9 @@
         if (!mm) tag = raw;
         else {
           let attrs = mm[1];
-          const cls = /class\s*=\s*"([^"]*)"/i.exec(attrs);
-          attrs = attrs.replace(/class\s*=\s*"[^"]*"/i, '');
+          /* ★ 2026-10-31（codex C03）：class 三种写法都要摘掉再按统一形态重建（与 node 侧 rewrite 同判）。 */
+          const clsVal = M.classValOf(attrs);
+          attrs = attrs.replace(M.ATTR_CLASS_RE, '');
           const st = /style\s*=\s*"([^"]*)"/i.exec(attrs);
           let styleVal;
           if (st) {
@@ -762,7 +774,7 @@
             attrs = attrs.replace(/style\s*=\s*"[^"]*"/i, '');
           } else styleVal = 'min-width:' + w;
           const rest = attrs.trim();
-          tag = '<span' + (cls ? ' class="' + cls[1] + '"' : ' class="blank"') + ' style="' + styleVal + '"' + (rest ? ' ' + rest : '') + '>';
+          tag = '<span' + (clsVal != null ? ' class="' + clsVal + '"' : ' class="blank"') + ' style="' + styleVal + '"' + (rest ? ' ' + rest : '') + '>';
         }
       } else tag = '<span class="blank" style="min-width:' + w + '"></span>';
       out = out.slice(0, s.start) + tag + out.slice(s.end);

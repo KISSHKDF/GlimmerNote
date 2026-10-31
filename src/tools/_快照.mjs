@@ -21,7 +21,7 @@
 import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
-import { readJsonStrict, writeTextAtomic } from './_安全写.mjs';
+import { readJsonStrict, writeTextAtomic, acquireLibLock } from './_安全写.mjs';
 import { libraryRoot } from './_库根.mjs';
 
 /* ★ 2026-10-23 程序与数据分家：ROOT 是**库根**（数据 + 库所在的 git 仓库），不是工具目录。
@@ -155,6 +155,18 @@ if (args.includes('--restore')) {
   console.log(`  大小：${content.length} 字节`);
 
   if (dry) { console.log('（--dry：未写入。先去掉 --dry 再执行恢复）'); process.exit(0); }
+
+  /* ★ 2026-10-31（codex B03，已复现）：恢复必须**取同一把库写锁**。
+     缺陷：`--restore` 全程没有 acquireLibLock，可以把某个文件恢复成旧版本，
+     穿插到另一笔**未提交事务**的内部 —— 而 `_标记复习` 的批改是"先写台账、再写索引"两文件事务：
+       ① CLI 持锁，事务已写新台账；② CLI 还没写索引；
+       ③ 有人跑 `_快照 --restore _组卷台账.json`，未取锁 → 台账被恢复成旧值、校验通过、报成功；
+       ④ CLI 写完新索引并提交 ⇒ 台账旧、索引新，两边都报成功（正是事务要防的半截状态）。
+     修法：写盘前取锁（与所有写通道同一把），锁内再复读/校验，退出时释放。
+     `--dry` / `--restore-list` 是纯读，不取锁。 */
+  const releaseRestoreLock = acquireLibLock(ROOT, { label: '_快照 --restore ' + path.basename(abs) });
+  /* 本分支有多处 process.exit()，`finally` 对它是无效的 ⇒ 释放挂 exit 钩子 */
+  process.on('exit', () => { try { releaseRestoreLock(); } catch (e) { } });
 
   /* 安全网 1：恢复前把当前内容留档（万一恢复错，还能退回来）。
    ⚠ 同构校验的**基准必须是"恢复前的正常内容"，不能是"当前这份"** ——

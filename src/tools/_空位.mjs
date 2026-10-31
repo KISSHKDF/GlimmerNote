@@ -35,10 +35,21 @@ const SVG_RE = /<svg[\s\S]*?<\/svg>/gi;
    `<span class="blank-no">3</span>` 也当成一个空位（`blank-no` 的 `\bblank\b` 也成立），
    于是 8 空的完形渲染后又被数成 16 空、答案逐空对不上号。现在按 token 判。 */
 const BLANK_SPAN_RE = /<\s*span\b([^>]*)>/gi;
+/* ★ 2026-10-31（codex C03，已实测复现）：class 属性必须认**三种合法写法** ——
+   双引号 `class="blank"`、单引号 `class='blank'`、无引号 `class=blank`。
+   旧实现只认双引号，于是 `class='blank'` 在**门禁**里数到 0 个空、而浏览器净化器
+   （model.js 的 filterAttrs 按 HTML 规则认三种、并统一重写成双引号）渲染出 1 个空位
+   ⇒ 纸面出现一个没有登记答案的空位，门禁却是绿的（判据比的是"写法"，用户看到的是"解析结果"）。
+   判据：`judge(null 逻辑)` 与前端 M.hasBlankClass **逐字同判**（tests\neg-answer-slot-contract.cjs 的 P 段对拍）。 */
+const ATTR_CLASS_RE = /class\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/i;
+const classValOf = attrs => {
+  const m = ATTR_CLASS_RE.exec(String(attrs || ''));
+  if (!m) return null;
+  return m[1] != null ? m[1] : (m[2] != null ? m[2] : m[3]);
+};
 const hasBlankClass = attrs => {
-  const m = /class\s*=\s*"([^"]*)"/i.exec(String(attrs || ''));
-  if (!m) return false;
-  return m[1].split(/\s+/).indexOf('blank') >= 0;
+  const v = classValOf(attrs);
+  return v != null && v.split(/\s+/).indexOf('blank') >= 0;
 };
 const NUMBERED_UNDERSCORE_RE = /(?:_{2,}|＿{2,})\s*[0-9０-９]{1,3}\s*(?:_{2,}|＿{2,})/g;
 const UNDERSCORE_RE = /_{2,}|＿{2,}/g;
@@ -234,8 +245,11 @@ function rewrite(raw, kind, widthEm, o) {
   const m = /^<span\b([^>]*)>/i.exec(String(raw));
   if (!m) return raw;
   let attrs = m[1];
-  const cls = /class\s*=\s*"([^"]*)"/i.exec(attrs);
-  attrs = attrs.replace(/class\s*=\s*"[^"]*"/i, '');
+  /* ★ 2026-10-31（codex C03）：class 的三种写法都要摘掉再按统一形态重建，
+     否则 `class='blank'` 会被当成"没有 class"⇒ 输出 `class="blank"` 而把用户原有的
+     其它 class（例如 `rd` 着重号）整条丢掉。 */
+  const clsVal = classValOf(attrs);
+  attrs = attrs.replace(ATTR_CLASS_RE, '');
   const st = /style\s*=\s*"([^"]*)"/i.exec(attrs);
   let styleVal;
   if (st) {
@@ -245,7 +259,7 @@ function rewrite(raw, kind, widthEm, o) {
     attrs = attrs.replace(/style\s*=\s*"[^"]*"/i, '');
   } else styleVal = `min-width:${w}`;
   const rest = attrs.trim();
-  const classPart = cls ? ` class="${cls[1]}"` : ' class="blank"';
+  const classPart = clsVal != null ? ` class="${clsVal}"` : ' class="blank"';
   return `<span${classPart} style="${styleVal}"${rest ? ' ' + rest : ''}>`;
 }
 

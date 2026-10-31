@@ -136,12 +136,171 @@ function lib(...parts) { return path.join(LIB, ...parts); }
 /** 工具绝对路径（兄弟工具一律走它，不要自己拼 ROOT） */
 function tool(name) { return path.join(TOOLS, name); }
 
-/** 会写盘的测试必须先调它：LIB 指向真库就拒绝执行 */
-function assertWritableLib(what) {
-  if (isFrozen(LIB)) {
-    throw new Error('[测试环境] 拒绝执行：本次测试会写盘（' + (what || '未说明') + '），' +
-      '而 LIB 指向真库 → ' + LIB + '\n  请先 const tmp = makeTempLib(); 并把 LIB 换成 tmp。');
+/* ══════════════════════════════════════════════════════════════════════
+   写盘准入守卫（2026-10-31 E01 整改的唯一判据）
+   为什么要有唯一判据：改前 `assertWritableLib` 全仓**真实调用点 = 0**（只有定义与注释），
+   于是这道"真库拒写守卫"是死代码，写路径用例照样往用户真库写（实测吃掉 24 份已跟踪备份）。
+   现在三种形态全部走 `writeGuard()` 同一个判据，任何一处放宽都会让另外两处失真：
+     · writeGuard(target)      —— 纯查询，返回 {ok, target, reason}，不抛错（供需要"SKIP 而不是红"的用例）
+     · assertWritableLib(what) —— 抛错形态（供"进去就等于事故"的写盘点，如组卷/批改）
+     · guardWriteTest(name)    —— 用例级准入，返回 {skip, reason}（供 e2e 打印 RESULT=SKIP）
+   ⚠ 判据看的是**写盘目标**：默认 LIB，但显式传 CTB_DATA 时以它为准 ——
+     因为桌面壳的库根是 launch-dev 在 spawn 时用 CTB_DATA 定死的，测试改不了它；
+     只看 LIB 会漏掉"测试用副本、壳仍指向真库"这种半改状态（那正是最危险的一种）。
+   ══════════════════════════════════════════════════════════════════════ */
+function writeGuard(target) {
+  const t = target ? String(target) : String(process.env.CTB_DATA || LIB);
+  if (isFrozen(t)) {
+    return {
+      ok: false, target: t,
+      reason: '写盘目标是冻结区（用户真库）：' + t,
+    };
   }
+  return { ok: true, target: t, reason: '' };
+}
+/** 会写盘的测试必须先调它：目标指向真库就**抛错**（不给"静默通过"留口子） */
+function assertWritableLib(what) {
+  const g = writeGuard();
+  if (!g.ok) {
+    throw new Error('[测试环境] 拒绝执行：本次测试会写盘（' + (what || '未说明') + '），而 ' + g.reason + '\n' +
+      '  请改用 makeTempLib() 副本，或把 CTB_TEST_LIB 指向一份副本。');
+  }
+}
+/** 用例级写盘准入：不抛错，返回 {skip, reason}，让用例自己打印 `RESULT=SKIP(理由)` 后 exit 0。
+ *  为什么不用抛错：门禁里"环境不具备"必须**可见地跳过**（打印理由 + exit 0），
+ *  而"门禁该红"要 exit≠0 —— 两者不能混成同一个形态，否则真红会被当成 SKIP 吞掉。 */
+function guardWriteTest(name) {
+  const g = writeGuard();
+  if (g.ok) return { skip: false, reason: '' };
+  return {
+    skip: true,
+    reason: name + ' 会真写盘（组卷/批改/撤批），而 ' + g.reason +
+      ' —— 明确 SKIP，绝不静默通过。真跑办法：把**整个库目录（含影像）**复制到副本，' +
+      '再设 CTB_TEST_LIB=<副本> 跑 full（壳的 CTB_DATA 由 launch-dev 取 E.LIB，会一并对上）。' +
+      '⚠ 只复制文本（makeTempLib 默认行为）不够：组卷要过盲解/答案来源/影像门禁，选不出卡会退化成 exit 2。',
+  };
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   `_备份-真源\` 轮转的放行判据（2026-10-31 E01-d）
+   背景：`writeJsonAtomic(..., {backup:true})` 每写一次真源就在 `_备份-真源\` 留一份、
+   只留最近 8 份 ⇒ 任何一次合法真源写入都会让它增减。
+   但这**只在副本库上**是"派生"；跑在用户真库上时它意味着**恢复点被吃掉**（实测删掉 24 份
+   已跟踪备份），必须判红。所以放行不是无条件的：判据抽在这里，供 run.mjs 调用，
+   也让 tests/neg-e2e-frozen-lib.cjs 能直接对拍"冻结库上必须不放行"。
+   ══════════════════════════════════════════════════════════════════════ */
+function backupRotationAllowed(frozenLib) {
+  return !frozenLib;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   「语义等价」判据（2026-10-31 E02 整改的唯一实现）
+   为什么必须搬到测试环境里：原先它写在 tests\run.mjs 内部，run.mjs 是有副作用的 ESM
+   入口（一 import 就跑门禁），**无法被测试直接调用** ⇒ 判据本身没有任何用例守，
+   于是它宽到什么程度都没人发现（实测 22 项扰动里 11 项真损坏被判等价）。
+   现在判据是纯函数、可被 neg-semantic-equivalence.cjs 逐项对拍。
+   ──────────────────────────────────────────────────────────────────────
+   口径（E02 整改核心）：**递归键规范化后全量比对** —— 对象键按字典序、数组保序、值逐字节。
+   改前是"挑几个字段"定义整份文件的等价性（索引只取 7 个字段、台账只取 4 个），
+   于是删 answerSlots、改 reviews[].result、改批次 student/subject/date、换题序全被放行。
+   显式例外只有两处，都在下面 EXCEPTIONS 里写清"为什么"，且都是**单调**判据而非"忽略"：
+     ① `_组卷台账.json` 的 `paperSeq`：水印设计上只增不复用（撤批也不回退）；
+     ② `_索引.json` 的 `updatedAt`：派生时间戳，批改/撤批必刷成今天；只允许**变新**。
+   两处都先"摘掉再全量比对"，摘掉的那些键单独做单调性检查 —— 所以"只改这些键"能被容忍，
+   "顺手改了任何业务字段"必然判不等价。
+   ══════════════════════════════════════════════════════════════════════ */
+const SEM_EXCEPTIONS = {
+  '_组卷台账.json': { dropTopKeys: ['paperSeq'], monotonic: 'paperSeq' },
+  '_索引.json': { dropTopKeys: ['updatedAt'], monotonic: 'updatedAt' },
+};
+function readJsonLoose(p) {
+  try { return JSON.parse(fs.readFileSync(p, 'utf8').replace(/^\uFEFF/, '')); } catch { return undefined; }
+}
+/** 递归规范化：对象键排序、数组保序、其余按原值（JSON 可表达的类型） */
+function canonValue(v) {
+  if (Array.isArray(v)) return v.map(canonValue);
+  if (v && typeof v === 'object') {
+    const out = {};
+    for (const k of Object.keys(v).sort()) out[k] = canonValue(v[k]);
+    return out;
+  }
+  return v;
+}
+function semExceptionOf(rel) {
+  if (SEM_EXCEPTIONS[rel]) return SEM_EXCEPTIONS[rel];
+  if (/_索引\.json$/.test(String(rel))) return SEM_EXCEPTIONS['_索引.json'];
+  return null;
+}
+/** 摘掉例外键后的规范化文本（不含例外键 ⇒ 例外的变化不会混进"业务内容"比对里） */
+function canonWithout(doc, dropTopKeys) {
+  if (Array.isArray(doc)) return JSON.stringify(canonValue(doc));
+  if (!doc || typeof doc !== 'object') return JSON.stringify(canonValue(doc));
+  const copy = {};
+  for (const k of Object.keys(doc)) if (!dropTopKeys.includes(k)) copy[k] = doc[k];
+  return JSON.stringify(canonValue(copy));
+}
+/** 数值水印只增：旧有、新无（或变小）都算退化 */
+function monoNumberOk(a, b) {
+  const A = (a && typeof a === 'object') ? a : {};
+  const B = (b && typeof b === 'object') ? b : {};
+  for (const k of Object.keys(A)) {
+    if (Number(B[k] || 0) < Number(A[k] || 0)) return false;
+  }
+  return true;
+}
+/** 时间戳只进不退（ISO 日期串可直接字典序比较；新值缺失 = 退步） */
+function monoStampOk(a, b) {
+  const A = String(a == null ? '' : a), B = String(b == null ? '' : b);
+  if (A === B) return true;
+  if (!B) return false;
+  if (!A) return true;
+  return B > A;
+}
+/** 两个文件是否"业务内容等价"（字节变了但业务内容没变）。
+ *  beforeAbs = 跑前的副本；afterAbs = 跑后的当前文件。任何读不懂的情况一律判**不等价**（fail-closed）。 */
+function semanticallyEqual(rel, beforeAbs, afterAbs) {
+  const ex = semExceptionOf(rel);
+  if (!ex) return false;                       // 没登记的扩展名：不参与语义放行
+  const A = readJsonLoose(beforeAbs), B = readJsonLoose(afterAbs);
+  if (A === undefined || B === undefined) return false;
+  if (canonWithout(A, ex.dropTopKeys) !== canonWithout(B, ex.dropTopKeys)) return false;
+  if (ex.monotonic === 'paperSeq') return monoNumberOk(A.paperSeq, B.paperSeq);
+  if (ex.monotonic === 'updatedAt') return monoStampOk(A.updatedAt, B.updatedAt);
+  return true;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   verify-deploy 退出码的唯一消费判据（2026-10-31 E03 整改）
+   改前缺陷：verify-deploy 用同一个 exit 2 表示"本机没有运行区"与"清单解析失败/形状不对"，
+   两个调用方（run.mjs / .githooks/pre-commit）又把**所有** exit 2 一律当"没有运行区"放行
+   ⇒ 清单损坏 = fail-open（实测：损坏清单 → rc=2 → pre-commit 返回 0 允许提交）。
+   现在退出码拆开、判据收在一处，两个调用方都调本函数，不再各自抄一份 if/else
+   （两份实现必然漂移，本仓 L-286）。
+     ESC 语义：只有 `skip` 是"无法评估"；`block` 一律按失败处理（fail-closed）。
+   ══════════════════════════════════════════════════════════════════════ */
+const VERIFY_DEPLOY_CODES = {
+  OK: 0,            // 一致
+  DRIFT: 1,         // 有文件被改/增/删，或版本与清单不符
+  USAGE: 2,         // 用法错误（参数不认识）
+  NO_RUNTIME: 3,    // 本机没有运行区（没有 <仓库上一级>\GlimmerNote 或其中没有 app\）—— **唯一可豁免**
+  BAD_MANIFEST: 4,  // 清单损坏 / 形状不对 —— **必须阻断**（不许当成"没有运行区"）
+  NO_MANIFEST: 5,   // 运行区在、但尚无清单（机制建立前的历史状态）—— 阻断，但不与"没有运行区"混为一谈
+};
+const VERIFY_DEPLOY_MEANING = {
+  0: '运行区与部署清单一致',
+  1: '运行区被绕过 deploy.ps1 改动过（或版本与清单不符）',
+  2: '用法错误',
+  3: '本机没有运行区（干净克隆 / 换机 / CI 的预期状态）',
+  4: '清单损坏或形状不对（读不懂的运行区基线 = 无法证明，必须阻断）',
+  5: '运行区尚无部署清单（机制建立之前的历史状态）',
+};
+/** 把退出码翻译成 {action:'pass'|'skip'|'block', label}。
+ *  ⚠ 只有 NO_RUNTIME(3) 是 skip —— "无法评估"；其它非 0 一律 block。 */
+function classifyVerifyDeploy(code) {
+  const n = Number(code);
+  if (n === VERIFY_DEPLOY_CODES.OK) return { action: 'pass', code: n, label: VERIFY_DEPLOY_MEANING[0] };
+  if (n === VERIFY_DEPLOY_CODES.NO_RUNTIME) return { action: 'skip', code: n, label: VERIFY_DEPLOY_MEANING[3] };
+  return { action: 'block', code: n, label: VERIFY_DEPLOY_MEANING[n] || ('未知退出码 ' + code) };
 }
 
 /* 复制库到临时目录（只复制数据文件，不复制 1.4GB 影像；需要图的任务另行指定） */
@@ -317,7 +476,13 @@ async function serverBase() {
 
 module.exports = {
   REPO, TOOLS, LIB, isFrozen, findIndexes,
-  lib, tool, assertWritableLib, makeTempLib, runToolSync,
+  lib, tool, makeTempLib, runToolSync,
+  /* 写盘准入（E01）：三种形态共用 writeGuard 一个判据 */
+  writeGuard, assertWritableLib, guardWriteTest, backupRotationAllowed,
+  /* 语义等价（E02）：纯函数，可被 neg-semantic-equivalence.cjs 直接对拍 */
+  semanticallyEqual, canonValue, SEM_EXCEPTIONS,
+  /* verify-deploy 退出码（E03）：两个调用方的唯一判据 */
+  VERIFY_DEPLOY_CODES, VERIFY_DEPLOY_MEANING, classifyVerifyDeploy,
   startServer, serverBase, freePort,
   isAppUrl, isFileAppUrl,
   describe: () => '仓库=' + REPO + '　库=' + LIB,

@@ -223,7 +223,13 @@
       S.render();
     };
     U.$id('rvUndo').onclick = () => { M.sessionUndo(); S.render(); };
-    U.$id('rvImg').onclick = () => S.lightbox([Object.assign({ src: H.asset(c.img), rel: c.img, title: c.id + ' 原卷（含笔迹，仅核对用）',
+    /* ★ 2026-10-31（codex D04，已复现）：**按钮可能不存在**（`c.img` 为 null 时不渲染 `rvImg`），
+       而这里无条件取 `.onclick` ⇒ TypeError ⇒ S.render 的 try/catch 把整个做题界面换成
+       "视图渲染出错"，且异常发生在翻答案/判分按钮绑定**之前**（连判分都点不了）。
+       `c.img` 为 null 是**合法常态**：`生成状态.mjs` 里 `o.img = fs.existsSync(原卷截图.jpg) ? … : null`，
+       没截图的卡（只有题干.html、AI 直接出的题）就是没有。相邻的 rvReveal 早就判空了，这里漏掉。 */
+    const rvImgBtn = U.$id('rvImg');
+    if (rvImgBtn) rvImgBtn.onclick = () => S.lightbox([Object.assign({ src: H.asset(c.img), rel: c.img, title: c.id + ' 原卷（含笔迹，仅核对用）',
       chips: '<span class="tag warn">' + U.esc(c.id) + '</span>', q: c.question,
       hint: '判分前核对：红笔订正处即当时错误点。此图含答案，只在翻开后用。' }, M.origOf(c))]);
     const rv = U.$id('rvReveal'); if (rv) rv.onclick = () => { reveal = true; S.render(); };
@@ -356,11 +362,31 @@
     const d1 = U.$id('rvDrop'); if (d1) d1.onclick = async () => {
       if (await S.confirm({ title: '丢弃本场判定？', body: '不落库，判定直接清空。', ok: '丢弃', danger: true })) { M.session = null; S.render(); }
     };
-    U.$id('rvMore').onclick = () => { M.session = null; S.render(); };
-    const m2 = U.$id('rvMore2'); if (m2) m2.onclick = () => { M.session = null; S.render(); };
+    /* ★ 2026-10-31（codex D02，已复现）：**"离开本场"必须与"丢弃不写"同口径**。
+       三个入口**无条件** `M.session = null` —— 判分（含 BUG-12 那种"已建批、待补批改"的
+       committed 信息）当场清空且不可恢复。用户点"再来一场"时的心理是"再做一场"，
+       不是"把这场的判定扔了"，这是**静默丢数据**（本仓纪律：失败必须可见，删除必须确认）。
+       修法：凡是还有未写回台账的东西（`M.sessionPendingCount() > 0`）就先问，
+       与 rvDrop 用同一个 S.confirm 口径（壳里原生 confirm 会冻整页，只能用 S.confirm）。 */
+    const leaveSession = async (next) => {
+      const pend = M.sessionPendingCount();
+      if (pend > 0) {
+        const ok = await S.confirm({
+          title: '还有 ' + pend + ' 条判定没写回台账',
+          body: '现在离开，这 ' + pend + ' 条判定会**直接丢失**（既不入账也不改变建议日）。<br><br>要先把它们落库吗？点「取消」回去点「💾 落库」。',
+          ok: '仍然丢弃', danger: true,
+        });
+        if (!ok) return;
+      }
+      M.session = null;
+      if (typeof next === 'function') next();
+      S.render();
+    };
+    U.$id('rvMore').onclick = () => leaveSession();
+    const m2 = U.$id('rvMore2'); if (m2) m2.onclick = () => leaveSession();
     el.querySelectorAll('#rvRedoSkipped').forEach(b => b.onclick = () => {
       if (!skippedRefs.length) return;
-      M.session = null; M.startSession(skippedRefs); S.render();
+      leaveSession(() => M.startSession(skippedRefs));
     });
   }
 

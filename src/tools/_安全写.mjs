@@ -238,7 +238,75 @@ export function acquireLibLock(root, { label = '', timeoutMs = 120000, pollMs = 
      只有它持续读不出且超过 LOCK_UNREADABLE_GRACE_MS 才判定为真·半截文件并清理。
      判据必须能自证：并发用例里 6 个进程全成功且批次条数 == 6（少一条就是又丢更新了）。 */
   const LOCK_UNREADABLE_GRACE_MS = 2000;
+  const GC_STALE_MS = 10000;          // 回收互斥（<lock>.gc）自身被崩溃留下时的兜底时限
   let unreadableSince = 0;
+
+  /** 取到锁之后的统一收尾：把 token 交给子孙进程 + 回滚上次未完成事务 + 返回 release */
+  function onAcquired() {
+    process.env[TXN_ENV] = myToken;
+    const healed = recoverTransactions(root);
+    if (healed) console.error('[写锁] ⚠ ' + healed);
+    let released = false;
+    return function release() {
+      if (released) return;
+      released = true;
+      try {
+        const cur = readLockFile(lockPath);
+        if (cur && cur.token === myToken) fs.unlinkSync(lockPath);
+      } catch { }
+      try { delete process.env[TXN_ENV]; } catch { }
+    };
+  }
+
+  /* ══════════════════════════════════════════════════════════════════════════
+   * 僵尸锁回收必须**互斥**（2026-10-31 codex 外部审查 A01/B02，已实测复现）
+   *
+   * 缺陷（真实复现：25 轮 × 3 并发进程，8 次在临界区内发现锁属于别人）：
+   *   原实现是 `const cur = readLockFile(lockPath); if (cur && !pidAlive(cur.pid)) unlinkSync(lockPath)`——
+   *   **读与删之间没有任何互斥**。两次读之间完全可能发生：
+   *     A 读到僵尸锁（判死）→ 暂停；B 清掉僵尸锁并建了自己的新锁、进入写区；
+   *     A 恢复 → unlinkSync(lockPath) 删的是 **B 的活锁** → A 也建锁成功进入写区。
+   *   两个进程同时"持锁"，后写覆盖前者 —— 正是这把锁要防的静默丢更新。
+   *   这个窗口比"空锁文件"那条更窄但同样可命中，且后果一样（丢写）。
+   *
+   * 修法：回收动作放进一把**独立的回收互斥**（`<lock>.gc`，同样 'wx' 独占创建）里，
+   *   并且在互斥内**重读一次**判死；只有重读仍判死才删，删完**立刻**在互斥内建自己的锁。
+   *   空窗分析：删除→创建都在 gc 内，且任何删除方都先拿 gc ⇒ 不存在"删掉别人刚建的锁"。
+   *   gc 自身被崩溃留下时按 mtime 超过 GC_STALE_MS 兜底清理（它只被持有几毫秒）。
+   * 判据：tests\neg-concurrent-write-lock.cjs 的 6 进程用例 + 本轮新增的
+   *   `neg-lock-reclaim-race.cjs`（造僵尸锁 + 多进程抢，断言无人在临界区内看到别人的 token）。
+   * ══════════════════════════════════════════════════════════════════════════ */
+  function reclaimUnderMutex(mode) {
+    const gc = lockPath + '.gc';
+    try {
+      const fd = fs.openSync(gc, 'wx');
+      fs.writeFileSync(fd, String(process.pid), 'utf8');
+      fs.closeSync(fd);
+    } catch (e) {
+      /* 别人正在回收：若是崩溃残留（超时），清掉后由下一轮重试；否则让出 */
+      try {
+        const st = fs.statSync(gc);
+        if (Date.now() - st.mtimeMs > GC_STALE_MS) fs.unlinkSync(gc);
+      } catch { }
+      return false;
+    }
+    try {
+      const again = readLockFile(lockPath);                 // ← 互斥内重读（这就是修法）
+      if (again && pidAlive(again.pid)) return false;       // 持有者活着：绝不删
+      if (again) console.error('[写锁] 清理僵尸锁（持有进程 ' + again.pid + ' 已不存在，label=' + (again.label || '') + '）');
+      /* mode='unreadable' 且现在能读出内容 ⇒ 说明它已不是半截件，本轮放弃删除 */
+      if (mode === 'unreadable' && again) return false;
+      try { fs.unlinkSync(lockPath); } catch { }
+      try {
+        const fd2 = fs.openSync(lockPath, 'wx');
+        fs.writeFileSync(fd2, body, 'utf8');
+        fs.closeSync(fd2);
+        return true;                                        // 已在互斥内持锁
+      } catch { return false; }
+    } finally {
+      try { fs.unlinkSync(gc); } catch { }
+    }
+  }
 
   for (; ;) {
     let fd = null;
@@ -247,35 +315,20 @@ export function acquireLibLock(root, { label = '', timeoutMs = 120000, pollMs = 
       fs.writeFileSync(fd, body, 'utf8');
       fs.closeSync(fd);
       fd = null;
-      // 拿到锁：把 token 交给子孙进程（继承即放行），并立刻做一次未完成事务的回滚
-      process.env[TXN_ENV] = myToken;
-      const healed = recoverTransactions(root);
-      if (healed) console.error('[写锁] ⚠ ' + healed);
-      let released = false;
-      return function release() {
-        if (released) return;
-        released = true;
-        try {
-          const cur = readLockFile(lockPath);
-          if (cur && cur.token === myToken) fs.unlinkSync(lockPath);
-        } catch { }
-        try { delete process.env[TXN_ENV]; } catch { }
-      };
+      return onAcquired();
     } catch (e) {
       if (fd !== null) { try { fs.closeSync(fd); } catch { } }
       if (e && e.code !== 'EEXIST') throw new Error('[写锁] 无法创建锁文件 ' + lockPath + '：' + e.message);
       const cur = readLockFile(lockPath);
       if (cur && !pidAlive(cur.pid)) {
-        console.error('[写锁] 清理僵尸锁（持有进程 ' + cur.pid + ' 已不存在，label=' + (cur.label || '') + '）');
-        try { fs.unlinkSync(lockPath); continue; } catch { }
-      }
-      if (!cur) {
+        if (reclaimUnderMutex('dead')) return onAcquired();
+      } else if (!cur) {
         /* 空/半截：多半是另一个进程刚 'wx' 成功、还没来得及写内容。**绝不立刻抢**。 */
         if (!unreadableSince) unreadableSince = Date.now();
         else if (Date.now() - unreadableSince > LOCK_UNREADABLE_GRACE_MS) {
+          if (reclaimUnderMutex('unreadable')) { unreadableSince = 0; return onAcquired(); }
           console.error('[写锁] 锁文件持续 ' + LOCK_UNREADABLE_GRACE_MS + 'ms 读不出内容，判定为残留并清理（' + lockPath + '）');
           unreadableSince = 0;
-          try { fs.unlinkSync(lockPath); continue; } catch { }
         }
       } else {
         unreadableSince = 0;
@@ -337,6 +390,16 @@ export function openTransaction(root, { label = '' } = {}) {
       if (done) return null;
       done = true;
       const r = rollbackJournal(journal);
+      /* ★ 2026-10-31（codex B01，实测复现）：**回滚自身失败时绝不能删日志与留档**。
+         原实现无条件 unlink 日志 + rm 留档，于是"A 恢复成功、B 恢复失败（占用/权限/磁盘）"
+         这一现场变成：A 已是旧值、B 仍是新值，而能支撑下次重试的材料被自己删光了 ——
+         半更新既没被修好、也失去了自动恢复的依据（下次启动那条路只剩"没有日志"）。
+         判据：`failed.length` 非空 ⇒ 保留 journal 与 snapDir，返回给调用方去大声报错；
+         下一次取锁时 recoverTransactions() 会自动再试一次（真解决了就清掉）。 */
+      if (r.failed.length) {
+        console.error('[事务] ⚠ 回滚未完成（' + r.failed.length + ' 个文件恢复失败），已**保留**事务日志与留档以便下次重试：' + r.failed.join('；'));
+        return r;
+      }
       try { fs.unlinkSync(journalPath); } catch { }
       try { fs.rmSync(snapDir, { recursive: true, force: true }); } catch { }
       return r;
@@ -355,11 +418,29 @@ function rollbackJournal(j) {
   let restored = 0, removed = 0, failed = [];
   for (const e of (j.entries || []).slice().reverse()) {
     try {
-      if (e.snap) { fs.copyFileSync(e.snap, e.file); restored++; }
+      /* ★ 2026-10-31（codex B01）：恢复也必须**原子替换**。
+         原实现 `copyFileSync(snap, file)` 直接覆盖目标：恢复跑到一半被打断（断电/taskkill/占用）
+         会留下**半截真源** —— 那比"恢复失败"更糟（失败至少还能再试一次）。
+         与 writeJsonAtomic 同口径：同目录临时文件 → rename 覆盖，失败则目标原样。 */
+      if (e.snap) { restoreFileAtomic(e.snap, e.file); restored++; }
       else if (fs.existsSync(e.file)) { fs.unlinkSync(e.file); removed++; }
     } catch (err) { failed.push(e.file + '：' + err.message); }
   }
   return { txId: j.txId, label: j.label, restored, removed, failed };
+}
+
+/** 用留档覆盖目标（原子：同目录临时件 + rename；绝不"先删目标再拷"） */
+function restoreFileAtomic(snapshotPath, targetPath) {
+  const dir = path.dirname(targetPath);
+  fs.mkdirSync(dir, { recursive: true });
+  const tmp = path.join(dir, path.basename(targetPath) + '.restore-' + process.pid + '-' + Date.now());
+  try {
+    fs.copyFileSync(snapshotPath, tmp);
+    renameWithRetry(tmp, targetPath);
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch { }
+    throw e;
+  }
 }
 
 /** 启动时（拿到锁之后）检查有没有上次没做完的事务：有就回滚并**大声报告** */
@@ -374,11 +455,17 @@ export function recoverTransactions(root) {
   }
   if (Number(j.pid) === process.pid) return '';       // 同一进程内的上一次事务（理论上不会留）
   const r = rollbackJournal(j);
+  /* ★ 2026-10-31（codex B01）：回滚有失败项时**不删日志/留档**，并明确要求人工介入。
+     原实现无论成败都 unlink+rm ⇒ 失败现场连"下次再试"的机会都没有。 */
+  if (r.failed.length) {
+    return '发现上次未完成的写事务（' + (j.label || '未标注') + ' · ' + j.startedAt + '），回滚**未完成**：' +
+      '已恢复 ' + r.restored + ' 个文件、删除 ' + r.removed + ' 个新建文件，但 ' + r.failed.length + ' 个失败：' + r.failed.join('；') +
+      '。事务日志与留档已保留（下次取锁会重试）——请先关掉占用这些文件的程序，再重跑一次。';
+  }
   try { fs.unlinkSync(journalPath); } catch { }
   try { fs.rmSync(j.dir, { recursive: true, force: true }); } catch { }
   return '发现上次未完成的写事务（' + (j.label || '未标注') + ' · ' + j.startedAt + '），已回滚：' +
     '恢复 ' + r.restored + ' 个文件、删除 ' + r.removed + ' 个新建文件' +
-    (r.failed.length ? '；⚠ 回滚失败 ' + r.failed.length + ' 个：' + r.failed.join('；') : '') +
     '。这是"要么全成要么全退"在起作用：那次操作没有生效，请重做一次。';
 }
 

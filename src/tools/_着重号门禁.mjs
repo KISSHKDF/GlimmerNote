@@ -130,9 +130,36 @@ export function judgeCss(cssText) {
   const problems = [];
   const hasRule = /\.rd(?![-\w])/.test(css);
   if (!hasRule) problems.push({ code: 'style-missing', msg: 'app.css 里没有 .rd 规则——加点字会被当普通字印出来（2026-10-25 Y0001 事故原样）' });
-  /* 必须真的画出点：伪元素 + 圆角/背景 或 border-bottom 之类可见装饰 */
-  const paints = /\.rd[^{]*::?after\s*\{[^}]*\}/.test(css) && /(border-radius|background)/.test(css);
-  if (hasRule && !paints) problems.push({ code: 'style-invisible', msg: '.rd 规则存在但画不出点（缺 ::after 的 border-radius/background）——纸面上仍然看不见' });
+  /* ★ 2026-10-31（codex C05，已实测复现）：判据必须**只看那条 ::after 规则自己的声明体**。
+     旧实现是 `规则存在` && `/(border-radius|background)/.test(整份 CSS)`——
+     第二个条件搜的是**整份样式表**，只要任意元素有背景/圆角它就恒为真。
+     于是 `.rd::after { content: none; }` + 别处随便一条 background 就能通过：
+     着重号根本不生成，门禁却是绿的（这正是"判据比写法、不比解析结果"的老毛病）。
+     新判据（逐条）：
+       ① `.rd…::after` 规则体里必须有**有效 content**（`none`/`normal`/空串 = 不生成伪元素）；
+       ② 同一个规则体里必须有**画得出来的形态**：border-radius 或 background（圆点）；
+       ③ 尺寸不能塌成 0（width/height 若显式声明则必须 > 0）。
+     判据自证：tests\neg-emphasis-mark.cjs 的 Z 段（掏掉任一条都要红）。 */
+  const afterRules = [...css.matchAll(/\.rd(?![-\w])[^{}]*::?after\s*\{([^}]*)\}/g)].map(m => m[1]);
+  const declOf = (body, prop) => {
+    const m = new RegExp('(^|[;{\\s])' + prop + '\\s*:\\s*([^;}]+)', 'i').exec(body);
+    return m ? m[2].trim() : null;
+  };
+  const rulePaints = afterRules.some(body => {
+    const content = declOf(body, 'content');
+    /* 没有 content 声明 ⇒ 伪元素不生成（浏览器不给 ::after 默认内容） */
+    if (content == null) return false;
+    /* content: none/normal ⇒ 明确不生成；`content:''`（空串）**是合法且常见写法**
+       （本仓生产 CSS 就是 `content:''` + 圆点几何），绝不能当成"空内容看不见"。 */
+    if (/^(none|normal|inherit|initial|unset)$/i.test(content)) return false;
+    if (!/(border-radius|background)/i.test(body)) return false;  // 有内容但没形状 ⇒ 还是个透明盒子
+    for (const p of ['width', 'height']) {
+      const v = declOf(body, p);
+      if (v != null && /^0*(\.0+)?\s*(em|px|rem|mm|%)?$/i.test(v)) return false;   // 显式塌成 0
+    }
+    return true;
+  });
+  if (hasRule && !rulePaints) problems.push({ code: 'style-invisible', msg: '.rd 规则存在但画不出点（::after 规则体里缺有效 content 或 border-radius/background）——纸面上仍然看不见' });
   /* 明确藏起来的一律算事故 */
   const hidden = /\.rd[^{]*\{[^}]*(display\s*:\s*none|visibility\s*:\s*hidden)/.test(css);
   if (hidden) problems.push({ code: 'style-hidden', msg: '.rd 被 display:none / visibility:hidden 藏起来了' });

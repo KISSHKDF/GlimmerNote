@@ -21,6 +21,9 @@ if (-not $ProdRoot) {
 }
 Add-Type -AssemblyName System.IO.Compression.FileSystem | Out-Null
 
+# ── 清单写入的唯一实现（与 rollback.ps1 共用，避免两份实现漂移；2026-10-31 E04）──
+. (Join-Path $PSScriptRoot 'deploy-manifest.ps1')
+
 function Fail($msg) { throw "[部署失败] $msg" }
 
 # ── 0) 前置检查 ──
@@ -143,26 +146,11 @@ try {
   #  清单 = 这条纪律的**可验证物证**：scripts\verify-deploy.mjs 拿它逐文件比对，
   #  对不上就证明有人绕过了本脚本。清单写在 $ProdRoot 而不是 app\ 内，
   #  这样下次部署清空 app\ 时不会把它自己删掉。
-  $appFiles = @(Get-ChildItem $appDir -Recurse -File -Force)
-  $fileMap = [ordered]@{}
-  foreach ($f in $appFiles) {
-    $rel = $f.FullName.Substring($appDir.Length).TrimStart('\') -replace '\\', '/'
-    $fileMap[$rel] = (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash
-  }
-  $manifest = [ordered]@{
-    schema     = 1
-    version    = $newVer
-    zip        = $zipItem.Name
-    zipSha256  = $actual
-    deployedAt = $stamp
-    appDir     = 'app'
-    count      = $fileMap.Count
-    files      = $fileMap
-    note       = '本清单由 deploy.ps1 唯一写入；verify-deploy.mjs 用它判断运行区是否被绕过部署改动。'
-  }
-  $manifestPath = Join-Path $ProdRoot '_deploy-manifest.json'
-  ($manifest | ConvertTo-Json -Depth 5) | Set-Content -Path $manifestPath -Encoding UTF8
-  Write-Host "  清单：$manifestPath（$($fileMap.Count) 个文件 sha256）"
+  #  ★ 2026-10-31 E04：写入逻辑搬进 scripts\deploy-manifest.ps1（与 rollback.ps1 共用一份）。
+  #    改前回滚不写清单 ⇒ 正常回滚后 verify-deploy 必然误红；共用一份才不会两边漂移。
+  $mf = Write-DeployManifest -ProdRoot $ProdRoot -Version $newVer -Zip $zipItem.Name `
+    -ZipSha256 $actual -Source 'deploy' -Stamp $stamp
+  Write-Host "  清单：$($mf.Path)（$($mf.Count) 个文件 sha256）"
 
   Write-Host ""
   Write-Host "✔ 部署完成：$oldVer → $newVer" -ForegroundColor Green
