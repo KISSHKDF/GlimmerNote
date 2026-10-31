@@ -34,6 +34,7 @@ import { execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { readJsonStrict, writeJsonAtomic, acquireLibLock } from './_安全写.mjs';
 import { libraryRoot, toolPath } from './_库根.mjs';
+import { resolver as origResolver } from './_原图寻址.mjs';
 /* ⚠ 2026-10-15 修（F-P0 治本）：库根包含性判据。**刻意复用** _路径护栏.mjs 的纯判据，
    而不是在本文件手写 `rel.startsWith('..')` —— 护栏是"不查 exists、只做归一化前缀比较"的写法，
    天然不做 IO，因此不会像旧判据那样被"相对路径拼回原绝对路径"的把戏绕过去（详见 ruleTaskJson 注释）。 */
@@ -783,6 +784,11 @@ function gate(allowPxWrite = false) {
   const doc = readJson(LEDGER);
   const cards = loadCards();
   const errs = [], warns = [];
+  /* ★ 2026-10-31：原图兜底寻址（内容寻址保全库 `_原图\`）。
+     原路径没了 ≠ 原图丢了 —— 按内容能找回就不算断链。 */
+  const ORIG_RESOLVER = origResolver();
+  let nViaStore = 0;
+  const viaStoreSamples = [];
   /* ⚠ 2026-10-15 修（I · 门禁检出盲区）：`未定位` 原先直接打印 `errs.length`，
      而 errs 里混了「未定位」「不在盘」「box 非法」「指向自身」等多种错因——
      数字名不副实；本次再往 errs 加「越出库根」会让这个数更失真。
@@ -822,14 +828,38 @@ function gate(allowPxWrite = false) {
         `      → 怎么办：原老库已于 2026-10-12 废弃，现主库是 ${ROOT}；\n` +
         `        常见原因是 _task.json/卡目录里硬编码了老库绝对路径或 ../.. 上跳路径。`);
     }
-    if (!exists(e.page)) errs.push(`${c.key} 整页不在盘：${e.page}`);
+    if (!exists(e.page)) {
+      /* ★ 2026-10-31：**原路径没了不等于原图丢了**。
+         内容寻址保全库 `_原图\` 里按 sha256 存着字节完全相同的那一份（只增不改）。
+         原路径失效（收件箱被清空 / 原件被改名 / 目录被搬）时：
+           ① 能按内容找回 ⇒ **不是错误**，只记一条"已从保全库兜底"的提示；
+           ② 找不到 ⇒ 才算真的断链，照旧判红。
+         ⚠ 判据是**按内容**确认的（重算 sha256 比对），不是按路径猜 ——
+         路径被复用成另一个文件时不会张冠李戴。 */
+      const store = ORIG_RESOLVER.resolve(e.page);
+      if (store && store.via === 'store') {
+        nViaStore++;
+        if (viaStoreSamples.length < 20) viaStoreSamples.push(`${c.key} 整页原路径已失效，已按内容从保全库找回：${store.path}`);
+      } else {
+        errs.push(`${c.key} 整页不在盘：${e.page}` +
+          (store ? '' : '（且保全库里也没有同内容副本 ⇒ 真的断了）'));
+      }
+    }
     if (e.box && !boxOk(e.box)) errs.push(`${c.key} box 非法：${JSON.stringify(e.box)}`);
     /* e.import 同源风险：也补包含性判据（评估见报告 §4；import 指向库外同属污染）。
        仍保留在 warns（导入原件失效属降级告警，不阻断门禁）——与原语义一致，只加"越界"这一因。 */
     if (e.import) {
       const impAbs = path.resolve(ROOT, e.import);
       if (!isInsideRoot(impAbs)) warns.push(`${c.key} 导入原件**越出库根**（库外路径）：${e.import}（解析为 ${impAbs}）`);
-      if (!exists(e.import)) warns.push(`${c.key} 导入原件失效：${e.import}`);
+      if (!exists(e.import)) {
+        const store = ORIG_RESOLVER.resolve(e.import);
+        if (store && store.via === 'store') {
+          nViaStore++;
+          if (viaStoreSamples.length < 20) viaStoreSamples.push(`${c.key} 导入原件原路径已失效，已按内容从保全库找回：${store.path}`);
+        } else {
+          warns.push(`${c.key} 导入原件失效：${e.import}`);
+        }
+      }
     }
     if (e.page && e.cardDir && norm(e.page) === e.cardDir) errs.push(`${c.key} 整页指向卡片目录自身`);
     /* 方向体检（2026-10-16）：EXIF orientation ≠ 1 ⇒ 渲染层要么不转（横躺）要么转错（红框全歪）。
@@ -852,8 +882,17 @@ function gate(allowPxWrite = false) {
     const stale = Object.values(doc.cards).filter(e => e.box && e.page && !px[norm(e.page)]).length;
     if (stale) console.log(`（只读模式：${stale} 张缺像素尺寸缓存，已跳过长宽比体检；要补缓存跑 \`node _原卷台账.mjs 门禁 --px-cache\`）`);
   }
-  console.log(`门禁：卡 ${cards.length} ｜ 未定位 ${nUnlocated} ｜ 有整页无红框 ${noBox} ｜ 告警 ${warns.length}`);
+  console.log(`门禁：卡 ${cards.length} ｜ 未定位 ${nUnlocated} ｜ 有整页无红框 ${noBox} ｜ 告警 ${warns.length}` +
+    (nViaStore ? ` ｜ **已从保全库按内容兜底 ${nViaStore} 条**（原路径失效但字节还在，不是断链）` : ''));
   for (const w of warns) console.log('  ⚠ ' + w);
+  /* ★ 2026-10-31：兜底明细也要打印（不静默）。
+     用户看到"整页不在盘"会以为数据丢了；实际是路径失效、字节在保全库。
+     这条信息必须可见，否则用户会去手工"修复"一个其实没坏的东西。 */
+  if (nViaStore) {
+    console.log(`  ── 原路径失效但已按内容从保全库找回（${nViaStore} 条，**不是断链**）──`);
+    for (const s of viaStoreSamples) console.log('  ✓ ' + s);
+    if (nViaStore > viaStoreSamples.length) console.log(`    … 另有 ${nViaStore - viaStoreSamples.length} 条`);
+  }
   /* ⚠ 2026-10-15 修（I · 输出截断遮蔽高严重级错误）：
      原先 `errs.slice(0, 40)` + "另有 N 条" —— 在**已有一批低严重级错误**
      （本项目实测：59 条「未定位」）时，新加进来的**高严重级**错误（越出库根/数据污染）

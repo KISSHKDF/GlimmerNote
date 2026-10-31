@@ -184,10 +184,20 @@ function main() {
 
     const mutDir = path.join(TMP, 'mut');
     fs.mkdirSync(mutDir, { recursive: true });
-    for (const f of ['_原卷台账.mjs', '_安全写.mjs', '_库根.mjs', '_路径护栏.mjs']) {
+    /* ★ 2026-10-31：新增 `_原图寻址.mjs`（原图兜底寻址）后，被测工具多了一个相对 import。
+       变异体必须**连它的依赖一起复制**，否则 mutant 跑不起来（实测报
+       `node:internal/modules/esm/resolve:241` ⇒ exit 1），而那不是"变异体真跑成功"判红，
+       是**夹具没配好**——会掩盖真正的阴性自证。
+       办法：从被测源码里**解析出它 import 的所有同目录工具**（不靠手写清单，
+       手写清单漏一个就红一次）。 */
+    const imported = [...ORIG.matchAll(/from\s+'\.\/([^']+)'/g)].map(m => m[1]);
+    const toolFiles = [...new Set(['_原卷台账.mjs', ...imported])];
+    for (const f of toolFiles) {
       const src = path.join(ROOT, 'src', 'tools', f);
+      if (!fs.existsSync(src)) { A('③ 前置：依赖文件存在 ' + f, false, src); continue; }
       fs.copyFileSync(src, path.join(mutDir, f));
     }
+    A('③ 前置：变异体连同它的全部相对依赖都复制了（' + toolFiles.length + ' 个）', true, toolFiles.join(', '));
     const mutTool = path.join(mutDir, '_原卷台账.mjs');
     fs.writeFileSync(mutTool, mutSrc, 'utf8');       // UTF-8 无 BOM + LF（源文件就是 LF）
     const chk = spawnSync(process.execPath, ['--check', mutTool], { encoding: 'utf8' });
