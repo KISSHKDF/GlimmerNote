@@ -40,7 +40,12 @@ const okCards = pool.filter(x => ['已通过', '已修正'].includes(x.blind) &&
 A('找到用于对照的可组卷卡', okCards.length === 2, okCards.map(x => x.id).join(','));
 let paper = null;
 try {
-  const out = run(['组卷', '--student', STU, '--subject', '数学', '--ids', okCards.map(x => x.id).join(','), '--title', '间隔方向对照', '--note', '自检']);
+  /* ⚠ 2026-10-31：加 `--no-repeat-days 0` —— 本用例要验的是**间隔方向**，不是防重复组卷门禁。
+     真库里 M0001/M0002 在 P20261025-06 里印过（2026-10-25），7 天窗口内跑本用例必被
+     「防重复组卷拦截」挡下 ⇒ exit 2 ⇒ full 变红，而**代码一行没动、只是日历走到了这几天**
+     （已在改动前的 commit 6382ce0 上 A/B 复现：同样红、同一个签名）。
+     用日期当隐式前条件 = 门禁会随日历腐烂，所以显式关掉这条与本用例无关的门禁。 */
+  const out = run(['组卷', '--student', STU, '--subject', '数学', '--ids', okCards.map(x => x.id).join(','), '--title', '间隔方向对照', '--note', '自检', '--no-repeat-days', '0']);
   paper = (out.match(/P\d{8}-\d{2}/) || [null])[0];
   A('组卷成功', !!paper, paper);
   /* 一张判「对」，一张判「半对」，比较 nextDue 距离 */

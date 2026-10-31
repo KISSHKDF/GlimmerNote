@@ -2,6 +2,9 @@
 # 拾光小册 · 流水线自检（回滚演练）
 #   在一套临时沙箱里真跑一遍：装旧版 → 升级 → 回滚 → 指定版本回滚
 #   全程验证「数据目录一个字节都没变」
+#   ★ 2026-10-31 E04：回滚之后必须再跑一次 verify-deploy（部署一致性），
+#     并把它的失败记成断言红。改前本脚本**全文不调用** verify-deploy ⇒
+#     "回滚不写清单、门禁必然误红"这个缺陷在自检里永远看不见（自检恒绿 = 假绿）。
 #   铁律：绝不碰真实运行区（GlimmerNote）
 #   用法：powershell -File scripts\selftest-pipeline.ps1 [-Keep]
 # ═══════════════════════════════════════════════════════════
@@ -52,6 +55,20 @@ function DataHash($dir) {
   $sha = [Security.Cryptography.SHA256]::Create().ComputeHash($bytes)
   return ($sha | ForEach-Object { $_.ToString('x2') }) -join ''
 }
+# ── 部署一致性校验（回滚后必跑；失败要变成断言红，不许只打印）──
+$nodeExe = (Get-Command node -ErrorAction SilentlyContinue)
+function VerifyDeployOf($prod) {
+  if (-not $nodeExe) { return [pscustomobject]@{ Code = -1; Out = '本机找不到 node，无法跑 verify-deploy' } }
+  $script = Join-Path (Join-Path $root 'scripts') 'verify-deploy.mjs'
+  $out = & $nodeExe.Source $script --prod $prod 2>&1
+  return [pscustomobject]@{ Code = $LASTEXITCODE; Out = (@($out) -join ' ') }
+}
+function ManifestVerOf($prod) {
+  $f = Join-Path $prod '_deploy-manifest.json'
+  if (-not (Test-Path $f)) { return $null }
+  try { return [string]((Get-Content $f -Raw -Encoding UTF8 | ConvertFrom-Json).version) } catch { return '(读不懂)' }
+}
+
 function CurVerOf($p) {
   $f = Join-Path $p 'app\版本.json'
   if (Test-Path $f) { return [string]((Get-Content $f -Raw -Encoding UTF8 | ConvertFrom-Json).version) }
@@ -94,6 +111,10 @@ try {
   Write-Host "  场景一（一键回退）耗时：$sec1 s（上限 $LIMIT1_SEC s）"
   Check "回滚到 $oldVer" ((CurVerOf $sandbox) -eq $oldVer) "实际 $(CurVerOf $sandbox)"
   Check "回滚后数据未变" ((DataHash $dataDir) -eq $hash0) "数据被动了"
+  # ★ E04：回滚必须重写清单，且"落地版本 == 清单版本"，否则一致性门禁必然误红
+  Check "回滚后清单版本 == 落地版本（$oldVer）" ((ManifestVerOf $sandbox) -eq $oldVer) "清单版本 $(ManifestVerOf $sandbox) / 落地 $(CurVerOf $sandbox)"
+  $vd1 = VerifyDeployOf $sandbox
+  Check "回滚后部署一致性校验通过（verify-deploy exit 0）" ($vd1.Code -eq 0) ("exit $($vd1.Code)：$($vd1.Out)")
 
   # ── 4) 指定版本回滚（计时）──
   $sw2 = [Diagnostics.Stopwatch]::StartNew()
@@ -103,6 +124,9 @@ try {
   Write-Host "  场景二（指定版本回退）耗时：$sec2 s（上限 $LIMIT2_SEC s）"
   Check "指定版本切到 $newVer" ((CurVerOf $sandbox) -eq $newVer) "实际 $(CurVerOf $sandbox)"
   Check "指定版本回滚后数据未变" ((DataHash $dataDir) -eq $hash0) "数据被动了"
+  Check "指定版本回滚后清单版本 == 落地版本（$newVer）" ((ManifestVerOf $sandbox) -eq $newVer) "清单版本 $(ManifestVerOf $sandbox) / 落地 $(CurVerOf $sandbox)"
+  $vd2 = VerifyDeployOf $sandbox
+  Check "指定版本回滚后部署一致性校验通过（verify-deploy exit 0）" ($vd2.Code -eq 0) ("exit $($vd2.Code)：$($vd2.Out)")
 
   # ── 5) 部署记录完整性 ──
   $log = Join-Path $sandbox '部署记录.txt'

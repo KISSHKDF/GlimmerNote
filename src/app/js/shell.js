@@ -90,11 +90,19 @@
     const modeTxt = { shell: ['ok', '桌面壳直连'], server: ['ok', '本机服务端 ' + (H.port || '—')], offline: ['off', '离线（无数据）'], boot: ['off', '连接中'] }[H.mode] || ['', H.mode];
     const gen = M.state && M.state.generatedAt ? new Date(M.state.generatedAt).toLocaleString('zh-CN', { hour12: false }) : '—';
     const bad = M.healthBad();
+    /* ★ 2026-10-30 B01：服务端数据降级必须**在界面上看得见**。
+       起因：`GET /api/state` 读不出磁盘 `_状态.json`（写坏/被删/权限）时，服务端改前静默返回
+       旧内存快照 + 200，界面上一切正常 —— 用户看到的"今日总览"可能早于磁盘上的最新改动。
+       现在服务端会带 `degraded`，host.js 在通道层记进 `H.degraded`，这里把它渲染成一条红字。
+       为什么不塞进 M.health（dataHealth）：那不是"某道门禁读不到"，而是"整份状态包是旧的"，
+       混进去会让人以为是某个门禁坏了；分开显示才能一眼归因。 */
+    const hd = H.degraded;
     U.$id('statusbar').innerHTML =
       '<span><i class="dot ' + modeTxt[0] + '"></i>' + modeTxt[1] + '</span>' +
       '<span>在册 <b class="num">' + M.cards.length + '</b> 题</span>' +
       '<span>未办结待办 <b class="num">' + M.pendingOpen().length + '</b></span>' +
       (bad.length ? '<span class="sb-bad" title="' + U.esc(M.healthText()) + '">⚠ 门禁降级 ' + bad.length + ' 项</span>' : '') +
+      (hd ? '<span class="sb-bad" title="' + U.esc(hd.detail || '') + '">⚠ 数据可能不是最新（' + U.esc(hd.code) + '）</span>' : '') +
       '<span>数据生成 <b>' + U.esc(gen) + '</b></span>' +
       (extra ? '<span>' + U.esc(extra) + '</span>' : '') +
       '<span style="margin-left:auto">按 <kbd>?</kbd> 看快捷键</span>';
@@ -210,9 +218,21 @@
     }
     renderHealth();
     try { statusbar(); } catch (e) { console.error(e); }
-    const tbs = U.$id('tbSub');
-    if (tbs) { const sub = v.sub; tbs.textContent = sub ? (typeof sub === 'function' ? sub() : sub) : ''; }
+    refreshSub();
   };
+
+  /* 顶栏副标题（2026-10-30 抽出成函数，供视图在**数据异步到位之后**再刷一次）。
+   * 起因：录题页的收件箱是 onShow 里异步读的，而 S.render() 在这一步之前就把 sub() 求了值 ⇒
+   *   副标题永远停在初始态「收件箱空着」，哪怕列表里明明有 80 张待处理（真机截图里一眼可见）。
+   *   这类"派生数字取早了一帧"的错，光看代码看不出，只能靠界面回归。 */
+  function refreshSub() {
+    const tbs = U.$id('tbSub');
+    if (!tbs) return;
+    const v = CTB.views[route] || CTB.views.dash;
+    const sub = v && v.sub;
+    tbs.textContent = sub ? (typeof sub === 'function' ? sub() : sub) : '';
+  }
+  S.refreshSub = refreshSub;
 
   /* ================= 数据重载 ================= */
   S.reload = async function (silent) {

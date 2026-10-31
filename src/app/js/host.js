@@ -76,6 +76,24 @@
     return '';
   })();
   H.serverOrigin = H.port ? ('http://127.0.0.1:' + H.port) : '';
+  /* ★ 2026-10-30 S02：服务端本轮启动的**随机 token**，由服务端在注入的 index.html 里给出
+     （`<script>window.__ctbToken="…"</script>`，注入点在 </head> 之前 ⇒ 早于本文件执行）。
+     为什么要有它：服务端已取消对 `Origin: null` 的信任（不透明源与 file:// 在 HTTP 层不可区分），
+     光靠 Origin 只剩"浏览器替我们填的自述"，本机网页仍能伪造请求头。token 是"只有本服务页面
+     才拿到"的那一半证据，所有 /api/* 请求必须带上（见下面 apiFetch）。
+     ⚠ 拿不到 token ≠ 服务端坏了：它等于"这个页面不是服务端发出来的"（file:// 直开 / 桌面壳），
+     此时**不进 server 模式**（见 probeServer），免得落进"health 通、每个 /api 都 403"的半死状态。 */
+  H.token = (function () {
+    try {
+      const t = window.__ctbToken;
+      /* 只认服务端生成的那种十六进制串（长度给足余量）：注入失败/被别的页面写成花串时按"没有"处理 */
+      return (t && /^[0-9a-f]{16,128}$/i.test(String(t))) ? String(t) : '';
+    } catch (e) { return ''; }
+  })();
+  /* 服务端状态降级（2026-10-30 B01）：`GET /api/state` 读不出磁盘 `_状态.json` 时会在响应体里带
+     `degraded` / `degradedDetail`。页面不能把它当正常数据吞掉（那正是这次审计要修掉的"静默降级"），
+     所以在通道层就记住它，由状态条（shell.js statusbar）显示出来。null = 本通道没有降级。 */
+  H.degraded = null;
   /* 端口来源的自我说明（状态条/排障用；只描述"这个值是从哪来的"，不参与逻辑）。 */
   H.portSource = (function () {
     try {
@@ -91,10 +109,45 @@
   /* ---------- 通道探测 ---------- */
   async function probeServer() {
     if (!H.serverOrigin) return false;   /* 端口未知（端口真源没读到）⇒ 不猜、不试（R2 SC-09） */
+    /* ★ 2026-10-30 S02：没有 token 就**不认**这个服务端。token 只由服务端注入的 index.html 提供，
+       所以"没 token"的真实含义是"这个页面不是服务端发的"（file:// 直开、桌面壳里的那份）。
+       改前这类页面靠服务端信任 `Origin: null` 才读得到数据；那条信任已按审计 S02 取消，
+       继续硬连只会得到一个"health 通、/api/* 全 403"的半死状态（用户看到的是空白界面 + 一堆 403）。
+       现在直接判"没有服务端" → 落到 offline 模式，界面说"离线（无数据）"，是**诚实**的降级。
+       桌面壳那条路不受影响：它走 postMessage（H.mode='shell'），根本不探测 HTTP 服务端。 */
+    if (!H.token) return false;
     try {
       const r = await fetch(H.serverOrigin + '/health', { cache: 'no-store' });
       return r.ok;
     } catch (e) { return false; }
+  }
+  /* ★ 2026-10-30 S02/S06：server 模式下**所有** /api/* 请求的唯一出口。
+     集中一处加 `X-CTB-Token`（改前四处 fetch 各写一份 header，加一个鉴权头就得改四遍，
+     漏一处就是"某个功能莫名 403"）；顺带统一 `cache:'no-store'`。
+     ⚠ 只给 /api/* 用：静态资源（图/题干/css）不带 token，也不需要。 */
+  function apiFetch(pathAndQuery, opts) {
+    if (H.mode !== 'server') return Promise.reject(new Error('未连接数据通道'));
+    const o = Object.assign({}, opts || {});
+    const h = Object.assign({}, o.headers || {});
+    if (H.token) h['X-CTB-Token'] = H.token;
+    o.headers = h;
+    o.cache = 'no-store';
+    return fetch(H.root + pathAndQuery, o);
+  }
+  H.apiFetch = apiFetch;
+  /* 把服务端给的降级标记搬到通道层（同时 console.error 留痕；状态条会显示）。
+     为什么在通道层记、而不是让每个调用方自己判：调用方有 6 处渲染点，漏一处就变成静默。 */
+  function noteDegraded(j) {
+    if (!j || typeof j !== 'object') return j;
+    if (j.degraded) {
+      H.degraded = { code: String(j.degraded), detail: String(j.degradedDetail || ''), at: Date.now() };
+      try { console.error('[host] 服务端数据降级：' + H.degraded.code + '　' + H.degraded.detail); } catch (e) { }
+    } else if (Array.isArray(j.data)) {
+      /* 只有"完整状态包"才清降级标记：POST /api/pending 返回的 {ok,results,state} 里没有 degraded，
+         拿它清标记会把上一次真降级悄悄洗白。 */
+      H.degraded = null;
+    }
+    return j;
   }
   H.init = async function () {
     if (window.ctbHost && window.chrome && window.chrome.webview) {
@@ -192,9 +245,9 @@
   H.getState = async function () {
     if (H.mode === 'shell') return bridge('state', {}, 180000);
     if (H.mode === 'server') {
-      const r = await fetch(H.root + 'api/state', { cache: 'no-store' });
+      const r = await apiFetch('api/state');
       if (!r.ok) throw new Error('服务端 /api/state → ' + r.status);
-      return r.json();
+      return noteDegraded(await r.json());
     }
     throw new Error('未连接数据通道');
   };
@@ -204,9 +257,9 @@
   H.pendingResolve = async function (resolves) {
     if (H.mode === 'shell') return bridge('pendingResolve', { resolves }, 180000);
     if (H.mode === 'server') {
-      const r = await fetch(H.root + 'api/pending', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ resolves }) });
+      const r = await apiFetch('api/pending', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ resolves }) });
       const j = await r.json(); if (!j.ok) throw new Error(j.toolOut || j.error || '落库失败');
-      return { ok: true, results: j.results || [], state: j.state || await H.getState() };
+      return { ok: true, results: j.results || [], state: noteDegraded(j.state) || await H.getState() };
     }
     throw new Error('离线模式只能查看，不能落库（请用桌面壳 拾光小册.exe 打开）');
   };
@@ -240,13 +293,32 @@
   /* 全量重建（生成器重跑），返回新 state；生成器实测 ~5 分钟，超时给 10.5 分钟 */
   H.regen = async function () {
     if (H.mode === 'shell') return bridge('regen', {}, 630000);
-    if (H.mode === 'server') { const r = await fetch(H.root + 'api/state', { method: 'POST' }); if (!r.ok) throw new Error('重建失败'); return r.json(); }
+    if (H.mode === 'server') {
+      /* ★ 2026-10-30 S06：服务端现在只收 `application/json`（与 /api/pending 同口径），
+         并且同一来源 1 秒内重复触发会 429。所以这里必须带 JSON 体 —— 改前是不带 body 的裸 POST，
+         改后会 415。429 的文案要能直接给用户看（"等它结束再点"），不要吞成"重建失败"。 */
+      const r = await apiFetch('api/state', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+      if (r.status === 429) {
+        let why = '重建过于频繁';
+        try { const j = await r.json(); why = j.error || why; } catch (e) { }
+        throw new Error(why);
+      }
+      if (!r.ok) throw new Error('重建失败');
+      return noteDegraded(await r.json());
+    }
     throw new Error('离线模式不能重建');
   };
   /* 读题库内文本文件（错题记录.md 抽屉用） */
   H.readFile = async function (relPath) {
     if (H.mode === 'shell') return bridge('readFile', { path: relPath }, 60000);
-    if (H.mode === 'server') { const r = await fetch(H.root + encodeURI(relPath)); if (!r.ok) throw new Error('读取失败'); return { ok: true, text: await r.text() }; }
+    if (H.mode === 'server') {
+      /* 静态路径不走 apiFetch 的语义（它是给 /api/* 用的），但**同样**没有鉴权头需求：
+         服务端只在浏览器访问 /api/* 时才强制 token。这里用 apiFetch 只是为了让"服务端模式的
+         fetch 出口只有一处"这条规则成立，将来加公共头不会漏掉这一路。 */
+      const r = await apiFetch(encodeURI(relPath));
+      if (!r.ok) throw new Error('读取失败');
+      return { ok: true, text: await r.text() };
+    }
     throw new Error('离线模式不能读文件');
   };
   /* 交系统/内置阅读器打开（图片/PDF/md）。索引里的 img/origPage 是**百分号编码**形态，

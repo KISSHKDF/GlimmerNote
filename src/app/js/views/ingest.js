@@ -196,15 +196,31 @@
         '<br><span class="small muted">若是浏览器模式打开，本页不能用（需要桌面壳：拾光小册.exe）。</span>';
       return;
     }
+    const archN = r.archivedCount || 0;
+    const archNote = String(r.archivedNote || '');
+    /* ⚠ 2026-10-31：跳过项（读不动 / 越出库根）必须说出口。
+       这些文件**没有**出现在任何清单里，用户看不到就以为照片丢了。
+       "不许静默少列"是这条链路的纪律。 */
+    const skipNote = String(r.skipNote || '');
+    const skipHtml = skipNote
+      ? '<div class="small muted ig-archnote">⚠ 有 ' + U.esc(skipNote) + '，未列入清单（文件仍在收件箱里，没被删）</div>'
+      : '';
     if (!r.total) {
       box.innerHTML = '<div class="row" style="margin-bottom:8px">' +
         '<button class="btn sm primary" id="igOpenInbox">📂 打开收件箱文件夹</button>' +
         '<span class="small muted">把错题照片放进去，回来点「刷新」</span>' +
         '<button class="btn sm ghost" id="igRefresh">⟳ 刷新</button></div>' +
-        '收件箱还是空的。<br>' +
-        '<span class="small muted">按批次建子文件夹更好找，例：<b>_收件箱\\数学-10月28日\\</b>' +
-        '（不建子文件夹也能用，直接丢在 _收件箱 下即可）</span>';
+        (archN
+          ? '<b>没有待处理的照片了。</b>收件箱里 ' + archN + ' 张都已经处理过（已归档，不再列在这里）。<br>' +
+            '<span class="small muted">照片<b>一张都没删</b>，仍在 <b>数据\\_收件箱</b> 下；要重做某张，先把它从收件箱挪出去。</span>'
+          : '收件箱还是空的。<br>' +
+            '<span class="small muted">按批次建子文件夹更好找，例：<b>_收件箱\\数学-10月28日\\</b>' +
+            '（不建子文件夹也能用，直接丢在 _收件箱 下即可）</span>') +
+        (archNote ? '<div class="small muted ig-archnote">⚠ ' + U.esc(archNote) + '</div>' : '') +
+        skipHtml +
+        archBlockHtml(r);
       wireInboxButtons(box);
+      wireArch(box, archN);
       return;
     }
     const rows = [];
@@ -224,8 +240,14 @@
       '<button class="btn sm" id="igOpenInbox">📂 打开收件箱文件夹</button>' +
       '<button class="btn sm ghost" id="igRefresh">⟳ 刷新</button></div>' +
       '<div class="small muted" style="margin-bottom:6px">共 ' + r.batches.length + ' 批 / ' +
-      r.total + ' 张。勾选要处理的那一张（一次一张，判错准确率最高）。</div>' + rows.join('');
+      r.total + ' 张待处理' +
+      (archN ? '　<b>另有 ' + archN + ' 张已处理，已归档不显示</b>' : '') +
+      '。勾选要处理的那一张（一次一张，判错准确率最高）。</div>' +
+      (archNote ? '<div class="small muted ig-archnote">⚠ ' + U.esc(archNote) + '</div>' : '') +
+      skipHtml +
+      rows.join('') + archBlockHtml(r);
     wireInboxButtons(box);
+    wireArch(box, archN);
     box.querySelectorAll('input[data-rel]').forEach(cb => {
       cb.onchange = () => {
         if (cb.checked) { st.picked = {}; }   /* 单选语义：勾新的就取消旧的 */
@@ -238,6 +260,54 @@
     });
   }
 
+  /* ---------- 「已归档」区（2026-10-30 加）----------
+   * 用户原话：「把所有的照片都显示出来，又长又多，显示还慢，这个设置明显不合理。
+   *   应该把已处理过的照片全部归档，不要在这个窗口显示了」。
+   * 判定在工具侧（`_配方.mjs`：被 `_原卷台账.json` 里某张卡引用过 = 已处理），页面只做两件事：
+   *   ① 把结论**说清楚**（多少张、为什么不算待办、文件没删）——不许悄悄消失；
+   *   ② 需要时能翻出来核对（折叠起来，默认不占地方）。
+   * 列表**只读**、不给勾选：已处理的照片再发一遍只会重复建卡；要看原图走题库的「原图」。 */
+  function archRowsByBatch(list) {
+    const groups = new Map();
+    for (const f of list) {
+      /* rel 形如 `_收件箱/<批次>/<文件名>` 或 `_收件箱/<文件名>`；只取中间的批次名，不显示盘符与库根 */
+      const parts = String(f.rel || '').split('/');
+      const dir = parts.length > 2 ? parts.slice(1, -1).join('/') : '';
+      const key = dir || '（未分批）';
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(f);
+    }
+    const out = [];
+    for (const [dir, files] of groups) {
+      out.push('<div class="ig-batch">▸ <b>' + U.esc(dir) + '</b>　<span class="small muted">' + files.length + ' 张</span></div>');
+      for (const f of files) {
+        out.push('<div class="ig-arch-row" title="' + U.esc(f.rel) + '">' +
+          '<span class="ig-arch-tag">已归档</span>' +
+          '<span class="ig-fn">' + U.esc(f.name) + '</span>' +
+          '<span class="small muted">' + (f.bytes / 1024).toFixed(0) + ' KB</span></div>');
+      }
+    }
+    return out.join('');
+  }
+  function archBlockHtml(r) {
+    const n = r.archivedCount || 0;
+    if (!n) return '';
+    return '<div class="ig-arch">' +
+      '<button class="btn sm ghost" id="igArchToggle">显示已归档的 ' + n + ' 张</button>' +
+      '<div class="small muted ig-arch-why">这些照片已经处理过（在 <b>原卷台账</b> 里登记过），' +
+      '不再是待办，所以不占上面的清单。文件<b>一张都没删</b>，仍在 <b>数据\\_收件箱</b> 下。</div>' +
+      '<div id="igArchBox" hidden>' + archRowsByBatch(r.archived || []) + '</div>' +
+      '</div>';
+  }
+  function wireArch(box, n) {
+    const t = box.querySelector('#igArchToggle'); if (!t) return;
+    const b = box.querySelector('#igArchBox'); if (!b) return;
+    t.onclick = () => {
+      b.hidden = !b.hidden;
+      t.textContent = b.hidden ? ('显示已归档的 ' + n + ' 张') : '收起已归档';
+    };
+  }
+
   /* 收件箱区那两个按钮（空态与有内容态共用） */
   function wireInboxButtons(box) {
     const o = box.querySelector('#igOpenInbox');
@@ -247,6 +317,9 @@
       rf.disabled = true; rf.textContent = '⟳ 刷新中…';
       await loadInbox(true);
       await paintInbox();
+      /* 顶栏那句「收件箱 N 张待处理」是 S.render 里取的派生值；
+         刷新后数字变了得让它重算，否则又是"列表已更新、标题还停在旧数字"（2026-10-30 实机抓到过）。 */
+      if (S.refreshSub) S.refreshSub();
     };
   }
 
@@ -341,4 +414,4 @@
   }
 
   /* 切到本页时重新读一次收件箱（用户刚丢完照片就切回来是最常见的动作） */
-  V.onShow = function () { loadInbox(true).then(paintInbox); };})();
+  V.onShow = function () { loadInbox(true).then(paintInbox).then(() => { if (S.refreshSub) S.refreshSub(); }); };})();

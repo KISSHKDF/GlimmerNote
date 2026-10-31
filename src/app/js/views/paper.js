@@ -305,6 +305,12 @@
     if (!keys.length) return S.toast('本卷各学科批次均已入账', 'ok');
     /* 门禁拦下时是否已被用户确认剔除重印题（避免重复弹两次确认） */
     let allowRepeat = false;
+    /* ★ 2026-10-31（codex D03 修法第二版回归，external 复核抓出）：**已成功入账的题要累积记账**。
+       按"剩余 groups"算清篮会漏掉"本轮早先已经成功的那一组"：
+       跨学科时（数学成功 → 物理被拦 → 重试只提交物理）groups 里已无数学，
+       于是数学那批题留在篮子里 ⇒ 下次进配卷屏又被抽出来再印一遍（正是 D03 想防的重复印卷）。
+       判据：tests\neg-paper-reject-sync.cjs 的"跨学科：早成功的组也要从篮子摘掉"。 */
+    const committedKeys = new Set();
     for (let attempt = 0; attempt < 5; attempt++) {
       let curKey = null;                 // F-30：只对「本次失败的那个批次」剔除，不牵连别的组
       try {
@@ -332,11 +338,22 @@
           }
           const pm = String(r.out || '').match(/P\d{8}-\d{2}/);
           sheet.committed[k] = pm ? pm[0] : '?';
+          /* 这一组真正入账了：把它涉及的题记进累积集合（后面清篮只按这个集合） */
+          for (const x of groups[k]) committedKeys.add(x.kid + '|' + x.card.id);
+          /* ★ 2026-10-31（external 复核发现）：**成功的组必须立刻从待提交表里摘掉**。
+             否则后续某组被门禁拦下、`continue` 重进循环时，前面的组会被**重复组卷**
+             （实测序列 T·数学 → T·物理(被拦) → T·数学 → T·物理），第二次数学会被
+             「防重复组卷」拦下 exit 2，用户看到一句与操作无关的报错、两个批次各停一半。
+             判据：tests\neg-paper-reject-sync.cjs 的"序列里数学只出现一次"。 */
+          delete groups[k];
         }
         /* ★ 2026-10-24（重复印卷的第二层根因）：入账成功必须把**本卷已入账的题从篮子里摘掉**。
            原来不清空 ⇒ 篮子（localStorage）里还是这 30 题，下次进配卷屏直接再点预览+入账就再印一遍
-           （P20261021-01 → P20261024-01 实测就是这条路）。清掉之后，"再组一卷"天然只剩还没印过的题。 */
-        const doneKeys = new Set(sheet.refs.map(x => x.kid + '|' + x.card.id));
+           （P20261021-01 → P20261024-01 实测就是这条路）。清掉之后，"再组一卷"天然只剩还没印过的题。
+           ★ 2026-10-31（codex D03）：清篮必须按**真正入账的那些题**（累积集合 committedKeys）算，
+             不能再按 `sheet.refs`（会把被门禁剔除、根本没进台账的题也摘掉 = 静默少题），
+             也不能按"剩余 groups"（会漏掉本轮早先已成功的组 = 已入账的题留在篮里再印一遍）。 */
+        const doneKeys = committedKeys;
         const left = M.basket().filter(k => !doneKeys.has(k));
         if (left.length !== M.basket().length) M.basketSet(left);
         _ledgerCache = null;                       // 台账已变，下次进配卷屏重新读
@@ -370,9 +387,29 @@
             body: '<b>' + U.esc(ids.join('、')) + '</b><br><br>（盲解/答案来源未归档）剔除这些题、其余继续入账吗？',
             ok: '剔除并继续',
           })) {
+          /* ★ 2026-10-31（codex D03，已复现）：剔除必须**同时**改提交列表与卷面题源 `sheet.refs`。
+             缺陷：旧实现只 `groups[curKey] = groups[curKey].filter(...)`，而
+               ① 预览/打印/答案册都读 `sheet.refs`（renderSheets:435）⇒ 纸面仍印着被拦的题；
+               ② 清篮用 `new Set(sheet.refs…)` ⇒ **没印出去的题也被从篮子里摘掉**，
+                  用户以为印了、实际台账里没有；
+               ③ 纸面第 2 题在台账里成为第 1 题 ⇒ 家长按卷面题号回录必然对错位置
+                  （比缺一道题更坏：错的是复习流水）。
+             修法：把被拒的卡号从 `sheet.refs` 同步摘掉并重绘卷面，让"提交/打印/答案册"共用同一份题序。
+             判据：tests\neg-paper-reject-sync.cjs（掏掉同步必红）。 */
+          /* ⚠ 键的口径是「学生|卡号」（kid 来自 curKey 的第一段），不是「学生|学科|卡号」——
+             第一版按 curKey 拼整串，`sheet.refs.filter` 一条都匹配不上（静默不生效），
+             由 tests\neg-paper-reject-sync.cjs 当场抓出。 */
+          const kidOfKey = String(curKey).split('|')[0];
+          const dropKeys = new Set(ids.map(id => kidOfKey + '|' + id));
+          sheet.refs = sheet.refs.filter(x => !dropKeys.has(x.kid + '|' + x.card.id));
           groups[curKey] = groups[curKey].filter(x => !ids.includes(x.card.id));
           if (!groups[curKey].length) delete groups[curKey];
           if (!Object.keys(groups).length) { S.toast('剩余题目全被拦，未入账', 'warn'); return; }
+          /* 卷面已变：立刻重绘卷面容器（否则用户点"打印"印的还是含被拦题的那一版）。
+             ⚠ 只重绘 #pvSheets，不整页 S.render() —— 整页重绘会把用户刚看到的确认态与
+               attempt 循环上下文一起冲掉；操作条上的"已入账"标记由收尾那次 S.render() 负责。 */
+          const pvSheets = U.$id('pvSheets');
+          if (pvSheets) pvSheets.innerHTML = renderSheets();
           continue;
         }
         S.toast('入账未完成：' + e.message, 'bad', 9000);

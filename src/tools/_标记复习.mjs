@@ -41,7 +41,7 @@ import path from 'path';
 import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { libraryRoot, toolPath } from './_库根.mjs';
-import { readJsonStrict, writeJsonAtomic } from './_安全写.mjs';
+import { readJsonStrict, writeJsonAtomic, acquireLibLock, openTransaction } from './_安全写.mjs';
 
 /* ★ 2026-10-23 程序与数据分家：ROOT 现在是**用户库根**，不再是"本脚本所在目录"。
    兄弟工具一律用 toolPath(...)，见 _库根.mjs。 */
@@ -71,7 +71,33 @@ const num = v => { const n = parseInt(v, 10); return Number.isFinite(n) ? n : 0;
    读：解析失败会抛（响亮，尚可），但形状"合法却不对"时上层会当我以为是空的。
    统一改走 _安全写.mjs：原子替换 + 写前备份；形状守卫一律响亮拒绝。 */
 function readJson(p) { return readJsonStrict(p, { label: path.basename(p) }); }
-function writeJson(p, o) { writeJsonAtomic(p, o, { backup: true }); }
+/* ★ 2026-10-30（外部审计 D01/D02）：写盘不再是"各自 writeJsonAtomic 覆盖"。
+   ① 进程一进来就取**跨进程写锁**（壳 / HTTP 服务端 / 命令行共用同一把，见 _安全写.mjs）；
+      —— 取不到就等，等不到就响错退出，绝不在别人写到一半时插进去覆盖。
+   ② 多文件动作（批改 / 撤批 / 组卷 / 归档）在锁内开**事务**：任一文件写失败或进程被杀，
+      下次启动把这一批文件整体退回原样。单文件原子写只保证"文件不半截"，
+      救不了"台账已改、索引没动"这种跨文件半截状态（审计 D01 的故障窗口就在这）。
+   未加 --dry 的动作都算写（--dry 也要取锁：读的时候不能有人正在改）。 */
+const ACTION_LABEL = '_标记复习 ' + (action || '');
+const releaseLock = acquireLibLock(ROOT, { label: ACTION_LABEL });
+let TX = null;                                   // 惰性开启：只有真要写时才建事务
+function tx() { return TX || (TX = openTransaction(ROOT, { label: ACTION_LABEL })); }
+function commitTx() { if (TX) { TX.commit(); TX = null; } }
+/* 收尾（正常结束 / 异常 / process.exit 都走这里）：没提交的事务一律回滚，然后放锁。
+   为什么挂 exit 而不是 try/catch：本文件有 7 处 `process.exit(2)`（门禁拦截）和大量
+   `throw`（真源异常），把每一处都包一遍既容易漏、又会改变既有退出码语义。
+   `exit` 钩子是唯一"每条退出路径都会经过"的地方。 */
+process.on('exit', () => {
+  if (TX) {
+    const r = TX.rollback(); TX = null;
+    if (r && (r.restored || r.removed)) {
+      console.error('[事务] 本次动作未完成，已整体回滚（恢复 ' + r.restored + ' 个、删除 ' + r.removed + ' 个新建文件）：真源没有被改成半截状态，请重做一次');
+    }
+  }
+  releaseLock();
+});
+/* 事务化写：首次写某个文件前先留档，整个动作提交时才真正"生效"。 */
+function writeJson(p, o) { return tx().writeJson(p, o, { backup: true }); }
 /* 索引有两种合法形态：学科级 j.items[] 或学生级 j.subjects{学科:{items[]}}。
    形状守卫必须挡住"合法 JSON 但两种都不是"的情况——例如被 PowerShell ConvertFrom/To-Json
    往返成 {items:{value:[…]}}：那种情况下 itemsOf() 会一条都取不到，202 张卡**还在文件里但谁都看不见**，
@@ -777,6 +803,11 @@ switch (action) {
     console.log('未知动作：' + action + '\n可用：组卷 / 批改 / 撤批 / 归档 / 撤归档 / 迁移 / 同步 / 状态');
     process.exitCode = 2;
 }
+
+/* ★ 2026-10-30（审计 D01）：动作全部跑完才提交事务。
+   走到这里 = 本动作成功；中途 `throw` / `process.exit(2)` 都不会经过这一行
+   ⇒ `process.on('exit')` 钩子把这一批文件整体退回原样（这就是"要么全成、要么全退"）。 */
+commitTx();
 
 if (opt.refresh) {
   const r = spawnSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', toolPath('_生成首页.ps1')], { stdio: 'ignore' });

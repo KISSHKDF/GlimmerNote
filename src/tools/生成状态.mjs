@@ -24,7 +24,7 @@ import fs from 'fs';
 import path from 'path';
 import { execFileSync } from 'child_process';
 import { libraryRoot, toolPath } from './_库根.mjs';
-import { writeJsonAtomic } from './_安全写.mjs';
+import { writeJsonAtomic, acquireLibLock } from './_安全写.mjs';
 
 const argv = process.argv.slice(2);
 const has = (k) => argv.includes(k);
@@ -65,6 +65,25 @@ function findIndexes(base, depth) {
 const indexFiles = findIndexes(ROOT, 2).sort();
 if (!indexFiles.length) {
   log('[生成状态] 库里没有 _索引.json');
+}
+
+/* ══════════════ 1.5) 取库写锁（★ 2026-10-31 codex A03，已实测复现）══════════════
+ * 缺陷：生成器**从不取锁**。它与 CLI 写入并发时会出现"跨事务拼接的快照"：
+ *   ① 生成器读旧 `_索引.json`（reviewCount=0）；
+ *   ② CLI 拿到锁，完成批改事务（索引 reviewCount=1、台账 status=已批改）；
+ *   ③ 生成器继续读台账（已是"已批改"）并写出 `_状态.json`
+ *   ⇒ 同一份状态包里"试卷已批改"与"卡片还没复习"并存（实测：snapshotReview=0 + paperStatus=graded）。
+ * 影响：`_状态.json` 虽是派生缓存，却是**界面唯一读的东西** —— 用户会看到自相矛盾的报表，
+ *   而且下次重建前一直是错的（不是"慢一拍"，是"两份真源各取一半"）。
+ * 修法：在**第一次读真源之前**取库写锁，持有到进程退出（含异常/提前 exit 路径）。
+ *   子进程（四个门禁通道）靠 `_安全写.mjs` 的 token 继承机制直接放行，不会自死锁。
+ *   注意：`--out -`（只输出到 stdout）是纯读，不取锁，避免阻塞只读调用。
+ *   ⚠ 释放必须挂 `exit` 钩子：本文件有多处 `process.exit()`，`finally` 对它是无效的。
+ * 判据：tests\neg-state-gen-mixed-snapshot.cjs（阴性自证：把锁摘掉必红）。 */
+let releaseLibLock = null;
+if (OUT !== '-') {
+  releaseLibLock = acquireLibLock(ROOT, { label: '生成状态' });
+  process.on('exit', () => { try { if (releaseLibLock) releaseLibLock(); } catch (e) { } });
 }
 
 /* ══════════════ 2) 索引 → data[]（一个学生一项，一个学科一项） ══════════════ */
