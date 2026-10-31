@@ -198,6 +198,13 @@
     }
     const archN = r.archivedCount || 0;
     const archNote = String(r.archivedNote || '');
+    /* ⚠ 2026-10-31：跳过项（读不动 / 越出库根）必须说出口。
+       这些文件**没有**出现在任何清单里，用户看不到就以为照片丢了。
+       "不许静默少列"是这条链路的纪律。 */
+    const skipNote = String(r.skipNote || '');
+    const skipHtml = skipNote
+      ? '<div class="small muted ig-archnote">⚠ 有 ' + U.esc(skipNote) + '，未列入清单（文件仍在收件箱里，没被删）</div>'
+      : '';
     if (!r.total) {
       box.innerHTML = '<div class="row" style="margin-bottom:8px">' +
         '<button class="btn sm primary" id="igOpenInbox">📂 打开收件箱文件夹</button>' +
@@ -210,6 +217,7 @@
             '<span class="small muted">按批次建子文件夹更好找，例：<b>_收件箱\\数学-10月28日\\</b>' +
             '（不建子文件夹也能用，直接丢在 _收件箱 下即可）</span>') +
         (archNote ? '<div class="small muted ig-archnote">⚠ ' + U.esc(archNote) + '</div>' : '') +
+        skipHtml +
         archBlockHtml(r);
       wireInboxButtons(box);
       wireArch(box, archN);
@@ -236,6 +244,7 @@
       (archN ? '　<b>另有 ' + archN + ' 张已处理，已归档不显示</b>' : '') +
       '。勾选要处理的那一张（一次一张，判错准确率最高）。</div>' +
       (archNote ? '<div class="small muted ig-archnote">⚠ ' + U.esc(archNote) + '</div>' : '') +
+      skipHtml +
       rows.join('') + archBlockHtml(r);
     wireInboxButtons(box);
     wireArch(box, archN);

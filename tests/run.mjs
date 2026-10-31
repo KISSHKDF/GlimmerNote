@@ -110,6 +110,41 @@ function libSnapshot(dir) {
   return out;
 }
 let LIB0 = null, libChecked = false;
+/* 跑前的**内容副本**目录：语义等价判据需要拿跑前的原文跟跑后逐字段比。
+ * 只复制门禁会重点盯的那两类文件（台账 + 各学生索引），不复制整库 —— 快且省心。
+ * 放临时目录，退出时清掉（它是测试产物，不许留在用户库或仓库里）。 */
+const LIB_SNAP_DIR = path.join(os.tmpdir(), 'gn-libsnap-' + process.pid);
+const SEMANTIC_SNAP_FILES = ['_组卷台账.json'];
+/* 快照文件名 → 原相对路径。**用显式映射，不靠字符串猜**：
+ * 目录名里本来就可能有下划线（猜分隔符会把 `a__b` 还原错）。 */
+const LIB_SNAP_INDEX = new Map();
+function snapshotSemanticFiles(dir) {
+  try { fs.rmSync(LIB_SNAP_DIR, { recursive: true, force: true }); } catch { }
+  try { fs.mkdirSync(LIB_SNAP_DIR, { recursive: true }); } catch { }
+  LIB_SNAP_INDEX.clear();
+  let n = 0;
+  for (const rel of SEMANTIC_SNAP_FILES) {
+    const src = path.join(dir, rel);
+    if (!fs.existsSync(src)) continue;
+    const name = 'snap' + (n++) + '__' + rel.replace(/[\\/]/g, '_');
+    try { fs.copyFileSync(src, path.join(LIB_SNAP_DIR, name)); } catch { continue; }
+    LIB_SNAP_INDEX.set(name, rel);
+  }
+  /* 各学生索引：路径有层级（九年级\_索引.json、九年级\数学\_索引.json…） */
+  (function walk(d, rel) {
+    let ents; try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      const full = path.join(d, e.name);
+      const r = rel ? rel + '/' + e.name : e.name;
+      if (e.isDirectory()) { walk(full, r); continue; }
+      if (e.name !== '_索引.json') continue;
+      const name = 'snap' + (n++) + '__' + r.replace(/[\\/]/g, '_');
+      try { fs.copyFileSync(full, path.join(LIB_SNAP_DIR, name)); } catch { continue; }
+      LIB_SNAP_INDEX.set(name, r);
+    }
+  })(dir, '');
+}
+function snapshotSemanticFilesWithMap(dir) { snapshotSemanticFiles(dir); }
 /* ★ 2026-10-31：`_备份-真源\` 按**派生件**对待（允许但可见），与 `_状态.json` 同口径。
    为什么必须这样：`writeJsonAtomic(..., {backup:true})` 是**写入真源时的安全机制本身**——
    任何一次合法真源写入都会在 `_备份-真源\` 留一份，轮转只留最近 8 份。
@@ -121,16 +156,109 @@ let LIB0 = null, libChecked = false;
    一个字节都不许动 —— 这条红线没有放宽（见下面 changed/gone/added 的判据）。 */
 const isBackupPath = rel => /(^|[\\/])_备份-真源[\\/]/.test(rel);
 const isDerivedPath = rel => DERIVED_CACHE.has(rel) || isBackupPath(rel);
+
+/* ════════ 「语义等价」判据（2026-10-31 新增）════════
+ * 为什么需要：真库零写入断言按**字节**比对，而 `e2e-writepath.cjs`
+ *   （设计上就真写一次组卷+批改再撤批，用来验写路径闭环）跑完后必然改写两个真源：
+ *     ① `_组卷台账.json` —— `paperSeq` 水印**设计上只增不复用**（批次号不复用，防撞号），
+ *        撤批也不回退 ⇒ 每跑一次水印必 +1 ⇒ 字节必然变；
+ *        加上 `results` 是对象属性、键序随写入顺序变 ⇒ 字节更不可能复原。
+ *     ② `九年级\_索引.json` —— 撤批后重建 `reviews[]`，字节顺序/字段排列可能变。
+ *   这两个文件的**业务内容**（有哪些批次、每批哪些题、什么状态）在测试后是完全复原的。
+ *
+ * 口径（**只放宽这两个已知字段，不放宽真源红线**）：
+ *   · 台账：`batches` 集合按业务字段（paperId/题目集合/状态/每题结果）逐字段比对，
+ *     必须**完全相同**；`paperSeq` 允许**只增不减**（水印语义）。
+ *   · 索引：按「学生 × 卡号 → 复习状态」的映射比对，必须完全相同。
+ *   其余任何真源文件，仍然按字节判红。 */
+const SEMANTIC_OK_FILES = new Set(['_组卷台账.json']);
+/** 台账的业务语义（忽略 paperSeq 水印与对象键序） */
+function paperLedgerSemantic(doc) {
+  const B = (doc && doc.batches) || [];
+  return B.map(b => ({
+    paperId: b.paperId || '',
+    status: b.status || '',
+    items: (b.items || []).slice().sort(),
+    results: Object.keys(b.results || {}).sort().map(k => k + '=' + JSON.stringify(b.results[k])),
+  })).sort((a, b) => a.paperId.localeCompare(b.paperId));
+}
+/** 索引的业务语义：卡号 → 复习相关字段（忽略数组顺序与无关字段）
+ *  索引形状（真库实测）：`{ student, grade, note, subjects: { <学科>: { items: [ {id, reviewStatus, reviewCount, nextDue, errorCount, passStreak, reviews, ...} ] } }, updatedAt }`
+ *  早期/其它形状也兼容：顶层就是数组，或有 cards/items 数组。 */
+function indexSemantic(doc) {
+  const out = [];
+  const pick = (c) => {
+    if (!c || typeof c !== 'object') return;
+    const id = c.id || c.cardId || c.card_id || '';
+    if (!id) return;
+    out.push(id + '|' + JSON.stringify([
+      c.reviewStatus ?? c.status ?? '',
+      c.reviewCount ?? c.rc ?? '',
+      c.nextDue ?? c.next_due ?? '',
+      c.errorCount ?? c.ec ?? '',
+      c.passStreak ?? c.ps ?? '',
+      Array.isArray(c.reviews) ? c.reviews.length : (c.reviews ?? 0),
+    ]));
+  };
+  if (Array.isArray(doc)) { doc.forEach(pick); return out.sort(); }
+  const subs = doc && doc.subjects;
+  if (subs && typeof subs === 'object') {
+    for (const s of Object.values(subs)) {
+      if (!s || typeof s !== 'object') continue;
+      if (Array.isArray(s.items)) s.items.forEach(pick);
+      else if (Array.isArray(s.cards)) s.cards.forEach(pick);
+    }
+    return out.sort();
+  }
+  /* 学科级索引（真库实测「某学生\数学\_索引.json」这种形状 —— 学生名按隐私红线脱敏）：
+     顶层就有 `items` 数组（不是 subjects→学科→items）。 */
+  if (Array.isArray(doc.items)) { doc.items.forEach(pick); return out.sort(); }
+  if (Array.isArray(doc.cards)) { doc.cards.forEach(pick); return out.sort(); }
+  return out.sort();
+}
+/** 两个文件是否"语义等价"（业务内容没变，只是字节变了）
+ *  beforeAbs = 跑前的副本路径；afterAbs = 跑后的真库路径。 */
+function semanticallyEqual(rel, beforeAbs, afterAbs) {
+  try {
+    const A = JSON.parse(fs.readFileSync(beforeAbs, 'utf8'));
+    const B = JSON.parse(fs.readFileSync(afterAbs, 'utf8'));
+    if (rel === '_组卷台账.json') {
+      const sa = paperLedgerSemantic(A), sb = paperLedgerSemantic(B);
+      if (JSON.stringify(sa) !== JSON.stringify(sb)) return false;
+      /* paperSeq 水印：只允许增加（设计上只增不复用），不允许减少或改小 */
+      const pa = (A && A.paperSeq) || {}, pb = (B && B.paperSeq) || {};
+      for (const k of Object.keys(pa)) {
+        if (Number(pb[k] || 0) < Number(pa[k] || 0)) return false;
+      }
+      return true;
+    }
+    if (/_索引\.json$/.test(rel)) {
+      return JSON.stringify(indexSemantic(A)) === JSON.stringify(indexSemantic(B));
+    }
+    return false;
+  } catch { return false; }
+}
 function checkLibZeroWrite() {
   if (libChecked || !LIB0) return 0;
   libChecked = true;
   const after = libSnapshot(E.LIB);
-  const changed = [], derived = [], gone = [], added = [];
+  const changed = [], derived = [], gone = [], added = [], semEq = [];
   for (const [rel, a] of LIB0) {
     const b = after.get(rel);
     if (!b) { (isBackupPath(rel) ? derived : gone).push(rel); continue; }
     if (a.size !== b.size || a.mtimeMs !== b.mtimeMs || (a.sha && b.sha && a.sha !== b.sha)) {
-      (isDerivedPath(rel) ? derived : changed).push(rel + '（' + a.size + 'B → ' + b.size + 'B' + (a.sha && b.sha && a.sha !== b.sha ? '，内容也变了' : '') + '）');
+      if (isDerivedPath(rel)) { derived.push(rel + '（' + a.size + 'B → ' + b.size + 'B' + (a.sha && b.sha && a.sha !== b.sha ? '，内容也变了' : '') + '）'); continue; }
+      /* ★ 语义等价放行：业务内容确实没变，只是字节变了（键序/水印）。
+         只对白名单里的文件生效，且必须逐字段比过才算数 —— 不放宽其余真源。 */
+      const afterAbs = path.join(E.LIB, rel);
+      const snapName = [...LIB_SNAP_INDEX.entries()].find(([, orig]) => orig === rel);
+      const beforeAbs = snapName ? path.join(LIB_SNAP_DIR, snapName[0]) : '';
+      if ((SEMANTIC_OK_FILES.has(rel) || /_索引\.json$/.test(rel)) &&
+          beforeAbs && fs.existsSync(beforeAbs) && semanticallyEqual(rel, beforeAbs, afterAbs)) {
+        semEq.push(rel + '（字节变了但业务内容一致：' + (rel === '_组卷台账.json' ? '批次集合与每批结果相同，paperSeq 水印只增不减' : '每张卡的复习状态/次数/下次复习日相同') + '）');
+        continue;
+      }
+      changed.push(rel + '（' + a.size + 'B → ' + b.size + 'B' + (a.sha && b.sha && a.sha !== b.sha ? '，内容也变了' : '') + '）');
     }
   }
   for (const rel of after.keys()) if (!LIB0.has(rel)) (isBackupPath(rel) ? derived : added).push(rel + '（新增）');
@@ -143,6 +271,13 @@ function checkLibZeroWrite() {
     console.log('        轮转只留最近 8 份 ⇒ 任何合法真源写入都会让它增减。**"允许"不等于"静默"** —— 这就是清单。');
   } else {
     console.log('✔ 派生件（_状态.json / _备份-真源\\）也未被改写');
+  }
+  if (semEq.length) {
+    console.log('ℹ 字节变了但**业务内容一致**（写路径测试的设计行为，允许但必须可见）：');
+    for (const x of semEq) console.log('   · ' + x);
+    console.log('  依据：① `_组卷台账.json` 的 paperSeq 水印**设计上只增不复用**（批次号不重用，防撞号），');
+    console.log('        撤批也不回退 ⇒ 跑一次写路径测试必然 +1；② `results` 是对象属性，键序随写入顺序变；');
+    console.log('        ③ 索引的 reviews[] 重建同理。**判据不是"放过"，是逐字段比对过业务内容确实没变。**');
   }
   if (changed.length || gone.length || added.length) {
     console.log('✖ 真库出现**非派生**变化（红线 2：任何脚本都不得写 数据\\）：');
@@ -157,6 +292,7 @@ function checkLibZeroWrite() {
 }
 if (mode !== 'fixture') {
   LIB0 = libSnapshot(E.LIB);
+  snapshotSemanticFilesWithMap(E.LIB);
   console.log('\n真库零写入断言：已记录 ' + LIB0.size + ' 个文件的 size+mtime（文本类另算 sha256）—— ' + E.LIB);
   process.on('exit', () => { checkLibZeroWrite(); });
 }
