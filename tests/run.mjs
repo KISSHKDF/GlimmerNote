@@ -51,27 +51,42 @@ function run(script, args = []) {
  * 判据：scripts\verify-deploy.mjs 逐文件 sha256 比对 <运行区>\_deploy-manifest.json。
  * ⚠ 放在 fixture 分支**之前**：新克隆/换机跑 fixture 时也应当知道"运行区有没有漂移"，
  *   否则这道检查只在开发机 quick/full 时存在（本仓 L-175「能绿但没人跑」的老坑）。
- * ⚠ 退出码 3 = 运行区尚无清单（机制建立前的历史状态）→ 只告警不判红：
- *   否则基线建立之前本门禁会永久红，反而逼人跳过它。建基线只有一条路：
- *   走一次正规 build-release.ps1 → deploy.ps1。 */
+ *
+ * ★ 2026-10-31 E03 整改：**不再自己写一套退出码分支**。
+ *   改前这里把 verify-deploy 的所有 exit 2 当成"运行区不存在"放行，而 verify-deploy 同时又用
+ *   exit 2 表示「清单解析失败 / 形状不对」⇒ **清单损坏被当成"这机器没有运行区"**，
+ *   门禁 fail-open（实测：损坏清单 → run.mjs 不 exit，继续跑完全绿）。
+ *   现在退出码在 verify-deploy 头部注释里定义、判据收在 `_测试环境.cjs` 的
+ *   `classifyVerifyDeploy()` 一个函数里，本文件与 .githooks\pre-commit 都调它
+ *   （两份 if/else 必然漂移，见 L-286）。只豁免 NO_RUNTIME。
+ */
 {
   const r = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'verify-deploy.mjs'), '--quiet'], { encoding: 'utf8', cwd: ROOT });
   const code = r.status == null ? 1 : r.status;
-  if (code === 3) {
-    console.log('\n⚠ 运行区尚无部署清单（_deploy-manifest.json）——本门禁暂无法判定；');
-    console.log('  建立基线只有一条路：scripts\\build-release.ps1 → scripts\\deploy.ps1');
-  } else if (code === 2) {
-    /* ★ 2026-10-25：exit 2 = 运行区不存在（新克隆 / 换机 / CI——仓库旁边根本没有 GlimmerNote\）。
-       这不是"有人绕过链路"，是"这台机器本来就没有运行区"。判死 fixture 会把新克隆第一步
-       堵死（实测：干净克隆跑 fixture 直接红，README 承诺的 3 秒 exit 0 失效）。
-       语义修正：运行区在 ⇒ 一致性照旧硬判（开发机红线不动）；运行区不在 ⇒ 提示后继续。 */
-    console.log('\n○ 本机没有运行区（' + String(r.stderr || '').trim().split('\n')[0].replace(/^✖\s*/, '') + '）——部署一致性门禁只在有运行区的机器上生效');
-  } else if (code !== 0) {
+  const v = E.classifyVerifyDeploy(code);
+  if (v.action === 'pass') {
+    /* --quiet 下成功时 stdout 是空的（pre-commit / CI 用），所以括号要按需省略，
+       否则会打出 `✔ 运行区与部署清单一致（）` 这种看着像"细节丢了"的行。 */
+    const detail = String(r.stdout || '').trim().split('\n')[0];
+    console.log('\n✔ 运行区与部署清单一致' + (detail ? '（' + detail + '）' : '（verify-deploy exit 0）'));
+  } else if (v.action === 'skip') {
+    console.log('\n○ ' + v.label + '（verify-deploy exit ' + v.code + '）——部署一致性门禁只在有运行区的机器上生效');
+  } else if (v.action === 'block') {
     console.log('\n' + String(r.stderr || r.stdout || '').trim());
-    console.log('✖ 运行区被绕过 deploy.ps1 改动过（或版本与清单不符），先归位再发版');
+    console.log('✖ ' + v.label + '（verify-deploy exit ' + v.code + '）——不一致/读不懂都必须先归位再发版');
+    if (v.code === E.VERIFY_DEPLOY_CODES.BAD_MANIFEST) {
+      console.log('  清单损坏不等于"本机没有运行区"：这是 fail-closed 情形，禁止用"删掉清单"让门禁变绿。');
+    } else if (v.code === E.VERIFY_DEPLOY_CODES.NO_MANIFEST) {
+      console.log('  建立基线只有一条路：走一次正规 scripts\\build-release.ps1 → scripts\\deploy.ps1。');
+    } else if (v.code === E.VERIFY_DEPLOY_CODES.DRIFT) {
+      console.log('  正确链路：dev 改 → dev 测 → build-release.ps1 → deploy.ps1（不要直接改运行区）。');
+    }
     process.exit(1);
   } else {
-    console.log('\n✔ 运行区与部署清单一致（' + String(r.stdout || '').trim().split('\n')[0] + '）');
+    /* 判据只产出 pass/skip/block 三种；出现第四种说明判据被改坏了。
+       这里必须 fail-closed —— "不认识的判定结果"绝不能被当成"通过"。 */
+    console.log('\n✖ 未知的部署一致性判定结果：' + JSON.stringify(v) + '（fail-closed）');
+    process.exit(1);
   }
 }
 
@@ -110,26 +125,117 @@ function libSnapshot(dir) {
   return out;
 }
 let LIB0 = null, libChecked = false;
+/* 跑前的**内容副本**目录：语义等价判据需要拿跑前的原文跟跑后逐字段比。
+ * 只复制门禁会重点盯的那两类文件（台账 + 各学生索引），不复制整库 —— 快且省心。
+ * 放临时目录，退出时清掉（它是测试产物，不许留在用户库或仓库里）。 */
+const LIB_SNAP_DIR = path.join(os.tmpdir(), 'gn-libsnap-' + process.pid);
+const SEMANTIC_SNAP_FILES = ['_组卷台账.json'];
+/* 快照文件名 → 原相对路径。**用显式映射，不靠字符串猜**：
+ * 目录名里本来就可能有下划线（猜分隔符会把 `a__b` 还原错）。 */
+const LIB_SNAP_INDEX = new Map();
+function snapshotSemanticFiles(dir) {
+  try { fs.rmSync(LIB_SNAP_DIR, { recursive: true, force: true }); } catch { }
+  try { fs.mkdirSync(LIB_SNAP_DIR, { recursive: true }); } catch { }
+  LIB_SNAP_INDEX.clear();
+  let n = 0;
+  for (const rel of SEMANTIC_SNAP_FILES) {
+    const src = path.join(dir, rel);
+    if (!fs.existsSync(src)) continue;
+    const name = 'snap' + (n++) + '__' + rel.replace(/[\\/]/g, '_');
+    try { fs.copyFileSync(src, path.join(LIB_SNAP_DIR, name)); } catch { continue; }
+    LIB_SNAP_INDEX.set(name, rel);
+  }
+  /* 各学生索引：路径有层级（九年级\_索引.json、九年级\数学\_索引.json…） */
+  (function walk(d, rel) {
+    let ents; try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      const full = path.join(d, e.name);
+      const r = rel ? rel + '/' + e.name : e.name;
+      if (e.isDirectory()) { walk(full, r); continue; }
+      if (e.name !== '_索引.json') continue;
+      const name = 'snap' + (n++) + '__' + r.replace(/[\\/]/g, '_');
+      try { fs.copyFileSync(full, path.join(LIB_SNAP_DIR, name)); } catch { continue; }
+      LIB_SNAP_INDEX.set(name, r);
+    }
+  })(dir, '');
+}
+function snapshotSemanticFilesWithMap(dir) { snapshotSemanticFiles(dir); }
+/* ★ 2026-10-31：`_备份-真源\` 按**派生件**对待（允许但可见），与 `_状态.json` 同口径 ——
+   但**只在副本库上**允许（E01-d 整改）。
+   为什么必须允许：`writeJsonAtomic(..., {backup:true})` 是**写入真源时的安全机制本身**——
+   任何一次合法真源写入都会在 `_备份-真源\` 留一份，轮转只留最近 8 份。
+   为什么必须加条件：跑在**用户真库**上时，"备份被轮转"意味着**恢复点被吃掉**
+   （实测后果：真库三个目录各被删 8 份已跟踪备份，共 24 份，删掉的是最旧的 20261025/27/28 那批）。
+   改前这里是**无条件**放行 ⇒ 写路径用例吃掉真库历史备份后门禁照样全绿。
+   现在判据在 `_测试环境.cjs` 的 `backupRotationAllowed()`：冻结库 ⇒ 不放行 ⇒ 走进 changed/gone 判红。
+   注意口径：**只有 `_备份-真源\` 下的轮转受这条影响**；真源本身（_索引.json / 台账 / 题干…）
+   一个字节都不许动 —— 这条红线没有放宽（见下面 changed/gone/added 的判据）。 */
+const isBackupPath = rel => /(^|[\\/])_备份-真源[\\/]/.test(rel);
+/* 库是不是冻结区（真库）：备份轮转放行、写路径用例准入都看它，只解析一次 */
+const LIB_FROZEN = E.isFrozen(E.LIB);
+const isDerivedPath = rel => DERIVED_CACHE.has(rel) || (E.backupRotationAllowed(LIB_FROZEN) && isBackupPath(rel));
+
+/* ════════ 「语义等价」判据（2026-10-31 新增 / 同日 E02 整改收窄）════════
+ * 为什么需要：真库零写入断言按**字节**比对，而写路径用例跑完后必然改写两个真源：
+ *     ① `_组卷台账.json` —— `paperSeq` 水印**设计上只增不复用**（批次号不复用，防撞号），
+ *        撤批也不回退 ⇒ 每跑一次水印必 +1 ⇒ 字节必然变；`results` 是对象属性、键序随写入顺序变。
+ *     ② 各 `_索引.json` —— 撤批后重建 `reviews[]`、刷 `updatedAt`，字节顺序/字段排列可能变。
+ *   这两个文件的**业务内容**在测试后是完全复原的。判据本体在 `_测试环境.cjs` 的
+ *   `semanticallyEqual()`（搬过去是为了能被 tests\neg-semantic-equivalence.cjs **直接对拍**；
+ *   写在 run.mjs 里 = 判据自身零用例守 = 它能宽到什么程度都没人知道）。
+ *
+ * ⚠ E02 的缺陷原文与修法：改前是"挑几个字段"定义整份文件的等价性
+ *   （索引只取 reviewStatus/reviewCount/nextDue/errorCount/passStreak/reviews.length 七个，
+ *   台账只取 paperId/status/items(已排序!)/results），于是 **22 项扰动里 11 项真损坏被判等价**：
+ *   删 answerSlots、改 reviews[].result、改批次 student/subject/date、换题目顺序全被放行。
+ *   现在：**递归键规范化后全量比对**（对象键排序、数组保序），显式例外只有两处且都是
+ *   "摘掉后单独做单调性检查"（`_组卷台账.json` 的 paperSeq；`_索引.json` 的 updatedAt），
+ *   所以"只动例外键"能被容忍，"顺手改任何业务字段"必然判不等价。
+ *   其余任何真源文件，仍然按字节判红。 */
+const SEMANTIC_OK_FILES = new Set(['_组卷台账.json']);
+const isIndexPath = rel => /_索引\.json$/.test(rel);
 function checkLibZeroWrite() {
   if (libChecked || !LIB0) return 0;
   libChecked = true;
   const after = libSnapshot(E.LIB);
-  const changed = [], derived = [], gone = [], added = [];
+  const changed = [], derived = [], gone = [], added = [], semEq = [];
   for (const [rel, a] of LIB0) {
     const b = after.get(rel);
-    if (!b) { gone.push(rel); continue; }
+    if (!b) { (isDerivedPath(rel) ? derived : gone).push(rel); continue; }
     if (a.size !== b.size || a.mtimeMs !== b.mtimeMs || (a.sha && b.sha && a.sha !== b.sha)) {
-      (DERIVED_CACHE.has(rel) ? derived : changed).push(rel + '（' + a.size + 'B → ' + b.size + 'B' + (a.sha && b.sha && a.sha !== b.sha ? '，内容也变了' : '') + '）');
+      if (isDerivedPath(rel)) { derived.push(rel + '（' + a.size + 'B → ' + b.size + 'B' + (a.sha && b.sha && a.sha !== b.sha ? '，内容也变了' : '') + '）'); continue; }
+      /* ★ 语义等价放行：业务内容确实没变，只是字节变了（键序/水印/时间戳）。
+         只对白名单里的文件生效，且必须逐键比过才算数 —— 不放宽其余真源。 */
+      const afterAbs = path.join(E.LIB, rel);
+      const snapName = [...LIB_SNAP_INDEX.entries()].find(([, orig]) => orig === rel);
+      const beforeAbs = snapName ? path.join(LIB_SNAP_DIR, snapName[0]) : '';
+      if ((SEMANTIC_OK_FILES.has(rel) || isIndexPath(rel)) &&
+          beforeAbs && fs.existsSync(beforeAbs) && E.semanticallyEqual(rel, beforeAbs, afterAbs)) {
+        semEq.push(rel + '（字节变了但业务内容逐键一致：' + (rel === '_组卷台账.json' ? '批次/题目/状态/每题结果全等，仅 paperSeq 水印递增' : '整份索引逐键相等，仅 updatedAt 时间戳前进') + '）');
+        continue;
+      }
+      changed.push(rel + '（' + a.size + 'B → ' + b.size + 'B' + (a.sha && b.sha && a.sha !== b.sha ? '，内容也变了' : '') + '）');
     }
   }
-  for (const rel of after.keys()) if (!LIB0.has(rel)) added.push(rel);
+  for (const rel of after.keys()) if (!LIB0.has(rel)) (isDerivedPath(rel) ? derived : added).push(rel + '（新增）');
   console.log('\n────────── 真库零写入断言（记录 ' + LIB0.size + ' 个文件）──────────');
   if (derived.length) {
-    console.log('⚠ 派生缓存被重写（**允许**，但必须可见，故不判红）：' + derived.join('、'));
-    console.log('  依据：_状态.json 是可再生的派生件；且 tests\\neg-server-get-readonly.cjs 会故意删它的');
-    console.log('        _pendingSrc 指纹来验证"台账没变就不刷"。**"允许"不等于"静默"** —— 这就是那份清单。');
+    console.log('⚠ 派生件被重写/轮转（**允许**，但必须可见，故不判红）' +
+      (LIB_FROZEN ? '［⚠ 当前 LIB 是冻结区，本条本不该出现］' : '') + '：' + derived.join('、'));
+    console.log('  依据：① `_状态.json` 是可再生的派生件，且 tests\\neg-server-get-readonly.cjs 会故意删它的');
+    console.log('        _pendingSrc 指纹来验证"台账没变就不刷"；');
+    console.log('        ② `_备份-真源\\` 是"写真源时的安全机制本身"留下的副本（writeJsonAtomic backup:true），');
+    console.log('        轮转只留最近 8 份 ⇒ 任何合法真源写入都会让它增减。**"允许"不等于"静默"** —— 这就是清单。');
+    console.log('        ③ 该放行**只在副本库上成立**（E01-d）：冻结库上备份轮转 = 恢复点被吃掉，走判红。');
   } else {
-    console.log('✔ 派生缓存（_状态.json）也未被重写');
+    console.log('✔ 派生件（_状态.json / _备份-真源\\）也未被改写');
+  }
+  if (semEq.length) {
+    console.log('ℹ 字节变了但**业务内容一致**（写路径测试的设计行为，允许但必须可见）：');
+    for (const x of semEq) console.log('   · ' + x);
+    console.log('  依据：① `_组卷台账.json` 的 paperSeq 水印**设计上只增不复用**（批次号不重用，防撞号），');
+    console.log('        撤批也不回退 ⇒ 跑一次写路径测试必然 +1；② `results` 是对象属性，键序随写入顺序变；');
+    console.log('        ③ 索引的 reviews[] 重建同理。**判据不是"放过"，是逐字段比对过业务内容确实没变。**');
   }
   if (changed.length || gone.length || added.length) {
     console.log('✖ 真库出现**非派生**变化（红线 2：任何脚本都不得写 数据\\）：');
@@ -144,6 +250,7 @@ function checkLibZeroWrite() {
 }
 if (mode !== 'fixture') {
   LIB0 = libSnapshot(E.LIB);
+  snapshotSemanticFilesWithMap(E.LIB);
   console.log('\n真库零写入断言：已记录 ' + LIB0.size + ' 个文件的 size+mtime（文本类另算 sha256）—— ' + E.LIB);
   process.on('exit', () => { checkLibZeroWrite(); });
 }
@@ -172,6 +279,22 @@ if (mode === 'fixture') {
     ['chunk-roundtrip.cjs', 'C# 分片往返逐字符相等（源码级断言）'],
     ['safe-write.test.mjs', '原子写底座自检（自带临时目录）'],
     ['neg-recipe-contract.cjs', '配方层契约（五件套/学科分派/schema 真校验/指纹/自检，纯文本资产，不需要任何库）'],
+    /* ★ 2026-10-30 外部安全审计整改的护栏，全部零库依赖（只读本仓源码 / 自建 %TEMP% 夹具）：
+       「加新条目必须先在干净克隆上实测」这条纪律本次**未做**（干净克隆需要重装环境），
+       所以只挂进 quick/full 的 unitTests，不擅自扩 HERMETIC 白名单 —— 要扩请先按规矩实跑。 */
+    ['neg-stem-sanitize.cjs', 'S01/S04 题干净化（尾部 fail-closed + CSS/SVG URL 型值全拦）'],
+    ['neg-shell-source-and-reparse.cjs', 'S03/S07 壳的导航/消息来源/重解析点判据（源码级 + 真 junction 同构）'],
+    ['neg-write-lock-and-txn.cjs', 'D01/D02 跨进程写锁与多文件事务（含崩溃恢复回滚）'],
+    /* ★ 2026-10-31：影像备份的**分母口径**（全库扫描 − 显式声明的可重建集合）。
+       守的不是"备份能不能跑"，而是"分母是不是工具自己挑的"——旧口径下 271 个库内影像
+       静默不进分母、覆盖率恒 100.0%，其中 80 个 / 19.4 MB 全机无第二份副本。
+       夹具全部自建在 %TEMP%（不碰真库、不依赖真实用户数据）；镜像四条要求"镜像盘 ≠ 题库盘"，
+       单卷机器上**可见 SKIP** 并打出理由，其余断言照跑。已按规矩在本地克隆上实测
+       （`git clone --no-hardlinks` 到 %TEMP%，没有真库、没有 exe 的情形下 fixture 全绿）。
+       ★ 同日补：`_原图\`（内容寻址保全库）**按内容全收、不看扩展名** —— 里面的
+       `_来源映射.csv` / 某题 `.md` 是人工判读产物，不能从任何原图推出，旧口径（只看影像扩展名）
+       让它们既不进分母也从未备份。 */
+    ['neg-image-backup-coverage.cjs', '影像备份分母/覆盖率判红/镜像 sha1 判据/陈旧件只报告/原图库非影像对象（40 断言）'],
   ];
   const SKIPPED = [
     ['portability.cjs', '需要已构建的 src\\app\\拾光小册.exe（gitignored）'],
@@ -364,6 +487,90 @@ const unitTests = [
      本用例守三条边界（只跑一路不写 / 两路指纹不等不写 / **已有非空值一律不覆盖**），
      在自建合成库上真跑工具，并已做变异自证（掏掉"不覆盖"规则 → 用例当场红）。 */
   ['neg-answer-source-autofill.cjs'],
+  /* ★ 2026-10-30 外部安全审计（Codex 那轮 11 项）的整改护栏。每条都自带"掏掉修复必红"的阴性自证，
+     所以它们是**真的会红**的门禁，不是"装个样子能绿"。 */
+  /* S03+S07：桌面壳导航白名单 / 消息桥来源 / 重解析点。
+     改前 NavigationStarting 用字符串前缀 `u.StartsWith("http://127.0.0.1:"+port)` ⇒
+     `http://127.0.0.1:7187@attacker.example/` 直接通过（userinfo 伪装另一端主机）；
+     OnWebMessage 处理 readFile/mark/openFile 前不核 e.Source；TryResolveInsideRoot 只做字符串包含性
+     ⇒ 库内一条 `mklink /J link C:\Windows` 就能读库外（HTTP 侧早已补 realpath，C# 桥一直漏着）。 */
+  ['neg-shell-source-and-reparse.cjs'],
+  /* S01+S04：题干净化。改前标签白名单循环结束后 `out += s.slice(last)` 把**未匹配原文**直通，
+     末尾不闭合的 `<img src=x onerror=…` 整段原样输出，再被模板补的 `</div>` 补上闭合 ⇒ 事件脚本执行
+     （审计在真 Edge 里复现过）；CSS 转义 `u\72l(...)` 与 SVG fill/stroke 的 url() 也一路放行。 */
+  ['neg-stem-sanitize.cjs'],
+  /* S02+S05+S06+B01：本机服务端。改前 `Origin: null` 被当可信来源（沙箱 iframe 的源就是 null）、
+     不校验 Host（DNS rebinding 的服务端必要条件）、POST /api/state 不收 JSON 也不拒不受信来源、
+     状态包读失败被空 catch 吞掉继续回旧数据。 */
+  ['neg-server-host-and-token.cjs'],
+  /* D01+D02：写入一致性。改前壳有 Global mutex、HTTP 只有进程内队列、CLI 连进程内锁都没有
+     ⇒ 两条通道"读同一份旧数据 → 各自改 → 各自原子覆盖"，后完成的把前一个的修改整段丢掉
+     （本用例用 6 个真进程跑，一次就抓到锁自身的抢锁竞态）；批改先写台账再写索引，
+     第二次写失败就留下"台账说批改了、索引没动"的半截状态。 */
+  ['neg-write-lock-and-txn.cjs'],
+  ['neg-concurrent-write-lock.cjs'],
+  /* ★ 2026-10-31（Lead 本轮新写，原为游离文件）：写锁僵尸回收的 TOCTOU + 事务回滚保留恢复材料。
+     「游离 = 能绿但没人跑」，本仓已把它当缺陷处理（见上面 D-049/D-050 那段），故一并登记。 */
+  ['neg-lock-reclaim-race.cjs'],
+  /* P01：发行包夹带开发机日志。实测 release\GlimmerNote-2026.10.30.03 的 app\shell.log 有 480 字节，
+     内容是本机绝对路径；根因是打包脚本整目录复制界面目录。本用例从 build-release.ps1 里**读出真实
+     黑名单**在临时目录上实跑，并用"规则掏空"做阴性自证。 */
+  ['neg-release-package-hygiene.cjs'],
+  /* ★ 2026-10-31：影像备份的分母口径 + 镜像判据（同一份用例，fixture 模式也跑）。
+     它是本仓"唯一真正会永久丢数据"的那个口子的机器化判据：覆盖率的分母必须是
+     "全库扫描 − 显式可重建"，不是工具按文件名挑出来的那一撮。 */
+  ['neg-image-backup-coverage.cjs'],
+  /* ═════════ 2026-10-31 外部复核 E 区四条整改的护栏（同一次改动里补，见 CONTRIBUTING §七）═════════
+     E01：`full` 门禁真写用户真库、吃掉历史备份。根因链：`_测试环境.cjs` 的 LIB 在开发机上就是
+     真库（isFrozen=true）→ launch-dev 把 CTB_DATA 传给壳 → e2e-writepath 通过 CDP 真跑组卷/批改/撤批
+     → `_安全写` 的 backupJson 只留 8 份 ⇒ 真库三个目录各被删 8 份已跟踪备份。
+     而 `assertWritableLib` 全仓**真实调用点=0**（死代码），`_备份-真源\` 的轮转还是**无条件**按派生放行。
+     本用例守三件事：冻结库上 e2e 必须打印 RESULT=SKIP（不是静默通过、更不是真写）、
+     `assertWritableLib` 必须真有调用点、备份轮转放行必须是**有条件**的（冻结库上必须不放行）。 */
+  ['neg-e2e-frozen-lib.cjs'],
+  /* E02：`run.mjs` 的"语义等价"判据太宽（索引只比 7 个字段、台账只比 4 个），实测 22 项扰动里
+     11 项真损坏被判等价。本用例逐项构造"只改一个业务字段"的变体，要求每种都判不等价，
+     并把旧判据原样搬进来做**对照**（旧判据必须放行 ⇒ 证明这条用例有牙齿）。 */
+  ['neg-semantic-equivalence.cjs'],
+  /* E03：verify-deploy 的 exit 2 同时表示"没有运行区"与"清单损坏"，两个调用方一律当"没有运行区"
+     放行 ⇒ 清单损坏 = fail-open（实测损坏清单能让 pre-commit 允许提交）。
+     本用例造临时运行区真跑 verify-deploy，断言损坏清单返回阻断码、且 run.mjs/pre-commit 的豁免
+     分支**不会**吞掉它（判据收在 `_测试环境.cjs` 的 classifyVerifyDeploy，调用方与它做对拍）。 */
+  ['neg-verify-deploy-manifest.cjs'],
+  /* E04：一键回滚不重写 `_deploy-manifest.json` ⇒ 正常回滚后 verify-deploy 必然误红（实测
+     deploy 0.0.1→0.0.2 都 exit 0，rollback 后 exit 1）。本用例在沙箱里真跑 rollback.ps1，
+     断言"回滚后清单版本 == 落地版本"且 verify-deploy exit 0，并用"只恢复 app\、不重写清单"的
+     旧行为做阴性自证（旧行为下 verify 必须红）。 */
+  ['neg-rollback-manifest.cjs'],
+  /* ═════════ 2026-10-31 外部复核 A/B/C/D 区整改的护栏（同一次改动里补，见 CONTRIBUTING §七）═════════
+     A03：状态生成器从不取库写锁 ⇒ 与 CLI 批改并发时产出"跨事务拼接"的 `_状态.json`
+     （同一份包里"试卷已批改"+"卡片还没复习"并存）。本用例起真生成器进程，从外部读锁文件
+     断言运行期确实被它持锁；阴性自证：摘掉取锁后它整个运行期都不持锁。 */
+  ['neg-state-gen-mixed-snapshot.cjs'],
+  /* B03：`_快照 --restore` 不取锁 ⇒ 能把台账恢复成旧版、插进另一笔未提交事务内部
+     （台账旧、索引新，两边都报成功）。本用例用一个真持锁者占库，断言 restore 在锁释放前
+     不写目标文件、且释放后才完成；阴性自证：摘掉取锁后它当场插队改写。 */
+  ['neg-snapshot-restore-lock.cjs'],
+  /* D01：题卡元数据回显不走净化器，`lastReviewedAt`/`blindSolveAt` 未转义 ⇒ 索引里放
+     `<img src=x onerror=…>` 打开卡片详情即执行。静态（源级判据防新字段漏）+ 动态（真跑前端渲染）
+     双判据；阴性自证：摘掉 U.esc 后同一 payload 原样进 HTML。 */
+  ['neg-meta-escape.cjs'],
+  /* D02+D04：结算屏「再来一场」无确认清空未落库判分（同屏「丢弃不写」却有确认）；
+     没有 `原卷截图.jpg` 的合法卡（生成器本来就给 img:null）在 `U.$id('rvImg').onclick` 崩掉整屏，
+     且崩在退出/判分按钮绑定之前 ⇒ 整场复习锁死、重进仍崩。两条都带阴性自证。 */
+  ['neg-review-leave-and-noidx.cjs'],
+  /* D03：门禁剔除被拒题只改提交列表、不改卷面题源 `sheet.refs` ⇒ 纸面仍印着被拒题、
+     题号错位（纸上第 2 题成了台账第 1 题）、清篮还把没入账的题一起摘掉。
+     附带守"剔除重试不得对已成功组重复组卷"（external 复核抓到的第二个缺陷）。 */
+  ['neg-paper-reject-sync.cjs'],
+  /* C01：建卡清单缓存键是裸卡号 ⇒ 跨学生同号卡串号（实测**单份**清单就会错；
+     真库两学生同号卡 96 个，只是当前恰好没有清单目录）。判据：老清单无学生归属 + 跨学生重号
+     ⇒ 必须返回歧义，不许"后枚举覆盖前者"。 */
+  ['neg-orig-ledger-ambiguity.cjs'],
+  /* C02：收件箱"转置件"判据只有尺寸+体积 ⇒ 内容无关但恰好互为转置、体积同量级的照片被贴上
+     "已处理"标签（从待处理清单消失）。判据改为"必须有内容证据"；阴性自证摘掉证据闸门，
+     正向对照用"同一份字节的副本"（防"改成一律不隐藏"）。 */
+  ['neg-inbox-transposed-evidence.cjs'],
 ];
 for (const [name] of unitTests) {
   worst = Math.max(worst, run(name));
@@ -428,6 +635,17 @@ if (mode === 'full') {
      rejection，界面看着正常、S.render 的 try/catch 接不住）、`chart.js` 单学科标签被压成 width=0
      （不抛错不 console，只能量几何）。本脚本自打桩写通道、跑前跑后校验真源 SHA 不变、localStorage 前后隔离。 */
   worst = Math.max(worst, run('verify-v2-interactive-sweep.cjs'));
+  /* ★ 2026-10-31 E01：写路径闭环用例的**库准入**在这里先声明一次。
+     为什么还要在这一层再说一遍（用例自己也会判）：
+       ① 让"这次 full 到底有没有验写路径"在**汇总输出**里就看得见 —— 不能只在某个子进程的
+          输出中间有一行 SKIP，那样等于静默（本仓的老坑：SKIP 不可见 = 假绿）；
+       ② 用例自身的准入闸仍有独立判据（它才是最靠近写盘点的那道），两层不冲突。
+     真跑写路径：先把库复制到副本，`set CTB_TEST_LIB=<副本>`，再跑 full。 */
+  const wpGate = E.guardWriteTest('e2e-writepath.cjs');
+  if (wpGate.skip) {
+    console.log('\n[SKIP] e2e-writepath.cjs —— ' + wpGate.reason);
+    console.log('       本轮 full **没有**验证写路径闭环（这不是通过，是没跑）。');
+  }
   worst = Math.max(worst, run('e2e-writepath.cjs'));
   // 收尾：干净重启（无调试口），把桌面留给用户
   console.log('\n═══ 收尾：干净重启 ═══');

@@ -300,6 +300,324 @@ console.log('\n══ 五、组装：原图路径按库根解析（用户实测�
   }
 }
 
+console.log('\n══ 五·补、收件箱「已处理归档」（2026-10-30：不再把所有照片一股脑列出来）══');
+/* 用户原话：「这个收件箱，把所有的照片都显示出来，又长又多，显示还慢…已处理过的照片全部归档，
+   不要在这个窗口显示了」。现场 256 张里 184 张早就建过卡，列表却全列，还对每张算 sha256。
+   这里钉的是**判据本身**与**退化方向**：判错成"藏起来"比判错成"多显示"严重得多，
+   所以任何不确定（没有台账 / 台账坏了）都必须退回"全部待处理"，且原因要说出口。 */
+{
+  const run3 = (args) => spawnSync(process.execPath, [ENGINE, ...args], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  const L2 = path.join(TMP, 'lib-archive');
+  const inb = path.join(L2, '_收件箱');
+  fs.mkdirSync(path.join(inb, '批次乙'), { recursive: true });
+  fs.mkdirSync(path.join(inb, '_已处理'), { recursive: true });
+  /* 内容各不相同（否则 sha 撞车会让"同内容不同件"的判据失真） */
+  const mk = (p, tag) => fs.writeFileSync(p, Buffer.concat([Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]), Buffer.from(tag, 'utf8')]));
+  mk(path.join(inb, '待处理1.png'), 'A');
+  mk(path.join(inb, '批次乙', '待处理2.png'), 'B');
+  mk(path.join(inb, '批次乙', '已建卡-page.png'), 'C');
+  mk(path.join(inb, '已建卡-import.png'), 'D');
+  mk(path.join(inb, '_已处理', '老归档.png'), 'E');
+  const LED = path.join(L2, '_原卷台账.json');
+  fs.writeFileSync(LED, JSON.stringify({
+    version: 1,
+    cards: { '甲|K1': { page: '_收件箱/批次乙/已建卡-page.png', import: '_收件箱/已建卡-import.png' } },
+  }, null, 1), 'utf8');
+
+  const list = run3(['收件箱', '--json', '--data', L2]);
+  const J = list.status === 0 ? JSON.parse(list.stdout) : { batches: [], archived: [], total: -1, archivedCount: -1 };
+  const flat = [];
+  for (const b of (J.batches || [])) for (const f of (b.files || [])) flat.push(f);
+  const names = flat.map(f => f.name).sort();
+  const archNames = (J.archived || []).map(f => f.name).sort();
+
+  /* ⚠ 2026-10-31 更新（用户裁定「只要处理过，那当然不应该放在收件箱里了呀」）：
+     判据新增**批次级**（同一批次里有一张被台账引用 ⇒ 整批都算处理过），
+     所以 `批次乙/待处理2.png` 现在也归档 —— 同一份作业是**一次处理**的。
+     因此本节期望值随之改变：待处理只剩 1 张（顶层那张，它没有同批次兄弟）。 */
+  A('待处理清单只剩没建过卡的那张（批次级：同批次的也算处理过）', JSON.stringify(names) === JSON.stringify(['待处理1.png']), JSON.stringify(names));
+  A('total 只数待处理（侧栏角标/标题都用它）', J.total === 1, 'total=' + J.total);
+  A('archivedCount 数到台账引用的两张 + 同批次的那张（批次级）', J.archivedCount === 3, 'archivedCount=' + J.archivedCount);
+  A('archived 带出这三张的名字（页面"显示已归档"要用）', JSON.stringify(archNames) === JSON.stringify(['已建卡-import.png', '已建卡-page.png', '待处理2.png']), JSON.stringify(archNames));
+  A('★ 已归档件不再算哈希（"显示慢"的正面修法：IO 只花在真待办上）', (J.archived || []).length === 3 && (J.archived || []).every(f => f.sha256 === undefined), JSON.stringify((J.archived || [])[0] || null));
+  A('待处理件仍有 64 位内容指纹（找图/任务单还要靠它）', flat.length === 1 && flat.every(f => /^[0-9a-f]{64}$/.test(f.sha256 || '')), '');
+  A('★ _收件箱/_已处理 下的照片两边都不列（物理归档位，永不回到待办）', !names.includes('老归档.png') && !archNames.includes('老归档.png'), JSON.stringify(names.concat(archNames)));
+
+  const human = run3(['收件箱', '--data', L2]);
+  A('人读输出说清"另有 N 张已处理、已归档不显示"', /已处理/.test(human.stdout) && /3 张/.test(human.stdout), (human.stdout || '').split('\n').filter(l => /待处理/.test(l))[0] || '');
+  A('--all 才列出已归档的名字（CLI 自查用，页面通道没有这个 flag）', /已建卡-page\.png/.test(run3(['收件箱', '--all', '--data', L2]).stdout), '');
+  A('不加 --all 时人读输出不列已归档件（列表要短）', !/已建卡-page\.png/.test(human.stdout), '');
+
+  /* 退化方向①：没有台账（新克隆/空库）⇒ 全部按待处理显示，不许"借机藏起来" */
+  fs.renameSync(LED, LED + '.bak');
+  const noLed = run3(['收件箱', '--json', '--data', L2]);
+  const J2 = noLed.status === 0 ? JSON.parse(noLed.stdout) : { total: -1, archivedCount: -1 };
+  A('没有台账 → 全部按待处理显示（新库不许误藏）', J2.total === 4 && J2.archivedCount === 0, 'total=' + J2.total + ' archived=' + J2.archivedCount);
+
+  /* 退化方向②：台账坏了 ⇒ 仍按待处理显示，且**把原因说出来**（静默藏 = 用户以为照片丢了） */
+  fs.writeFileSync(LED, '{ 这不是 JSON', 'utf8');
+  const badLed = run3(['收件箱', '--json', '--data', L2]);
+  const J3 = badLed.status === 0 ? JSON.parse(badLed.stdout) : { total: -1, archivedNote: '' };
+  A('★ 台账坏了 → 退回"全部待处理"并说明原因（不许静默藏照片）',
+    J3.total === 4 && /台账/.test(String(J3.archivedNote || '')),
+    'total=' + J3.total + ' note=' + String(J3.archivedNote || '').slice(0, 60));
+
+  /* 退化方向③：台账形状不对（cards 是数组，PowerShell 往返就会这样）⇒ 同上，不许抛异常 */
+  fs.writeFileSync(LED, JSON.stringify({ cards: [{ page: '_收件箱/待处理1.png' }] }), 'utf8');
+  const shapeBad = run3(['收件箱', '--json', '--data', L2]);
+  const J4 = shapeBad.status === 0 ? JSON.parse(shapeBad.stdout) : { total: -1 };
+  A('cards 是数组（错形状）→ 退化成全部待处理，不抛异常', J4.total === 4, 'total=' + J4.total);
+
+  /* 路径写法容错：台账里用反斜杠/大小写不同也算已处理（Windows 路径大小写不敏感） */
+  fs.writeFileSync(LED, JSON.stringify({
+    cards: { '甲|K1': { page: '_收件箱\\批次乙\\已建卡-page.png', import: '_收件箱/已建卡-IMPORT.png' } },
+  }), 'utf8');
+  const norm = run3(['收件箱', '--json', '--data', L2]);
+  const J5 = norm.status === 0 ? JSON.parse(norm.stdout) : { archivedCount: -1 };
+  /* 期望 3：台账引用的两张 + 同批次的那张（批次级判据） */
+  A('★ 台账里的反斜杠/大小写不同也算已处理（不做假阴性）', J5.archivedCount === 3, 'archivedCount=' + J5.archivedCount);
+}
+
+/* ══════════════ 六·补·内容判据（2026-10-31 修）══════════════
+ * 用户复报（2026-10-31）：「收件箱中还有这么多？这些照片我们都处理过了呀」。
+ * 上一版（2026-10-30）只认**路径字符串** ⇒ 漏判一大片。真库现场：
+ *   同一张照片，台账里 `page`/`import` 有时记收件箱原路径，有时记**原卷库里重命名后的路径**
+ *   （收件箱 `.../p08-src61.jpg` ↔ 台账 `九年级/英语/原卷/课课练9上-p08-src61.jpg`）。
+ *   内容同一张、路径两套 ⇒ 纯路径判据永远判不出来。真库实测 256 张里 56 张这样漏判。
+ *
+ * 这里钉三件事：
+ *   ① 内容判据**能认出来**（路径对不上但字节相同 ⇒ 已处理）；
+ *   ② 内容判据**不误藏**（字节不同 ⇒ 仍是待办）；
+ *   ③ 性能不塌（已归档件仍然**一次字节都不读**：sha256 字段缺席）。 */
+console.log('\n══ 六·补、收件箱「内容判据」（2026-10-31：路径对不上但内容同一张也算已处理）══');
+{
+  const run3 = (args) => spawnSync(process.execPath, [ENGINE, ...args], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  const L3 = path.join(TMP, 'lib-content');
+  const inb = path.join(L3, '_收件箱');
+  fs.mkdirSync(path.join(inb, '批次丙'), { recursive: true });
+  fs.mkdirSync(path.join(L3, '原卷库'), { recursive: true });
+  const mk = (p, tag) => fs.writeFileSync(p, Buffer.concat([Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]), Buffer.from(tag, 'utf8')]));
+  /* 场景①：收件箱里一张，台账指向**原卷库里的同内容副本**（改了名的同一张） */
+  mk(path.join(inb, '批次丙', 'p08-src61.png'), 'SAME');
+  mk(path.join(L3, '原卷库', '课课练9上-p08-src61.png'), 'SAME');
+  /* 场景②：收件箱里一张，台账指向**内容不同**的另一张 ⇒ 必须是待办 */
+  mk(path.join(inb, '批次丙', 'p09-src62.png'), 'OTHER');
+  mk(path.join(L3, '原卷库', '课课练9上-p09-src62.png'), 'DIFFERENT');
+  /* 场景③：纯待办件，谁都没引用 */
+  mk(path.join(inb, '批次丙', 'p10-src63.png'), 'PENDING');
+
+  const LED = path.join(L3, '_原卷台账.json');
+  fs.writeFileSync(LED, JSON.stringify({
+    version: 1,
+    cards: {
+      '乙|E1': { page: '原卷库/课课练9上-p08-src61.png' },
+      '乙|E2': { page: '原卷库/课课练9上-p09-src62.png' },
+    },
+  }, null, 1), 'utf8');
+
+  const r = run3(['收件箱', '--json', '--data', L3]);
+  const J = r.status === 0 ? JSON.parse(r.stdout) : { batches: [], archived: [], total: -1, archivedCount: -1 };
+  const flat = [];
+  for (const b of (J.batches || [])) for (const f of (b.files || [])) flat.push(f);
+  const names = flat.map(f => f.name).sort();
+  const archNames = (J.archived || []).map(f => f.name).sort();
+
+  A('★ 内容判据：路径对不上但字节相同 ⇒ 判为已处理（真库 4 张这样漏判）',
+    archNames.includes('p08-src61.png'), 'archived=' + JSON.stringify(archNames));
+  A('★ 内容判据不误藏：台账指向的是**内容不同**的另一张 ⇒ 仍是待办',
+    names.includes('p09-src62.png'), '待办=' + JSON.stringify(names));
+  A('谁都没引用的那张仍在待办清单里',
+    names.includes('p10-src63.png'), '待办=' + JSON.stringify(names));
+  A('待处理清单只剩这两张（没把没做过的藏起来）',
+    JSON.stringify(names) === JSON.stringify(['p09-src62.png', 'p10-src63.png']), JSON.stringify(names));
+  A('total 与待处理清单一致', J.total === 2, 'total=' + J.total);
+  A('★ 已归档件仍然不算哈希（性能：IO 只花在真待办上）',
+    (J.archived || []).length === 1 && (J.archived || []).every(f => f.sha256 === undefined),
+    JSON.stringify((J.archived || [])[0] || null));
+  A('待处理件仍有 64 位内容指纹（找图/任务单还要靠它）',
+    flat.length === 2 && flat.every(f => /^[0-9a-f]{64}$/.test(f.sha256 || '')), '');
+
+  /* 退化方向④：台账引用的文件**不在盘** ⇒ 不能凭它判已处理（宁可多显示） */
+  fs.writeFileSync(LED, JSON.stringify({
+    version: 1,
+    cards: { '乙|E1': { page: '原卷库/根本不存在.png' } },
+  }), 'utf8');
+  const miss = run3(['收件箱', '--json', '--data', L3]);
+  const JM = miss.status === 0 ? JSON.parse(miss.stdout) : { total: -1, archivedCount: -1 };
+  A('台账引用的文件不在盘 ⇒ 不据此判已处理（不产生假阳性）',
+    JM.archivedCount === 0 && JM.total === 3, 'archived=' + JM.archivedCount + ' total=' + JM.total);
+
+  /* 退化方向⑤：台账引用的路径**越出库根**（`../` 或绝对路径）⇒ 一律不读、不据此判已处理。
+   *    这条是安全边界：内容判据要读文件，若库外路径被 resolve 到库外，就等于让只读工具
+   *    碰了库外的文件，还可能拿老库数据误判成"已处理"。 */
+  fs.writeFileSync(LED, JSON.stringify({
+    version: 1,
+    cards: { '乙|E1': { page: '../库外/x.png' }, '乙|E2': { page: path.join(L3, '..', '库外绝对.png') } },
+  }), 'utf8');
+  const outside = run3(['收件箱', '--json', '--data', L3]);
+  const JO = outside.status === 0 ? JSON.parse(outside.stdout) : { total: -1, archivedCount: -1 };
+  A('★ 台账引用越出库根 ⇒ 不读不判（库外路径不参与内容判据）',
+    JO.archivedCount === 0 && JO.total === 3, 'archived=' + JO.archivedCount + ' total=' + JO.total);
+
+  /* 退化方向⑥（2026-10-31 实测踩到）：`--data` 必须真的生效。
+   *    起因：本轮在模块顶层 import 了 `_路径护栏.mjs`，而它在**导入期**就求值并缓存库根，
+   *    抢在 `--data` 落进 CTB_DATA 之前 ⇒ root 仍指向仓库 src，--data 直接失效。
+   *    教训：任何在导入期求值库根的模块，都不能在参数处理之前被引入。 */
+  const withData = run3(['收件箱', '--json', '--data', L3]);
+  const JD = withData.status === 0 ? JSON.parse(withData.stdout) : { root: '' };
+  A('★ --data 参数真的生效（root 就是它指的库，不是仓库目录）',
+    path.resolve(JD.root || '') === path.resolve(L3), 'root=' + JD.root);
+}
+
+/* ══════════════ 六·补三·批次级 / 同族 / 转置三条判据（2026-10-31）══════════════
+ * 用户裁定：「47 张，只要处理过，那当然不应该放在收件箱里了呀」
+ *   ⇒ 同一份作业是**一次处理**的（同一次扫描、同一次挑错），整批都算处理过。
+ * 三条新判据各钉一组断言：
+ *   ① 批次级：台账引用了某批次目录下任一文件 ⇒ 整批归档
+ *      （真库现场：错题卷 7 张卡的 page 指向合卷扫描件，纯路径判据一张都认不出）
+ *   ② 顶层同族：顶层文件的"族"（去掉页码/加工后缀）里已有件被台账引用 ⇒ 整族归档
+ *      （真库现场：`…物理10月阶段练习-p1p2.jpg` 与 `…-答题纸2.jpg` 同族）
+ *   ③ 转置：收件箱件与某个已处理件**互为转置**（尺寸交换）**且内容证据成立**（sha256 相等）
+ *      ⇒ 同一张照片的两种姿态（真库现场：横拍的照片在库里存了"转正前/转正后"两份）。
+ *      ★ 2026-10-31 C02 整改：尺寸+体积只是**候选筛选**，拿不到内容证据的件**留在待处理**——
+ *        旧判据（只比尺寸+体积）会把内容无关、尺寸恰好互为转置的照片误藏成"已处理"。
+ * 每条都必须有"不误藏"的对照断言。
+ */
+console.log('\n══ 六·补三、批次级 / 同族 / 转置三条判据（2026-10-31）══');
+{
+  const run3 = (args) => spawnSync(process.execPath, [ENGINE, ...args], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  const { pngGray } = require('../scripts/png-cjs.cjs');
+  const L5 = path.join(TMP, 'lib-batch');
+  const inb5 = path.join(L5, '_收件箱');
+  const mkPng = (p, w, h, tag) => {
+    const buf = pngGray(w, h, () => 200);
+    fs.writeFileSync(p, Buffer.concat([buf, Buffer.from(tag, 'utf8')]));
+  };
+
+  /* ── 场景①批次级：台账引用批次里的一张 ⇒ 整批归档 ── */
+  const B1 = path.join(inb5, '2026-01-02-学生甲-数学-作业');
+  fs.mkdirSync(B1, { recursive: true });
+  mkPng(path.join(B1, 'p01.png'), 100, 200, 'B1');
+  mkPng(path.join(B1, 'p02.png'), 120, 220, 'B2');   // 这一张没被台账引用
+  mkPng(path.join(B1, 'p03.png'), 140, 240, 'B3');
+  /* ── 场景②同族：顶层两个同族文件，只有其中一个被台账引用 ── */
+  mkPng(path.join(inb5, '2026-03-04-学生乙-物理-阶段卷-p1p2.png'), 300, 400, 'F1');
+  mkPng(path.join(inb5, '2026-03-04-学生乙-物理-阶段卷-答题纸1.png'), 320, 420, 'F2');
+  /* ── 场景③转置（★ 2026-10-31 C02 整改后**只做候选筛选**）：
+     收件箱 200x300，已处理件 300x200 —— 尺寸互为转置、体积同量级，但**内容不同**（T1/T2）。
+     旧判据（尺寸+体积即判"同一张照片的两种姿态"）会把无关照片误藏成"已处理"；
+     新判据要求**内容证据**（sha256 相等）才归档 ⇒ 这一张必须留在待处理清单。 ── */
+  mkPng(path.join(inb5, '2026-05-06-学生丙-化学-横拍.png'), 200, 300, 'T1');
+  /* ── 对照：完全没人碰过的件 ── */
+  mkPng(path.join(inb5, '2026-09-09-学生丁-语文-全新.png'), 500, 600, 'NEW');
+  mkPng(path.join(inb5, '2026-07-08-学生戊-数学-全新批次.png'), 520, 640, 'NEW2');
+
+  const LED5 = path.join(L5, '_原卷台账.json');
+  fs.writeFileSync(LED5, JSON.stringify({
+    version: 1,
+    cards: {
+      '甲|M1': { page: '_收件箱/2026-01-02-学生甲-数学-作业/p01.png' },
+      '乙|M2': { page: '_收件箱/2026-03-04-学生乙-物理-阶段卷-答题纸1.png' },
+      '丙|M3': { page: '原卷库/转正后.png' },
+    },
+  }, null, 1), 'utf8');
+  /* 转置判据的**候选**：原卷库里放一张 300x200 的"转正后"件，且被台账引用。
+     ⚠ 两张图的大小必须在同一量级（旧条件③）—— 这里给两张同样大小、tag 不同的 PNG。
+     ★ 但"同量级 + 互为转置"**只是候选筛选**：C02 整改后还要求 sha256 相等（同一份字节）。
+       本夹具刻意让两张**内容不同**（尺寸本身不同 ⇒ 字节必然不同）⇒ 判据必须**不**归档它。
+       否则就退回"内容无关的照片被贴上已处理标签"那个缺陷（面上一张 1600x1200 就能骗过去）。 */
+  fs.mkdirSync(path.join(L5, '原卷库'), { recursive: true });
+  mkPng(path.join(L5, '原卷库', '转正后.png'), 300, 200, 'T2');
+
+  const r = run3(['收件箱', '--json', '--data', L5]);
+  const J = r.status === 0 ? JSON.parse(r.stdout) : { batches: [], archived: [], total: -1, archivedCount: -1 };
+  const flat = [];
+  for (const b of (J.batches || [])) for (const f of (b.files || [])) flat.push(f);
+  const names = flat.map(f => f.name).sort();
+  const archNames = (J.archived || []).map(f => f.name).sort();
+
+  A('★ 批次级判据：该批次已建过卡 ⇒ 整批归档（含没被单独引用的那两张）',
+    archNames.includes('p01.png') && archNames.includes('p02.png') && archNames.includes('p03.png'),
+    'archived=' + JSON.stringify(archNames));
+  A('★ 顶层同族判据：同族里已有件被引用 ⇒ 同族另一张也归档',
+    archNames.includes('2026-03-04-学生乙-物理-阶段卷-p1p2.png') &&
+    archNames.includes('2026-03-04-学生乙-物理-阶段卷-答题纸1.png'),
+    'archived=' + JSON.stringify(archNames));
+  /* ★ 2026-10-31 C02 整改：转置判据（尺寸互为转置 + 体积同量级）**只是候选筛选**，
+     结论必须有内容证据（sha256 相等）。这一对是**内容不同**的无关照片（tag T1/T2），
+     按新判据必须留在待处理清单 —— 旧断言（期望归档）是照旧（错误）行为写的，已反转。 */
+  A('★ 转置判据只做候选筛选：尺寸互为转置但内容不同 ⇒ **留在待处理**（C02）',
+    names.includes('2026-05-06-学生丙-化学-横拍.png') && !archNames.includes('2026-05-06-学生丙-化学-横拍.png'),
+    'archived=' + JSON.stringify(archNames) + ' 待办=' + JSON.stringify(names));
+  A('★ 批次级判据不误藏：从未建过卡的批次 ⇒ 整批仍在待办',
+    names.includes('2026-07-08-学生戊-数学-全新批次.png') && names.includes('2026-09-09-学生丁-语文-全新.png'),
+    '待办=' + JSON.stringify(names));
+  A('待处理清单只剩该剩的三张', JSON.stringify(names) === JSON.stringify([
+    '2026-05-06-学生丙-化学-横拍.png',
+    '2026-07-08-学生戊-数学-全新批次.png', '2026-09-09-学生丁-语文-全新.png']), JSON.stringify(names));
+}
+
+/* ══════════════ 六·补二·卡片裁图判据 + 健壮性（2026-10-31 复核补上）══════════════
+ * 复核发现的三个问题，各补一条会红的断言：
+ *  ① P1 漏判：有一批卡的 `page` 指向**另一张整页**，而"这张照片本身"被裁成了卡片里的
+ *     `原卷截图.jpg` —— 那张裁图**不在台账引用集合里** ⇒ 只用台账做候选源会漏判。
+ *     真库实测 5 张（错题卷 图3~图7 → M0021~M0025）已建卡却仍挂在待办清单。
+ *  ② P2 越界：收件箱里的 junction/符号链接指向库外时，库外文件会被读进来算指纹。
+ *  ③ P3 崩溃：单个文件读不动（权限/占用）会让**整个收件箱列表挂掉**（EPERM 直接退出）。
+ */
+console.log('\n══ 六·补二、卡片裁图判据 + 健壮性（2026-10-31 复核）══');
+{
+  const run3 = (args) => spawnSync(process.execPath, [ENGINE, ...args], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  const L4 = path.join(TMP, 'lib-card');
+  const inb = path.join(L4, '_收件箱', '批次丁');
+  const cardDir = path.join(L4, '甲班', '数学', 'M0001-测试卡');
+  fs.mkdirSync(inb, { recursive: true });
+  fs.mkdirSync(cardDir, { recursive: true });
+  fs.mkdirSync(path.join(L4, '原卷库'), { recursive: true });
+  const mk = (p, tag) => fs.writeFileSync(p, Buffer.concat([Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]), Buffer.from(tag, 'utf8')]));
+  /* 这张收件箱照片 == 卡片里的题图（裁图），而卡的 page 指向**另一张整页** */
+  mk(path.join(inb, '题图.png'), 'CROP');
+  mk(path.join(cardDir, '原卷截图.jpg'), 'CROP');
+  fs.writeFileSync(path.join(cardDir, '错题记录.md'), '# M0001\n', 'utf8');
+  mk(path.join(L4, '原卷库', '另一张整页.jpg'), 'PAGE');
+  mk(path.join(inb, '真待办.png'), 'PENDING');
+  const LED4 = path.join(L4, '_原卷台账.json');
+  fs.writeFileSync(LED4, JSON.stringify({
+    version: 1,
+    cards: { '甲|M0001': { page: '原卷库/另一张整页.jpg' } },
+  }, null, 1), 'utf8');
+
+  const r = run3(['收件箱', '--json', '--data', L4]);
+  const J = r.status === 0 ? JSON.parse(r.stdout) : { batches: [], archived: [], total: -1, archivedCount: -1 };
+  const flat = [];
+  for (const b of (J.batches || [])) for (const f of (b.files || [])) flat.push(f);
+  const names = flat.map(f => f.name).sort();
+  const archNames = (J.archived || []).map(f => f.name).sort();
+
+  A('★ 卡片裁图判据：收件箱那张 == 卡片里的 原卷截图.jpg ⇒ 判为已处理（真库 5 张这样漏判）',
+    archNames.includes('题图.png') && !names.includes('题图.png'),
+    'archived=' + JSON.stringify(archNames) + ' 待办=' + JSON.stringify(names));
+  A('★ 卡片裁图判据不误藏：不是同一张的那张仍在待办',
+    names.includes('真待办.png'), '待办=' + JSON.stringify(names));
+  A('待处理清单只剩该剩的一张', JSON.stringify(names) === JSON.stringify(['真待办.png']), JSON.stringify(names));
+
+  /* P3：一个读不动的文件不许拖垮整个列表 */
+  const locked = path.join(inb, '锁住.png');
+  mk(locked, 'LOCKED');
+  try {
+    /* 用"目录当文件"制造一个必然读不动的条目：把它换成目录，readFileSync 会抛 EISDIR */
+    fs.unlinkSync(locked);
+    fs.mkdirSync(locked, { recursive: true });
+    const r2 = run3(['收件箱', '--json', '--data', L4]);
+    const J2 = r2.status === 0 ? JSON.parse(r2.stdout) : { total: -1 };
+    A('★ 收件箱里有读不动的项 ⇒ 整个列表照常列出（不许整列表崩掉）',
+      r2.status === 0 && J2.total === 1, 'exit=' + r2.status + ' total=' + J2.total);
+    fs.rmSync(locked, { recursive: true, force: true });
+  } catch (e) {
+    A('★ 收件箱里有读不动的项 ⇒ 整个列表照常列出（不许整列表崩掉）', false, 'setup 失败：' + e.message);
+  }
+}
+
 console.log('\n══ 六、指纹（改了内容必须变，否则无法追版本）══');{
   const r1 = engine(['指纹', '--recipe', 'ingest-single', '--json']);
   const r2 = engine(['指纹', '--recipe', 'ingest-single', '--json']);

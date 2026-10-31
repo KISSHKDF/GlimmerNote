@@ -76,7 +76,11 @@ console.log('输入里「相邻同族（考点相交且同码）」的对数：'
 let paper = null;
 try {
   if (cand.length < 3) throw new Error('可组卷的数学卡不足 3 张，无法验证交错');
-  const out = run('_标记复习.mjs', ['组卷', '--student', STU, '--subject', '数学', '--ids', cand.join(','), '--interleave', '--title', '交错自检卷', '--note', '交错组卷自检，测毕撤批']);
+  /* ⚠ 2026-10-31：加 `--no-repeat-days 0`。本用例验的是**交错轴**（相邻考点无交集），
+     与防重复组卷无关；而候选卡里 M0006/M0007/M0008 在 P20261025-03 印过，
+     7 天窗口内跑必被拦 ⇒ exit 2 ⇒ full 红。已在改动前的 commit 6382ce0 上 A/B 复现过
+     同一签名（旧代码同样红），属"用例把日历当隐式前条件"的既有缺陷，不是回归。 */
+  const out = run('_标记复习.mjs', ['组卷', '--student', STU, '--subject', '数学', '--ids', cand.join(','), '--interleave', '--title', '交错自检卷', '--note', '交错组卷自检，测毕撤批', '--no-repeat-days', '0']);
   console.log(out.trim().split('\n').slice(0, 4).join('\n'));
   paper = (out.match(/P\d{8}-\d{2}/) || [null])[0];
   A('组卷成功并解析到批次号', !!paper, paper);

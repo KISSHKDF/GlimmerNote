@@ -50,6 +50,18 @@ if [ -f tests/run.mjs ]; then
 fi
 
 # ── 3) 运行区漂移 ──
+# ★ 2026-10-31 E03 整改：退出码不再"所有非 0 一律同一种处理"。
+#   改前：verify-deploy 的 exit 2 同时表示「没有运行区」与「清单解析失败/形状不对」，
+#   本钩子把**所有** exit 2 都当"这台机器没有运行区"放行 ⇒ **清单损坏 = fail-open**
+#   （实测：把 _deploy-manifest.json 写坏 → rc=2 → 本钩子返回 0，允许提交；对照 rc=1 才拦）。
+#   现在退出码定义在 scripts\verify-deploy.mjs 头部注释（唯一真源），本处只做分支：
+#     0 一致 → 通过
+#     3 本机没有运行区 → **唯一**可豁免（新克隆/换机/CI 的预期状态；无法评估 ≠ 有漂移）
+#     其它(1 漂移 / 2 用法错误 / 4 清单损坏 / 5 尚无清单) → 一律阻断（fail-closed）
+#   为什么 4(清单损坏) 必须拦：损坏不是"没有"，是"基线读不懂"——放行等于把"删掉/写坏清单"
+#   变成过门禁的捷径。同理 5(尚无清单) 也不再放行：无法证明 = 不通过，建基线走一次正规部署。
+#   消费侧判据与 tests\run.mjs 共用一份（tests\_测试环境.cjs 的 classifyVerifyDeploy），
+#   两份 if/else 必然漂移（本仓 L-286），所以这里只保留与它逐条对齐的最小实现。
 if [ -f scripts/verify-deploy.mjs ]; then
   echo "[pre-commit] ③ 运行区部署一致性 ..."
   set +e
@@ -59,19 +71,25 @@ if [ -f scripts/verify-deploy.mjs ]; then
   case "$rc" in
     0) echo "  ✔ 运行区与部署清单一致" ;;
     3)
-      echo "  ⚠ 运行区尚无部署清单（建立本机制之前部署的历史状态）"
-      echo "    下一步走一次正规链路即可建立基线：build-release.ps1 → deploy.ps1"
+      # 唯一豁免：本机根本没有运行区（默认 <仓库上一级>\GlimmerNote 不存在）。
+      # 干净克隆里这是预期状态；无法评估 ≠ 有漂移。
+      echo "  ⚠ 本机没有运行区（verify-deploy exit 3）——部署一致性门禁只在有运行区的机器上生效"
+      echo "    干净克隆 / 换机 / CI 里这是预期状态；本机有运行区时再跑一次即可验证。"
       ;;
-    2)
-      # 2026-10-29 补：verify-deploy 的 exit 2 是"环境/用法错误"——最常见的就是
-      # **干净克隆里根本没有运行区**（默认 <仓库上一级>\GlimmerNote 不存在）。
-      # 旧钩子把它并进 *) 当"被绕过部署改动过"拦下 ⇒ 新克隆第一次提交就被误拦，
-      # 报的还是一句错误诊断。无法评估 ≠ 有漂移，这里降级为可见告警。
-      echo "  ⚠ 无法评估运行区一致性（verify-deploy exit 2：运行区不存在或环境/用法错误）"
-      echo "    干净克隆里这是预期状态；本机有运行区时再跑一次即可验证。"
+    4)
+      # 清单损坏 = 基线读不懂。**不许**与 3 混为一谈（那正是本轮缺陷：fail-open）。
+      echo "  ✖ 部署清单损坏/形状不对（verify-deploy exit 4）"
+      echo "    损坏 ≠ 没有运行区：这是 fail-closed 情形，禁止用\"删掉清单\"让门禁变绿。"
+      echo "    恢复：走一次正规部署重建基线（build-release.ps1 → deploy.ps1）。"
+      exit 1
+      ;;
+    5)
+      echo "  ✖ 运行区尚无部署清单（verify-deploy exit 5）——无法证明运行区等于某个发布包"
+      echo "    建基线只有一条路：build-release.ps1 → deploy.ps1（不要手工补清单）。"
+      exit 1
       ;;
     *)
-      echo "  ✖ 运行区被绕过 deploy.ps1 改动过（详见上面清单）"
+      echo "  ✖ 运行区被绕过 deploy.ps1 改动过 / 无法校验（verify-deploy exit $rc，详见上面清单）"
       echo "    正确链路：dev 改 → dev 测 → build-release.ps1 → deploy.ps1"
       exit 1
       ;;

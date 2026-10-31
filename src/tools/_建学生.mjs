@@ -28,9 +28,15 @@
 import fs from 'fs';
 import path from 'path';
 import { libraryRoot } from './_库根.mjs';
-import { writeJsonAtomic } from './_安全写.mjs';
+import { writeJsonAtomic, acquireLibLock } from './_安全写.mjs';
 
 const ROOT = libraryRoot();
+/* ★ 2026-10-30（外部审计 D02）：跨进程写锁（壳 / HTTP 服务端 / 命令行三条通道共用同一把，见 _安全写.mjs）。
+   本工具是「读出来 → 改内存 → 写回去」的模式：没有这把锁时，另一个通道可以在两者之间插进来，
+   两边各写一份原子文件，**后完成的那个把前一个的修改整段丢掉**（审计复现的现场）。
+   锁从进程启动持有到退出（工具都是短命进程，登记式持锁最省事也最少漏）。 */
+const __releaseLibLock = acquireLibLock(ROOT, { label: '_建学生' });
+process.on('exit', __releaseLibLock);
 const argv = process.argv.slice(2);
 const has = (k) => argv.includes(k);
 const valOf = (k, d) => { const i = argv.indexOf(k); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };

@@ -41,10 +41,16 @@ import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { libraryRoot, toolPath } from './_库根.mjs';
-import { readJsonStrict, writeJsonAtomic, backupJson, writeTextAtomic } from './_安全写.mjs';
+import { readJsonStrict, writeJsonAtomic, backupJson, writeTextAtomic, acquireLibLock } from './_安全写.mjs';
 import { slotsOf, slotCount, needEm, blankWidthEm, alignedAnswers, fitSlots, applySlotWidths, BLANK_MAX_EM, CHILD_FACTOR } from './_空位.mjs';
 
 const ROOT = libraryRoot();
+/* ★ 2026-10-30（外部审计 D02）：跨进程写锁（壳 / HTTP 服务端 / 命令行三条通道共用同一把，见 _安全写.mjs）。
+   本工具是「读出来 → 改内存 → 写回去」的模式：没有这把锁时，另一个通道可以在两者之间插进来，
+   两边各写一份原子文件，**后完成的那个把前一个的修改整段丢掉**（审计复现的现场）。
+   锁从进程启动持有到退出（工具都是短命进程，登记式持锁最省事也最少漏）。 */
+const __releaseLibLock = acquireLibLock(ROOT, { label: '_作答门禁' });
+process.on('exit', __releaseLibLock);
 const STEM_HTML = '题干.html';
 const MODES = ['blank', 'figure', 'zone', 'none'];
 /* 图上作答的题面信号：动词出现在「题面」而不是「答案」里才说明要画/写在图上。
@@ -188,6 +194,13 @@ function judge(x) {
       if (!at.length) problems.push({ code: 'slots-at', msg: 'answerScope=partial 必须用 answerSlotsAt 指明是第几空（1 起）' });
       else if (at.length !== raw.length) problems.push({ code: 'slots-at', msg: `answerSlots ${raw.length} 条 vs answerSlotsAt ${at.length} 条，对不齐` });
       else if (at.some(k => !(k >= 1 && k <= n))) problems.push({ code: 'slots-at', msg: `answerSlotsAt 越界：${at.join(',')}（本题只有 ${n} 个空）` });
+      /* ★ 2026-10-31（codex C04，已实测复现）：空号必须是**整数**。
+         旧实现只判 `k >= 1 && k <= n`，于是 `answerSlotsAt: [1.5]` 能过门禁；
+         而 alignedAnswers 用它算下标 `1.5-1 = 0.5` ⇒ 答案被写进数组的**非索引属性**，
+         `[0,1]` 两个位置全是空 ⇒ 逐空判宽时一条都取不到答案，
+         连"答案 31em > 18em 该改 zone"这条阻断也被跳过（门禁绿、纸面缺答案）。
+         判据：写入（writeDecl）与判定（judge）两处都要 Number.isInteger —— 只堵一处会被另一条通道绕开。 */
+      else if (at.some(k => !Number.isInteger(k))) problems.push({ code: 'slots-at-int', msg: `answerSlotsAt 必须是整数（第几空，1 起）：${at.join(',')}` });
       /* ★ 2026-10-25：序号必须严格递增且互不相同。实测踩到：把"编号横线算两个空"的旧解析
          迁移到新解析时，两个旧空会塌进同一个新空，`at` 出现 [1,1,2] 这种重号 ——
          答案册会把两条答案都印成「第1空」，家长照它批改必然对错位置（比缺答案更坏）。 */
@@ -294,6 +307,12 @@ function writeDecl(x, d) {
   }
   if (d.at != null) {
     const arr = Array.isArray(d.at) ? d.at : String(d.at).split(/[,，\s]+/);
+    /* ★ 2026-10-31（codex C04）：**非整数空号必须在写入处就拒绝**，不许 filter 悄悄丢掉。
+       旧实现 `.map(Number).filter(n => n > 0)` 会把 1.5 放进去（>0 成立），
+       而 judge 那边只判范围 ⇒ 1.5 一路落到 alignedAnswers 当属性键（见 judge 的同条注释）。
+       为什么不能"过滤掉"：过滤 = 静默改用户输入，答案条数与序号表的对应关系被悄悄挪位。 */
+    const bad = arr.map(Number).filter(n => !Number.isInteger(n));
+    if (bad.length) fail(`answerSlotsAt 必须是整数（第几空，1 起）：${bad.join(',')} 不是整数`);
     it.answerSlotsAt = arr.map(Number).filter(n => n > 0);
     if (!it.answerSlotsAt.length) delete it.answerSlotsAt;      // at: [] 的语义是"清空"
   }

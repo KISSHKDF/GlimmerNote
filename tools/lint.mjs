@@ -39,7 +39,7 @@ const SKIP_DIRS = new Set(['.git', 'vendor', 'node_modules', 'release', '_probe'
 const CODE_EXT = new Set(['.js', '.mjs', '.cjs']);
 
 let scanned = 0;
-const problems = { L1: [], L2: [], L3: [], L4: [], L5: [], L6: [], L7: [], L8: [] };
+const problems = { L1: [], L2: [], L3: [], L4: [], L5: [], L6: [], L7: [], L8: [], L9: [] };
 
 /* 递归收集源码文件 */
 function walk(dir, out = []) {
@@ -338,8 +338,37 @@ if (fs.existsSync(CL_FILE)) {
   problems.L7.push('CHANGELOG.md 不存在 —— 逐版格式断言无法生效');
 }
 
+/* ══════════════════════════════════════════════════════════════════════════
+   L9 替换字符哨兵（U+FFFD，2026-10-31 新增）
+   为什么必须有这一条：这一轮整改里真实发生过两次「中文被写坏成残字」——
+   一次在 `src\tools\_影像备份.mjs`（HEAD 里就带着 2 处，肉眼在终端里几乎看不见），
+   一次在一个新建的测试文件里（3 处）。坏法是同一个字变成两三个 U+FFFD 连在一起（俗称"锟斤拷"式残字）。
+   两次都**通过了当时的全部门禁**：
+   编码断言只查 BOM 类型与行尾，U+FFFD 是"合法的 UTF-8 字符"，语法/测试都不受影响 ⇒
+   坏掉的是注释与文档里的中文，而这正是这个项目的读者要看的东西。
+   判据：版本化文本文件里不许出现 U+FFFD（码位 0xFFFD，俗称"替换字符"）。它不是任何正常中文输入会产生的字符，
+   出现即意味着"某个环节曾经用错编码解码过这段文字"。
+   ⚠ 放行二进制扩展名（图片/zip/exe/dll/woff2）：它们本来就可能随便含这个字节序列。
+   ══════════════════════════════════════════════════════════════════════════ */
+const FFFD_SKIP_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico', '.zip',
+  '.exe', '.dll', '.pdf', '.woff2', '.woff', '.ttf', '.eot', '.sha256']);
+let fffdScanned = 0;
+for (const rel of VER.files) {
+  if (FFFD_SKIP_EXT.has(path.extname(rel).toLowerCase())) continue;
+  let src; try { src = fs.readFileSync(path.join(ROOT, rel), 'utf8'); } catch { continue; }
+  fffdScanned++;
+  if (src.indexOf('\uFFFD') < 0) continue;
+  const lines = src.split(/\r?\n/);
+  const hits = [];
+  lines.forEach((l, i) => { if (l.indexOf('\uFFFD') >= 0) hits.push(`${i + 1}: ${l.trim().slice(0, 90)}`); });
+  problems.L9.push(`${rel}  出现 ${hits.length} 处 U+FFFD（替换字符，中文被写坏）` +
+    ` ｜ 首处 ${hits[0]}` +
+    ` ｜ 期望：0 处 —— 用 node 的 fs.writeFileSync(p, s, 'utf8') 重写该文件，不要用会走本地码页的通道` +
+    ` ｜ 复核：node -e "const t=require('fs').readFileSync('${rel}','utf8');console.log((t.match(/\\uFFFD/g)||[]).length)"`);
+}
+
 /* 汇总输出 */
-const KEYS = ['L1', 'L2', 'L3', 'L4', 'L5', 'L6', 'L7', 'L8'];
+const KEYS = ['L1', 'L2', 'L3', 'L4', 'L5', 'L6', 'L7', 'L8', 'L9'];
 const total = KEYS.reduce((n, k) => n + problems[k].length, 0);
 const LABEL = {
   L1: '语法错误',
@@ -350,11 +379,13 @@ const LABEL = {
   L6: '换行符不合规（工作区字节 vs .gitattributes）',
   L7: 'CHANGELOG 逐版字段不合规',
   L8: '端口字面量（端口真源之外写死端口）',
+  L9: '替换字符 U+FFFD（中文被写坏）',
 };
 
 console.log(`L5/L6 清单来源：${VER.source}（${VER.files.length} 个文件；编码检查 ${encChecked} 个、换行检查 ${eolChecked} 个）`);
 console.log(`L7 CHANGELOG 版本条目：${clEntries} 个`);
 console.log(`L8 端口字面量扫描：${portScanned} 个 src/** 源码文件（真源：${PORT_TRUTH_SRC}）`);
+console.log(`L9 替换字符哨兵：${fffdScanned} 个文本文件`);
 
 for (const k of KEYS) {
   const list = problems[k];
@@ -367,7 +398,7 @@ for (const k of KEYS) {
   }
 }
 
-console.log(`\nlint: 扫描 ${scanned} 个 JS 文件、${VER.files.length} 个版本化文件（编码/换行）、${clEntries} 个 CHANGELOG 版本条目、${portScanned} 个端口字面量扫描点，问题 ${total} 处`);
+console.log(`\nlint: 扫描 ${scanned} 个 JS 文件、${VER.files.length} 个版本化文件（编码/换行）、${clEntries} 个 CHANGELOG 版本条目、${portScanned} 个端口字面量扫描点、${fffdScanned} 个替换字符哨兵点，问题 ${total} 处`);
 if (total === 0) {
   console.log('LINT=PASS');
   process.exit(0);

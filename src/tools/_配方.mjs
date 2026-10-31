@@ -39,6 +39,20 @@ import path from 'path';
 import crypto from 'crypto';
 import { APP_ROOT, libraryRoot } from './_库根.mjs';
 
+/* ⚠ 2026-10-31：**不要**在模块顶层 import `_路径护栏.mjs`。
+ *   那个模块在**导入时**就求值 `libraryRoot()` 并缓存，于是它会抢在下面
+ *   `process.env.CTB_DATA = …`（--data 参数的落地点）之前把库根定死
+ *   ⇒ `--data` 直接失效（实测：root 仍指向仓库 src，而不是 --data 指的库）。
+ *   教训同族：**任何在导入期求值库根的模块，都不能在参数处理之前被引入**。
+ *   下面的 `insideLib()` 用**本次运行的库根**自建同口径判据（纯字符串、零 IO），
+ *   与 `_路径护栏.mjs` 的 `isInsideRoot` 逐条同族（归一化 + 带尾分隔符前缀比较 + 小写）。 */
+function insideLib(root, abs) {
+  const base = path.normalize(root);
+  const prefix = (base.endsWith(path.sep) ? base : base + path.sep).toLowerCase();
+  const a = path.normalize(String(abs)).toLowerCase();
+  return a === prefix.slice(0, -1) || a.startsWith(prefix);
+}
+
 const argv = process.argv.slice(2);
 const cmd = argv[0] || '';
 const has = (k) => argv.includes(k);
@@ -336,6 +350,459 @@ function selfTest(recipeId, actual) {
 const IMG_RE = /\.(jpe?g|png|webp|bmp|tiff?)$/i;
 const INBOX_SKIP = new Set(['_任务单', '_已处理', '_probe']);
 
+/* ══════════════ 「已处理」判定：收件箱里哪些照片**不该再占待处理清单** ══════════════
+ * 用户原话（2026-10-30）：「这个收件箱，把所有的照片都显示出来，又长又多，显示还慢，这个设置明显不合理。
+ *   应该把已处理过的照片全部归档，不要在这个窗口显示了」。
+ * 实测现场：256 张里 184 张早就变成过错题卡，列表却一张不落地全列，还对每张都算 sha256。
+ *
+ * 判据（两条，都可查证）：**这张照片已经被 `_原卷台账.json` 引用过**。
+ *   那本台账是"卡 ↔ 原图"的唯一真源（`_原卷台账.mjs` 头部就这么写），
+ *   所以"被它引用过"= 这张照片已经用掉、不再是待处理件。不猜、不看文件名、不看日期。
+ *
+ * ⚠ 2026-10-31 修（用户复报「这些照片我们都处理过了呀」还是显示着）：
+ *   上一版（2026-10-30）**只认路径字符串**，于是漏判了一大片。实测现场：
+ *   台账里同一张照片的 `page`/`import` 有时被记成**收件箱原路径**，
+ *   有时被记成**原卷库里重命名后的路径**（例：收件箱 `.../p08-src61.jpg`
+ *   ↔ 台账 `九年级/英语/原卷/课课练9上-p08-src61.jpg`）——**内容同一张，路径两套**。
+ *   纯路径判据 ⇒ 这类件永远判不出来。真库实测：256 张里 **176 张路径命中**
+ *   （page 命中 56 + 只被 import 命中 120），**内容判据额外命中 4 张**。
+ *
+ *   ⇒ 判据升级为**两条并行**：
+ *     ① 路径命中（快，零 IO）：台账 page/import 的路径集合；
+ *     ② 内容命中（慢，要读文件）：收件箱该件的 sha256 ∈ 候选文件的 sha256 集合。
+ *       候选源两处：台账 page/import 点名的文件 **+ 各卡片目录里的 `原卷截图.jpg`**。
+ *       加后者是因为有一批卡（错题卷图3~图7 → M0021~M0025）的 `page` 指向**另一张整页**，
+ *       "这张照片本身"被裁成了卡片题图，而那张裁图不在台账引用集合里 ⇒ 只用台账会漏判这 5 张。
+ *   ② 只在 ① 不命中时才算指纹 ⇒ **路径命中的 176 张仍然一次字节都不读**，
+ *     2026-10-30 那次性能优化（256→80 张、502→214ms）**不被这次修复推翻**。
+ *     （内容命中的那几张要读自己的字节才能算指纹，这是物理上躲不掉的，不是退化。）
+ *
+ *   为什么 ② 不会把没做过的照片藏起来：候选源里的文件要么就是**这张照片本身**
+ *   （整页母本或导入原件），要么是**从它裁出来的题图**（裁图与母图字节必然不同，
+ *   指纹相同仍等价于"同一张母图被用过"），判定方向一致。
+ *
+ *   退化方向（宁可多显示，绝不藏掉没做的）：台账缺失/损坏/cards 不是对象
+ *     ⇒ 一律退回"全部待处理"并把原因说出来。
+ *   为什么不把文件真的搬进 `_收件箱\_已处理\`：台账里现有 176 个不同路径指向 `_收件箱\…`，
+ *   挪文件会让 `_原卷台账.mjs 门禁` 当场整片报红（"整页不在盘"）。归档要动真源，得连台账一起改，
+ *   那是另一件事（要单独批准、可回滚）。本函数**只读**：不动任何文件、不写任何东西。 */
+const LEDGER_NAME = '_原卷台账.json';
+function inboxArchivedSet(root) {
+  const set = new Set();
+  const p = path.join(root, LEDGER_NAME);
+  if (!isFile(p)) return { set, seen: null, doneBatches: null, doneStems: null, doneFamilies: null, transposed: null, note: '' };   // 新库/空库：正常的"还没有台账"，不是异常
+  let doc;
+  try { doc = readJson(p); }
+  catch (e) {
+    /* 台账坏了 ⇒ **宁可多显示**：退回"全部待处理"，并把原因说出来（不许静默把待处理件藏掉）。 */
+    return { set, seen: null, doneBatches: null, doneStems: null, doneFamilies: null, transposed: null, note: '原卷台账读不动（' + String((e && e.message) || e).split('\n')[0] + '），已按"全部待处理"显示' };
+  }
+  const cards = (doc && doc.cards && typeof doc.cards === 'object' && !Array.isArray(doc.cards)) ? doc.cards : {};
+  /* ① 路径集合 + 台账指纹集合（内容判据与转置判据都要用） */
+  const refs = [];                       // 台账点名的绝对路径（去重后）
+  const refSeen = new Set();
+  const ledSha = new Set();              // 台账引用文件的 sha256（惰性算，见下）
+  for (const key of Object.keys(cards)) {
+    const c = cards[key] || {};
+    for (const field of ['page', 'import']) {
+      const v = c[field];
+      if (typeof v !== 'string' || !v.trim()) continue;
+      set.add(inboxRelKey(v));
+      const abs = path.resolve(root, inboxRelKey(v));
+      if (refSeen.has(abs)) continue;
+      refSeen.add(abs);
+      refs.push(abs);
+    }
+  }
+  /* ①d **转置**判据（2026-10-31，同日按外部审查 C02 收紧）。
+   *    有一批照片是**横着拍的**（手机把纸转过来），库里存了两份：
+   *      收件箱 `_收件箱/2026-10-15-…物理10月阶段练习-p1p2.jpg`  （横置，2646×1860）
+   *      库内   `九年级/物理/原卷/_横置备份-20261016/…-p1p2.jpg`（转正前，1860×2646）
+   *    台账引用的是**转正后**那份 ⇒ 路径/指纹/批次/族四条判据全都认不出收件箱那张。
+   *
+   *    ⚠ 收紧原因（外部审查实测）：只比"尺寸互为转置 + 体积同量级"**不足以**下"已处理"结论——
+   *      台账引用 1200×1600 的 A，收件箱放一张内容无关、恰好 1600×1200、体积比 1.000 的 B，
+   *      B 就从待处理清单消失了。尺寸/体积只能当**候选筛选**，结论必须另有**内容证据**
+   *      （sha256 相等），见 inboxTransposedSet() 的条件④与那里的取舍说明。
+   *    代价：真正的"转正"件（重新编码过）从此留在待处理清单 —— 宁可多列，不可误藏。 */
+  const transposed = inboxTransposedSet(root, cards);
+
+  /* ①b **批次级**判据（2026-10-31，用户裁定「只要处理过，那当然不应该放在收件箱里了呀」）。
+   *    为什么需要：同一份作业是**一次处理**的（同一次扫描、同一次挑错），
+   *    不是逐页处理。台账里给一张卡记的 `page` 常常是**合卷扫描件**或**另一张整页**，
+   *    而不是"这张照片所在的那一页"，于是纯路径/纯指纹判据认不出同批次的其它页。
+   *    实测现场：错题卷批次的 7 张卡（M0019~M0025）的 `page` 全指向
+   *    `九年级/原卷/九上第一周数学练习-扫描.jpg` 这类合卷件 ⇒ 收件箱里那 7 张原图一张都不认。
+   *
+   *    判据（**两条独立证据，任一成立**即该批次已建过卡 ⇒ 整批归档）：
+   *      A. 台账的 `page`/`import` 里出现了**该批次目录下**的任一路径
+   *         （例：`_收件箱/2026-10-08-某学生A-数学-学习与评价29页/p01.jpg` 被 M0027 引用
+   *           ⇒ 该批次已建卡 ⇒ 同批次的 p06/p07/p20/p24 也算处理过）。
+   *         这条最可靠：路径是机器写的，不会有措辞差异。
+   *      B. 台账的 `source`/`note` 里出现了该批次的**日期**
+   *         （例：批次目录 `2026-10-06-某学生A-数学-错题卷` ↔ source `2026-10-06 数学错题卷`）。
+   *         这条补 A 的盲区：卡的 `page` 指向合卷件时，目录名对不上，但日期两边都有。
+   *
+   *    收紧（防误藏）：
+   *      · 只认**收件箱里真实存在的批次目录**（不猜、不模糊匹配）；
+   *      · A 要路径**真的在该批次目录下**（不是全库任意路径）；
+   *      · B 要日期在 source 里**原样出现**；
+   *      · 从未建过卡的批次 ⇒ 整批留在待处理清单（不多藏）。
+   *    ⚠ 代价（诚实记录）：这会把"该批次里孩子做对了、因此没建卡的页"也归档。
+   *      这是用户明确要的语义（整份作业处理过就算处理过），原图仍在收件箱里，随时可再挑错。 */
+  const doneBatches = new Set();
+  const batchDates = inboxBatchDates(root);       // 批次目录名 → 该批次的日期串
+  for (const key of Object.keys(cards)) {
+    const c = cards[key] || {};
+    /* 证据 A：page/import 落在某个批次目录下。
+       ⚠ 这里**不能**用 inboxRelKey（它会转小写）：批次目录名里可能有大写
+       （实测 `2026-10-22-某学生A-英语-七上Unit1起-51页` 里的 `Unit1`），
+       转小写后与真实目录名对不上 ⇒ 批次认不出来。
+       所以这里只做**分隔符归一**，大小写保持原样。 */
+    for (const field of ['page', 'import']) {
+      const v = c[field];
+      if (typeof v !== 'string' || !v.trim()) continue;
+      const norm = String(v).replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '');
+      const m = norm.match(/^_收件箱\/([^/]+)\//);
+      if (m) { doneBatches.add(m[1]); break; }
+    }
+    /* 证据 B：source/note 里含该批次的日期 */
+    const blob = [c.source, c.note].map(x => String(x || '')).join('\n');
+    if (blob.trim()) {
+      for (const [b, dates] of batchDates) {
+        if (dates.some(x => blob.includes(x))) { doneBatches.add(b); break; }
+      }
+    }
+  }
+  /* ①c **顶层同族**判据（2026-10-31）。
+   *    收件箱**顶层**（没有批次目录）的照片，常常是同一份材料的**一组页**或**一组变体**：
+   *      `2026-10-15-某学生B-物理10月阶段练习-p1p2.jpg` … `-p7p8.jpg`、`-答题纸1.jpg`、`-答题纸2.jpg`
+   *      `2026-10-07-…默写-原卷.jpg` / `-原卷-增强.png` / `-标准答案.jpg`
+   *      `2026-10-05-…数学-作业.jpg` / `-作业-转正.jpg`
+   *    它们没有批次目录 ⇒ 判据①②认不出，批次级判据（①b）也覆盖不到。
+   *    判据：**同一个"族"里，只要有一个件已被台账引用 ⇒ 整族都算处理过**。
+   *
+   *    "族"的定义（两条同时成立才算一族，刻意保守）：
+   *      · **共享前缀**：去掉页码/加工后缀后剩下的部分相同
+   *        （`2026-10-15-某学生B-物理10月阶段练习-p1p2` 与 `…-答题纸2` 同族；
+   *          `…数学-作业` 与 `…数学-作业-转正` 同族）；
+   *      · 前缀**够长**（≥ 8 个字符）—— 否则「数学作业」会把「数学作业2」也拖进来。
+   *
+   *    收紧：只认**顶层**文件；只认台账**确实引用过**的族；
+   *          没被引用过的族 ⇒ 一张都不归档（不多藏）。 */
+  const doneStems = new Set();
+  const doneFamilies = new Set();
+  for (const key of Object.keys(cards)) {
+    const c = cards[key] || {};
+    for (const field of ['page', 'import']) {
+      const v = c[field];
+      if (typeof v !== 'string' || !v.trim()) continue;
+      const norm = String(v).replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '');
+      if (!norm.startsWith('_收件箱/')) continue;
+      const parts = norm.split('/');
+      const fileName = parts[parts.length - 1];
+      /* 顶层文件（parts.length===2）：登记"主体"与"族" */
+      if (parts.length === 2) {
+        doneStems.add(inboxVariantStem(fileName));
+        const fam = inboxFamily(fileName);
+        if (fam) doneFamilies.add(fam);
+      } else {
+        /* 批次目录下的文件：它的**文件名**同样能提供族证据
+           （例：台账引用 `_收件箱/2026-10-06-…国庆假期作业2-原卷p2(18-22).jpg`
+             ⇒ 族 `2026-10-06-…国庆假期作业2` 已处理 ⇒ 顶层的
+             `_横置备份-20261016-原卷p2(18-22).jpg` 同族，也算处理过）。 */
+        const fam = inboxFamily(fileName);
+        if (fam) doneFamilies.add(fam);
+        const stem = inboxVariantStem(fileName);
+        if (stem) doneStems.add(stem);
+      }
+    }
+  }
+  /* 收件箱顶层文件的"主体" → 主体集合（用于"同主体的另一个件已处理"） */
+  const topStems = new Map();                    // stem → [顶层文件名]
+  for (const name of inboxTopFiles(root)) {
+    const st = inboxVariantStem(name);
+    if (!topStems.has(st)) topStems.set(st, []);
+    topStems.get(st).push(name);
+  }
+  /* ② 内容判据：**惰性**指纹索引。
+   *    实测性能坑（2026-10-31）：台账引用 788 条、涉及 351 个不同文件、约 1GB。
+   *    一上来就把这些文件全读一遍算 sha256 ⇒ 单次列收件箱要 1.8 秒（2026-10-30 那版只要 0.2 秒），
+   *    等于把用户抱怨过的"慢"又请回来了。
+   *    ⇒ 改成两段：
+   *      · 先按**文件大小**把引用文件分桶（stat 一次，不读内容）；
+   *      · 收件箱那张件算完自己的 sha256 后，只有**大小相同**的引用文件才可能是同一张
+   *        （sha 相同 ⇒ 大小必然相同 ⇒ 大小不同的候选直接排除）；
+   *      · 且这些候选的 sha256 **用到才算**，同一进程内算一次就缓存。
+   *    实测：真库上列收件箱回到 0.2 秒量级。 */
+  const bySize = new Map();              // size → [绝对路径]
+  const addCand = (abs) => {
+    if (!insideLib(root, abs)) return;    // 库外一律不读（见下方注释）
+    let st; try { st = fs.statSync(abs); } catch { return; }
+    if (!st.isFile()) return;
+    if (!bySize.has(st.size)) bySize.set(st.size, []);
+    const arr = bySize.get(st.size);
+    if (!arr.includes(abs)) arr.push(abs);
+  };
+  for (const abs of refs) {
+    /* ⚠ 库外路径一律不读（2026-10-31 加固）。
+       台账里的 page/import 若写成 `../..\老库\…` 或绝对路径，`path.resolve` 会把它解析到
+       **库根之外** ⇒ 内容判据会去读库外的文件（既可能被老库数据误判成"已处理"，
+       也等于让一个只读工具碰了库外文件）。用 `insideLib()` 判（零 IO 纯字符串判据，
+       与 `_路径护栏.mjs` 的 `isInsideRoot` 逐条同族：归一化 + 带尾分隔符前缀比较 + 小写）。
+       库外引用 ⇒ 不参与内容判据（退回"多显示"方向，与整体退化策略一致）。 */
+    addCand(abs);
+  }
+  /* ②b 卡片目录里的 **原卷截图.jpg** 也纳入候选源（2026-10-31 复核补上）。
+   *    为什么必须加：有一批卡（例：错题卷图3~图7 → M0021~M0025），
+   *    它的 `page` 指向**另一张整页**，而"这张照片本身"是被裁成卡片题图的（`原卷截图.jpg`）。
+   *    那张裁图**不在台账的 page/import 引用集合里** ⇒ 只用台账做候选源会漏判这 5 张，
+   *    用户仍会看到"已经建过卡的照片"挂在待办清单上。
+   *    实测：加入卡片裁图候选源后，这 5 张从待处理清单消失（76 → 71）。
+   *    代价：候选源从 351 涨到约 800 个文件；仍靠 size 分桶把实际读盘压到很小。 */
+  for (const cd of inboxCardDirs(root)) {
+    addCand(path.join(cd, '原卷截图.jpg'));
+  }
+  const shaCache = new Map();            // 绝对路径 → sha256（惰性填充）
+  function seen(sha, size) {
+    const cand = bySize.get(size);
+    if (!cand) return false;             // 大小都对不上 ⇒ 不可能是同一张
+    for (const abs of cand) {
+      if (!shaCache.has(abs)) {
+        let h; try { h = crypto.createHash('sha256').update(fs.readFileSync(abs)).digest('hex'); }
+        catch { shaCache.set(abs, ''); continue; }
+        shaCache.set(abs, h);
+      }
+      const h = shaCache.get(abs);
+      if (h && h === sha) return true;
+    }
+    return false;
+  }
+  return { set, seen, doneBatches, doneStems, doneFamilies, transposed, note: '' };
+}
+/** 图片的像素尺寸（**只读文件头**，不解码整图 —— 性能关键：
+ *  台账引用 351 个文件，若每个都 readFileSync 整图（约 1GB）要 1.5 秒；
+ *  只读前 64KB 文件头就够拿尺寸 ⇒ 几毫秒）。读不出返回 null。 */
+function inboxImgDims(abs) {
+  let fd;
+  try { fd = fs.openSync(abs, 'r'); } catch { return null; }
+  try {
+    const head = Buffer.alloc(65536);
+    const n = fs.readSync(fd, head, 0, 65536, 0);
+    const b = head.subarray(0, n);
+    if (b[0] === 0xFF && b[1] === 0xD8) {
+      let o = 2;
+      while (o < n - 4) {
+        if (b[o] !== 0xFF) { o++; continue; }
+        const m = b[o + 1];
+        if (m === 0xD8 || m === 0x01 || (m >= 0xD0 && m <= 0xD7)) { o += 2; continue; }
+        if (m === 0xDA) break;
+        const len = (b[o + 2] << 8) | b[o + 3];
+        if (m >= 0xC0 && m <= 0xCF && m !== 0xC4 && m !== 0xC8 && m !== 0xCC) {
+          return { w: (b[o + 7] << 8) | b[o + 8], h: (b[o + 5] << 8) | b[o + 6] };
+        }
+        o += 2 + len;
+      }
+      return null;
+    }
+    if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4E && b[3] === 0x47) {
+      return { w: b.readUInt32BE(16), h: b.readUInt32BE(20) };
+    }
+    return null;
+  } catch { return null; }
+  finally { try { fs.closeSync(fd); } catch { } }
+}
+/** 转置候选的**内容证据**：必须拿到"这两个文件是同一张照片"的客观凭据。
+ *  本仓台账里**没有**"转置副本"这类字段（`_原卷台账.json` 的条目字段只有
+ *  page/box/import/by/note/pagePx/cropPx/lost/locFile/need/key/student/subject/cardDir/source），
+ *  所以这里只认一条：两个文件的 **sha256 相等**（同一份字节的两次拷贝）。
+ *  拿不到 ⇒ 返回 false，调用方据此把该件**留在待处理清单**（宁可多列，不可误藏）。
+ *  ★ 阴性自证锚点（tests\neg-inbox-transposed-evidence.cjs）：把调用点那一行摘掉
+ *    （= 旧行为：尺寸互为转置 + 体积同量级就判已处理）必须复现"无关照片被贴上已处理标签"。 */
+function transposedContentEvidence(shaA, absB, shaOf) {
+  const hb = shaOf(absB);
+  return !!shaA && !!hb && shaA === hb;
+}
+
+/** 收件箱顶层（及批次目录下）那些"与已处理件互为转置"的图片 → 它们的库根相对路径集合。
+ *  用途：横拍的照片在库里存了"转正前"与"转正后"两份，路径/指纹都认不出对应关系。
+ *
+ *  ⚠ 2026-10-31 修（C02 · P2，外部审查复核）：**尺寸/体积只能当候选筛选，不许单独下
+ *    "已处理"结论**。缺陷原形（只比条件②③）：台账引用过 1200×1600 的 A，收件箱里放一张
+ *    **内容无关**、恰好 1600×1200、体积比 1.000 的 B ⇒ B 从待处理清单消失；
+ *    尺寸改成 1600×1201 或体积比 0.002 就不消失 —— 说明判据当时确实只看了尺寸与体积。
+ *    性质是"贴错标签"而不是"文件被吞"（界面有「显示已归档的 N 张」可展开、文件没搬没删），
+ *    但方向错了：本仓纪律是"宁可多列，不可误藏"。
+ *  修法：①②③ 三条原样保留为**候选筛选**（零内容 IO，先把范围压到极少数），
+ *    通过筛选后**必须再拿到内容证据（条件④）**才进归档集合；拿不到就留在待处理清单。
+ *
+ *  取舍（诚实记录，别当注释噪音删掉）：
+ *    · 真正的"转正"是重新编码，字节必变 ⇒ sha256 必然不同 ⇒ 这类件**从此不再自动归档**，
+ *      会留在待处理清单里。这是刻意的：误藏一张没做过的照片（用户以为丢件）比多列一张
+ *      已经做过的照片（用户划过去即可）代价大得多。
+ *    · 推论：同一份字节 ⇒ 尺寸必然相同 ⇒ 与"尺寸互为转置"在物理上互斥，**本判据的实际效果
+ *      是"转置件一律留在待处理"**。保留这条链是为了：① 判据结构完整（将来台账若记录
+ *      "转置副本"关系，直接接在条件④上即可）；② 阴性自证需要一个"能摘掉的门"——
+ *      tests\neg-inbox-transposed-evidence.cjs 摘掉条件④必须复现误藏。
+ *    · 性能：条件④的 sha256 **只对已经通过①②③筛选的极少数候选**算（不是扫全库）；
+ *      原先"零 IO"的口径因此失效，但代价被候选筛选限制住了，收件箱列表仍是"只读文件头"。 */
+function inboxTransposedSet(root, cards) {
+  const out = new Set();
+  const inbox = path.join(root, '_收件箱');
+  /* 台账引用过的文件（条件①的"已处理"判定）—— 这就是候选源，不用扫全库 */
+  const usedFiles = [];
+  for (const c of Object.values(cards || {})) {
+    for (const f of ['page', 'import']) {
+      const v = c && c[f];
+      if (typeof v !== 'string' || !v.trim()) continue;
+      const abs = path.resolve(root, v);
+      if (!insideLib(root, abs)) continue;
+      let st; try { st = fs.statSync(abs); } catch { continue; }
+      /* ⚠ 阈值取 1 字节而不是 1000：合成测试素材（PNG 几百字节）也要能被认出来，
+         而"图片小于 1 字节"本身就不存在，不构成误判。 */
+      if (!st.isFile() || st.size < 1) continue;
+      usedFiles.push(abs);
+    }
+  }
+  /* 条件④ 的指纹：同一进程内同一文件只算一次（候选很少，但别重复读同一份大图） */
+  const shaCache = new Map();
+  function shaOf(abs) {
+    const key = String(abs).toLowerCase();
+    if (shaCache.has(key)) return shaCache.get(key);
+    let h = '';
+    try { h = crypto.createHash('sha256').update(fs.readFileSync(abs)).digest('hex'); } catch { h = ''; }
+    shaCache.set(key, h);
+    return h;
+  }
+  /* 台账引用件按尺寸分桶（转置后的尺寸 → 候选） */
+  const byDims = new Map();
+  for (const abs of usedFiles) {
+    const dm = inboxImgDims(abs);
+    if (!dm || dm.w === dm.h) continue;
+    let st; try { st = fs.statSync(abs); } catch { continue; }
+    const k = dm.h + 'x' + dm.w;
+    if (!byDims.has(k)) byDims.set(k, []);
+    byDims.get(k).push({ abs, size: st.size });
+  }
+  /* 收件箱侧逐张找转置伙伴（条件②③是候选筛选，④才是结论） */
+  (function walk(d) {
+    let ents; try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      const abs = path.join(d, e.name);
+      if (e.isDirectory()) { walk(abs); continue; }
+      if (!e.isFile() || !/\.(jpe?g|png|webp|bmp|tiff?)$/i.test(e.name)) continue;
+      const dm = inboxImgDims(abs);
+      if (!dm || dm.w === dm.h) continue;
+      const cand = byDims.get(dm.w + 'x' + dm.h);
+      if (!cand) continue;
+      let st; try { st = fs.statSync(abs); } catch { continue; }
+      for (const c of cand) {
+        const ratio = c.size / st.size;
+        if (ratio < 0.5 || ratio > 2.0) continue;         // 条件③：同量级（候选筛选）
+        /* ★ 阴性自证锚点（tests\neg-inbox-transposed-evidence.cjs）：把下面这行改成
+           `if (false) continue;` = 回到"尺寸+体积即判已处理"的旧行为，用例第一个断言必须变红。 */
+        if (!transposedContentEvidence(shaOf(abs), c.abs, shaOf)) continue;   // 条件④：内容证据（必须有）
+        out.add(path.relative(root, abs).split(path.sep).join('/').toLowerCase());
+        break;
+      }
+    }
+  })(inbox);
+  return out;
+}
+/** 收件箱里真实的**批次目录名**（顶层子目录，排除 `_`/`.` 开头与物理归档位）。
+ *  批次级判据的锚点：只认盘上真实存在的目录名，不猜、不模糊匹配。 */
+function inboxBatchNames(root) {
+  const inbox = path.join(root, '_收件箱');
+  const out = [];
+  let ents; try { ents = fs.readdirSync(inbox); } catch { return out; }
+  for (const name of ents) {
+    if (name.startsWith('.') || INBOX_SKIP.has(name)) continue;
+    try { if (fs.statSync(path.join(inbox, name)).isDirectory()) out.push(name); } catch { }
+  }
+  return out;
+}
+/** 收件箱**顶层**的图片文件名（不在批次目录里的那些）。 */
+function inboxTopFiles(root) {
+  const inbox = path.join(root, '_收件箱');
+  const out = [];
+  let ents; try { ents = fs.readdirSync(inbox); } catch { return out; }
+  for (const name of ents) {
+    if (name.startsWith('.')) continue;
+    const abs = path.join(inbox, name);
+    let st; try { st = fs.statSync(abs); } catch { continue; }
+    if (st.isFile() && /\.(jpe?g|png|webp|bmp|tiff?)$/i.test(name)) out.push(name);
+  }
+  return out;
+}
+/** 顶层文件名的**主体**：去掉已知加工后缀（转正/增强/标准答案/原卷/备份…）。
+ *  只去**已知**词，不做模糊匹配 —— 否则「数学作业」与「数学作业2」会被当成同一张。
+ *  ⚠ 「横置备份/备份」是**前缀**型（`_横置备份-20261016-原卷p2(18-22)`），
+ *    不能用后缀规则整段吃掉（会把整名吃空）⇒ 单独处理，见 inboxFamily()。 */
+const VARIANT_SUFFIX = /[-_]?(?:已转正|转正|增强|标准答案|原卷)$/;
+function inboxVariantStem(name) {
+  const b = String(name).replace(/\.[^.]+$/, '');
+  return b.replace(VARIANT_SUFFIX, '').toLowerCase();
+}
+/** 顶层文件的**族**：去掉扩展名、加工后缀、页码/页区间尾巴，剩下的公共部分。
+ *  例（→ 同族）：
+ *    `2026-10-15-某学生B-物理10月阶段练习-p1p2.jpg` ┐
+ *    `2026-10-15-某学生B-物理10月阶段练习-答题纸1.jpg`┘ ⇒ `2026-10-15-某学生B-物理10月阶段练习`
+ *    `2026-10-05-某学生A-数学-作业.jpg` / `…-作业-转正.jpg` ⇒ `2026-10-05-某学生A-数学-作业`
+ *    `_横置备份-20261016-原卷p2(18-22).jpg` 与 `2026-10-06-…国庆假期作业2-原卷p2(18-22).jpg`
+ *      —— 前者是转正那天留的备份（带自己的日期前缀），把该前缀也剥掉才算同族。
+ *  长度不足 8 字符 ⇒ 返回空串（不参与分族，避免「数学作业」拖进「数学作业2」）。 */
+function inboxFamily(name) {
+  let s = String(name).replace(/\.[^.]+$/, '').toLowerCase();
+  /* 剥掉「备份型前缀」：`_横置备份-20261016-原卷p2(18-22)` → `原卷p2(18-22)`
+     （前缀里含它自己的日期，去掉后才能与本体同族）。 */
+  s = s.replace(/^_横置备份[^/]*?-/, '').replace(/^_备份[^/]*?-/, '');
+  /* 再去加工后缀与页码尾巴 */
+  s = s.replace(VARIANT_SUFFIX, '');
+  s = s.replace(/[-_]?(p\d+(?:\s*-\s*p?\d+)?|p\d+p\d+|第?\d+页|答题纸\d*|原卷p?\d*(?:p?\d+)?|原卷p\d+\(\d+-\d+\))$/i, '');
+  s = s.replace(/[-_]+\d+$/, '');
+  return s.length >= 8 ? s : '';
+}
+/** 批次目录名 → 该批次的**日期串**列表。
+ *  为什么用日期：收件箱目录名与台账 source 的写法不同
+ *   （目录 `2026-10-06-某学生A-数学-错题卷` vs source `2026-10-06 数学错题卷`），
+ *   只有日期两边都原样有、且足够唯一。
+ *  提取规则：目录名里出现的 `YYYY-MM-DD`；另外 `某学生B-物理-20261007` 这种
+ *   把日期写成 `20261007` 的，**不**折算成 `2026-10-07`（避免造出 source 里没有的串）。 */
+function inboxBatchDates(root) {
+  const out = new Map();
+  for (const b of inboxBatchNames(root)) {
+    const ds = b.match(/\d{4}-\d{2}-\d{2}/g);
+    out.set(b, ds ? ds : []);
+  }
+  return out;
+}
+/* 找出库里所有"卡片目录"（含 `错题记录.md` 的目录）的绝对路径。
+ * 判据与卡片目录的既有定义一致（`错题记录.md` 存在即算一张卡），
+ * 只取**两层深**（学生/学科/卡号），与 `_原卷台账.mjs` 的 loadCards 口径同族。
+ * 排除 `_` / `.` 开头的目录（`_收件箱`、`_probe`、`_备份-*` 等都不是卡）。 */
+function inboxCardDirs(root) {
+  const out = [];
+  const walk = (dir, depth) => {
+    if (depth > 2) return;
+    let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      if (!e.isDirectory()) continue;
+      if (e.name.startsWith('_') || e.name.startsWith('.')) continue;
+      const abs = path.join(dir, e.name);
+      let kids; try { kids = fs.readdirSync(abs); } catch { continue; }
+      if (kids.some(k => k.endsWith('错题记录.md'))) out.push(abs);
+      else walk(abs, depth + 1);
+    }
+  };
+  walk(root, 0);
+  return out;
+}
+/* 台账里的路径是库根相对的 posix 形态，但老数据里也可能出现反斜杠 / ./ 前缀 / 大小写差异。
+   收件箱侧同样用这个口径归一，两边必须走**同一个函数**，否则"明明登记过却还显示"这种假阴性查不出来。 */
+function inboxRelKey(rel) {
+  return String(rel).replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '').toLowerCase();
+}
+
 function cmdInbox() {
   const root = libraryRoot();
   const inbox = path.join(root, '_收件箱');
@@ -363,7 +830,11 @@ function cmdInbox() {
       return 2;
     }
   }
+  const arch = inboxArchivedSet(root);
   const batches = [];
+  const archived = [];
+  let nUnreadable = 0;                  // 读不动而跳过的文件数（跨批次累计）
+  let nOutside = 0;                     // 越出库根而跳过的文件数（跨批次累计）
   if (isDir(inbox)) {
     for (const name of fs.readdirSync(inbox).sort()) {
       if (name.startsWith('.') || INBOX_SKIP.has(name)) continue;
@@ -373,15 +844,55 @@ function cmdInbox() {
       const scanDir = isB ? dir : inbox;
       if (!isB && !IMG_RE.test(name)) continue;
       const files = [];
-      const pushFile = (abs, relBase) => {
+      const archHere = [];
+      /* 判据③（批次级，零 IO）：该批次已建过卡 ⇒ 整批都是"处理过的"，一张一张判是多余的。
+         用户原话（2026-10-31）：「只要处理过，那当然不应该放在收件箱里了呀」——
+         整份作业是**一次处理**的（同一次扫描、同一次挑错）。 */
+      const batchDone = isB && arch.doneBatches && arch.doneBatches.has(name);
+      const pushFile = (abs) => {
         let st; try { st = fs.statSync(abs); } catch { return; }
         if (!st.isFile() || !IMG_RE.test(path.basename(abs))) return;
-        files.push({
-          name: path.basename(abs),
-          rel: path.relative(root, abs).split(path.sep).join('/'),
-          bytes: st.size,
-          sha256: crypto.createHash('sha256').update(fs.readFileSync(abs)).digest('hex'),
-        });
+        /* ⚠ 库外文件一律不读（2026-10-31 复核补上，与台账侧同一个判据）。
+           若 `_收件箱\<批次>` 是指向库外的 junction / 符号链接，
+           下面的文件会被当成本库的照片读进来算指纹 —— 违反"只碰用户库"的边界。 */
+        if (!insideLib(root, abs)) { nOutside++; return; }
+        const rel = path.relative(root, abs).split(path.sep).join('/');
+        const base = { name: path.basename(abs), rel, bytes: st.size };
+        /* 判据③：该批次已建过卡 ⇒ 整批归档（零 IO，连 stat 都不用）。
+           放在路径判据**之前**：批次级是更粗但更准的粒度，先判它最省事。 */
+        if (batchDone) { archHere.push(base); return; }
+        /* 判据①：路径命中（零 IO）⇒ 已处理 ⇒ 只报名字/大小，**不算哈希**。
+           这一条就是"显示还慢"的正面修法：慢的那部分 IO 只花在真正待办的照片上。 */
+        if (arch.set.has(inboxRelKey(rel))) { archHere.push(base); return; }
+        /* 判据①c（顶层同族，零 IO）：同一"族"里已有件被台账引用 ⇒ 这张也处理过。
+           例：`…物理10月阶段练习-p1p2.jpg` 与 `…物理10月阶段练习-答题纸2.jpg`（台账引用的是后者）
+           —— 同一份作业的不同页，路径与指纹都认不出，只有"族"认得出。 */
+        if (!isB && arch.doneStems) {
+          const st = inboxVariantStem(base.name);
+          const fam = inboxFamily(base.name);
+          if (arch.doneStems.has(st) || (fam && arch.doneFamilies && arch.doneFamilies.has(fam))) {
+            archHere.push(base); return;
+          }
+        }
+        /* 判据①d（转置）：与某个已处理件**互为转置**且**内容证据成立**（sha256 相等）。
+           ⚠ 不是"零 IO"了：sha256 只在通过尺寸/体积候选筛选的少数件上算（见 inboxTransposedSet）。
+           只满足尺寸/体积的件**刻意不进这里** —— 宁可留在待处理清单，不可误藏。 */
+        if (arch.transposed && arch.transposed.has(inboxRelKey(rel))) { archHere.push(base); return; }
+        /* 待处理件本来就要算 sha256（前端要显示指纹、勾选时按指纹找回同内容那张），
+           所以这里**顺手**用它比一次内容指纹 —— 判据②零额外 IO。
+           ⚠ 2026-10-31：路径对不上但内容同一张的件（台账记的是重命名后的原卷路径）
+              以前就是这么漏判的。 */
+        let h;
+        try { h = crypto.createHash('sha256').update(fs.readFileSync(abs)).digest('hex'); }
+        catch (e) {
+          /* ⚠ 单个文件读不动（权限/占用/损坏）**不许拖垮整个列表**（2026-10-31 复核补上）。
+             旧实现这里没有 try ⇒ 一张坏照片就让整个收件箱读不出来（EPERM 直接退出 2），
+             用户连别的照片都看不到。改成：跳过这一张、记个数、继续。 */
+          nUnreadable++;
+          return;
+        }
+        if (arch.seen && arch.seen(h, st.size)) { archHere.push(base); return; }
+        files.push({ ...base, sha256: h });
       };
       if (isB) {
         for (const f of fs.readdirSync(dir).sort()) {
@@ -393,28 +904,52 @@ function cmdInbox() {
       } else {
         pushFile(dir);
       }
-      if (!files.length) continue;
-      const bucketName = isB ? name : '（未分批）';
-      let bucket = batches.find((b) => b.name === bucketName);
-      if (!bucket) { bucket = { name: bucketName, files: [] }; batches.push(bucket); }
-      bucket.files.push(...files);
+      if (files.length) {
+        const bucketName = isB ? name : '（未分批）';
+        let bucket = batches.find((b) => b.name === bucketName);
+        if (!bucket) { bucket = { name: bucketName, files: [] }; batches.push(bucket); }
+        bucket.files.push(...files);
+      }
+      archived.push(...archHere);
     }
   }
   const total = batches.reduce((n, b) => n + b.files.length, 0);
+  const archivedCount = archived.length;
+  /* 跳过项要说出口：读不动 / 越出库根的文件**没有**出现在任何清单里，
+     用户看不到就以为照片丢了。宁可显式报出来，也不静默少列。 */
+  const skipNote = (nUnreadable ? nUnreadable + ' 张读不动（权限或文件占用）' : '') +
+    (nOutside ? (nUnreadable ? '；' : '') + nOutside + ' 张越出库根（已跳过，不读）' : '');
 
   if (JSON_OUT) {
-    process.stdout.write(JSON.stringify({ ok: true, root, inboxRel: '_收件箱', batches, total, created: ensured }) + '\n');
+    process.stdout.write(JSON.stringify({
+      ok: true, root, inboxRel: '_收件箱', batches, total,
+      archivedCount, archived, archivedNote: arch.note, created: ensured,
+      skipped: { unreadable: nUnreadable, outside: nOutside },
+      skipNote,
+    }) + '\n');
     return 0;
   }
   console.log('收件箱：' + inbox + (ensured === 'made' ? '（刚为你建好）' : ''));
-  if (!total) {
+  if (arch.note) console.log('  ⚠ ' + arch.note);
+  if (skipNote) console.log('  ⚠ 已跳过：' + skipNote);
+  if (!total && !archivedCount) {
     console.log('（空）把错题照片按批次放进 _收件箱\\<批次名>\\，再回到程序里选它。');
     return 0;
   }
-  console.log('共 ' + batches.length + ' 批 / ' + total + ' 张待处理：');
+  if (!total) {
+    console.log('收件箱里的 ' + archivedCount + ' 张照片都已处理完（已归档，不再列出；文件一张没动）。');
+    return 0;
+  }
+  console.log('共 ' + batches.length + ' 批 / ' + total + ' 张待处理' +
+    (archivedCount ? '（另有 ' + archivedCount + ' 张已处理，已归档不再显示）' : '') + '：');
   for (const b of batches) {
     console.log('  ▸ ' + b.name + '（' + b.files.length + ' 张）');
     for (const f of b.files) console.log('      ' + f.name + '  ' + (f.bytes / 1024).toFixed(0) + ' KB  ' + f.sha256.slice(0, 12));
+  }
+  /* CLI 自查用：--all 才把已归档的名字也打出来（页面通道没有这个 flag，壳的白名单不含它） */
+  if (archivedCount && has('--all')) {
+    console.log('\n  已归档（已处理，不再列出；仍在 _收件箱 里）：' + archivedCount + ' 张');
+    for (const f of archived) console.log('      ' + f.rel);
   }
   return 0;
 }

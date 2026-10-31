@@ -301,8 +301,13 @@
         kv('错误次数', c.errorCount || 1) +
         kv('状态', U.esc(c.status || '') + ' / ' + U.esc(c.reviewStatus || '')) +
         kv('复习', (c.reviewCount || 0) + ' 次 · 连对 ' + (c.passStreak || 0)) +
-        kv('下次建议', U.esc(c.nextDue || '—') + (c.lastReviewedAt ? '（上次 ' + c.lastReviewedAt + '）' : '')) +
-        kv('盲解', U.esc(c.blindStatus || '未盲解') + (c.blindSolveAt ? '（' + c.blindSolveAt + '）' : '') + (blindFresh ? ' · 指纹' + U.esc(blindFresh) : '')) +
+        /* ⚠ 2026-10-31（codex D01，已复现）：日期字段是**元数据回显**，不走题干净化器，
+           只能靠 U.esc 转义。原实现这两个字段直接拼串 ⇒ 索引里一旦出现
+           `<img src=x onerror=…>`（AI 写坏 / 手工编辑 / 外部导入），打开卡片详情就执行脚本。
+           同一块里其它字段都过了 U.esc，只有这两处漏了 —— 这正是"逐个字段手写转义"的结构性风险；
+           本文件的新增字段一律先 U.esc 再接字符串（判据见 tests\neg-meta-escape.cjs）。 */
+        kv('下次建议', U.esc(c.nextDue || '—') + (c.lastReviewedAt ? '（上次 ' + U.esc(c.lastReviewedAt) + '）' : '')) +
+        kv('盲解', U.esc(c.blindStatus || '未盲解') + (c.blindSolveAt ? '（' + U.esc(c.blindSolveAt) + '）' : '') + (blindFresh ? ' · 指纹' + U.esc(blindFresh) : '')) +
         kv('配图', fig ? U.esc(fig.state || '—') : '未登记') +
         '</dl></div>' +
         '<div class="sect"><h4>复习流水</h4>' +

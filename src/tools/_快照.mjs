@@ -21,7 +21,7 @@
 import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
-import { readJsonStrict, writeTextAtomic } from './_安全写.mjs';
+import { readJsonStrict, writeTextAtomic, acquireLibLock } from './_安全写.mjs';
 import { libraryRoot } from './_库根.mjs';
 
 /* ★ 2026-10-23 程序与数据分家：ROOT 是**库根**（数据 + 库所在的 git 仓库），不是工具目录。
@@ -54,12 +54,20 @@ const reason = args.find(a => !a.startsWith('--')) || '例行快照';
    ⚠ 2026-10-10（BUG-13）：原先漏了 3 个真源（_原卷台账.json / _盲解双路.json / _笔形台账.json）
    与撤卡留档目录 —— 那三个文件装的是 205 条双路盲解结论、202 条原卷溯源坐标、19 条笔形判读，
    全是不可再生的人工判读；漏掉它们等于"快照"名不副实。
+   ⚠ 2026-10-31：再补 `_原图台账.json`（原图保全库的对象名册）。
+   丢了它不等于丢原图字节（字节在 `_原图\` 与备份里），但会丢掉"哪个 sha 是哪个批次/原名/学生"
+   这层溯源 —— 而卡片关系里的 pageSha 指着它，名册一丢就只能靠人工重认。
+   同理补 `_页码映射.json`（原卷扫描件 → 印刷页码的单一真源，153 条映射且含偏移规则）。
    自检：tests\gate-contracts 不覆盖此项，故在本文件底部给出 `--list` 打印实际纳管清单。 */
 const DATA_PATHS = [
   '*_索引.json', '_待确认.json', '_组卷台账.json', '_配图台账.json',
   '_原卷台账.json', '_盲解双路.json', '_笔形台账.json',
+  '_原图台账.json', '_页码映射.json',
   '*错题记录.md', '*题干.html', '_词表.md',
   '_撤卡留档/**',
+  /* 收件箱里的来源映射/人工判读（2026-10-31 实测：本机别处没有同字节副本，
+     且它们不能从任何原图推出。清空收件箱前必须先被快照纳管。） */
+  '_收件箱/**/_来源映射.csv', '_收件箱/**/_答案页映射.csv', '_收件箱/*.md',
 ];
 
 const git = (...a) => execFileSync('git', ['-C', ROOT, ...a], { encoding: 'utf8', maxBuffer: 64e6 });
@@ -155,6 +163,18 @@ if (args.includes('--restore')) {
   console.log(`  大小：${content.length} 字节`);
 
   if (dry) { console.log('（--dry：未写入。先去掉 --dry 再执行恢复）'); process.exit(0); }
+
+  /* ★ 2026-10-31（codex B03，已复现）：恢复必须**取同一把库写锁**。
+     缺陷：`--restore` 全程没有 acquireLibLock，可以把某个文件恢复成旧版本，
+     穿插到另一笔**未提交事务**的内部 —— 而 `_标记复习` 的批改是"先写台账、再写索引"两文件事务：
+       ① CLI 持锁，事务已写新台账；② CLI 还没写索引；
+       ③ 有人跑 `_快照 --restore _组卷台账.json`，未取锁 → 台账被恢复成旧值、校验通过、报成功；
+       ④ CLI 写完新索引并提交 ⇒ 台账旧、索引新，两边都报成功（正是事务要防的半截状态）。
+     修法：写盘前取锁（与所有写通道同一把），锁内再复读/校验，退出时释放。
+     `--dry` / `--restore-list` 是纯读，不取锁。 */
+  const releaseRestoreLock = acquireLibLock(ROOT, { label: '_快照 --restore ' + path.basename(abs) });
+  /* 本分支有多处 process.exit()，`finally` 对它是无效的 ⇒ 释放挂 exit 钩子 */
+  process.on('exit', () => { try { releaseRestoreLock(); } catch (e) { } });
 
   /* 安全网 1：恢复前把当前内容留档（万一恢复错，还能退回来）。
    ⚠ 同构校验的**基准必须是"恢复前的正常内容"，不能是"当前这份"** ——

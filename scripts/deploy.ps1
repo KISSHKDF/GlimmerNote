@@ -21,6 +21,9 @@ if (-not $ProdRoot) {
 }
 Add-Type -AssemblyName System.IO.Compression.FileSystem | Out-Null
 
+# ── 清单写入的唯一实现（与 rollback.ps1 共用，避免两份实现漂移；2026-10-31 E04）──
+. (Join-Path $PSScriptRoot 'deploy-manifest.ps1')
+
 function Fail($msg) { throw "[部署失败] $msg" }
 
 # ── 0) 前置检查 ──
@@ -95,6 +98,25 @@ try {
   $landed = (Get-Content (Join-Path $appDir '版本.json') -Raw -Encoding UTF8 | ConvertFrom-Json).version
   if ([string]$landed -ne $newVer) { throw "落地版本号不符：期望 $newVer，实际 $landed" }
 
+  # ── 5b) 把 app\ 的「强制完整性标签」复位成中（否则部署完也起不来）──────
+  #  2026-10-30 实测事故：运行区（`<仓库上一级>\GlimmerNote`）整棵树带 Windows **低强制性完整性标签**
+  #  （S:AI(ML;OICIID;NW;;;LW)，DSH 文件沙箱授权的常驻副作用），而**新写入的文件会继承它**。
+  #  于是每次部署出来的 拾光小册.exe 都带低标签 ⇒ 进程以低完整性运行（实测令牌 IL=0x1000）
+  #  ⇒ 写不了中完整性的 %LOCALAPPDATA% ⇒ WebView2 建不出用户数据目录，双击报
+  #  「拾光小册 · 初始化失败 / 请求的资源在使用中 (0x800700AA)」，而且 shell.log 一个字都写不进去
+  #  （于是排查时连日志都没有）。低权限进程改不了自己的标签，只能在部署这一侧补这一步。
+  #  失败只告警不中断：标签本来就正常的机器上这条命令什么也不改。
+  try {
+    $ic = & icacls.exe $appDir /setintegritylevel '(OI)(CI)M' /T /C 2>&1
+    if ($LASTEXITCODE -ne 0) {
+      Write-Host "  ⚠ 完整性标签复位失败（不影响已落地的文件）：$($ic[-1])" -ForegroundColor Yellow
+    } else {
+      Write-Host "  完整性标签：app\ 已复位为中完整性"
+    }
+  } catch {
+    Write-Host "  ⚠ 完整性标签复位异常（已跳过）：$($_.Exception.Message)" -ForegroundColor Yellow
+  }
+
   # ── 6) 归档发布包 + 写部署记录 ──
   # 注意：从 _releases 重新部署时，源就是目标，直接 Copy-Item 会报"不能覆盖自己"
   $destZip = Join-Path $relArchive $zipItem.Name
@@ -124,26 +146,11 @@ try {
   #  清单 = 这条纪律的**可验证物证**：scripts\verify-deploy.mjs 拿它逐文件比对，
   #  对不上就证明有人绕过了本脚本。清单写在 $ProdRoot 而不是 app\ 内，
   #  这样下次部署清空 app\ 时不会把它自己删掉。
-  $appFiles = @(Get-ChildItem $appDir -Recurse -File -Force)
-  $fileMap = [ordered]@{}
-  foreach ($f in $appFiles) {
-    $rel = $f.FullName.Substring($appDir.Length).TrimStart('\') -replace '\\', '/'
-    $fileMap[$rel] = (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash
-  }
-  $manifest = [ordered]@{
-    schema     = 1
-    version    = $newVer
-    zip        = $zipItem.Name
-    zipSha256  = $actual
-    deployedAt = $stamp
-    appDir     = 'app'
-    count      = $fileMap.Count
-    files      = $fileMap
-    note       = '本清单由 deploy.ps1 唯一写入；verify-deploy.mjs 用它判断运行区是否被绕过部署改动。'
-  }
-  $manifestPath = Join-Path $ProdRoot '_deploy-manifest.json'
-  ($manifest | ConvertTo-Json -Depth 5) | Set-Content -Path $manifestPath -Encoding UTF8
-  Write-Host "  清单：$manifestPath（$($fileMap.Count) 个文件 sha256）"
+  #  ★ 2026-10-31 E04：写入逻辑搬进 scripts\deploy-manifest.ps1（与 rollback.ps1 共用一份）。
+  #    改前回滚不写清单 ⇒ 正常回滚后 verify-deploy 必然误红；共用一份才不会两边漂移。
+  $mf = Write-DeployManifest -ProdRoot $ProdRoot -Version $newVer -Zip $zipItem.Name `
+    -ZipSha256 $actual -Source 'deploy' -Stamp $stamp
+  Write-Host "  清单：$($mf.Path)（$($mf.Count) 个文件 sha256）"
 
   Write-Host ""
   Write-Host "✔ 部署完成：$oldVer → $newVer" -ForegroundColor Green

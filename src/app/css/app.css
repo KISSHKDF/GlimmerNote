@@ -649,6 +649,16 @@ textarea{width:100%;resize:vertical;min-height:64px;line-height:1.7}
 .ig-file.on{background:var(--brand-soft);border-color:var(--brand-2)}
 .ig-fn{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ig-sha{font-family:var(--font-num);font-size:10px;opacity:.7}
+/* 已归档区（2026-10-30）：已处理过的照片不占待处理清单，但必须**看得见、点得开**——
+   "悄悄消失"会让用户以为照片被删了。所以默认只留一行按钮 + 一句实话，展开才列。 */
+.ig-arch{margin-top:14px;padding:8px 10px;border-radius:var(--r-s);background:var(--surface2)}
+.ig-arch-why{margin-top:6px;line-height:1.6}
+.ig-archnote{margin-top:6px;color:var(--warn,var(--text3))}
+.ig-arch-row{display:flex;align-items:center;gap:8px;padding:3px 8px;border-radius:var(--r-s);
+  font-size:var(--fs-sm);color:var(--text3)}
+.ig-arch-row:hover{background:var(--surface)}
+.ig-arch-tag{flex:none;font-size:10px;padding:1px 6px;border-radius:999px;
+  background:var(--surface);border:1px solid var(--line);color:var(--text3)}
 .ig-ta{width:100%;min-height:120px;margin-top:8px;padding:8px 10px;border-radius:var(--r-s);
   border:1px solid var(--line);background:var(--surface);color:var(--text);font-family:var(--font-num);
   font-size:var(--fs-xs);line-height:1.5;resize:vertical}

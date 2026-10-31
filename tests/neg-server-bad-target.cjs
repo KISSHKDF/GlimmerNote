@@ -27,6 +27,10 @@
  *      · 写路径（`POST /api/pending`、`POST /api/state` 及其 OPTIONS 预检）不回显 `ACAO: null`，
  *        而 `GET /api/state` 的 file:// 取数路径**保持**回显（不能把能用的读路径一起废掉）；
  *      · 降级必须显式：台账 stat 不到 / 生成器成功但状态包读不出，都要带 `degraded` 标记。
+ *      ★ 2026-10-30 S02：第 ②条的上半句"写路径不回显 ACAO: null"已升级为"**一律 403**"——
+ *        `Origin: null` 是不透明源（`<iframe sandbox>` 发的就是它），与 file:// 在 HTTP 层不可区分，
+ *        已整体取消信任；连带 `GET /api/state` 也不再回显 `ACAO: null`（它现在 403）。
+ *        ⑥ 里那四条断言按新判据改写，注释里逐条写明改前行为。
  *
  * 全程自建**临时库** + 独立端口（7194/7195/7201），与真库、与用户正在跑的 7187 实例零接触。
  * 退出码 0=全绿。
@@ -278,20 +282,27 @@ async function waitListen(s, ms = 10000) {
       A('Content-Length 预检：声明 3 MB 而只发 `{}` → 立刻 413（没等 body 到齐、没断连）',
         statusOf(rPre.raw) === 413, 'status=' + statusOf(rPre.raw) + ' sockErr=' + (rPre.err || 'none'));
 
-      /* 写路径不回显 ACAO: null；读路径保持回显（file:// 取数仍可用） */
+      /* 写路径不回显 ACAO: null；读路径保持回显（file:// 取数仍可用）
+         ★ 2026-10-30 S02 判据反转：本段四条原先 pin 的是"null 源能进来、只是不给 ACAO"，
+           那正是这一轮要修掉的旧行为（`Origin: null` 是不透明源，与 file:// 在 HTTP 层不可区分）。
+           现在入口直接 403，且**任何** ACAO 都不发。四条断言因此从"204/200 + 无 ACAO"改成
+           "403 + 无 ACAO"——判据更严，不是放宽（详见 _服务端.mjs 的 S02 段与 tests\neg-server-origin.cjs ②）。 */
       const wPost = await req(PORT, '/api/pending', { method: 'POST', headers: Object.assign({ Origin: 'null' }, JSONH), body: JSON.stringify({ resolves: [] }) });
-      A('POST /api/pending + Origin: null → 不回显 Access-Control-Allow-Origin',
-        wPost.headers['access-control-allow-origin'] === undefined, 'ACAO=' + String(wPost.headers['access-control-allow-origin']) + ' status=' + wPost.status);
+      A('POST /api/pending + Origin: null → **403** 且不回显 Access-Control-Allow-Origin（改前：200，靠 null 信任进门）',
+        wPost.status === 403 && wPost.headers['access-control-allow-origin'] === undefined,
+        'ACAO=' + String(wPost.headers['access-control-allow-origin']) + ' status=' + wPost.status);
       const wPre = await req(PORT, '/api/pending', { method: 'OPTIONS', headers: { Origin: 'null', 'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'content-type' } });
-      A('OPTIONS 预检 /api/pending + Origin: null → 204 但**也不回显** ACAO（预检不收口等于没挡）',
-        wPre.status === 204 && wPre.headers['access-control-allow-origin'] === undefined,
+      A('OPTIONS 预检 /api/pending + Origin: null → **403** 且不回显 ACAO（改前：204 + 无 ACAO；预检放行等于给跨源写开绿灯）',
+        wPre.status === 403 && wPre.headers['access-control-allow-origin'] === undefined,
         'status=' + wPre.status + ' ACAO=' + String(wPre.headers['access-control-allow-origin']));
       const wState = await req(PORT, '/api/state', { method: 'POST', headers: { Origin: 'null' } });
-      A('POST /api/state + Origin: null → 不回显 ACAO',
-        wState.headers['access-control-allow-origin'] === undefined, 'ACAO=' + String(wState.headers['access-control-allow-origin']) + ' status=' + wState.status);
+      A('POST /api/state + Origin: null → **403** 且不回显 ACAO（改前：直接进 doRebuild 触发整库重建）',
+        wState.status === 403 && wState.headers['access-control-allow-origin'] === undefined,
+        'ACAO=' + String(wState.headers['access-control-allow-origin']) + ' status=' + wState.status);
       const rGet = await req(PORT, '/api/state', { headers: { Origin: 'null' } });
-      A('GET /api/state + Origin: null → **仍然**回显 ACAO: null（file:// 取数路径不能被一起废掉）',
-        rGet.headers['access-control-allow-origin'] === 'null', 'status=' + rGet.status + ' ACAO=' + String(rGet.headers['access-control-allow-origin']));
+      A('GET /api/state + Origin: null → **403**（改前：200 + ACAO: null 并把状态包交出去 —— 审计 S02 指的就是这一条）',
+        rGet.status === 403 && rGet.headers['access-control-allow-origin'] === undefined,
+        'status=' + rGet.status + ' ACAO=' + String(rGet.headers['access-control-allow-origin']));
       const okOrigin = 'http://127.0.0.1:' + PORT;
       const wOk = await req(PORT, '/api/pending', { method: 'POST', headers: Object.assign({ Origin: okOrigin }, JSONH), body: JSON.stringify({ resolves: [] }) });
       A('POST + 白名单来源 → 照旧原样回显该来源（正常客户端不受影响）',
@@ -315,7 +326,9 @@ async function waitListen(s, ms = 10000) {
       const genUp = await waitAlive(7201);
       A('降级用例实例启动（带"假生成器"的独立程序目录）', genUp, 'stderr=' + oneLine(srvGen.err.slice(0, 200)));
       if (genUp) {
-        const rb = await req(7201, '/api/state', { method: 'POST', timeoutMs: 60000 });
+        /* ★ 2026-10-30 S06：`POST /api/state` 现在只收 `application/json`（与 /api/pending 同口径），
+           不带这个头会先撞 415 —— 本段要验的是"生成器成功但状态包读不出"的降级，所以必须带上。 */
+        const rb = await req(7201, '/api/state', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', timeoutMs: 60000 });
         A('生成器 exit=0 但状态包读不出 → **500 + ok:false + degraded:"state-unreadable"**（改前：200 + ok:true + 旧快照）',
           rb.status === 500 && rb.json && rb.json.ok === false && rb.json.degraded === 'state-unreadable',
           'status=' + rb.status + ' ok=' + (rb.json && rb.json.ok) + ' degraded=' + (rb.json && rb.json.degraded) + ' err=' + String(rb.json && rb.json.error).slice(0, 80));
