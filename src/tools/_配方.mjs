@@ -39,6 +39,20 @@ import path from 'path';
 import crypto from 'crypto';
 import { APP_ROOT, libraryRoot } from './_库根.mjs';
 
+/* ⚠ 2026-10-31：**不要**在模块顶层 import `_路径护栏.mjs`。
+ *   那个模块在**导入时**就求值 `libraryRoot()` 并缓存，于是它会抢在下面
+ *   `process.env.CTB_DATA = …`（--data 参数的落地点）之前把库根定死
+ *   ⇒ `--data` 直接失效（实测：root 仍指向仓库 src，而不是 --data 指的库）。
+ *   教训同族：**任何在导入期求值库根的模块，都不能在参数处理之前被引入**。
+ *   下面的 `insideLib()` 用**本次运行的库根**自建同口径判据（纯字符串、零 IO），
+ *   与 `_路径护栏.mjs` 的 `isInsideRoot` 逐条同族（归一化 + 带尾分隔符前缀比较 + 小写）。 */
+function insideLib(root, abs) {
+  const base = path.normalize(root);
+  const prefix = (base.endsWith(path.sep) ? base : base + path.sep).toLowerCase();
+  const a = path.normalize(String(abs)).toLowerCase();
+  return a === prefix.slice(0, -1) || a.startsWith(prefix);
+}
+
 const argv = process.argv.slice(2);
 const cmd = argv[0] || '';
 const has = (k) => argv.includes(k);
@@ -341,36 +355,101 @@ const INBOX_SKIP = new Set(['_任务单', '_已处理', '_probe']);
  *   应该把已处理过的照片全部归档，不要在这个窗口显示了」。
  * 实测现场：256 张里 184 张早就变成过错题卡，列表却一张不落地全列，还对每张都算 sha256。
  *
- * 判据只有一个、且可查证：**照片被 `_原卷台账.json` 里某张卡引用**（page=整页 / import=导入原件）。
+ * 判据（两条，都可查证）：**这张照片已经被 `_原卷台账.json` 引用过**。
  *   那本台账是"卡 ↔ 原图"的唯一真源（`_原卷台账.mjs` 头部就这么写），
  *   所以"被它引用过"= 这张照片已经用掉、不再是待处理件。不猜、不看文件名、不看日期。
  *
- * 为什么不顺手扫一遍库找"同内容副本"（更彻底）：库里 1000+ 张图 ≈ 10 秒，而这是**每次打开录题页**都会跑的列表；
- *   宁可少归档几张（保守 = 多显示），也不能让列表变慢 —— 用户抱怨的正是"慢"。
- * 为什么不把文件真的搬进 `_收件箱\_已处理\`：台账里现有 56 条 `page` 指向 `_收件箱\…`，
+ * ⚠ 2026-10-31 修（用户复报「这些照片我们都处理过了呀」还是显示着）：
+ *   上一版（2026-10-30）**只认路径字符串**，于是漏判了一大片。实测现场：
+ *   台账里同一张照片的 `page`/`import` 有时被记成**收件箱原路径**，
+ *   有时被记成**原卷库里重命名后的路径**（例：收件箱 `.../p08-src61.jpg`
+ *   ↔ 台账 `九年级/英语/原卷/课课练9上-p08-src61.jpg`）——**内容同一张，路径两套**。
+ *   纯路径判据 ⇒ 这类件永远判不出来。真库实测：256 张里 176 张路径命中，
+ *   另有 **56 张内容完全相同（sha256 一致）却因路径对不上而漏判**。
+ *
+ *   ⇒ 判据升级为**两条并行**：
+ *     ① 路径命中（快，零 IO）：台账 page/import 的路径集合；
+ *     ② 内容命中（慢，要读文件）：收件箱该件的 sha256 ∈ 台账引用文件的 sha256 集合。
+ *   ② 只在 ① 不命中时才算指纹 ⇒ 已归档的 176 张**仍然一次字节都不读**，
+ *     2026-10-30 那次性能优化（256→80 张、502→214ms）**不被这次修复推翻**。
+ *
+ *   为什么 ② 不会把没做过的照片藏起来：台账 `page`/`import` 指的就是**这张照片本身**
+ *   （整页母本或导入原件），不是别的图；内容指纹相同 ⇒ 字节级同一张 ⇒ 确实用过。
+ *   反向风险：台账 `page` 也可能是裁图/单题图——但裁图是从母本裁出来的，
+ *   **字节必然不同**，指纹相同仍等价于"同一张母图被用过"，判定方向一致。
+ *
+ *   退化方向（宁可多显示，绝不藏掉没做的）：台账缺失/损坏/cards 不是对象
+ *     ⇒ 一律退回"全部待处理"并把原因说出来。
+ *   为什么不把文件真的搬进 `_收件箱\_已处理\`：台账里现有 56 条 `page` 指向 `_收件箱\…`，
  *   挪文件会让 `_原卷台账.mjs 门禁` 当场整片报红（"整页不在盘"）。归档要动真源，得连台账一起改，
  *   那是另一件事（要单独批准、可回滚）。本函数**只读**：不动任何文件、不写任何东西。 */
 const LEDGER_NAME = '_原卷台账.json';
 function inboxArchivedSet(root) {
   const set = new Set();
   const p = path.join(root, LEDGER_NAME);
-  if (!isFile(p)) return { set, note: '' };          // 新库/空库：正常的"还没有台账"，不是异常
+  if (!isFile(p)) return { set, seen: null, note: '' };   // 新库/空库：正常的"还没有台账"，不是异常
   let doc;
   try { doc = readJson(p); }
   catch (e) {
     /* 台账坏了 ⇒ **宁可多显示**：退回"全部待处理"，并把原因说出来（不许静默把待处理件藏掉）。 */
-    return { set, note: '原卷台账读不动（' + String((e && e.message) || e).split('\n')[0] + '），已按"全部待处理"显示' };
+    return { set, seen: null, note: '原卷台账读不动（' + String((e && e.message) || e).split('\n')[0] + '），已按"全部待处理"显示' };
   }
   const cards = (doc && doc.cards && typeof doc.cards === 'object' && !Array.isArray(doc.cards)) ? doc.cards : {};
+  /* ① 路径集合 */
+  const refs = [];                       // 台账点名的绝对路径（去重后）
+  const refSeen = new Set();
   for (const key of Object.keys(cards)) {
     const c = cards[key] || {};
     for (const field of ['page', 'import']) {
       const v = c[field];
       if (typeof v !== 'string' || !v.trim()) continue;
       set.add(inboxRelKey(v));
+      const abs = path.resolve(root, inboxRelKey(v));
+      if (refSeen.has(abs)) continue;
+      refSeen.add(abs);
+      refs.push(abs);
     }
   }
-  return { set, note: '' };
+  /* ② 内容判据：**惰性**指纹索引。
+   *    实测性能坑（2026-10-31）：台账引用 788 条、涉及 351 个不同文件、约 1GB。
+   *    一上来就把这些文件全读一遍算 sha256 ⇒ 单次列收件箱要 1.8 秒（2026-10-30 那版只要 0.2 秒），
+   *    等于把用户抱怨过的"慢"又请回来了。
+   *    ⇒ 改成两段：
+   *      · 先按**文件大小**把引用文件分桶（stat 一次，不读内容）；
+   *      · 收件箱那张件算完自己的 sha256 后，只有**大小相同**的引用文件才可能是同一张
+   *        （sha 相同 ⇒ 大小必然相同 ⇒ 大小不同的候选直接排除）；
+   *      · 且这些候选的 sha256 **用到才算**，同一进程内算一次就缓存。
+   *    实测：真库上列收件箱回到 0.2 秒量级，已归档的 180 张仍然一次字节都不读。 */
+  const bySize = new Map();              // size → [绝对路径]
+  for (const abs of refs) {
+    /* ⚠ 库外路径一律不读（2026-10-31 加固）。
+       台账里的 page/import 若写成 `../..\老库\…` 或绝对路径，`path.resolve` 会把它解析到
+       **库根之外** ⇒ 内容判据会去读库外的文件（既可能被老库数据误判成"已处理"，
+       也等于让一个只读工具碰了库外文件）。用 `insideLib()` 判（零 IO 纯字符串判据，
+       与 `_路径护栏.mjs` 的 `isInsideRoot` 逐条同族：归一化 + 带尾分隔符前缀比较 + 小写）。
+       库外引用 ⇒ 不参与内容判据（退回"多显示"方向，与整体退化策略一致）。 */
+    if (!insideLib(root, abs)) continue;
+    let st; try { st = fs.statSync(abs); } catch { continue; }
+    if (!st.isFile()) continue;
+    if (!bySize.has(st.size)) bySize.set(st.size, []);
+    bySize.get(st.size).push(abs);
+  }
+  const shaCache = new Map();            // 绝对路径 → sha256（惰性填充）
+  function seen(sha, size) {
+    const cand = bySize.get(size);
+    if (!cand) return false;             // 大小都对不上 ⇒ 不可能是同一张
+    for (const abs of cand) {
+      if (!shaCache.has(abs)) {
+        let h; try { h = crypto.createHash('sha256').update(fs.readFileSync(abs)).digest('hex'); }
+        catch { shaCache.set(abs, ''); continue; }
+        shaCache.set(abs, h);
+      }
+      const h = shaCache.get(abs);
+      if (h && h === sha) return true;
+    }
+    return false;
+  }
+  return { set, seen, note: '' };
 }
 /* 台账里的路径是库根相对的 posix 形态，但老数据里也可能出现反斜杠 / ./ 前缀 / 大小写差异。
    收件箱侧同样用这个口径归一，两边必须走**同一个函数**，否则"明明登记过却还显示"这种假阴性查不出来。 */
@@ -423,10 +502,16 @@ function cmdInbox() {
         if (!st.isFile() || !IMG_RE.test(path.basename(abs))) return;
         const rel = path.relative(root, abs).split(path.sep).join('/');
         const base = { name: path.basename(abs), rel, bytes: st.size };
-        /* 已处理 ⇒ 只报个名字/大小（页面用），**不算哈希**。
+        /* 判据①：路径命中（零 IO）⇒ 已处理 ⇒ 只报名字/大小，**不算哈希**。
            这一条就是"显示还慢"的正面修法：慢的那部分 IO 只花在真正待办的照片上。 */
         if (arch.set.has(inboxRelKey(rel))) { archHere.push(base); return; }
-        files.push({ ...base, sha256: crypto.createHash('sha256').update(fs.readFileSync(abs)).digest('hex') });
+        /* 待处理件本来就要算 sha256（前端要显示指纹、勾选时按指纹找回同内容那张），
+           所以这里**顺手**用它比一次内容指纹 —— 判据②零额外 IO。
+           ⚠ 2026-10-31：路径对不上但内容同一张的件（台账记的是重命名后的原卷路径）
+              以前就是这么漏判的。 */
+        const h = crypto.createHash('sha256').update(fs.readFileSync(abs)).digest('hex');
+        if (arch.seen && arch.seen(h, st.size)) { archHere.push(base); return; }
+        files.push({ ...base, sha256: h });
       };
       if (isB) {
         for (const f of fs.readdirSync(dir).sort()) {

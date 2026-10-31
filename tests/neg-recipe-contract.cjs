@@ -373,6 +373,97 @@ console.log('\n══ 五·补、收件箱「已处理归档」（2026-10-30：�
   A('★ 台账里的反斜杠/大小写不同也算已处理（不做假阴性）', J5.archivedCount === 2, 'archivedCount=' + J5.archivedCount);
 }
 
+/* ══════════════ 六·补·内容判据（2026-10-31 修）══════════════
+ * 用户复报（2026-10-31）：「收件箱中还有这么多？这些照片我们都处理过了呀」。
+ * 上一版（2026-10-30）只认**路径字符串** ⇒ 漏判一大片。真库现场：
+ *   同一张照片，台账里 `page`/`import` 有时记收件箱原路径，有时记**原卷库里重命名后的路径**
+ *   （收件箱 `.../p08-src61.jpg` ↔ 台账 `九年级/英语/原卷/课课练9上-p08-src61.jpg`）。
+ *   内容同一张、路径两套 ⇒ 纯路径判据永远判不出来。真库实测 256 张里 56 张这样漏判。
+ *
+ * 这里钉三件事：
+ *   ① 内容判据**能认出来**（路径对不上但字节相同 ⇒ 已处理）；
+ *   ② 内容判据**不误藏**（字节不同 ⇒ 仍是待办）；
+ *   ③ 性能不塌（已归档件仍然**一次字节都不读**：sha256 字段缺席）。 */
+console.log('\n══ 六·补、收件箱「内容判据」（2026-10-31：路径对不上但内容同一张也算已处理）══');
+{
+  const run3 = (args) => spawnSync(process.execPath, [ENGINE, ...args], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  const L3 = path.join(TMP, 'lib-content');
+  const inb = path.join(L3, '_收件箱');
+  fs.mkdirSync(path.join(inb, '批次丙'), { recursive: true });
+  fs.mkdirSync(path.join(L3, '原卷库'), { recursive: true });
+  const mk = (p, tag) => fs.writeFileSync(p, Buffer.concat([Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]), Buffer.from(tag, 'utf8')]));
+  /* 场景①：收件箱里一张，台账指向**原卷库里的同内容副本**（改了名的同一张） */
+  mk(path.join(inb, '批次丙', 'p08-src61.png'), 'SAME');
+  mk(path.join(L3, '原卷库', '课课练9上-p08-src61.png'), 'SAME');
+  /* 场景②：收件箱里一张，台账指向**内容不同**的另一张 ⇒ 必须是待办 */
+  mk(path.join(inb, '批次丙', 'p09-src62.png'), 'OTHER');
+  mk(path.join(L3, '原卷库', '课课练9上-p09-src62.png'), 'DIFFERENT');
+  /* 场景③：纯待办件，谁都没引用 */
+  mk(path.join(inb, '批次丙', 'p10-src63.png'), 'PENDING');
+
+  const LED = path.join(L3, '_原卷台账.json');
+  fs.writeFileSync(LED, JSON.stringify({
+    version: 1,
+    cards: {
+      '乙|E1': { page: '原卷库/课课练9上-p08-src61.png' },
+      '乙|E2': { page: '原卷库/课课练9上-p09-src62.png' },
+    },
+  }, null, 1), 'utf8');
+
+  const r = run3(['收件箱', '--json', '--data', L3]);
+  const J = r.status === 0 ? JSON.parse(r.stdout) : { batches: [], archived: [], total: -1, archivedCount: -1 };
+  const flat = [];
+  for (const b of (J.batches || [])) for (const f of (b.files || [])) flat.push(f);
+  const names = flat.map(f => f.name).sort();
+  const archNames = (J.archived || []).map(f => f.name).sort();
+
+  A('★ 内容判据：路径对不上但字节相同 ⇒ 判为已处理（真库 56 张这样漏判）',
+    archNames.includes('p08-src61.png'), 'archived=' + JSON.stringify(archNames));
+  A('★ 内容判据不误藏：台账指向的是**内容不同**的另一张 ⇒ 仍是待办',
+    names.includes('p09-src62.png'), '待办=' + JSON.stringify(names));
+  A('谁都没引用的那张仍在待办清单里',
+    names.includes('p10-src63.png'), '待办=' + JSON.stringify(names));
+  A('待处理清单只剩这两张（没把没做过的藏起来）',
+    JSON.stringify(names) === JSON.stringify(['p09-src62.png', 'p10-src63.png']), JSON.stringify(names));
+  A('total 与待处理清单一致', J.total === 2, 'total=' + J.total);
+  A('★ 已归档件仍然不算哈希（性能：IO 只花在真待办上）',
+    (J.archived || []).length === 1 && (J.archived || []).every(f => f.sha256 === undefined),
+    JSON.stringify((J.archived || [])[0] || null));
+  A('待处理件仍有 64 位内容指纹（找图/任务单还要靠它）',
+    flat.length === 2 && flat.every(f => /^[0-9a-f]{64}$/.test(f.sha256 || '')), '');
+
+  /* 退化方向④：台账引用的文件**不在盘** ⇒ 不能凭它判已处理（宁可多显示） */
+  fs.writeFileSync(LED, JSON.stringify({
+    version: 1,
+    cards: { '乙|E1': { page: '原卷库/根本不存在.png' } },
+  }), 'utf8');
+  const miss = run3(['收件箱', '--json', '--data', L3]);
+  const JM = miss.status === 0 ? JSON.parse(miss.stdout) : { total: -1, archivedCount: -1 };
+  A('台账引用的文件不在盘 ⇒ 不据此判已处理（不产生假阳性）',
+    JM.archivedCount === 0 && JM.total === 3, 'archived=' + JM.archivedCount + ' total=' + JM.total);
+
+  /* 退化方向⑤：台账引用的路径**越出库根**（`../` 或绝对路径）⇒ 一律不读、不据此判已处理。
+   *    这条是安全边界：内容判据要读文件，若库外路径被 resolve 到库外，就等于让只读工具
+   *    碰了库外的文件，还可能拿老库数据误判成"已处理"。 */
+  fs.writeFileSync(LED, JSON.stringify({
+    version: 1,
+    cards: { '乙|E1': { page: '../库外/x.png' }, '乙|E2': { page: path.join(L3, '..', '库外绝对.png') } },
+  }), 'utf8');
+  const outside = run3(['收件箱', '--json', '--data', L3]);
+  const JO = outside.status === 0 ? JSON.parse(outside.stdout) : { total: -1, archivedCount: -1 };
+  A('★ 台账引用越出库根 ⇒ 不读不判（库外路径不参与内容判据）',
+    JO.archivedCount === 0 && JO.total === 3, 'archived=' + JO.archivedCount + ' total=' + JO.total);
+
+  /* 退化方向⑥（2026-10-31 实测踩到）：`--data` 必须真的生效。
+   *    起因：本轮在模块顶层 import 了 `_路径护栏.mjs`，而它在**导入期**就求值并缓存库根，
+   *    抢在 `--data` 落进 CTB_DATA 之前 ⇒ root 仍指向仓库 src，--data 直接失效。
+   *    教训：任何在导入期求值库根的模块，都不能在参数处理之前被引入。 */
+  const withData = run3(['收件箱', '--json', '--data', L3]);
+  const JD = withData.status === 0 ? JSON.parse(withData.stdout) : { root: '' };
+  A('★ --data 参数真的生效（root 就是它指的库，不是仓库目录）',
+    path.resolve(JD.root || '') === path.resolve(L3), 'root=' + JD.root);
+}
+
 console.log('\n══ 六、指纹（改了内容必须变，否则无法追版本）══');{
   const r1 = engine(['指纹', '--recipe', 'ingest-single', '--json']);
   const r2 = engine(['指纹', '--recipe', 'ingest-single', '--json']);
