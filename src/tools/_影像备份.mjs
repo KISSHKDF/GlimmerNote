@@ -13,9 +13,11 @@
  *
  *   ⚠ 2026-10-12 第二次加固（同盘副本 ≠ 备份）：
  *     ① 判定口径从「文件名正则猜」改为「**台账反查 ∪ 目录规则 ∪ 卡目录整页截图**」；
- *     ② 新增**离机镜像**（`_影像镜像.txt` 配置落点，默认指向另一块物理盘）——
- *        `_影像备份\` 与原件同盘时，硬盘一坏两边一起没，那不叫备份；
- *     ③ 新增**覆盖率体检**：`--verify/--status` 输出「已备份 N/应备份 M + 百分比」。
+ *     ② 新增**覆盖率体检**：`--verify/--status` 输出「已备份 N/应备份 M + 百分比」。
+ *
+ *   ⚠ 2026-11-01：**离机镜像功能整体移除**（用户决策：不做异盘镜像，接受单机风险）。
+ *     `_影像镜像.txt`、`CTB_IMG_MIRROR`、`--mirror` 模式、镜像推送与陈旧件报告一并删除；
+ *     退出码回归纯覆盖率判据。历史记录见 CHANGELOG 2026.10.31.x 与 2026.11.01.01。
  *
  *   ⚠⚠ 2026-10-31 第三次加固：**分母不能再由工具自己挑**（本轮核心改动）。
  *     实测（2026-10-31 全库扫描）：库内影像 1298 个 / 1070.6 MB，其中**明显可重建**的只有
@@ -24,15 +26,13 @@
  *     而旧口径是**白名单式**的：只认「文件名切片正则 ∪ 台账 page 反查 ∪ 原件目录正则」——
  *     不在任何规则里的影像**静默不备份**。实测这类有 271 个，其中 93 个不在可重建集合里
  *     （`待办证据\`、`_笔形\`、`_撤卡留档\`、卡片 `题干.jpg` 等）；按 sha256 逐字节比对，
- *     93 个里有 80 个 / 19.4 MB 在本机备份与离机镜像里**都没有任何同内容副本**，
+ *     93 个里有 80 个 / 19.4 MB 连本机备份里都**没有任何同内容副本**，
  *     只存在于同一块机械盘上 —— 这是当前全项目唯一真正会永久丢数据的口子。
  *     所以口径反过来：**分母 = 全库扫描 − 显式声明的可重建集合**（`REBUILDABLE_RE`）。
  *     新增任何目录（如内容寻址库 `_原图\`）**默认进分母**；要排除必须写进 `REBUILDABLE_RE`
  *     并在那里说清"为什么它可重做"——这就是"声明制"与"规则猜"的区别。
- *     同一轮修掉三个同源缺陷（都在本文件）：
- *       ① 镜像跳过判据原先只比 `size`（同大小不同内容永远不推，镜像里那份坏的永远修不好）；
- *       ② 镜像里「源已删除」的陈旧件从不报告（实测 169 个 / 45.1 MB，只报告不删除）；
- *       ③ `--status` 永远 exit 0，而 `--verify` 会 exit 2 ⇒ 按退出码判断的自动化（计划任务、
+ *     同一轮修掉同源缺陷（都在本文件）：
+ *       `--status` 永远 exit 0，而 `--verify` 会 exit 2 ⇒ 按退出码判断的自动化（计划任务、
  *          体检）把"没备份好"记成"备份成功"。现在两个模式共用同一个判据 `coverageVerdict()`。
  *
  * 备份策略：**增量 + 幂等**。已存在且内容（sha1）一致的直接跳过，
@@ -43,19 +43,18 @@
  *     （`_来源映射.csv` ×3、`_答案页映射.csv`、某题 `…独立重做用.md`）。它们是**人工判读产物**：
  *     页码偏移规则、原文件名↔归档名↔sha 对应、胶带遮挡复原依据 —— **不能从任何原图推出**，
  *     丢一次就永远补不回来。而旧的收集口径只看影像扩展名 ⇒ 这 5 个既不在分母、也从没备份过
- *     （实测：本机备份与离机镜像里都找不到同内容副本，只在 D 盘机械盘上）。
+ *     （实测：本机备份里也找不到同内容副本，只在 D 盘机械盘上）。
  *     现在判据一句话：**「原图库里有什么，就必须备份什么」** —— `_原图\` 下按内容全收，
  *     唯一的排除项是 `*.tmp`（写一半的半成品）与 `_快照\`（库自身可再生的内部快照）。
  *
  * 用法：
- *   node _影像备份.mjs            # 增量备份 + 自动推离机镜像（日常就用这个）
+ *   node _影像备份.mjs            # 增量备份（日常就用这个）
  *   node _影像备份.mjs --verify   # 只校验：备份与源是否一致 + 覆盖率体检，不写入
- *   node _影像备份.mjs --status   # 只看统计（分母/覆盖率/缺失/镜像陈旧件），同样按覆盖率判红
- *   node _影像备份.mjs --mirror   # 只推离机镜像
+ *   node _影像备份.mjs --status   # 只看统计（分母/覆盖率/缺失），同样按覆盖率判红
  *
  * 退出码（全模式同一套口径，2026-10-31 统一）：
- *   0 = 分母内全部已备份（且镜像推送成功）
- *   1 = 有该备的没备上 / 镜像推送失败 / 备份内容与源不一致
+ *   0 = 分母内全部已备份
+ *   1 = 有该备的没备上 / 备份内容与源不一致
  *   2 = 覆盖率异常偏低或分母为 0（判定口径退化——"分母被改回去"这种缺陷必须能自动红）
  *
  * 约定（写进开发规范，由 _工具\裁图.ps1 与人工入库流程共同遵守）：
@@ -70,22 +69,7 @@ import { libraryRoot } from './_库根.mjs';
 /* ★ 2026-10-23 程序与数据分家：ROOT 是**库根**（影像与台账都在库里），不是工具目录。 */
 const ROOT = libraryRoot();
 const BACKUP = path.join(ROOT, '_影像备份');
-/* 离机备份落点：默认 <系统盘>\CTB-影像离机备份。
-   覆盖方式：环境变量 CTB_IMG_MIRROR，或库根下的 _影像镜像.txt 首行。
-   要点：**必须指向与题库不同的物理盘**，否则硬盘一坏两边一起没，那不叫备份。 */
-const MIRROR_FILE = path.join(ROOT, '_影像镜像.txt');
-function mirrorTarget() {
-  if (process.env.CTB_IMG_MIRROR) return process.env.CTB_IMG_MIRROR.trim();
-  try {
-    const s = fs.readFileSync(MIRROR_FILE, 'utf8');
-    const first = (s.split(/\r?\n/) || []).map(x => x.trim()).find(x => x && !x.startsWith('#'));
-    if (first) return first;
-  } catch { }
-  return '';
-}
 const IMG_EXT = /\.(jpe?g|png|pdf|webp|gif|bmp|tiff?)$/i;
-/** 备份落盘的两个桶（只决定落盘子目录，**不影响分母**；新增影像默认进「原件」） */
-const KINDS = ['原件', '切片'];
 
 /* 题库根下**不算"库内影像"**的目录：工具自身、自测区、归档区、程序/文档目录。
    它们不进分母不是因为"可重建"，而是因为它们不是孩子错题链路的影像（`_影像备份\` 是自身，
@@ -171,7 +155,7 @@ function walk(dir, out) {
 
 /** 内容指纹（sha1 前 16 位十六进制）。
  *  ★ 2026-10-31：改成**流式**读。影像里有 1GB 级 PDF，旧的 `readFileSync` 整份进内存
- *  在镜像逐文件比对时会把进程撑爆（新判据要比两边的内容，调用次数比改前多一倍）。 */
+ *  会把进程撑爆（跳过判据与 --verify 都要比两边的内容，调用次数多）。 */
 function sha1(file) {
   let fd;
   try {
@@ -185,7 +169,7 @@ function sha1(file) {
   finally { if (fd !== undefined) { try { fs.closeSync(fd); } catch { } } }
 }
 
-/** 递归列目录下的文件（posix 相对路径）。镜像推送、陈旧件报告、备份统计共用。 */
+/** 递归列目录下的文件（posix 相对路径）。备份统计共用。 */
 function listFiles(dir) {
   const out = [];
   (function w(d, rel) {
@@ -276,67 +260,7 @@ function statsOf(dir) {
   return { n, size };
 }
 
-/** 离机镜像：把 _影像备份 原样复制到另一块物理盘。
-    —— 同盘复制不是备份。这一步才是"备份"。可增量、可重复。 */
-function mirrorAll(log) {
-  const tgt = mirrorTarget();
-  if (!tgt) { log('  [离机] 未配置镜像落点（建 _影像镜像.txt 写一行目标路径，或设 CTB_IMG_MIRROR）—— 当前只有同盘副本'); return { ok: false, reason: '未配置' }; }
-  if (path.parse(tgt).root.toLowerCase() === path.parse(ROOT).root.toLowerCase()) {
-    log('  [离机] ⚠ 镜像落点与题库同卷（' + tgt + '）—— 硬盘一坏两边一起没，请改到另一块物理盘'); return { ok: false, reason: '同卷' };
-  }
-  let copied = 0, same = 0, err = 0;
-  for (const kind of KINDS) {
-    const src = path.join(BACKUP, kind);
-    if (!fs.existsSync(src)) continue;
-    for (const r of listFiles(src)) {
-      const s = joinRel(src, r), d = path.join(tgt, kind, ...r.split('/'));
-      try {
-        /* ★ 2026-10-31：跳过判据从「size 相同」改成「**内容**（sha1）相同」。
-           改前只比 size ⇒ 同大小不同内容的镜像副本**永远**不会被修正：
-           工具报"备份在"，可镜像里那份其实与源不同（正是"备份看着在、其实坏了"的形态）。
-           size 只作廉价前置筛（大小不同直接覆盖），最终判据是内容哈希。 */
-        if (fs.existsSync(d)) {
-          const ss = fs.statSync(s), ds = fs.statSync(d);
-          if (ds.size === ss.size) {
-            const hs = sha1(s), hd = sha1(d);
-            if (hs !== null && hs === hd) { same++; continue; }
-          }
-        }
-        fs.mkdirSync(path.dirname(d), { recursive: true });
-        fs.copyFileSync(s, d + '.tmp'); fs.renameSync(d + '.tmp', d); copied++;
-      } catch { err++; }
-    }
-  }
-  log('  [离机] → ' + tgt + '  新增 ' + copied + ' 个，内容一致跳过 ' + same + ' 个，失败 ' + err + ' 个');
-  return { ok: err === 0, copied, same, err };
-}
-
-/** 镜像里的**陈旧件**：镜像有、本机备份已无（源被删 / 改名 / 被排除后，旧副本还留在镜像里）。
-    ★ 2026-10-31 新增。**只报告，不删除**：删除是不可逆动作（本仓纪律：不可逆决定要问），
-    而"镜像里多出来的东西"可能是某份唯一副本；清理必须由人看清单后自己决定。
-    改前这些件一个都不报 —— 实测 169 个 / 45.1 MB，占着镜像空间却无人知晓。 */
-function staleInMirror(log) {
-  const tgt = mirrorTarget();
-  if (!tgt || !fs.existsSync(tgt)) { log('  镜像陈旧件：未配置/未落盘镜像，无法统计'); return { known: false, n: 0, size: 0, list: [] }; }
-  const local = new Set();
-  for (const kind of KINDS) for (const r of listFiles(path.join(BACKUP, kind))) local.add(kind + '/' + r);
-  let n = 0, size = 0;
-  const list = [];
-  for (const kind of KINDS) {
-    for (const r of listFiles(path.join(tgt, kind))) {
-      if (local.has(kind + '/' + r)) continue;
-      n++; list.push(kind + '/' + r);
-      try { size += fs.statSync(path.join(tgt, kind, ...r.split('/'))).size; } catch { }
-    }
-  }
-  list.sort();
-  log('  镜像陈旧件：' + n + ' 个 ' + fmtSize(size) + '（镜像有、本机备份已无；**只报告不删除**）');
-  for (const x of list.slice(0, 5)) log('    - ' + x);
-  if (list.length > 5) log('    … 还有 ' + (list.length - 5) + ' 条');
-  return { known: true, n, size, list };
-}
-
-/** 覆盖率体检：应备份 vs 已备份（含离机）。
+/** 覆盖率体检：应备份 vs 已备份。
     铁律（2026-10-12 立，2026-10-31 加强）：备份工具的绿灯只能证明"它自己选中的文件是好的"，
     必须额外报出**分母与覆盖率**，而且分母必须是"全库减可重建"这个扫描结果，
     不是工具自己按名字挑出来的那一撮。三个数必须齐：应备份 / 已备份 / 缺失（缺失还要能列出）。 */
@@ -420,9 +344,6 @@ function main() {
     const s = statsOf(path.join(BACKUP, '切片'));
     log('  本机备份：原件 ' + o.n + ' 个 ' + fmtSize(o.size) + ' / 切片 ' + s.n + ' 个 ' + fmtSize(s.size));
     const cov = coverage(origin, slice, log);
-    const tgt = mirrorTarget();
-    log('  离机镜像：' + (tgt || '（未配置——建 _影像镜像.txt）'));
-    staleInMirror(log);
     const v = coverageVerdict(cov, total);
     if (v.code) { console.error('✖ ' + v.reason + ' ⇒ 退出码 ' + v.code); process.exit(v.code); }
     log('  ✔ 分母内全部已备份（' + cov.need + ' 个）');
@@ -441,7 +362,6 @@ function main() {
     }
     log('  校验：一致 ' + ok + ' / 异常 ' + bad);
     const cov = coverage(origin, slice, log);
-    staleInMirror(log);
     /* 与 --status 同一个判据：覆盖率不达标就红，异常项也红 —— 两条都过才算备份好 */
     const v = coverageVerdict(cov, total);
     if (v.code) { console.error('✖ ' + v.reason + ' ⇒ 退出码 ' + v.code); process.exit(v.code); }
@@ -451,12 +371,11 @@ function main() {
   }
 
   if (mode === '--mirror') {
-    const r = mirrorAll(log);
-    staleInMirror(log);
-    process.exit(r.ok ? 0 : 1);
+    console.error('✖ --mirror 模式已移除（2026-11-01 用户决策不做异盘镜像），退出码 2');
+    process.exit(2);
   }
 
-  // 默认：增量备份 + 自动镜像到离机盘（备份的意义在离机那一份）
+  // 默认：增量备份
   ensureDirs();
   const c = { 原件: 0, 切片: 0 }, s = { 原件: 0, 切片: 0 };
   let fail = 0;
@@ -477,25 +396,16 @@ function main() {
   const sl = statsOf(path.join(BACKUP, '切片'));
   log('  本机备份：原件 ' + o.n + ' 个 ' + fmtSize(o.size) + ' / 切片 ' + sl.n + ' 个 ' + fmtSize(sl.size));
   const cov = coverage(origin, slice, log);
-  /* ★ 2026-10-29（R2 审计 D-03）：默认模式原先把 mirrorAll 的返回值**丢掉** ⇒ 离机镜像失败
-     （未配置落点 / 镜像盘没插 / 落点与题库同卷 / 逐个 copy 出错）仍然退出 0。
-     本文件头自己写着"备份的意义在离机那一份""同盘复制不是备份"，所以这里必须如实报失败。 */
-  const m = mirrorAll(log);   // 每次都推一次离机（幂等、增量）
-  staleInMirror(log);
-  log('  本机位置：' + BACKUP + '   ← 同盘副本，防误删');
-  log('  离机位置：' + (mirrorTarget() || '（未配置——建 _影像镜像.txt）') + '   ← 真备份，防硬盘坏');
+  /* ★ 2026-10-29（R2 审计 D-03）：默认模式凡判定失败必须如实设非 0 退出码，不许静默 exit 0
+     ——本仓最忌讳"看着成功"。2026-11-01 镜像移除后，退出码唯一由 coverageVerdict 决定。 */
+  log('  备份位置：' + BACKUP + '   ← 同盘副本，防误删');
   const v = coverageVerdict(cov, total);
-  if (!m.ok) {
-    console.error('✖ 离机镜像未成功（' + (m.reason || ('copy 出错 ' + (m.err | 0) + ' 项')) +
-      '）：本机副本已更新，但**真备份**没落盘 ⇒ 退出码 1');
-    process.exitCode = 1;
-  }
   if (v.code) {
     console.error('✖ ' + v.reason + ' ⇒ 退出码 ' + v.code);
-    process.exitCode = Math.max(process.exitCode | 0, v.code);
+    process.exitCode = v.code;
+    return;   // 已在上面如实报过（退出码也设好了）
   }
-  if (!m.ok || v.code) return;   // 已在上面如实报过（退出码也设好了）
-  log('  ✔ 默认模式完成：分母内全部已备份，且已推离机');
+  log('  ✔ 默认模式完成：分母内全部已备份');
 }
 
 main();
