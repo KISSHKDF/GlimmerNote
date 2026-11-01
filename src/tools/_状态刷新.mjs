@@ -22,6 +22,7 @@ import { execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { libraryRoot, toolPath } from './_库根.mjs';
 import { readJsonStrict, writeJsonAtomic, acquireLibLock } from './_安全写.mjs';
+import { resolver, encRel } from './_原图寻址.mjs';
 
 /* ★ 2026-10-23 程序与数据分家：ROOT 现在是**用户库根**，不再是"本脚本所在目录"。
    兄弟工具一律用 toolPath(...)，见 _库根.mjs。 */
@@ -88,18 +89,59 @@ function extractJson(text) {
   return JSON.parse(text.slice(a, b + 1));
 }
 
+/* ---------- 原图路径自愈（2026-11-01 缺陷修复，真库实测锚点） ----------
+   本工具是"读旧包 → 改一处分区 → 写回"，它**不重解析** `origPage`/`origImport`；
+   而带兜底寻址的 `生成状态.mjs` 只在**显式重建**时跑（`_服务端.mjs` 的 `doRebuild()`）。
+   后果（2026-11-01 真库实测）：只要上一次全量生成发生在兜底寻址那版之前，包里的死路径
+   就会被"刷新"着一直活下去 —— `generatedAt` 天天是新的，字段却是旧的（452 张卡全无
+   `origResolve`；抽样 3 张整页原卷 2 张破图，而字节其实都在保全库 `_原图\` 里）。
+   修法：写回前扫一遍卡片的这两个字段，路径不在盘上就按内容从保全库找回：
+   找回 → 换成可达路径 + 写 `via`；找不回 → 写 `'lost'`（可见，绝不静默）。
+   路径还在的卡零 IO（`resolver()` 内部直接 stat 返回 `direct`）。 */
+function healOrigPaths(s) {
+  const cards = [];
+  for (const k of s.data || []) for (const sub of k.subjects || []) for (const c of sub.items || []) cards.push(c);
+  if (!cards.length) return 0;
+  let R = null, n = 0;
+  for (const c of cards) {
+    for (const pair of [['origPage', 'origResolve'], ['origImport', 'origImportResolve']]) {
+      const f = pair[0], rf = pair[1];
+      if (!c[f]) continue;
+      let rel = c[f];
+      try { rel = decodeURIComponent(rel); } catch (e) { /* 不是合法百分号编码就按原样试 */ }
+      if (!R) R = resolver();                    // 反查表只建一次（452 张卡共用）
+      const r = R.resolve(rel);
+      if (r) {
+        const want = encRel(r.path);
+        /* ★ 只在**路径真的变了**时才写 via：本工具读到的是"状态包里的路径"（可能已经是
+           保全库路径），而生成器读到的是"台账里的路径"（收件箱老路径）。若这里对同一个路径
+           重算 via，同一个文件会被两个写入方交替标成 direct/store（churn，且语义打架）。
+           口径统一为：路径变了才换并记 via；路径没变只在缺 via 时补一个。 */
+        if (c[f] !== want) { c[f] = want; c[rf] = r.via; n++; }
+        else if (!c[rf]) { c[rf] = r.via; n++; }
+      } else if (c[rf] !== 'lost') { c[rf] = 'lost'; n++; }
+    }
+  }
+  return n;
+}
+
 let state = readState();
 if (section === 'pending' || section === 'pending-if-stale') {
   const fp = pendingFingerprint();
-  if (section === 'pending-if-stale' && pendingIsFresh(state, fp)) {
-    /* 台账没变 → 不 spawn `_待确认.mjs`、不写盘，直接把现状回给调用方。
+  const fresh = section === 'pending-if-stale' && pendingIsFresh(state, fp);
+  const healed = healOrigPaths(state);
+  if (fresh && healed === 0) {
+    /* 台账没变**且**原图路径无需自愈 → 不 spawn `_待确认.mjs`、不写盘，直接把现状回给调用方。
        调用方（`_服务端.mjs` GET）因此拿到的是**最新的** pending：既然台账没动，
        `_状态.json` 里的 pending 就是最新（`_pendingSrc` 记录的那一版）。 */
-    process.stderr.write('[pending] 台账未变（hash=' + fp.hash + '），跳过刷新与写盘\n');
+    process.stderr.write('[pending] 台账未变（hash=' + fp.hash + '），且原图路径无需自愈，跳过刷新与写盘\n');
   } else {
-    state.pending = refreshPending();
-    state._pendingSrc = fp;
+    if (!fresh) {
+      state.pending = refreshPending();
+      state._pendingSrc = fp;
+    }
     writeState(state);
+    if (healed) process.stderr.write('[pending] 原图路径自愈 ' + healed + ' 处（按内容从保全库找回，台账未改）\n');
   }
 } else if (section === 'all') {
   const r = execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', toolPath('_生成首页.ps1')],

@@ -36,6 +36,13 @@ const t0 = Date.now();
 
 console.log('测试环境：' + E.describe());
 if (E.isFrozen(E.LIB)) console.log('⚠ 库指向真库（冻结区）：本次只跑只读门禁；写盘类测试会自己拒绝执行');
+/* ★ 2026-11-01：落到合成库必须显眼。合成库上"恢复类/证据类"断言天然不可满足
+   （没有本地备份、没有 git 历史）；旧版因为真库路径写死，运行区一搬就**静默**落到这里，
+   于是 quick 常态红、回归也不再对着真库跑。来源判据见 tests\_测试环境.cjs 的 LIB_SOURCE。 */
+if (/fixtures/.test(String(E.LIB_SOURCE || ''))) {
+  console.log('⚠ 库落到仓库自带合成库（来源=' + E.LIB_SOURCE + '）：本轮的恢复/证据类断言只反映合成库形状。');
+  console.log('  要对着真库跑：设 GLIMMERNOTE_PROD 指向运行区根（或 CTB_TEST_LIB 指向 <运行区>\\数据）。');
+}
 
 function run(script, args = []) {
   console.log('\n═══ ' + script + ' ' + args.join(' ') + ' ═══');

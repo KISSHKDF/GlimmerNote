@@ -25,7 +25,7 @@ import path from 'path';
 import { execFileSync } from 'child_process';
 import { libraryRoot, toolPath } from './_库根.mjs';
 import { writeJsonAtomic, acquireLibLock } from './_安全写.mjs';
-import { resolver } from './_原图寻址.mjs';
+import { resolver, encRel } from './_原图寻址.mjs';
 
 const argv = process.argv.slice(2);
 const has = (k) => argv.includes(k);
@@ -96,7 +96,8 @@ function readJson(p) {
 }
 
 /** 卡片目录相对库根的路径 → 界面用的百分号编码资产路径 */
-const enc = (rel) => rel.split(path.sep).join('/').split('/').map(encodeURIComponent).join('/');
+const enc = encRel;   /* 编码口径的唯一实现已搬到 _原图寻址.encRel（2026-11-01）；
+                         这里保留别名，避免动 20+ 处调用点，也避免两份实现在下次改动时漂移 */
 
 /* ══════════════ 原卷溯源台账（_原卷台账.json）══════════════
  * ★ 2026-10-23 补：**换生成器时漏掉的一整块**。

@@ -265,16 +265,30 @@ const S = (name, why) => { skipped++; P('[SKIP]' + name + '  → ' + why); };
   A('每张卡的索引都有 origPage 或明确标未定位', OS.withPage + OS.noPage.length === OS.n, OS.n);
   A('origPage 不指向裁图（禁拿特写冒充原图）', OS.badTarget === 0, OS.badTarget);
   A('整页原卷定位率 ≥ 95%', OS.withPage >= OS.n * 0.95, OS.withPage + '/' + OS.n);
-  const pageImg = await cdp.evalJs(`(async function(){
-    var xs=CTB.model.cards.filter(function(x){return x.card.origPage}).slice(0,3),res=[];
+  /* ★ 2026-11-01：把"能不能显示"与"路径解析态"分开判。
+     旧版只打 file:// 加载、且固定取前 3 张：历史上前 3 张恰好全是收件箱老路径，
+     一旦状态包没重解析过 origPage（正是 2026-11-01 实测到的缺陷：包里有死路径、
+     无 origResolve）这条就红，而且红得没有归因。现在：抽样扩到 6 张；
+     另加一条"解析态"断言 —— 有整页的卡里 origResolve 不得为 'lost'、也不得缺字段
+     （真断了才算数据问题；缺字段说明包是旧的，指向 _状态刷新.mjs 的自愈没生效）。 */
+  const pageImg = JSON.parse(await cdp.evalJs(`(async function(){
+    var xs=CTB.model.cards.filter(function(x){return x.card.origPage}).slice(0,6),res=[];
     for(var i=0;i<xs.length;i++){
-      res.push(await new Promise(function(r){var im=new Image();
-        im.onload=function(){r('OK '+im.naturalWidth+'x'+im.naturalHeight)};im.onerror=function(){r('ERR')};
-        im.src=CTB.host.asset(xs[i].card.origPage);setTimeout(function(){r('TIMEOUT')},8000);}));
+      var r=await new Promise(function(done){var im=new Image();
+        im.onload=function(){done('OK '+im.naturalWidth+'x'+im.naturalHeight)};im.onerror=function(){done('ERR')};
+        im.src=CTB.host.asset(xs[i].card.origPage);setTimeout(function(){done('TIMEOUT')},8000);});
+      res.push({id:xs[i].card.id,resolve:xs[i].card.origResolve||null,load:r});
     }
-    return JSON.stringify(res);
-  })()`);
-  A('整页原卷 file:// 真能加载（抽样 3 张）', JSON.parse(pageImg).every(s => String(s).startsWith('OK')), pageImg);
+    var withPage=CTB.model.cards.filter(function(x){return x.card.origPage});
+    return JSON.stringify({items:res,
+      lost:withPage.filter(function(x){return x.card.origResolve==='lost'}).length,
+      noResolve:withPage.filter(function(x){return !x.card.origResolve}).length});
+  })()`));
+  A('整页原卷 file:// 真能加载（抽样 6 张）', pageImg.items.every(s => String(s.load).startsWith('OK')),
+    JSON.stringify(pageImg.items.map(s => s.id + ':' + String(s.load).slice(0, 12) + '/' + s.resolve)));
+  A('整页原卷解析态：不得有 lost，也不得缺 origResolve',
+    pageImg.lost === 0 && pageImg.noResolve === 0,
+    'lost=' + pageImg.lost + ' 缺字段=' + pageImg.noResolve);
 
   const LB = JSON.parse(await cdp.evalJs(`(async function(){
     var xs=CTB.model.cards.filter(function(c){return c.card.origPage&&c.card.origBox&&c.card.img});

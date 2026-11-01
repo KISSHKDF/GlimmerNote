@@ -53,17 +53,41 @@ const st = JSON.parse(fs.readFileSync(E.lib('_状态.json'), 'utf8'));
     A('状态包 origPage 条数 == 台账有整页的条数', gotPage === nPage, `状态包 ${gotPage} / 台账 ${nPage}`);
     A('状态包 origBox 条数 == 台账有红框的条数', gotBox === nBox, `状态包 ${gotBox} / 台账 ${nBox}`);
     A('状态包 origImport 条数 == 台账有原件的条数', gotImp === nImp, `状态包 ${gotImp} / 台账 ${nImp}`);
-    /* 逐卡核对（不是只比总数）：任一张卡的 origPage 必须等于台账里那条的 page。
-       状态包里的路径是**百分号编码**的（老生成器口径，前端 decode 后取图），所以比之前先解码。 */
+    /* 逐卡核对（不是只比总数）。状态包里的路径是**百分号编码**的（前端 decode 后取图），
+       所以比之前先解码。
+       ★ 2026-11-01 改判据：本断言写于「状态包 = 台账路径的编码副本」的时代；2026-10-31.05
+       引入「原图兜底寻址」后，状态包给的是**当前真正可用的路径**（台账里记的路径可能已被清空/
+       改名/搬走——收件箱清空就是这种情况）。所以只承认两种合法情形：
+         · 台账路径还在盘上 → 状态包必须逐字等于它（老口径，行为不变）；
+         · 台账路径没了     → 必须换成保全库路径，且 origResolve === 'store'，且那个文件真在盘上。
+       其余不一致一律判红 —— 特别是"换了路径却没标 store"（那正是 2026-11-01 实测到的
+       「状态包带死路径、无 origResolve」缺陷现场）。 */
     const dec = (s) => { try { return decodeURIComponent(String(s || '')); } catch { return String(s || ''); } };
     const mismatch = [];
     for (const c of cards) {
       const stu = stuOf.get(c);
       const rec = led[stu + '|' + c.id];
       if (!rec) continue;
-      if (String(rec.page || '') !== dec(c.origPage)) mismatch.push(`${stu}|${c.id}`);
+      const ledPage = String(rec.page || '');
+      const decPage = dec(c.origPage);
+      if (!ledPage) {
+        if (decPage) mismatch.push(`${stu}|${c.id}(台账无 page 但状态包有)`);
+        continue;
+      }
+      if (ledPage === decPage) continue;                       // ① 原路径还在 ⇒ 逐字一致
+      /* ② 路径已不是台账原文 ⇒ 必须是"按内容找回的当前可用路径"，而且是**真的可达**的。
+         注意 via 的两种合法取值：生成器每次从台账重解析 ⇒ 'store'；
+         而 `_状态刷新.mjs` 的自愈读到的是状态包里已解析的路径、路径没变就不再改 via,
+         所以这里只要求 via **非空且不是 lost**（'direct' 也合法：那个文件此刻确实在盘上）。 */
+      if (c.origResolve && c.origResolve !== 'lost') {
+        const abs = path.join(E.LIB, decPage);
+        if (!fs.existsSync(abs)) mismatch.push(`${stu}|${c.id}(解析后的路径不在盘上)`);
+        continue;
+      }
+      mismatch.push(`${stu}|${c.id}(既不等于台账、也没有解析记录)`);
     }
-    A('逐卡核对 origPage 与台账一致', mismatch.length === 0, mismatch.slice(0, 3).join(',') || '全部一致');
+    A('逐卡核对 origPage：等于台账，或等于按内容找回的保全库路径', mismatch.length === 0,
+      mismatch.slice(0, 3).join(',') || '全部一致');
   }
 }
 
