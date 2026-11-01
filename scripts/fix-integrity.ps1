@@ -43,7 +43,13 @@ $failed = 0
 foreach ($p in $Path) {
   if (-not (Test-Path $p)) { Write-Host "  跳过（不存在）：$p" -ForegroundColor Yellow; continue }
   $full = (Resolve-Path -LiteralPath $p).Path
-  $before = (icacls.exe $full 2>&1 | Select-String -Pattern 'Mandatory').ToString().Trim()
+  # ⚠ 2026-11-01 修（既有缺陷，D-xxx）：目录**还没有显式强制标签 ACE** 时，
+  #   `icacls | Select-String 'Mandatory'` 无命中 ⇒ 返回 $null ⇒ 链式 .ToString() 抛
+  #   "You cannot call a method on a null-valued expression"，脚本 exit 1。
+  #   "没有该行"本身是合法状态（下面 /setintegritylevel 正是要补上它），必须显式降级成文字，
+  #   不许让它变成崩溃，也不许静默吞掉（打印出来才看得见）。
+  $m = @(icacls.exe $full 2>&1 | Select-String -Pattern 'Mandatory')
+  $before = if ($m.Count -gt 0) { $m[0].ToString().Trim() } else { '(当前无 Mandatory 行)' }
   Write-Host "  $full"
   Write-Host "    现在：$before"
   if ($WhatIf) {
@@ -57,7 +63,8 @@ foreach ($p in $Path) {
     Write-Host "    ✖ 复位失败：$($out | Select-Object -Last 1)" -ForegroundColor Red
     continue
   }
-  $after = (icacls.exe $full 2>&1 | Select-String -Pattern 'Mandatory').ToString().Trim()
+  $m2 = @(icacls.exe $full 2>&1 | Select-String -Pattern 'Mandatory')
+  $after = if ($m2.Count -gt 0) { $m2[0].ToString().Trim() } else { '(复位后仍无 Mandatory 行)' }
   Write-Host "    之后：$after" -ForegroundColor Green
 }
 
