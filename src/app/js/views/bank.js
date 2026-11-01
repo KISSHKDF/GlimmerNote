@@ -337,7 +337,7 @@
           chips: '<span class="tag warn">' + U.esc(c.id) + '</span><span class="' + layerCls(c.causeLayer) + '">' + U.esc((c.causeLayer || '') + (c.causeCode || '')) + '</span>',
           q: c.question,
           detail: '正确答案：' + (c.answer || '—') + '　｜　当时错答：' + (c.studentAnswer || '—') + '　｜　错因：' + (c.causeDesc || '—'),
-          hint: '这是从原图（整页原卷）裁下的题图（含孩子黑笔作答与红笔订正），仅用于核对，勿用于重做（泄答案防线）。🗂 原图可打开这道题所在的整页。',
+          hint: '这是从原图（整页）上按题裁下的单题图（含孩子黑笔作答与红笔订正），仅用于核对，勿用于重做（泄答案防线）。看细节用这张，看这题在第几页/旁边是什么就按 P 切原图。',
         }, M.origOf(c));
         d.querySelectorAll('[data-open]').forEach(t => t.onclick = () => S.lightbox([lbItem(t.dataset.open, c.id + ' 原卷')]));
         const bImg = d.querySelector('#dvImg'); if (bImg) bImg.onclick = () => S.lightbox([lbItem(c.img || c.stem, c.id + ' 原卷大图')]);

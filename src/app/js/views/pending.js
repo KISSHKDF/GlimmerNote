@@ -175,7 +175,7 @@
        这条回话 2026-10-16 就写在 T092 的结论里（"学生A与学生B都是男孩，可以用他"），
        但结论没人消费、界面文案一直挂着 TA（L-373③ 的又一次显形：回话落库 ≠ 回话生效）。 */
     孩子: '这条要问孩子：拿着这张图问他当时怎么想的，把口述原话记进结论再办结。',
-    老师: '这条要问老师：可在灯箱按 ⇄ 切到整页原图后截图发老师，答复记进结论后办结。',
+    老师: '这条要问老师：可在灯箱按 ⇄ 切到原图（整页）后截图发老师，答复记进结论后办结。',
     系统: '这条是数据/工具待修项：写清修法办结，或注明已由谁处理。',
   }[p.askWho] || '看图判断，把结论写进下方再办结。');
   /* 2026-10-15 用户口径：裁图=截图；原图=这道题所在的原始整页。灯箱切换按钮与 🗂 都按此语义。 */
@@ -186,11 +186,11 @@
   }
   function gItem(p) {
     /* 2026-10-15 用户指正：待办灯箱此前 orig=证据图自身 ⇒ 「⇄/🗂」开到的还是裁图，永远到不了整页。
-       现在按 student|cardId 反查题卡，接原卷溯源三件套（M.origOf，与卡片/复习流同一实现）。
+       现在按 student|cardId 反查题卡，接原图溯源（M.origOf，与卡片/复习流同一实现）。
        2026-10-16 补第二级回落（T097~T105 实测）：**无卡待办**（cardId 空，"先补录题干再建卡"那类）
        反查不到卡 ⇒ 仍回落裁图。现在回落到台账待办级 origPage/origBox（_待确认.mjs 定位 --origpage 登记，
        门禁 --json 透传）——两级都接不通才回落裁图，且 origBy 会如实写「待办证据图」。 */
-    let orig = null, origBox = null, origImport = null, origBy = null;
+    let orig = null, origBox = null, origBy = null;
     const x = (p.cardId && /\w/.test(p.cardId || ''))
       ? M.cards.find(c => c.kid === (p.student || '') && c.card.id === p.cardId) : null;
     const three = x ? M.origOf(x.card) : null;
@@ -206,14 +206,13 @@
       origBox = (p.origBox && p.origBox.length === 4) ? p.origBox : null;
       origBy = '待办登记的整页';
     } else if (three && three.orig && three.orig !== p.evidence) {
-      orig = three.orig; origBox = three.origBox; origImport = three.origImport; origBy = three.origBy || '原卷台账';
+      orig = three.orig; origBox = three.origBox; origBy = three.origBy || '原卷台账';
     }
     const hasOrig = !!orig;
     return {
       src: H.asset(p.evidence), rel: p.evidence,
       orig: hasOrig ? orig : p.evidence,
       origBox: hasOrig ? origBox : null,
-      origImport: hasOrig ? origImport : null,
       origBy: hasOrig ? origBy : '待办证据图',
       title: '待办 ' + p.id + ' · ' + (p.student || '') + (p.subject ? '·' + p.subject : '') + ' · ' + (p.source || ''),
       chips: '<span class="tag warn">' + U.esc(p.id) + '</span><span class="tag gray">' + U.esc(p.kind || '') + '</span>' +
