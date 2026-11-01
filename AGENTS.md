@@ -10,6 +10,7 @@
 ## 设计红线（违反即返工，不接受"下次注意"）
 
 1. **不在运行区 `GlimmerNote\app\` 里改任何文件**。改 `src\`，走 `scripts\build-release.ps1` → `deploy.ps1` → `verify-deploy.mjs`。
+   运行区**不一定与仓库同级**：四个发布脚本按 `-ProdRoot`/`--prod` → 用户级环境变量 `GLIMMERNOTE_PROD` → 兜底 `<仓库上一级>\GlimmerNote` 解析（唯一实现 `scripts\_运行区.ps1`；表见 `docs\发布链路.md`）。**"运行区在哪"只能放环境变量**，不许写进任何 tracked 文件。
 2. **部署只动 `app\`**。`数据\` 是用户的，任何脚本都不得写它（导入/补录类工具除外，且必须走 `_安全写.mjs`）。
 3. **`answerSlots` 与 `answerMode` 只能由 `src\tools\_作答门禁.mjs` 写入**。手工改索引不算数，门禁会重新数空位对账并报红。
 4. **不写死本机路径**（`D:\…`、`C:\Users\…`）。前端由 `src\app\js\host.js` 自推导，脚本用 `$PSScriptRoot`；`tests\portability.cjs` 会拦。

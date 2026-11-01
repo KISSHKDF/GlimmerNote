@@ -36,7 +36,8 @@
  *   node scripts\verify-deploy.mjs                 人类可读
  *   node scripts\verify-deploy.mjs --json          机器可读
  *   node scripts\verify-deploy.mjs --quiet         只在失败时输出（pre-commit 用）
- *   node scripts\verify-deploy.mjs --prod D:\x\y   指定运行区（默认 <仓库上一级>\GlimmerNote）
+ *   node scripts\verify-deploy.mjs --prod D:\x\y   指定运行区
+ *     （运行区解析顺序：--prod → 环境变量 GLIMMERNOTE_PROD → 兜底 <仓库上一级>\GlimmerNote）
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -67,7 +68,17 @@ for (let i = 0; i < argv.length; i++) {
 const JSON_OUT = has('--json');
 const QUIET = has('--quiet');
 
-const PROD = path.resolve(valOf('--prod', path.join(REPO, '..', 'GlimmerNote')));
+/* ---- 运行区路径 ----
+ * 解析顺序（唯一契约，与 scripts\_运行区.ps1 的 Resolve-ProdRoot 同序；改一处必须同步另一处）：
+ *   ① --prod <目录>  ② 环境变量 GLIMMERNOTE_PROD  ③ 兜底 <仓库上一级>\GlimmerNote
+ * ★ 2026-11-01：运行区不再保证与开发仓库同级（可以整套搬到别的盘）。原先只按
+ *   「<仓库上一级>\GlimmerNote」推导 ⇒ 运行区一搬走，校验/部署/回滚/急救全部指向
+ *   同一个不存在的目录。机器差异用**用户级环境变量**承载，留在仓库外。
+ * ⚠ 本仓库是公开仓：这里不许写任何本机绝对路径（加目录请用 --prod / 环境变量）。
+ * 空字符串按"没给"处理（setx 尾部空格、`GLIMMERNOTE_PROD=` 都退回下一档），
+ * 否则会 resolve 成当前工作目录，变成一个"看着正常、其实在查别处"的结论。 */
+const ENV_PROD = String(process.env.GLIMMERNOTE_PROD || '').trim();
+const PROD = path.resolve(valOf('--prod', ENV_PROD || path.join(REPO, '..', 'GlimmerNote')));
 const APP = path.join(PROD, 'app');
 const MANIFEST = path.join(PROD, '_deploy-manifest.json');
 

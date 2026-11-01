@@ -5,7 +5,9 @@
 #   ★ 2026-10-31 E04：回滚之后必须再跑一次 verify-deploy（部署一致性），
 #     并把它的失败记成断言红。改前本脚本**全文不调用** verify-deploy ⇒
 #     "回滚不写清单、门禁必然误红"这个缺陷在自检里永远看不见（自检恒绿 = 假绿）。
-#   铁律：绝不碰真实运行区（GlimmerNote）
+#   铁律：绝不碰真实运行区。手段是**显式参数优先**——本脚本给 deploy/rollback 传 -ProdRoot、
+#     给 verify-deploy 传 --prod，全部指向临时沙箱（$env:TEMP）。所以运行区就算搬到别的盘、
+#     或本机 GLIMMERNOTE_PROD 指向哪里，演练都碰不到真实运行区（解析顺序见 scripts\_运行区.ps1）。
 #   用法：powershell -File scripts\selftest-pipeline.ps1 [-Keep]
 # ═══════════════════════════════════════════════════════════
 param([switch]$Keep)
