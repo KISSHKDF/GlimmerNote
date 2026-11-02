@@ -21,6 +21,13 @@
 #   ⚠ 不能在 param() 默认值里调用本函数：Windows PowerShell 5.1 求值 param 默认值时
 #     $PSScriptRoot 还是空字符串（2026-10-23 实测），必须在 param() 之后再解析。
 # ═══════════════════════════════════════════════════════════
+# ★ 2026-11-02 R21：5.1 宿主环境自愈（见 scripts\_PS环境.ps1 的说明）
+#   ⚠ 只在文件真存在时 dot-source：本文件会被部分用例/工具**单独**复制到沙箱里跑，
+#     那时没有 _PS环境.ps1。缺了就**显式告警**继续（可见降级），不静默、也不硬崩。
+$psEnvSelfHeal = Join-Path $PSScriptRoot '_PS环境.ps1'
+if (Test-Path -LiteralPath $psEnvSelfHeal) { . $psEnvSelfHeal }
+else { Write-Host '  ⚠ 缺少 scripts\_PS环境.ps1（5.1 宿主环境自愈）：沿用当前 PSModulePath 继续' -ForegroundColor Yellow }
+
 function Resolve-ProdRoot {
   [CmdletBinding()]
   param(

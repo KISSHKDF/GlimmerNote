@@ -13,6 +13,13 @@
 param([switch]$Keep)
 $ErrorActionPreference = 'Stop'
 
+# ★ 2026-11-02 R21：5.1 宿主环境自愈（见 scripts\_PS环境.ps1 的说明）
+#   ⚠ 只在文件真存在时 dot-source：本文件会被部分用例/工具**单独**复制到沙箱里跑，
+#     那时没有 _PS环境.ps1。缺了就**显式告警**继续（可见降级），不静默、也不硬崩。
+$psEnvSelfHeal = Join-Path $PSScriptRoot '_PS环境.ps1'
+if (Test-Path -LiteralPath $psEnvSelfHeal) { . $psEnvSelfHeal }
+else { Write-Host '  ⚠ 缺少 scripts\_PS环境.ps1（5.1 宿主环境自愈）：沿用当前 PSModulePath 继续' -ForegroundColor Yellow }
+
 # ── 回退耗时上限（判据 L-05：「回退耗时已知且有上限」）──
 # 依据：2026-10-29 审计轮实测 场景一 0.528 s / 场景二 3.893 s（40 MB 包），各留约 3~4 倍余量。
 # 上限不是 SLA，是"某次改动让回退悄悄慢一个数量级"的报警器：超限即 exit 3。

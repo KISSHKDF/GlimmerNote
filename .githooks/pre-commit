@@ -27,6 +27,13 @@ set -e
 REPO="$(git rev-parse --show-toplevel)"
 cd "$REPO"
 
+# ★ 2026-11-02 R12：跳过的门禁必须**列明**。改前这里在 exit 3 分支里打印一句"⚠ 本机没有运行区"，
+#   然后在文件末尾**无条件** echo「[pre-commit] 全部通过」—— 读者看到的是"全过"，
+#   而第 3 道检查其实根本没评估（实测原文："⚠ 本机没有运行区（verify-deploy exit 3）…" +
+#   末行 "[pre-commit] 全部通过"，同一轮输出里自相矛盾）。
+#   现在把跳过项记进这个变量，末行按有没有跳过项分两种措辞。
+SKIPPED_ITEMS=""
+
 # ── 1) lint ──
 if [ -f tools/lint.mjs ]; then
   echo "[pre-commit] ① lint ..."
@@ -71,10 +78,14 @@ if [ -f scripts/verify-deploy.mjs ]; then
   case "$rc" in
     0) echo "  ✔ 运行区与部署清单一致" ;;
     3)
-      # 唯一豁免：本机根本没有运行区（默认 <仓库上一级>\GlimmerNote 不存在）。
+      # 唯一豁免：**解析到的运行区路径不存在**（默认 <仓库上一级>\GlimmerNote 不存在）。
       # 干净克隆里这是预期状态；无法评估 ≠ 有漂移。
-      echo "  ⚠ 本机没有运行区（verify-deploy exit 3）——部署一致性门禁只在有运行区的机器上生效"
-      echo "    干净克隆 / 换机 / CI 里这是预期状态；本机有运行区时再跑一次即可验证。"
+      # ★ 2026-11-02 R12 文案：不再写"本机没有运行区" —— 判据只能证明"解析到的这一个路径不存在"，
+      #   证明不了"这台机器上没有运行区"（运行区可能在别处、只是没解析对）。
+      SKIPPED_ITEMS="部署一致性检查已跳过（verify-deploy exit 3：解析到的运行区路径不存在；干净克隆 / 换机 / CI 的预期状态）"
+      echo "  ⚠ 解析到的运行区路径不存在（verify-deploy exit 3）"
+      echo "    判据只能证明这一个路径不存在，证明不了「本机没有运行区」（运行区可能在别处、只是没解析对）。"
+      echo "    干净克隆 / 换机 / CI 里这是预期状态；本机有运行区时把 --prod / GLIMMERNOTE_PROD 指对再跑一次即可验证。"
       ;;
     4)
       # 清单损坏 = 基线读不懂。**不许**与 3 混为一谈（那正是本轮缺陷：fail-open）。
@@ -96,5 +107,12 @@ if [ -f scripts/verify-deploy.mjs ]; then
   esac
 fi
 
-echo "[pre-commit] 全部通过"
+if [ -n "$SKIPPED_ITEMS" ]; then
+  echo ""
+  echo "⚠ $SKIPPED_ITEMS"
+  echo "  跳过 ≠ 通过：这一条是「无法评估」，本机有运行区时再跑一次才算验证过。"
+  echo "[pre-commit] 全部通过（跳过项已列明）"
+else
+  echo "[pre-commit] 全部通过"
+fi
 exit 0

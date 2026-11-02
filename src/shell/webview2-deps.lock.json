@@ -1,0 +1,27 @@
+{
+  "package": "Microsoft.Web.WebView2",
+  "version": "1.0.2903.40",
+  "source": "https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/1.0.2903.40/microsoft.web.webview2.1.0.2903.40.nupkg",
+  "nupkgSha256": "EF128016DD1E51C59178C827ED5B8AA3322C57AFA8675D930F8109505542AD74",
+  "files": [
+    {
+      "name": "Microsoft.Web.WebView2.Core.dll",
+      "bytes": 603712,
+      "sha256": "88A3B62F45225A811CDB85DF6DFD95C2BFF9A0E43E3B04F813B125EACA56CC9F",
+      "from": "lib/net462/Microsoft.Web.WebView2.Core.dll"
+    },
+    {
+      "name": "Microsoft.Web.WebView2.WinForms.dll",
+      "bytes": 38488,
+      "sha256": "29FC954C3FDE1749817D158F3DD5EBE9EFD3B3CE9708D86092FB1E9F023A1CB0",
+      "from": "lib/net462/Microsoft.Web.WebView2.WinForms.dll"
+    },
+    {
+      "name": "WebView2Loader.dll",
+      "bytes": 165968,
+      "sha256": "462B36FD1BE6CA9F7563466A89E57C41EF4A4DEF3E0A84FA885D203AEA4A3AAF",
+      "from": "runtimes/win-x64/native/WebView2Loader.dll"
+    }
+  ],
+  "note": "受控预期哈希清单（本文件入 git，是唯一的外部锚点）。scripts\\fetch-deps.ps1 用它校验下载到的 nupkg 与解出的每个 DLL：解包前比 nupkgSha256，解包后逐个比 files[].sha256，任一不符即失败且不落任何文件。值来自 2026-10-23 与 2026-11-02 两次独立官方下载（api.nuget.org）互相印证，并在 2026-11-02 与本机 vendor\\webview2\\ 及审计留档副本逐字节核对一致。改版本必须同步更新本文件（version / source / nupkgSha256 / files 全部），且必须重新核对官方包的哈希——不许把新下载的文件自算一遍就当预期值填进来（那样等于自证清白，闸门就废了）。本文件只写『预期值』，不写运行时的取得记录；运行时记录仍是 vendor\\webview2\\DEPS.json（不入 git，格式不变）。"
+}

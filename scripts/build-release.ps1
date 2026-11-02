@@ -20,6 +20,13 @@ param(
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.IO.Compression.FileSystem | Out-Null
 
+# ★ 2026-11-02 R21：5.1 宿主环境自愈（见 scripts\_PS环境.ps1 的说明）
+#   ⚠ 只在文件真存在时 dot-source：本文件会被部分用例/工具**单独**复制到沙箱里跑，
+#     那时没有 _PS环境.ps1。缺了就**显式告警**继续（可见降级），不静默、也不硬崩。
+$psEnvSelfHeal = Join-Path $PSScriptRoot '_PS环境.ps1'
+if (Test-Path -LiteralPath $psEnvSelfHeal) { . $psEnvSelfHeal }
+else { Write-Host '  ⚠ 缺少 scripts\_PS环境.ps1（5.1 宿主环境自愈）：沿用当前 PSModulePath 继续' -ForegroundColor Yellow }
+
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $verFile = Join-Path $root 'VERSION.json'
 $srcApp  = Join-Path $root 'src\app'

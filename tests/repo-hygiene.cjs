@@ -52,18 +52,19 @@ function scanText(text) {
 }
 
 function main() {
-  let fails = 0;
-  const A = (n, ok, d) => { console.log(`${ok ? '[OK]  ' : '[FAIL]'} ${n}${d !== undefined ? '  → ' + d : ''}`); if (!ok) fails++; };
+  let fails = 0, asserts = 0;
+  const A = (n, ok, d) => { asserts++; console.log(`${ok ? '[OK]  ' : '[FAIL]'} ${n}${d !== undefined ? '  → ' + d : ''}`); if (!ok) fails++; };
 
   const files = trackedFiles();
   A('git ls-files 可用且非空（机检的检索根）', files.length > 100, files.length + ' 个 tracked 文件');
 
   const hits = [];
   const absUserHits = [];
-  let scanned = 0;
+  let scanned = 0, unreadable = 0;
+  const binFiles = [];
   for (const f of files) {
-    if (BINARY_RE.test(f)) continue;
-    let t; try { t = fs.readFileSync(path.join(ROOT, f), 'utf8'); } catch { continue; }
+    if (BINARY_RE.test(f)) { binFiles.push(f); continue; }
+    let t; try { t = fs.readFileSync(path.join(ROOT, f), 'utf8'); } catch { unreadable++; continue; }
     scanned++;
     for (const { token, n } of scanText(t)) hits.push({ f, token, n });
     const m = t.match(ABS_USER_RE);
@@ -85,6 +86,35 @@ function main() {
     absUserHits.length === 0,
     absUserHits.map(h => `${h.f}(${h.sample}×${h.n})`).join(' ') || '0 处');
 
+  /* ── 未覆盖范围（显式声明；三条真断言）────────────────────────────────────
+     ★ 2026-11-02 R15：改前只声明"只扫 tracked 文本文件"，未覆盖范围留给读者自己推 ——
+     外部复核（架构 c）指出三处真空白且逐条实证过，而屏幕上看不出边界在哪。
+     现在把三处**打印出来**，并各配一条**能变红**的断言：声明只有在"事实仍然成立"时才作数。
+     这三条判据的口径：
+       ① 检索根 = `git ls-files`（当前 tracked 树）⇒ git 历史 blob 天生不在其中；
+       ② `release\*.zip` 未跟踪、且被 BINARY_RE 排除 ⇒ 不在扫描面；
+       ③ 图片字节从不做内容检查（按扩展名跳过）⇒ 扫描面 = tracked − 二进制 − 读不出的。
+     哪天有人把 `.git` 纳入、或让发行归档进版本库、或摘掉 BINARY_RE 跳过，这里会先红。 */
+  const trackedPngs = files.filter(f => /^docs\/images\/.+\.(png|jpe?g|gif|webp)$/i.test(f));
+  console.log('');
+  console.log('────────── 未覆盖范围（本检查**不**覆盖；需独立检查，列明以免被读成"全覆盖"）──────────');
+  console.log('  · git 历史 blob —— 检索根是 `git ls-files`（当前 tracked 树），历史版本不在其内');
+  console.log('  · release\\*.zip —— 发行归档未跟踪（既不在 tracked 树，也被 BINARY_RE 按扩展名跳过）');
+  console.log('  · 图片字节 —— ' + binFiles.length + ' 个二进制扩展名文件整类跳过，不做内容检查（tracked 图片 ' +
+    trackedPngs.length + ' 张，如 docs\\images\\*.png）');
+  console.log('  · 联系方式 / 其他姓名 / 题目内容 —— 词表只有 ' + FORBIDDEN.length +
+    ' 个词 + 1 条本机用户目录路径正则，没有实体识别；这三类无任何机器判据');
+  console.log('  · 已由别处补位的部分：打包时 build-release.ps1 对**包内 app\\** 做内容复检；' +
+    'make-doc-shots.mjs 在截图**写盘前**断言页面文本不含真实化名（都不扫图片字节、不扫历史与归档全文）');
+  A('未覆盖声明① · 检索根里没有 git 历史对象（tracked 树不含 .git/ 路径）',
+    !files.some(f => f === '.git' || f.startsWith('.git/')), 'tracked ' + files.length + ' 项');
+  A('未覆盖声明② · release\\*.zip 确实不在 tracked 树（发行归档只在本机，不进版本库）',
+    !files.some(f => /^release\/.+\.zip$/i.test(f)), 'release 下 tracked = ' +
+    (files.filter(f => f.startsWith('release/')).join('、') || '(无)'));
+  A('未覆盖声明③ · 二进制文件整类按扩展名跳过、不做内容检查（扫描面 = tracked − 二进制 − 读不出的）',
+    binFiles.length > 0 && scanned + binFiles.length + unreadable === files.length,
+    '文本 ' + scanned + ' + 二进制 ' + binFiles.length + ' + 读不出 ' + unreadable + ' = ' + files.length);
+
   /* ── 自证（判据必须有牙齿；本仓门禁纪律）────────────────────────────────── */
   const bad = '前缀' + REAL_NAMES[0] + '中缀' + INTERNAL_ROOTS[0] + '后缀';
   const self = scanText(bad);
@@ -102,7 +132,7 @@ function main() {
   A('自证 · 本文件自身也不含真名用户路径', (() => { ABS_USER_RE.lastIndex = 0; return !ABS_USER_RE.test(fs.readFileSync(__filename, 'utf8')); })(), '');
   ABS_USER_RE.lastIndex = 0;
 
-  console.log(`\nRESULT=${fails ? 'FAIL(' + fails + ')' : 'PASS'}  禁词=${FORBIDDEN.length} 类  文本文件=${scanned}`);
+  console.log(`\nRESULT=${fails ? 'FAIL(' + fails + ')' : 'PASS'}  禁词=${FORBIDDEN.length} 类  文本文件=${scanned}  断言=${asserts}`);
   process.exit(fails ? 1 : 0);
 }
 

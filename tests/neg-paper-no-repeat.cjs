@@ -37,8 +37,6 @@ const A = (label, ok, extra = '') => {
 /* 只读真库取素材（绝不写）：拿一个真实批次的题号与日期 */
 const realLedger = JSON.parse(fs.readFileSync(path.join(E.LIB, '_组卷台账.json'), 'utf8'));
 const batches = realLedger.batches || [];
-const seed = batches.slice().sort((a, b) => (b.items || []).length - (a.items || []).length)[0];
-if (!seed) { console.log('✖ 真台账里没有批次，无法取素材'); process.exit(1); }
 
 /* 工具侧默认窗口（days）；改工具默认值必须同步改这里（断言会红，正是我们要的） */
 const REPEAT_WINDOW_DAYS = 7;
@@ -51,21 +49,36 @@ if (!new RegExp("num\\(opt\\['no-repeat-days'\\]\\) \\|\\| " + REPEAT_WINDOW_DAY
 /* ⚠ 2026-10-25：门禁加了「已到期放行」（nextDue ≤ 组卷日 ⇒ 不拦）。
    ②③④⑤ 要测的是"没到期时的拦截"，所以素材必须挑**组卷日当天还没到期**的题；
    真库里恰好有已到期的（那正是修这条门禁的起因），混进来会让 ② 变成永远绿。
-   口径与工具 dueOn 同判：nextDue 有值且 ≤ 组卷日。 */
+   口径与工具 dueOn 同判：nextDue 有值且 ≤ 组卷日。
+
+   ★ 2026-11-02 R22：**素材挑法改了**。原来是"挑题数最多的批次"，而 2026-11-02 的真库里
+   题数最多的批次（P20261101-01，60 题）**60 题全部已到期** ⇒ `ids` 恒为 0、
+   这条门禁在真库上恒红（0 素材），而且它是**数据漂移**不是代码缺陷 —— 在整改前的
+   pristine HEAD（1ccd1d35）上跑同样红（已实测）。现在改成"挑未到期题最多的批次"，
+   测试意图一字不变：依然只测"未到期时必须拦"。 */
+const dueCache = {};
 function loadNextDue(student) {
+  if (dueCache[student]) return dueCache[student];
   const out = {};
   for (const rel of E.findIndexes(E.LIB)) {
     let j; try { j = JSON.parse(fs.readFileSync(path.join(E.LIB, rel), 'utf8').replace(/^\uFEFF/, '')); } catch { continue; }
     if (j.student !== student) continue;
     for (const it of (j.items || [])) out[it.id] = it.nextDue || '';
   }
+  dueCache[student] = out;
   return out;
 }
-const seedDue = loadNextDue(seed.student);
-const isDueOn = (id, date) => { const nd = seedDue[id]; return !!(nd && String(nd) <= String(date)); };
-const ids = (seed.items || []).filter(id => !isDueOn(id, seed.date));
+const isDueOn = (due, id, date) => { const nd = due[id]; return !!(nd && String(nd) <= String(date)); };
+const undDueIds = (b) => { const due = loadNextDue(b.student); return (b.items || []).filter(id => !isDueOn(due, id, b.date)); };
+const ranked = batches.map(b => ({ b, ids: undDueIds(b) })).sort((x, y) => y.ids.length - x.ids.length);
+const seed = ranked.length ? ranked[0].b : null;
+if (!seed) { console.log('✖ 真台账里没有批次，无法取素材'); process.exit(1); }
+const ids = ranked[0].ids;
 if (ids.length < 3) {
-  console.log('✖ 素材不足：批次 ' + seed.paperId + ' 里能用来测"未到期拦截"的题只有 ' + ids.length + ' 题');
+  console.log('✖ 素材不足：真台账 ' + batches.length + ' 个批次里，未到期题最多的也只有 ' + ids.length +
+    ' 题（' + seed.paperId + '，' + seed.date + '，共 ' + (seed.items || []).length + ' 题）');
+  console.log('  口径：nextDue 有值且 ≤ 组卷日的题算"已到期"，不能用来测"未到期拦截"。');
+  console.log('  处置：要么先复习/推进一次复习队列让库里出现未到期的题，要么改这里的素材来源（别把断言阈值调低）。');
   process.exit(1);
 }
 

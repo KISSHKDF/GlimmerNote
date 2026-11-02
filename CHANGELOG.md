@@ -15,6 +15,79 @@
 
 版本号遵循日期制 `YYYY.MM.DD.NN`。版本号唯一真源：`VERSION.json`。
 
+## [2026.11.02.01] - 2026-11-02 · 外部审查核对结论的全范围整改（服务端边界 / 壳类型准入 / 依赖可信性 / 门禁补挂）
+
+**变更分类**：Security / Fixed / Changed / Added
+**升级影响**：换程序目录 `app\`（壳 exe + 前端 js + 服务端工具）。**`数据\` 一个字节不动**——本轮对真库
+只做只读探针；唯一的写入是契约里既有的派生件 `_状态.json`（下一次 pending 刷新时正常重写，`run.mjs`
+的真库零写入白名单本来就把它排除）。壳需重编（`src\shell\build.ps1`）。
+用户可感知的变化：①库内 `.html`/`.svg` 等"非图片非 PDF"文件不再交给系统程序打开，改为在文件夹中定位并
+明确提示（此前会在系统浏览器里以 `file://` 打开、脚本会真执行）；②打开失败不再"假成功"，界面按失败提示；
+③服务端对库内文档加 `default-src 'none'` 的 CSP，含远程图片/CSS/脚本的库内网页不会再向外发请求。
+开发者可感知的变化：`fetch-deps.ps1` 现在要求 `src\shell\webview2-deps.lock.json`（受控预期哈希），
+锁缺失即 fail-closed；静态路由加白名单与 `no-store`、响应改流式（64 MiB 上限 + 单段 Range）；
+`selftest-pipeline.ps1` 从"游离"挂进 `full`；新增 8 个阴性回归用例并全部挂进 `quick/full`。
+
+### 根因
+本机 Codex 对拾光小册做了首轮代码审查（2026-11-02）。我方逐条独立复核后确认：A2（文件打开无类型准入）、
+A3（打开失败仍回 `{"ok":true}`）、A4（依赖哈希是"下载后自算自记"，伪造包可过）、A5（静态路由通配放行）
+与三条架构项（`execFileSync` 阻塞事件循环 / 静态 `readFile` 无上限 / 旧注释与实现不一致）**全部成立**，
+另外还查出 8 条报告没查到的：真库 `数据\.git\` 整树可经 HTTP 读、pending 新鲜度两套判据（服务端 stat /
+刷新工具 hash）互相抵消导致**每次 `GET /api/state` 都同步 spawn 子进程**、CSP `sandbox` 只拦"执行"不拦
+"取"（`<script src>` 的请求照样发出）、桌面壳打开库内 html 时**完全没有** CSP、`docs\等级与NA清单.md`
+声称的"哈希校验"与实现不符、`fetch-deps` 章节点名的文档在仓里不存在、发布链路演练零调用点。
+核对结论与原始证据见本地审计目录 `work\audit-codex-20261102\`（不入库，是留档）。
+
+### 改法
+- **R1 库内文档 CSP**：`sandbox; default-src 'none'; img-src <本机服务端两个来源> data:; style-src 'unsafe-inline';
+  base-uri 'none'; form-action 'none'; frame-ancestors 'none'`（`data:` 是因为真库确有 1 处 data URI；
+  显式列来源是因为 sandbox 让文档变成不透明源、`'self'` 不可靠）。程序根 `index.html` 的 CSP 不变。
+- **R2 静态路由白名单**：四道判据 —— 路径段以 `.` 开头（杀 `数据\.git\` 整树）、目录段以 `_` 开头且不在
+  `{_原图, _收件箱}`、文件名以 `_` 开头且不在 `{_组卷台账.json}`、文件名含 `.bak`；库内响应统一
+  `Cache-Control: no-store`。放行集是按真库 6183 个文件的普查 + 前端 `H.readFile` 调用点穷举定的，不是猜的。
+- **R3/R4 壳的类型准入与失败回执**：`LocalLinks.SystemOpenExt` 一张表（图片 8 种 + `.pdf`）+
+  `RouteFor` 唯一路由，`openFile`、导航 `file:`、新窗口 `file:` 三处共用；其余类型改走"定位文件"并回
+  `{"ok":false,…}`；`Dispatch`/`OpenWithSystem` 返回 `OpenResult`，只有真成功才回 `{"ok":true}`；
+  `.md` 走内置查看器且失败不再回落到系统程序。附带把 `printPdf` 也纳入同一张表（它是第四处 ShellExecute 入口）。
+- **R5 壳的资源请求白名单**：`NavGuard.IsAllowedResource` + `WebResourceRequested`，放行
+  `file:`（程序目录/库目录内）、本机服务端来源、`data:`、`blob:`、`devtools:`、`about:blank`，其余 403 + 记日志。
+- **R6/R7/R8 服务端**：刷新子进程改 `spawn` + 进程内单飞（不再阻塞事件循环）；静态响应改
+  `createReadStream` + 64 MiB 上限（413）+ 单段 Range（206/416，非法与多段按 RFC 忽略回 200）；
+  `pendingFreshness` 改为与 `_状态刷新.mjs` 同算法的内容哈希判据（消除"每次 GET 都 spawn"的永久循环）。
+- **R9 依赖可信性**：新增入 git 的 `src\shell\webview2-deps.lock.json`（版本 + nupkg sha256 + 三个 DLL sha256），
+  `fetch-deps.ps1` 解包前比 nupkg、解到暂存区后逐个比 DLL、全过才搬运；锁缺失 fail-closed；`-LocalNupkg` 同规则。
+  锁里的值是 2026-10-23 与 2026-11-02 **两次独立官方下载互相印证**，并与本机 `vendor\webview2\` 逐字节核对一致。
+- **R11–R15 门禁与文档**：`selftest-pipeline.ps1` 挂进 `full`（含"演练记录先备份后还原"）；`verify-deploy`
+  exit 3 文案改成"解析到的运行区路径不存在"（原来写"本机没有运行区"是越界表述）并同步 `pre-commit`；
+  新建 `docs\服务端安全边界.md` 收编全部服务端判据并修掉两处悬空引用；`repo-hygiene` 显式打印未覆盖范围；
+  `等级与NA清单` 的措辞与实现对齐。
+- **R21（本轮新发现的环境缺陷）**：从 PowerShell 7 起的进程会把 PS7 的 `PSModulePath` 继承给
+  Windows PowerShell 5.1，5.1 撞上 PS7 的二进制模块后 `Get-FileHash` **整个不存在**（实测：node 从 PS7 起、
+  `spawn('powershell')` 继承环境 ⇒ MISSING；摆回 5.1 三档 ⇒ OK），会打红 `deploy`/`rollback`/`build-release`/
+  `selftest-pipeline`/`fetch-deps` 与 `neg-rollback-manifest.cjs`。新增 `scripts\_PS环境.ps1`：
+  **只在真坏了的时候**把 `PSModulePath` 摆回 5.1 三档，由四个入口脚本 dot-source。
+
+### 回归断言（新增 8 个用例，全部挂进 `quick/full`）
+| 用例 | 守什么 | 断言 |
+|---|---|---|
+| `neg-server-lib-csp.cjs` | R1：真 headless Edge + 本机计数器，远程子资源**发出请求数 = 0**，且本地图片**真的加载出来**（正对照） | 27 |
+| `neg-server-static-whitelist.cjs` | R2：`.git` 整树/根台账/备份/`.bak` 必须 403，业务资源必须 200 + `no-store` | 69 |
+| `neg-server-refresh-nonblocking.cjs` | R6：慢桩 6 s 期间 `/health` < 500 ms，并发只 spawn 一个子进程 | 19 |
+| `neg-server-static-stream.cjs` | R7：64 MiB 上限 413、Range 206/416、RSS 增幅 < 32 MiB | 42 |
+| `neg-server-pending-fresh.cjs` | R8：touch 不改内容时 3 次 GET **0 次 spawn**；改内容必须刷新 | 29 |
+| `neg-shell-openfile-policy.cjs` | R3+R4：逐扩展名准入 + 失败必须回 `ok:false` | 51 |
+| `neg-shell-resource-whitelist.cjs` | R5：资源白名单 30 个样本（含 `http://127.0.0.1:PORT@attacker.example/` 伪装） | 36 |
+| `neg-deps-lock.cjs` | R9：伪造包必须被拒、篡改锁必须红、缺锁必须 fail-closed | 32 |
+
+每个用例都带"掏掉修复必须复现缺陷"的阴性自证（含断言"掏掉的比对点恰好 N 处"，防止判据改名后自证空转）。
+另有两个既有用例按 R2 的新口径**只换样本、不削判据**（`neg-server-origin.cjs` 的静态样本改用
+`_组卷台账.json`；`neg-server-static-path.cjs` 对 `_索引.json` 的期望由 200 改 403 并加注释指向 R2）。
+
+### 顺带
+`tests\repo-hygiene.cjs` 现在显式打印"未覆盖范围"（git 历史不在检索根、`release\*.zip` 未纳入、图片字节不做
+内容检查、联系方式/其他姓名/题目内容无机器判据），并补 3 条会变红的真断言——把"证据缺口"写在门禁输出里，
+而不是留给读者猜。
+
 ## [2026.11.01.05] - 2026-11-01 · 灯箱概念收敛为「裁图 / 原图」，「📥 原件」下线
 
 **变更分类**：Removed / Changed

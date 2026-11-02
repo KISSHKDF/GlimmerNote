@@ -77,7 +77,10 @@ function run(script, args = []) {
     const detail = String(r.stdout || '').trim().split('\n')[0];
     console.log('\n✔ 运行区与部署清单一致' + (detail ? '（' + detail + '）' : '（verify-deploy exit 0）'));
   } else if (v.action === 'skip') {
-    console.log('\n○ ' + v.label + '（verify-deploy exit ' + v.code + '）——部署一致性门禁只在有运行区的机器上生效');
+    /* ★ 2026-11-02 R12：后半句原来写"只在有运行区的机器上生效"——那是**越界表述**：
+       exit 3 的判据只能证明"解析到的那个路径不存在"，证明不了"本机没有运行区"
+       （运行区可能搬到了别处、只是没解析对，见 docs\发布链路.md 的运行区解析契约）。 */
+    console.log('\n○ ' + v.label + '（verify-deploy exit ' + v.code + '）——无法评估 ≠ 有漂移；判据只证明解析到的那个路径不存在');
   } else if (v.action === 'block') {
     console.log('\n' + String(r.stderr || r.stdout || '').trim());
     console.log('✖ ' + v.label + '（verify-deploy exit ' + v.code + '）——不一致/读不懂都必须先归位再发版');
@@ -308,7 +311,8 @@ if (mode === 'fixture') {
   const SKIPPED = [
     ['portability.cjs', '需要已构建的 src\\app\\拾光小册.exe（gitignored）'],
     ['e2e-ui.mjs / neg-v2-ui-*.cjs', '需要桌面壳 exe + 9223 调试口'],
-    ['selftest-pipeline.ps1', '需要已构建的发布包与运行区'],
+    /* ★ 2026-11-02 R11：它已挂进 full（见下方 full 块）——fixture 里不跑，别再让这行读成"quick/full 会跑"。 */
+    ['selftest-pipeline.ps1', '需要 ≥2 个发布包（release\\ / 归档\\）；已挂进 full，fixture 里不跑'],
   ];
   let worst = 0;
   for (const [name] of HERMETIC) {
@@ -588,6 +592,42 @@ const unitTests = [
      "已处理"标签（从待处理清单消失）。判据改为"必须有内容证据"；阴性自证摘掉证据闸门，
      正向对照用"同一份字节的副本"（防"改成一律不隐藏"）。 */
   ['neg-inbox-transposed-evidence.cjs'],
+  /* ═════════ 2026-11-02 外部审查（Codex 首轮）核对结论的整改护栏 ═════════
+     来源：work\audit-codex-20261102\拾光小册-首轮审查报告-核对结论-20261102.md（逐条实测复核过，
+     不是照抄指控）+ 整改清单 2026.11.02.01。每条都带"掏掉修复必须复现缺陷"的阴性自证。
+
+     A1 库内文档 CSP：真服务端返回的 CSP 只有 `sandbox` 时，库内 HTML 里的远程
+     `img/link/@import/script src` 会**照发请求**（实到达本机计数器 8 条）；加 `default-src 'none'`
+     后 0 条。本用例用 headless Edge + 计数器做**真浏览器**判据，并要求"本地图片必须真的加载出来"
+     作正对照 —— 只断言"脚本没跑"会漏掉"取"这一半。 */
+  ['neg-server-lib-csp.cjs'],
+  /* A5 静态路由白名单：库根通配放行让 `数据\.git\` 整树（含 index/logs/objects）与全部根台账
+     无 token 可读（真库实测 /_待确认.json 200/324907B、/.git/index 200/198619B）。现在四道判据：
+     dot 段 / `_` 段目录(除 _原图、_收件箱) / `_` 开头文件名(除 _组卷台账.json) / .bak，外加 no-store。
+     正对照守住"业务资源不许被误杀"（题图、题干.html、错题记录.md、_原图/<sha>.jpg、_收件箱/、_组卷台账.json）。 */
+  ['neg-server-static-whitelist.cjs'],
+  /* 架1 refreshPendingSection 曾用 execFileSync：慢桩 6s 时 /health 被拖 5815ms（125s 桩实测 119727ms）。
+     改异步 + in-flight 复用后，慢桩进行中 /health 必须 < 500ms，且并发请求只 spawn 一个子进程。 */
+  ['neg-server-refresh-nonblocking.cjs'],
+  /* 架2 静态响应曾 fs.readFile 全量入内存（256MiB 文件 → 工作集 +256.3MB 且不归还、无 Range）。
+     现在流式 + 64MiB 上限 413 + 单段 Range 206/416，用例连 RSS 增幅一起断言。 */
+  ['neg-server-static-stream.cjs'],
+  /* 新发现：`_服务端.mjs:242` 只看 mtime+size，而 `_状态刷新.mjs:70` hash 优先且命中时不写盘
+     ⇒ "内容没变但 mtime 变过"（touch / 同字节重存 / 还原复制）时两者永久互相抵消，
+     **每次 GET /api/state 都同步 spawn 子进程**（实测 81/74/79ms vs 改内容后 1ms）。判据统一为 hash 优先。 */
+  ['neg-server-pending-fresh.cjs'],
+  /* A2/A3 壳：openFile 只做目录包含性检查、无类型准入（库内 .bat 实测真被执行）；且 Dispatch/
+     OpenWithSystem 吞异常 → 文件不存在、系统程序打不开都回 `{"ok":true}`。现在系统关联只放行
+     图片+pdf、其余改走"定位文件"并回 ok:false，三条链路（openFile / 导航 file: / 新窗口 file:）共用一张表。
+     用例按大括号配对抽真源码编成最小 C# 程序真跑，复刻体里没有任何 Process.Start/窗口。 */
+  ['neg-shell-openfile-policy.cjs'],
+  /* A1 桌面侧：库内 html/svg 经系统关联打开时拿不到服务端 CSP（file:// 直接执行脚本）⇒ 一并纳入
+     类型准入；另加 WebView2 资源请求白名单（NavGuard.IsAllowedResource），堵住壳内出网面。 */
+  ['neg-shell-resource-whitelist.cjs'],
+  /* A4 依赖可信性：改前哈希是"下载后自算自记"，715 字节的伪造 nupkg 也能 `✔ 依赖就位`。
+     现在 `src\shell\webview2-deps.lock.json` 是受控预期哈希（两次独立官方下载一致），
+     解包前校验 nupkg、解包后校验每个 DLL，缺锁文件 fail-closed。 */
+  ['neg-deps-lock.cjs'],
 ];
 for (const [name] of unitTests) {
   worst = Math.max(worst, run(name));
@@ -613,6 +653,32 @@ if (mode === 'full') {
      v1 卡显式 SKIP 并打印存量缺口。② 补 skipped 计数，符合"跳过必须可见"的门禁纪律。 */
   worst = Math.max(worst, run('neg-figure-fingerprint.cjs'));
   if (worst !== 0) { console.log('✖ 图形指纹对照未过（有 v2 卡改了图形却没失效？）'); process.exit(worst); }
+  /* ★ 2026-11-02 R11：把游离的发布链路演练挂进门禁。
+     改前 `selftest-pipeline.ps1` 在 run.mjs 里**只有 fixture 的 SKIP 展示行、0 个调用点**
+     ——任何模式都不跑它（"能绿但没人跑"，L-175 同族）。
+     实测（2026-11-02，隔离整树副本 + %TEMP% 沙箱）：14/14 断言、exit 0、12.75 s；
+     真运行区 app\ 与 数据\ 前后指纹一致（PROD-UNCHANGED=YES），真源 docs\回退演练记录.md 未被写。
+     ⚠ 两条前置：① release\ 与 归档\ 里至少**两个**版本的包（脚本 :36 直接 throw）；
+              ② 脚本成功时会往 docs\回退演练记录.md **追加一行**（设计如此）⇒ 这里先备份、跑完还原，
+                 否则每跑一次 full 工作树就脏一行，会把真正的未提交改动淹掉。
+     包不够时**显式跳过**（不是静默通过）。 */
+  {
+    const zipNames = [path.join(ROOT, 'release'), path.join(ROOT, '归档')]
+      .filter(d => fs.existsSync(d))
+      .flatMap(d => fs.readdirSync(d).filter(n => /^GlimmerNote-.+\.zip$/i.test(n)));
+    if (zipNames.length < 2) {
+      console.log('\n○ 发布链路自检（selftest-pipeline.ps1）跳过：release\\ 与 归档\\ 里只有 ' + zipNames.length +
+        ' 个包，它需要至少两个版本（先跑两次 build-release.ps1 打两个包）。这是**可见跳过**，不是通过。');
+    } else {
+      const rec = path.join(ROOT, 'docs', '回退演练记录.md');
+      const recBak = fs.existsSync(rec) ? fs.readFileSync(rec) : null;
+      const sp = spawnSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+        path.join(ROOT, 'scripts', 'selftest-pipeline.ps1')], { cwd: ROOT, stdio: 'inherit' });
+      if (recBak) fs.writeFileSync(rec, recBak); else if (fs.existsSync(rec)) fs.unlinkSync(rec);
+      worst = Math.max(worst, sp.status == null ? 1 : sp.status);
+      if (worst !== 0) { console.log('✖ 发布链路自检未过（升级/回滚动了数据，或耗时超上限）'); process.exit(worst); }
+    }
+  }
 }
 if (mode === 'full') {
   // launch-dev 是 fire-and-forget（spawn 新壳后自身退出），跑完等端口

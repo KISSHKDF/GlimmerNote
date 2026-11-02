@@ -16,9 +16,10 @@
  *
  * 安全：只绑 127.0.0.1；CORS 只回显白名单来源（绝不发 `*`）；`X-Frame-Options: DENY` +
  *       CSP `frame-ancestors 'none'` 防被嵌 iframe；POST 只收 `application/json`（BUG-17 受限加固，
- *       残余风险与"为什么不直接上 token"见 docs\修复说明-服务端-20261011.md §4）；
+ *       残余风险与"为什么不直接上 token"见 docs\服务端安全边界.md §2 入口三道门 / §3 随机 token）；
  *       无独立写盘（全委托既有工具）；写操作（pending/rebuild）串行化防多会话并发互踩。
- *       `GET /api/state` **只读**：pending 分区按 `_待确认.json` 的 mtime/size 判断，没变就不 spawn、不写盘（BUG-16）。
+ *       `GET /api/state` **只读**：pending 分区按 `_待确认.json` 的**内容哈希**（sha1 前 16 位，
+ *       与 `_状态刷新.mjs::pendingFingerprint` 同算法、同截断）判断，没变就不 spawn、不写盘（BUG-16 / R8）。
  *
  * ★ 2026-10-29 R2 安全整改（审计 H-08，两条都是审计员用**原始 socket** 独立复现的，
  *   逐字证据见 work\std-check\R2-20261029\reports\R2-C-sec.md §H-08）：
@@ -35,7 +36,7 @@
  *      能穿过来源门禁 + 宽松预检 + "只收 JSON"三道，直达 doResolve 落库。读路径不变（file:// 取数仍可用）。
  *      **取舍**：file:// 页面在 server 模式下的**写**路径会被浏览器 CORS 拦下（它要 ACAO=null）；
  *      桌面壳走 postMessage 直连、`http://127.0.0.1:PORT` 同源页面都不受影响。彻底解法是给写路径加
- *      一次性 token 握手（本轮不做，属后续工作）。
+ *      一次性 token 握手（本轮不做，属后续工作）。★ 2026-10-30 S02 已上线（见 docs\服务端安全边界.md §3）。
  *   ④ 失败必须说失败（两处原静默降级）：`doRebuild` 在"生成器成功但新状态包读不出"时不再吞异常回
  *      `ok:true`；`GET /api/state` 在读不到 `_待确认.json` 时不再静默返回过期 pending，改带
  *      `degraded` / `pendingStale` 标记。
@@ -62,7 +63,7 @@
  * 替换关系：本文件取代 _办结监听.mjs（计划任务 CTB-PendingSync 已改指本文件）。
  */
 import http from 'http';
-import { spawn, execFileSync } from 'child_process';
+import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
@@ -228,26 +229,88 @@ function runGen(timeoutMs = 180000) {
 /* ---------- BUG-16：pending 分区按需刷新 ----------
    `GET /api/state` 的语义是"读状态"，但旧代码每次都 spawn `_状态刷新.mjs pending`，
    把 1.35 MB 的 `_状态.json` **整体重写一遍**（连页面刷新都在放大 BUG-01 的中断窗口）。
-   现在：先比 `_待确认.json` 的 mtime/size 与状态包里记录的 `_pendingSrc`（`_状态刷新.mjs` 落的指纹），
-   没变就不 spawn、不写盘；变了才刷（`pending-if-stale` 子支再用内容哈希复核一次，杜绝"只改了 mtime"的假刷新）。 */
+   现在：先比 `_待确认.json` 的内容哈希（sha1 前 16 位）与状态包里记录的 `_pendingSrc`
+   （`_状态刷新.mjs` 落的指纹，R8 起两边同算法），没变就不 spawn、不写盘；
+   变了才刷（`pending-if-stale` 子支自己再复核一次，杜绝"只改了 mtime"的假刷新）。 */
 /* ★ R2 H-08-D（2026-10-29）：改前 `pendingStat()` 返回 null（台账 stat 不到）时让
    `pendingNeedsRefresh()` 直接 `return false` ⇒ 响应是 **200 + 旧的 pending 分区**，
    调用方完全看不出这是降级（"失败必须说失败"被违反）。现在把三态显式化，
-   `unreadable` 一路带到响应体（`GET /api/state` 的 `degraded` / `pendingStale` 标记）。 */
+   `unreadable` 一路带到响应体（`GET /api/state` 的 `degraded` / `pendingStale` 标记）。
+
+   ★ 2026-11-02 R8：**判据与 `_状态刷新.mjs` 统一到内容哈希**。改前这里只比 stat
+   （`rec.mtimeMs === st.mtimeMs && rec.size === st.size`），而刷新器
+   （`_状态刷新.mjs::pendingIsFresh`）是**内容哈希优先**、命中即"台账未变 ⇒ 不写盘"，
+   于是 `_状态.json._pendingSrc.mtimeMs` 永远停在旧值。两者互相抵消 ⇒
+   "内容没变但 mtime 变过"（touch / 以相同字节重存 / 从副本还原）这个**可达状态**下，
+   退化成**每次 `GET /api/state` 都同步 spawn 一个子进程**（ws1-http 2026-11-02 实测
+   81/74/79 ms vs 内容真变后的 1 ms；同一条路径还是页面启动/刷新的最高频路由）。
+   现在：`rec.hash` 存在 ⇒ 与磁盘内容比哈希（相等即 fresh）；mtime+size 与记录全等时
+   走**不读盘**的快速路径；`rec.hash` 缺失（老记录 / 生成器把它写成 `{}`）⇒ 一律 stale。
+   ⚠ 取舍：老记录（有 mtime/size 但无 hash）会退化为"每次 GET 刷一次"（保守方向：
+   宁可多起一次子进程也不漏刷新）。要与 `_状态刷新.mjs` 的 stat 退化口径**完全**对齐，
+   把最后那行 stale 换成 stat 回退即可 —— 那是另一条产品取舍，本轮按"无 hash = 不可信"处理。 */
+function pendingHash(raw) { return crypto.createHash('sha1').update(raw).digest('hex').slice(0, 16); }
 function pendingFreshness() {
   let st;
   try { st = fs.statSync(PENDING); }
   catch (e) { return { status: 'unreadable', error: String((e && e.message) || e) }; }
   const rec = state && state._pendingSrc;
-  if (rec && rec.mtimeMs === st.mtimeMs && rec.size === st.size) return { status: 'fresh' };
-  return { status: 'stale' };   // 无记录（生成器刚重写过状态包）一律算过期：宁可多刷一次，绝不漏
+  if (!rec || !rec.hash) return { status: 'stale' };   // 无记录 / 无 hash：保守刷新
+  if (rec.mtimeMs === st.mtimeMs && rec.size === st.size) return { status: 'fresh' };   // 快速路径：不读盘
+  let raw;
+  try { raw = fs.readFileSync(PENDING); }
+  catch (e) { return { status: 'unreadable', error: String((e && e.message) || e) }; }
+  if (pendingHash(raw) === rec.hash) return { status: 'fresh' };   // 内容级判据（touch 不算变）
+  return { status: 'stale' };
 }
 function pendingNeedsRefresh() { return pendingFreshness().status === 'stale'; }
+
+/* ★ 2026-11-02 R6：pending 刷新**不再阻塞事件循环**，并做进程内 in-flight 复用。
+   改前是 `execFileSync(...)`——同步调用跑在 async handler 里，等于把整个事件循环按子进程
+   的时长冻住：ws1-http 实测 6 s 子进程 ⇒ `/health` 也等 5815 ms；把子进程改成睡 125 s
+   （> timeout 120 s）⇒ 事件循环冻 119.7 s，随后该请求回 500 `spawnSync … ETIMEDOUT`。
+   现在换成 `spawn` + 收集 stdout（等价 maxBuffer 上限、120 s 超时后 kill 并**报失败**），
+   期间 `/health`、静态文件、其它 API 照常服务。
+   in-flight 复用：同一时刻只允许一个刷新子进程；并发请求共用同一个 Promise，不排队各起一个
+   （`GET /api/state` 的并发来自多标签页/多会话，改前每个请求都会起一个自己的子进程）。
+   ⚠ stderr 仍然**继承**（`stdio: ['ignore','pipe','inherit']`，与 `execFileSync` 的默认一致）：
+     刷新器写的 `[pending] …` 行是"它到底有没有被 spawn"的现场证据，不能被吞掉。
+   ⚠ 失败语义不变：超时/非零退出/输出读不懂一律**抛错** ⇒ 调用方的 catch 回 500
+     （"失败必须说失败"，绝不静默返回旧状态包）。 */
+let pendingRefreshInFlight = null;
 function refreshPendingSection() {
-  // `pending-if-stale`：重跑门禁 --json，替换 _状态.json 的 pending 分区，stdout=新状态包（未变则原样回）
-  const out = execFileSync(process.execPath, [REFRESH, 'pending-if-stale'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 120000 });
-  state = parseJsonText(out, '_状态刷新 输出');
-  try { state._diskM = fs.statSync(STATE).mtimeMs; } catch (e) {}
+  if (pendingRefreshInFlight) return pendingRefreshInFlight;
+  pendingRefreshInFlight = new Promise((resolve, reject) => {
+    // `pending-if-stale`：重跑门禁 --json，替换 _状态.json 的 pending 分区，stdout=新状态包（未变则原样回）
+    const p = spawn(process.execPath, [REFRESH, 'pending-if-stale'], {
+      cwd: ROOT, windowsHide: true, stdio: ['ignore', 'pipe', 'inherit'],
+    });
+    const MAX_OUT = 64 * 1024 * 1024;      // 等价于改前 execFileSync 的 maxBuffer
+    let out = '', done = false, timedOut = false, overflow = false;
+    const t = setTimeout(() => { if (!done) { timedOut = true; try { p.kill(); } catch (e) { } } }, 120000);
+    p.stdout.on('data', d => {
+      if (overflow) return;
+      if (out.length + d.length > MAX_OUT) {
+        overflow = true;
+        try { p.kill(); } catch (e) { }
+        return;
+      }
+      out += d;
+    });
+    p.on('error', e => { if (!done) { done = true; clearTimeout(t); reject(new Error('_状态刷新 拉起失败：' + String((e && e.message) || e))); } });
+    p.on('close', code => {
+      if (done) return;
+      done = true; clearTimeout(t);
+      if (timedOut) return reject(new Error('_状态刷新.mjs pending-if-stale 超时（120000ms）已终止'));
+      if (overflow) return reject(new Error('_状态刷新.mjs pending-if-stale 输出超过 ' + MAX_OUT + ' 字节（等价 maxBuffer 上限）'));
+      if (code !== 0) return reject(new Error('_状态刷新.mjs pending-if-stale 退出码 ' + code + '（stdout 前 200 字节：' + out.slice(0, 200) + '）'));
+      try { state = parseJsonText(out, '_状态刷新 输出'); }
+      catch (e) { return reject(e); }
+      try { state._diskM = fs.statSync(STATE).mtimeMs; } catch (e) { }
+      resolve();
+    });
+  }).finally(() => { pendingRefreshInFlight = null; });
+  return pendingRefreshInFlight;
 }
 
 async function doResolve(list) {
@@ -257,7 +320,7 @@ async function doResolve(list) {
     try {
       const r = await runTool([TOOL, '同步', '--file', tmp]);
       if (r.code !== 0) return { ok: false, toolOut: String(r.out || '').slice(-1200), toolErr: String(r.err || '').slice(-400) };
-      refreshPendingSection();
+      await refreshPendingSection();
       const results = [];
       for (const line of String(r.out || '').split(/\r?\n/)) {
         const m = line.match(/[✔↔✖]\s*(T\d+)/);
@@ -297,7 +360,10 @@ async function doRebuild() {
    改前：**所有**响应都发 `Access-Control-Allow-Origin: *`，且 `Origin: null` 直接放行 ⇒
    本机任意网页（或它内嵌的 `<iframe sandbox>`，其源是不透明源，发出的 `Origin` 也是 `null`）
    都能读走状态包、并 `POST /api/pending` 往人工判读真源里写内容（改前实测：`Origin: null` 的 POST = HTTP 200）。
-   现在（**不引入 token**，理由与残余风险见修复说明 §4）：
+    ★ 2026-11-02 R13：下面这句"不引入 token"**已作废**（那是 2026-10-11 那轮的历史决策）。
+      当前状态：每次启动随机 token 已上线（本文件 §Token 段 = TOKEN/TOKEN_HEADER/tokenVerdict），
+      Host/Origin/静态白名单/pending 新鲜度的权威判据见 docs\服务端安全边界.md §2/§3/§5/§7。
+   当时（**不引入 token**，理由与残余风险见 docs\服务端安全边界.md §2 入口三道门 / §3 随机 token）：
      ① 发 `X-Frame-Options: DENY` + CSP `frame-ancestors 'none'`：本服务自己的页面不得被任何页面嵌 iframe；
      ② CORS 只回显白名单来源（`http://127.0.0.1:PORT` / `http://localhost:PORT`）与 file:// 客户端的 `null`，
         **绝不再发通配 `*`**；无 Origin 的同源/非浏览器客户端不需要 ACAO；
@@ -391,6 +457,26 @@ function logReject(what, req, extra) {
   }
 }
 
+/* ★ 2026-11-02 R1：**库内文档**的 CSP（唯一实现）。
+   改前是 `sandbox; frame-ancestors 'none'`，而 `sandbox` 只禁**执行**、不禁**取**：
+   ws1-http 用本机计数器抓到 8 条真实出站（`<link>`、`<script src>`、`<img>`、`<object>`、
+   `@import`、CSS 背景图、favicon 全都在内，8/8 无 Referer 却照样到达对端）——即
+   "打开一个含远程图片的库内 HTML"就会把 IP/时间/UA 交给写它的人。
+   现在补 `default-src 'none'`（B 臂实测：0 条出站、6 条 blockedReason=csp），并按需开三个口子：
+     · `img-src http://127.0.0.1:PORT http://localhost:PORT data:`
+       —— **显式列来源而不是用 `'self'`**：`sandbox` 让文档变成不透明源
+          （实测 `window.origin === 'null'`、localStorage/cookie 抛 SecurityError），
+          不透明源下 `'self'` 匹配不到 `http://127.0.0.1:PORT` ⇒ 本地题图/证据图会被一并拦掉（全库破图）。
+          端口用运行时常量拼，不写死。
+       —— `data:` 是必需的：真库 html/svg/css 普查（2026-11-02）确有 1 处 data URI 图。
+     · `style-src 'unsafe-inline'`：库内题干/证据页用行内 style（还有 SVG 内联样式），禁掉会印坏版式。
+     · `script-src` 刻意**不列**来源 ⇒ 继承 `default-src 'none'`：内联脚本不执行，
+       外链 `<script src>` 连**请求**都不发（sandbox 只禁执行、不禁取，这一条才堵住取）。
+   程序根 `index.html` 的 CSP 不变（`APP_CSP`）：那是程序入口，host.js 必须能执行。 */
+const APP_CSP = "frame-ancestors 'none'";
+const LIB_CSP = "sandbox; default-src 'none'; img-src http://127.0.0.1:" + PORT + " http://localhost:" + PORT +
+  " data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+
 function addCommonHeaders(res, origin, opts) {
   const o = opts || {};
   res.setHeader('X-Frame-Options', 'DENY');
@@ -402,8 +488,9 @@ function addCommonHeaders(res, origin, opts) {
      再带 token 打 /api/*（实测：无 token 403、带 token 200）。这不是净化器被绕过，是权限给错了。
      `sandbox` 让文档变成唯一不透明源：脚本不执行、读不到同源资源；图片/PDF 等非文档响应不受影响
      （CSP 只对文档生效，`<img src>` 照常显示）。
+     ★ 2026-11-02 R1：光有 `sandbox` 不够 —— 子资源照样会**取**（见上面 LIB_CSP 的说明）。
      为什么不对 index.html 加：那是程序入口，host.js 必须能执行（它本身就是应用代码）。 */
-  const csp = o.sandbox ? "sandbox; frame-ancestors 'none'" : "frame-ancestors 'none'";
+  const csp = o.sandbox ? LIB_CSP : APP_CSP;
   res.setHeader('Content-Security-Policy', csp);
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'no-referrer');
@@ -416,6 +503,80 @@ function send(res, code, body, type, origin, opts) {
   res.end(body);
 }
 function sendJson(res, code, obj, origin) { send(res, code, JSON.stringify(obj), undefined, origin); }
+
+/* ★ 2026-11-02 R7：单文件静态下发上限。改前 `fs.readFile` 把整份文件读进内存，
+   ws1-http 实测 256 MiB 文件让服务端工作集 **+256.3 MB** 且请求结束后不归还；
+   现在超限明确回 413（不再"能读就整份读"），可下发的一律走流式。 */
+const MAX_STATIC_BYTES = 64 * 1024 * 1024;
+
+/* ★ 2026-11-02 R2：**库内静态路由白名单**（唯一实现）。四道判据，任一命中即 403：
+     ① 任一路径段以 `.` 开头 —— 杀 `数据\.git\` 整树（改前 `/.git/index` → 200 / 198619 B，
+        `.git\config`、对象库、reflog 统统可读）与一切 dotfile；
+     ② **目录段**以 `_` 开头且不在 `{_原图, _收件箱}` —— 杀 `_备份-真源/_影像备份/_撤卡留档/
+        _盲解/_笔形/_probe/_快照/_crops/_tmp` 等整树；
+     ③ **文件名**以 `_` 开头且不在 `{_组卷台账.json}` —— 杀全部根台账（真库 `_待确认.json`
+        324907 B 改前 200）；
+     ④ 文件名含 `.bak` —— 备份残留不下发。
+   为什么 `_原图` / `_收件箱` **必须**放行：它们是前端静态取图的**唯一两个**库内目录 ——
+     卡片 `img`/`stem`/`fig`/`evidence` 一律经 `H.asset()` 变成 `<img src>`，指向
+     `_原图\<sha256>.<ext>`（内容寻址保全库）与 `_收件箱\<批次>\<批次>-*.jpg`；拦掉 = 全库破图。
+   为什么只有 `_组卷台账.json` 例外：依据是**真库 6183 文件普查 + 前端 `H.readFile` 调用点穷举**
+     （2026-11-02）——UI 唯一静态读取的根台账就是它（`src\app\js\views\paper.js:127` 与 `:720`），
+     其余根台账（`_状态.json`/`_待确认.json`/`_原卷台账.json`/`_待确认清单.md` …）零静态消费者。
+   ⚠ 判据的输入是**请求 URL 解码后的相对路径**，不是 realpath 的结果：junction/symlink 逃逸由上一段
+     包含性判据管；这一层管"业务上该不该下发"。两层**都要**过。 */
+const LIB_DIR_ALLOW = new Set(['_原图', '_收件箱']);
+const LIB_FILE_ALLOW = new Set(['_组卷台账.json']);
+function staticAllowed(relPath) {
+  const segs = String(relPath == null ? '' : relPath).split(/[\\/]+/).filter(s => s.length);
+  if (!segs.length) return false;
+  const file = segs[segs.length - 1];
+  for (const d of segs.slice(0, -1)) {
+    if (d.startsWith('.')) return false;
+    if (d.startsWith('_') && !LIB_DIR_ALLOW.has(d)) return false;
+  }
+  if (file.startsWith('.')) return false;
+  if (file.startsWith('_') && !LIB_FILE_ALLOW.has(file)) return false;
+  if (file.includes('.bak')) return false;
+  return true;
+}
+
+/* ★ 2026-11-02 R7：`Range` 解析（唯一实现）。只支持**单段**（另收两个合法缩写）：
+     `bytes=a-b` / `bytes=a-` / `bytes=-N`（末尾 N 字节）。
+   口径（**RFC 7233 口径**，2026-11-02 按 lead 裁决从"一律 416"改成下面这套）：
+     · 无 `Range` → 200 全量 + `Content-Length`；
+     · 可满足的单段 → 206 + `Content-Range: bytes a-b/total` + `Accept-Ranges: bytes`；
+     · 合法单段但**不可满足**（起点 ≥ 文件尾 / 后缀长度为 0 / 空文件）→ 416 + `Content-Range: bytes * /total`；
+     · **非法或本轮不支持**的 `Range`（单位不是 bytes、语法坏、`bytes=a-b` 且末位<首位、
+       多段 `bytes=0-1,5-6`）→ **忽略该头、回 200 全量**。
+       为什么不回 416：416 的语义是"ranges-specifier 合法但一条都不可满足"；
+       非法 spec 与合法多段都不是"不可满足"（RFC 明确允许服务端忽略它们），
+       拿 416 去回答一个"我们没实现多段"的合法请求是错的。 */
+function parseRange(header, size) {
+  const NONE = { kind: 'none' };
+  if (!header) return NONE;
+  const h = String(header).trim();
+  if (!/^bytes=/i.test(h)) return NONE;        // 单位不是 bytes（含 `items=0-1`）⇒ 忽略
+  if (h.includes(',')) return NONE;            // 合法多段：本轮只做单段 ⇒ 忽略（不是不可满足）
+  const m = /^bytes=(\d*)-(\d*)$/i.exec(h);
+  if (!m) return NONE;                         // 语法坏（含 `bytes=abc` / `bytes=-`）⇒ 忽略
+  const a = m[1], b = m[2];
+  if (a === '' && b === '') return NONE;
+  if (a === '') {                              // bytes=-N
+    const n = Number(b);
+    if (!(n > 0) || size === 0) return { kind: 'unsat' };
+    return { kind: 'ok', start: Math.max(0, size - n), end: size - 1 };
+  }
+  const start = Number(a);
+  const hasEnd = b !== '';
+  const end = hasEnd ? Number(b) : size - 1;
+  /* ⚠ 两条判据的顺序不能反：`bytes=99999999-`（开口式、起点越界）是**合法 spec 但不可满足** ⇒ 416；
+     只有"末位是显式给出的且小于首位"（`bytes=51200-100`）才是非法 spec ⇒ 忽略。
+     反过来写会把 `bytes=N-`（N ≥ size）误判成非法并回 200。 */
+  if (hasEnd && end < start) return NONE;      // 非法 spec（末位<首位）⇒ 忽略
+  if (start >= size) return { kind: 'unsat' }; // 起点越过文件尾 ⇒ 不可满足
+  return { kind: 'ok', start, end: Math.min(end, size - 1) };
+}
 
 function serveStatic(req, res, urlPath, origin) {
   let rel;
@@ -445,31 +606,81 @@ function serveStatic(req, res, urlPath, origin) {
   if (!insideApp(real) && !insideRoot(real) && !insideRealApp(real) && !insideRealRoot(real)) {
     return sendJson(res, 403, { ok: false, error: 'forbidden (link outside root)' }, origin);
   }
-  fs.readFile(real, (err, buf) => {
-    if (err) return sendJson(res, 404, { ok: false, error: 'not found: ' + rel }, origin);
-    /* ★ 2026-10-30 S02：**只**给程序根那份 index.html 注入本轮 token（见 isRootIndex 的说明）。
-       注入点选 `</head>` 之前：index.html 里所有 `<script src>` 都在 body 尾部，
-       注入语句早于 host.js 执行 ⇒ host.js 读 `window.__ctbToken` 时一定已经就位。
-       没有 `</head>`（改造过的极简页面）时退化为插到文档最前面，仍然早于任何脚本。 */
-    if (isRootIndex(real)) {
-      const html = buf.toString('utf8');
-      const snippet = '<script>window.__ctbToken=' + JSON.stringify(TOKEN) + ';</script>';
-      const i = html.search(/<\/head\s*>/i);
-      const out = i < 0 ? snippet + html : html.slice(0, i) + snippet + html.slice(i);
-      addCommonHeaders(res, origin);
-      /* token 每轮启动都变：这条响应**绝不能被缓存**，否则重启后页面拿旧 token，症状是
-         "页面能打开、所有 /api/* 全 403"（而且看起来像服务端坏了，极难归因）。 */
-      res.setHeader('Cache-Control', 'no-store');
-      res.writeHead(200, { 'Content-Type': MIME['.html'] });
-      return res.end(Buffer.from(out, 'utf8'));
-    }
-    /* ★ 2026-10-31（codex A02）：**库内文件一律 sandbox**（见 addCommonHeaders 的注释）。
-       判据用 realpath 之后的位置：程序目录（AppRoot）里的东西才是应用代码；库里的都是用户数据。
-       index.html 例外（上面那条分支先 return 了），它需要执行 host.js。 */
-    const fromApp = insideApp(real) || insideRealApp(real);
-    send(res, 200, buf, MIME[path.extname(real).toLowerCase()] || 'application/octet-stream', origin,
-      fromApp ? undefined : { sandbox: true });
-  });
+  /* ★ 2026-10-31（codex A02）：**库内文件一律 sandbox**（见 addCommonHeaders 的注释）。
+     判据用 realpath 之后的位置：程序目录（AppRoot）里的东西才是应用代码；库里的都是用户数据。
+     index.html 例外（下面那条分支先 return 了），它需要执行 host.js。
+     ★ 2026-11-02 R2：白名单判据加在**包含性/realpath 之后**（先判"能不能碰"，再判"该不该给"）。 */
+  const fromApp = insideApp(real) || insideRealApp(real);
+  if (!fromApp && !staticAllowed(rel)) {
+    return sendJson(res, 403, {
+      ok: false,
+      error: 'forbidden：库内该路径不在静态白名单内（隐藏目录 / 内部台账 / 备份一律不下发）',
+      rel,
+    }, origin);
+  }
+  /* ★ 2026-11-02 R7：先 stat 拿大小与"是不是普通文件"，再决定 413 / 流式 / 整份读。
+     改前是 `fs.readFile` 一把读进内存（目录那时靠 EISDIR 变 404）。 */
+  let st;
+  try { st = fs.statSync(real); }
+  catch (e) { return sendJson(res, 404, { ok: false, error: 'not found: ' + rel }, origin); }
+  if (!st.isFile()) return sendJson(res, 404, { ok: false, error: 'not found: ' + rel }, origin);
+  if (st.size > MAX_STATIC_BYTES) {
+    return sendJson(res, 413, {
+      ok: false,
+      error: 'file too large：本服务端单文件静态下发上限 ' + MAX_STATIC_BYTES + ' 字节（64 MiB），该文件 ' + st.size +
+        ' 字节；这么大的文件请用桌面壳打开或"在文件夹中定位"',
+      rel, size: st.size, limit: MAX_STATIC_BYTES,
+    }, origin);
+  }
+  const type = MIME[path.extname(real).toLowerCase()] || 'application/octet-stream';
+  /* ★ 2026-10-30 S02：**只**给程序根那份 index.html 注入本轮 token（见 isRootIndex 的说明）。
+     注入点选 `</head>` 之前：index.html 里所有 `<script src>` 都在 body 尾部，
+     注入语句早于 host.js 执行 ⇒ host.js 读 `window.__ctbToken` 时一定已经就位。
+     没有 `</head>`（改造过的极简页面）时退化为插到文档最前面，仍然早于任何脚本。
+     这是唯一需要"整份读改写"的响应（R7 的流式路径不适用于它）。 */
+  if (isRootIndex(real)) {
+    let buf;
+    try { buf = fs.readFileSync(real); }
+    catch (e) { return sendJson(res, 404, { ok: false, error: 'not found: ' + rel }, origin); }
+    const html = buf.toString('utf8');
+    const snippet = '<script>window.__ctbToken=' + JSON.stringify(TOKEN) + ';</script>';
+    const i = html.search(/<\/head\s*>/i);
+    const out = i < 0 ? snippet + html : html.slice(0, i) + snippet + html.slice(i);
+    addCommonHeaders(res, origin);
+    /* token 每轮启动都变：这条响应**绝不能被缓存**，否则重启后页面拿旧 token，症状是
+       "页面能打开、所有 /api/* 全 403"（而且看起来像服务端坏了，极难归因）。 */
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Content-Length', String(Buffer.byteLength(out, 'utf8')));
+    res.writeHead(200, { 'Content-Type': MIME['.html'] });
+    return res.end(Buffer.from(out, 'utf8'));
+  }
+  /* ★ 2026-11-02 R7：流式下发。**所有头（含 CSP）必须在 writeHead 之前设好** ——
+     一旦 writeHead 发出，再 setHeader 只会抛 ERR_HTTP_HEADERS_SENT，客户端就拿不到 CSP。 */
+  addCommonHeaders(res, origin, fromApp ? undefined : { sandbox: true });
+  /* ★ 2026-11-02 R2：库内响应统一 `no-store`。改前只有程序根 index.html 有它，于是
+     真库 324 KB 的 `_待确认.json`、`.git\*` 这类敏感体在浏览器/中间层被留存（ws1-http 实测无该头）。 */
+  if (!fromApp) res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Accept-Ranges', 'bytes');
+  res.setHeader('Content-Type', type);
+  const rg = parseRange(req.headers.range, st.size);
+  if (rg.kind === 'unsat') {
+    res.setHeader('Content-Range', 'bytes */' + st.size);
+    res.writeHead(416);
+    return res.end();
+  }
+  let start = 0, end = st.size - 1, code = 200;
+  if (rg.kind === 'ok') {
+    start = rg.start; end = rg.end; code = 206;
+    res.setHeader('Content-Range', 'bytes ' + start + '-' + end + '/' + st.size);
+  }
+  if (st.size === 0) { res.setHeader('Content-Length', '0'); res.writeHead(code); return res.end(); }
+  res.setHeader('Content-Length', String(end - start + 1));
+  res.writeHead(code);
+  const rs = fs.createReadStream(real, { start, end });
+  /* stat 之后文件被删/被截断：响应头已经发出去了，只能断开连接
+     （再回一个 404 会变成"第二个响应"，Node 会抛 ERR_HTTP_HEADERS_SENT）。 */
+  rs.on('error', () => { try { res.destroy(); } catch (e) { } });
+  rs.pipe(res);
 }
 
 /* ★ R2 H-08-E（2026-10-29）：改前 `readBody` 超限一律 `req.destroy()` ⇒ 客户端看到的是
@@ -609,7 +820,9 @@ const server = http.createServer(async (req, res) => {
       /* ★ R2 H-08-D：刷新决策与"降级标记"**一起**算 —— 台账 stat 不到时不再静默返回旧 pending。 */
       const fr = pendingFreshness();
       if (fr.status === 'stale') {
-        await serialized(async () => { if (pendingNeedsRefresh()) refreshPendingSection(); });
+        /* ★ 2026-11-02 R6：`await`（刷新已是异步、不阻塞事件循环）；队列内的第二次判据用
+           `pendingNeedsRefresh()` 复查 —— 前一个请求刚把状态刷新过就不必再起子进程。 */
+        await serialized(async () => { if (pendingNeedsRefresh()) await refreshPendingSection(); });
       }
       const body = Object.assign({}, state || { error: 'no state' });
       if (stateFail) {

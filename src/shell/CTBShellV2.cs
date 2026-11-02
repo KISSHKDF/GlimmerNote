@@ -13,7 +13,8 @@
 //   recipe         → payload.action∈{清单,收件箱,组装,校验,自检,指纹} + 扁平 flag → _配方.mjs → {ok,code,out,err}
 //                    （code 是工具的**真实退出码**：校验通过=0 / 拒收=1 / 参数错=2；2026-10-29 R2 修）
 //   readFile       → payload.path（题库根内相对路径）→ {ok,text}
-//   openFile       → payload.path → 交内置阅读器/系统程序 → {ok:true}
+//   openFile       → payload.path → 类型准入（图片/pdf 交系统程序；.md 走内置阅读器；其余只"定位文件"）
+//                    → 真打开才 {ok:true}；不存在/系统程序打不开/类型被拒 → {ok:false,error}（R3/R4）
 //   quit           → 退出
 // 安全：只读/只跑「既有 CLI 工具」，壳自身不解析/改写任何 JSON 真源；mark/pending 全走唯一写入入口。
 // ============================================================================
@@ -621,8 +622,10 @@ namespace CTBShell2
         }
 
         /* 严格包含性：p 必须**在** root 之内（等于 root 本身算越界 —— 调用方要的是一个文件/子项）。
-           必须带分隔符比较：`…\错题本-X` 与 `…\错题本` 同前缀，裸 StartsWith 会放走兄弟目录。 */
-        static bool IsUnderDir(string p, string root)
+           必须带分隔符比较：`…\错题本-X` 与 `…\错题本` 同前缀，裸 StartsWith 会放走兄弟目录。
+           ★ 2026-11-02（R5）：改成 public —— NavGuard 的资源白名单要**复用**这一份实现
+             （对程序目录与库目录各比一次），不在另一处再写一份前缀比较。 */
+        public static bool IsUnderDir(string p, string root)
         {
             if (string.IsNullOrEmpty(p) || string.IsNullOrEmpty(root)) return false;
             string a = p.TrimEnd('\\', '/');
@@ -1225,7 +1228,13 @@ namespace CTBShell2
                     if (NavGuard.TryParse(u, out nu, out pwhy) && nu.Scheme == Uri.UriSchemeFile)
                     {
                         string p = LocalLinks.FileUriToPath(u), abs, why2;
-                        if (p != null && bridge.TryResolveInsideRoot(p, out abs, out why2)) LocalLinks.Dispatch(this, env, u);
+                        if (p != null && bridge.TryResolveInsideRoot(p, out abs, out why2))
+                        {
+                            /* ★ 2026-11-02（R3/R4）：与 openFile **同一条判据**（类型准入在 Dispatch 内唯一实现）。
+                               导航链没有"回执"可回，所以只把结果记进日志；类型被拒时同样只定位不打开。 */
+                            LocalLinks.OpenResult r = LocalLinks.Dispatch(this, env, u);
+                            HostBridge.Log("nav: 库内 file: " + (r.Ok ? "已打开 " : "未打开（" + (r.Err ?? "") + "）") + u);
+                        }
                         else HostBridge.Log("nav: 库外 file: 链接不转发：" + u);
                     }
                 };
@@ -1247,9 +1256,42 @@ namespace CTBShell2
                         return;
                     }
                     string p = LocalLinks.FileUriToPath(e.Uri), abs, why2;
-                    if (p != null && bridge.TryResolveInsideRoot(p, out abs, out why2)) LocalLinks.Dispatch(this, env, e.Uri);
+                    if (p != null && bridge.TryResolveInsideRoot(p, out abs, out why2))
+                    {
+                        /* ★ 2026-11-02（R3/R4）：同 openFile 的判据（见上一条注释）。 */
+                        LocalLinks.OpenResult r = LocalLinks.Dispatch(this, env, e.Uri);
+                        HostBridge.Log("new-window: 库内 file: " + (r.Ok ? "已打开 " : "未打开（" + (r.Err ?? "") + "）") + e.Uri);
+                    }
                     else HostBridge.Log("REJECT new-window（库外 file:）：" + e.Uri);
                 };
+
+                /* ★ 2026-11-02（审计 A1 桌面侧 → R5）：**资源请求白名单**（新机制）。
+                   判据本体在 NavGuard.IsAllowedResource（为什么需要、放行哪些，注释都写在那里）。
+                   挂载点的三条硬要求：
+                     ① 过滤器用 `"*"` + `CoreWebView2WebResourceContext.All` —— 只拦某几类会留下
+                        "其余 scheme 照样出网"的口子；`e.Response` 不设就是**原样放行**，命中白名单时
+                        什么都不做（语义与开销都最省）。
+                     ② 必须在 `Navigate(home)` **之前**挂上：挂晚了首屏 js/css/图片已经出去了。
+                     ③ 非白名单一律造一个 403 空响应。.NET 包装里**没有** Cancel API，
+                        可用形态是 `args.Response`（可写）+ 环境对象的
+                        `CoreWebView2Environment.CreateWebResourceResponse(Stream, int StatusCode,
+                        string ReasonPhrase, string Headers)` —— 已按本仓 SDK 1.0.2903.40
+                        （vendor\webview2\Microsoft.Web.WebView2.Core.dll）逐个核对签名。
+                   ⚠ 事件在 UI 线程触发：处理器里**不许**阻塞（这里只做一次纯函数判定 + 赋值）。 */
+                wv.CoreWebView2.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All);
+                wv.CoreWebView2.WebResourceRequested += (s, e) =>
+                {
+                    string ru = null;
+                    try { ru = e.Request.Uri; } catch (Exception ex) { HostBridge.Log("resource: 读 e.Request.Uri 失败 " + ex.Message); }
+                    string rwhy;
+                    if (NavGuard.IsAllowedResource(ru, srvPortValue, out rwhy)) return;
+                    HostBridge.Log("REJECT resource: " + (ru ?? "(null)") + " ← " + rwhy);
+                    try { e.Response = env.CreateWebResourceResponse(null, 403, "Forbidden", "text/plain; charset=utf-8"); }
+                    catch (Exception ex) { HostBridge.Log("REJECT resource: 构造 403 响应失败 " + ex.Message); }
+                };
+                HostBridge.Log("resource whitelist = file:{" + HostBridge.AppRoot + ", " + HostBridge.DataRoot
+                    + "} + http://127.0.0.1:" + (string.IsNullOrEmpty(srvPort) ? "(关闭：端口真源不可读)" : srvPort)
+                    + "/ + data: + blob: + about:blank");
 
                 /* ★ 2026-10-12 开发期禁用缓存（修"改了 JS 不生效"，实测踩到）。
                    起因：改了 v2\js\host.js 后重跑门禁，页面仍在用**旧脚本** ——
@@ -1356,7 +1398,11 @@ namespace CTBShell2
                 else if (op == "readFile") resp = bridge.ReadFile(payload);
                 else if (op == "openFile")
                 {
-                    // 越界一律拒（F-03）：Path.Combine 对绝对路径「直接返回第二参」，不校验就能拿系统程序开任意 exe
+                    /* 越界一律拒（F-03）：Path.Combine 对绝对路径「直接返回第二参」，不校验就能拿系统程序开任意 exe。
+                       ★ 2026-11-02（审计 A2/A3 → R3/R4）：门禁之后还有**类型准入**（唯一实现在
+                       LocalLinks.RouteFor：图片/pdf 交系统程序、.md 走内置阅读器、其余只定位不打开），
+                       且回执按**真实结果**给 —— 改前只要过了路径门禁就回 {"ok":true}，
+                       于是"文件不存在 / 系统程序打不开 / 类型被拒"在页面上全变成"成功但没反应"。 */
                     string rel = ExtractStringTop(raw, "path"), abs, why;
                     if (!bridge.TryResolveInsideRoot(rel, out abs, out why))
                     {
@@ -1365,8 +1411,17 @@ namespace CTBShell2
                     }
                     else
                     {
-                        try { LocalLinks.Dispatch(this, env, new Uri(abs).AbsoluteUri); resp = "{\"ok\":true}"; }
-                        catch (Exception ex) { resp = "{\"ok\":false,\"error\":\"" + EscJs(ex.Message) + "\"}"; }
+                        try
+                        {
+                            LocalLinks.OpenResult r = LocalLinks.Dispatch(this, env, new Uri(abs).AbsoluteUri);
+                            HostBridge.Log("openFile " + rel + " → " + (r.Ok ? "ok" : "失败：" + r.Err));
+                            resp = r.Ok ? "{\"ok\":true}" : "{\"ok\":false,\"error\":\"" + EscJs(r.Err) + "\"}";
+                        }
+                        catch (Exception ex)
+                        {
+                            HostBridge.Log("openFile FAILED: " + rel + " ← " + ex.Message);
+                            resp = "{\"ok\":false,\"error\":\"" + EscJs(ex.Message) + "\"}";
+                        }
                     }
                 }
                 else if (op == "revealFile")
@@ -1525,13 +1580,19 @@ namespace CTBShell2
                        （wps.exe /prometheus /pdf /n /p "%1"）。实测用它打印那份 963KB 重做卷，
                        打印机自身计数器 TotalImpressions 7965→7968（**真的印了 3 页**）。
                        路径必须落在题库根内（复用唯一实现 TryResolveInsideRoot）。 */
-                    string rel = ExtractStringTop(raw, "path"), abs, why;
+                    string rel = ExtractStringTop(raw, "path"), abs, why, pext;
                     if (!bridge.TryResolveInsideRoot(rel, out abs, out why))
                     {
                         HostBridge.Log("printPdf REJECTED: " + rel + " ← " + why);
                         resp = "{\"ok\":false,\"error\":\"" + EscJs(why) + "\"}";
                     }
                     else if (!File.Exists(abs)) resp = "{\"ok\":false,\"error\":\"PDF 不存在：" + EscJs(rel) + "\"}";
+                    /* ★ 2026-11-02（R3 同一条判据，附带）：这里也是一处"把库内文件交给 ShellExecute"
+                       （`Verb=print`），改前同样没有类型准入 —— payload.path 是页面给的，
+                       传一个库内 .bat 进来就会走系统关联的 print 动词。复用同一张表：
+                       非图片/PDF 一律不交系统程序（本功能实际只用 .pdf，行为不变）。 */
+                    else if (LocalLinks.RouteFor(abs, out pext) != LocalLinks.OpenRoute.System)
+                        resp = "{\"ok\":false,\"error\":\"该类型不交系统程序（printPdf 走 R3 的类型准入）：" + EscJs(rel) + "\"}";
                     else
                     {
                         try
@@ -1971,6 +2032,86 @@ namespace CTBShell2
             return IsAppOrigin(u, homePath, srvPort, out why);
         }
 
+        /* ══════════════════════════════════════════════════════════════════════
+           ★ 2026-11-02（审计 A1 桌面侧 → R5）：**资源请求白名单**（唯一实现）
+           为什么要它：NavigationStarting 只守**顶级导航**。文档一旦进了 WebView2（页面自身、
+           库内题干 html、md 渲染出的阅读器页面），它里面的 `<img src=http://…>`、
+           `<link rel=stylesheet>`、`<script src=…>`、fetch/XHR 全是**子资源请求** ——
+           导航白名单一个都看不见 ⇒ 库内容可以把"谁在用、什么时候在用"打到外部服务器
+           （离线工具的出网口被数据打开）。这条判据把所有子资源请求也过一遍。
+           放行面只有这几类（其余一律 403 + 日志）：
+             ① `file:` —— **程序目录内**（界面自身的 index.html / js / css / 图标；入口页也在这里，
+                所以下面不再单列"入口页"）或**库目录内**（题目照片、原卷图、题干 html 这些资产
+                都在库里，不放行就是整站白屏）。包含性复用本文件唯一的实现 `HostBridge.IsUnderDir`
+                （与 `TryResolveInsideRoot` 第 ① 步同一份，不在两处各写一遍前缀比较）。
+             ② `http://127.0.0.1:<srvPort>` / `http://localhost:<srvPort>` —— 本机服务端同源
+                （复用 `IsSrvOrigin`：host 白名单 + userinfo 必须为空 + 端口必须等于真源）。
+             ③ `data:` —— 库内确有 data: URI（真库实测 1 处：`国庆假期作业1\第4题-错题卡.html`）。
+             ④ `blob:` —— 唯一用例是 `pending.js` 的"导出办结包"（`URL.createObjectURL` + `a.download`）。
+                blob 由页面自己在**进程内**造出来，不带来源、也到不了网络；拦它只会把导出弄坏。
+             ⑤ `about:blank` —— 空 iframe / 内联空文档。
+             ⑥ `devtools:` —— 开发者工具前端（本机专用 scheme，**没有任何出网能力**）。
+                不放行的话 F12 打开 DevTools 时它自己的资源请求会被当"外部请求"拦掉，
+                表现成"F12 打不开 / 空白面板"—— 纯 UX 回归、零安全收益。2026-11-02 Lead 裁决放行。
+           明确拒：一切外部 http(s)、https（离线工具没有"远程来源"这一说）、ws/wss、ftp:、
+           `javascript:`、`ms-appx:`、`chrome-extension:`、`file://host/…`（UNC/共享形态）等。
+           ⚠ 这一层**不是**重解析点（junction）判据：库内一条指向库外的 junction 仍可能作为
+             子资源被读进来。但出网的通道（导航 / 子资源 / fetch-XHR / WebSocket）现在全被堵，
+             读到的东西出不去；重解析点的硬化仍在 `TryResolveInsideRoot` 那一层（导航与 openFile 走它，
+             本条判据的上游也只放行到"库内路径"）。这是**已知残余风险**，写在这里而不是装作没有。
+           ⚠ 挂载位置必须是 CoreWebView2 ready 之后、`Navigate(home)` 之前（见 InitWeb 里的说明）。
+           ══════════════════════════════════════════════════════════════════════ */
+        public static bool IsAllowedResource(string uri, string srvPort, out string why)
+        {
+            why = null;
+            if (string.IsNullOrEmpty(uri)) { why = "资源 URI 为空"; return false; }
+            Uri u;
+            if (!Uri.TryCreate(uri, UriKind.Absolute, out u) || u == null)
+            { why = "不是合法的绝对 URI：" + Trim(uri); return false; }
+            string scheme = (u.Scheme ?? "").ToLowerInvariant();
+            if (scheme == Uri.UriSchemeFile) return IsAllowedFileResource(u, out why);
+            if (scheme == Uri.UriSchemeHttp)
+            {
+                if (IsSrvOrigin(u, srvPort)) return true;
+                why = string.IsNullOrEmpty(srvPort)
+                    ? "本机服务端端口真源不可读 ⇒ 一切 http 资源拒（实际 " + u.Host + ":" + u.Port + "）"
+                    : "不是本机服务端同源（要求 host 为 127.0.0.1/localhost 且端口 " + srvPort + "，实际 " + u.Host + ":" + u.Port + "）";
+                return false;
+            }
+            if (scheme == "data") return true;
+            if (scheme == "blob") return true;                       // 见类注释 ④
+            if (scheme == "devtools") return true;                   // 见类注释 ⑥（F12 的 UX，无出网能力）
+            if (scheme == "about")
+            {
+                if (string.Equals(u.AbsolutePath, "blank", StringComparison.OrdinalIgnoreCase)) return true;
+                why = "about: 只放行 about:blank，实际 " + Trim(u.AbsoluteUri);
+                return false;
+            }
+            if (scheme == Uri.UriSchemeHttps)
+            { why = "https 一律不放行（离线工具没有任何远程来源）：" + Trim(u.Host); return false; }
+            why = "scheme 不在资源白名单（只放行 file:（程序目录/库目录内）、本机 http、data:、blob:、devtools:、about:blank）：" + scheme;
+            return false;
+        }
+
+        /* file: 资源：必须在**程序目录**（界面自身）或**库目录**（题库资产）之内。
+           `file://host/share` 指的是一台远端主机上的共享，不是本机目录 ⇒ 不认。
+           目标**不存在**也照判（前缀判据只看路径，与文件在不在无关）。 */
+        static bool IsAllowedFileResource(Uri u, out string why)
+        {
+            why = null;
+            if (!string.IsNullOrEmpty(u.Host))
+            { why = "file://host/…（UNC/共享）形态不放行：" + Trim(u.AbsoluteUri); return false; }
+            string p = LocalPathOf(u);
+            if (string.IsNullOrEmpty(p)) { why = "file: 资源路径无法解析：" + Trim(u.AbsoluteUri); return false; }
+            string full;
+            try { full = Path.GetFullPath(p); } catch (Exception ex) { why = "file: 资源路径非法：" + ex.Message; return false; }
+            if (HostBridge.IsUnderDir(full, HostBridge.AppRoot)) return true;
+            if (HostBridge.IsUnderDir(full, HostBridge.DataRoot)) return true;
+            why = "file: 只允许程序目录或库目录内的资源（程序 " + HostBridge.AppRoot
+                + " ／ 库 " + HostBridge.DataRoot + "），实际 " + full;
+            return false;
+        }
+
         static string Trim(string s)
         {
             if (s == null) return "";
@@ -2024,31 +2165,98 @@ namespace CTBShell2
             }
             catch (Exception ex) { Log("reveal FAILED [" + full + "]: " + ex.Message); return false; }
         }
-        public static void Dispatch(Form owner, CoreWebView2Environment env, string uri)
+        /* ══════════════════════════════════════════════════════════════════════
+           ★ 2026-11-02（审计 A2 → R3）：**类型准入**（唯一实现，三条链路共用）
+           三条能把"库内文件"交出去的通路，判据只此一份，不许各写一遍：
+             ① openFile op（消息桥分派里那一段）
+             ② NavigationStarting 里库内 file: 链接的转交
+             ③ NewWindowRequested 里库内 file: 链接的转交
+           规则（看扩展名，不看内容 —— 内容是攻击者可控的，扩展名是文件系统给的）：
+             · .md                      → 内置 ViewerForm（现状不变）
+             · 表里那 9 个图片/PDF 扩展名 → 交系统关联程序
+             · **其余一律不交系统程序**，只在资源管理器里定位（Reveal）
+           为什么连 .html/.htm/.xhtml/.svg 都不放行：它们由系统**浏览器**以 file:// 打开，
+           而系统浏览器里没有本仓服务端那套 `sandbox; default-src 'none'` 的 CSP（R1）——
+           页面里的 <script> 会真的执行，file:// 文档还能读到库内其它文件的路径信息。
+           "库内 html 归浏览器打开"这条历史行为正是把库内容送进一个无 CSP 环境。
+           审计实测（A2）：改前库内 `E5_证明可被启动.bat` 被 ShellExecute 真的执行了（marker 文件为证）。
+           ══════════════════════════════════════════════════════════════════════ */
+
+        /// <summary>唯一一份「哪些扩展名可以交系统关联程序」的表（其余一律不交）。</summary>
+        public static readonly HashSet<string> SystemOpenExt = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".pdf",
+        };
+
+        /// <summary>打开方式：Viewer=内置 md 阅读器；System=系统关联程序；Reveal=只在资源管理器里定位。</summary>
+        public enum OpenRoute { Viewer, System, Reveal }
+
+        /// <summary>路径 → 打开方式（唯一实现：openFile / 导航 file: / 新窗口 file: 都走它）。</summary>
+        public static OpenRoute RouteFor(string path, out string ext)
+        {
+            ext = "";
+            if (string.IsNullOrEmpty(path)) return OpenRoute.Reveal;
+            try { ext = Path.GetExtension(path); } catch { ext = ""; }
+            if (ext == null) ext = "";
+            if (ext.Equals(".md", StringComparison.OrdinalIgnoreCase)) return OpenRoute.Viewer;
+            if (SystemOpenExt.Contains(ext)) return OpenRoute.System;
+            return OpenRoute.Reveal;
+        }
+
+        /* ★ 2026-11-02（审计 A3 → R4）：打开结果。Ok=**真的打开了**；Err=失败原因（原样进回执）。
+           改前 Dispatch/OpenWithSystem 都是 void 且各自 catch 掉异常 ⇒ openFile 只要过了路径门禁
+           就回 {"ok":true}（前端 host.js 按 `data.ok === false` 判失败，于是"点了没反应"在页面上
+           一律显示成成功）。 */
+        public struct OpenResult
+        {
+            public bool Ok;
+            public string Err;
+            public static OpenResult Good() { OpenResult r; r.Ok = true; r.Err = null; return r; }
+            public static OpenResult Fail(string err) { OpenResult r; r.Ok = false; r.Err = err; return r; }
+        }
+
+        /// <summary>按 URI 打开库内文件。返回值必须被调用方用上（失败要如实回执）。</summary>
+        public static OpenResult Dispatch(Form owner, CoreWebView2Environment env, string uri)
         {
             try
             {
-                if (string.IsNullOrEmpty(uri)) { Log("dispatch: empty uri"); return; }
-                if (uri.StartsWith("http", StringComparison.OrdinalIgnoreCase)) { OpenWithSystem(owner, uri); return; }
-                if (!uri.StartsWith("file:", StringComparison.OrdinalIgnoreCase)) { Log("dispatch: 不支持的 URI " + uri); return; }
+                if (string.IsNullOrEmpty(uri)) { Log("dispatch: empty uri"); return OpenResult.Fail("空 URI"); }
+                if (uri.StartsWith("http", StringComparison.OrdinalIgnoreCase)) return OpenWithSystem(owner, uri);
+                if (!uri.StartsWith("file:", StringComparison.OrdinalIgnoreCase)) { Log("dispatch: 不支持的 URI " + uri); return OpenResult.Fail("不支持的 URI：" + uri); }
                 string p = FileUriToPath(uri);
-                if (string.IsNullOrEmpty(p)) { Log("dispatch: 解码失败 " + uri); Warn(owner, "打不开：无法解析路径\n" + uri); return; }
-                if (!File.Exists(p)) { Log("dispatch: 文件不存在 " + p); Warn(owner, "打不开：文件不存在\n" + p); return; }
-                if (p.EndsWith(".md", StringComparison.OrdinalIgnoreCase))
+                if (string.IsNullOrEmpty(p)) { Log("dispatch: 解码失败 " + uri); Warn(owner, "打不开：无法解析路径\n" + uri); return OpenResult.Fail("无法解析路径：" + uri); }
+                if (!File.Exists(p)) { Log("dispatch: 文件不存在 " + p); Warn(owner, "打不开：文件不存在\n" + p); return OpenResult.Fail("文件不存在：" + RelPath(p)); }
+                string ext;
+                OpenRoute route = RouteFor(p, out ext);
+                if (route == OpenRoute.Viewer)
                 {
+                    /* .md 只走内置阅读器：**不再**在失败后掉进 OpenWithSystem（那是把 .md 又交回系统程序）。
+                       打开成功才算 ok；失败也要 ok:false。 */
                     try
                     {
                         string md = File.ReadAllText(p, Encoding.UTF8);
                         string name = Path.GetFileName(Path.GetDirectoryName(p));
                         new ViewerForm(env, Md.ToHtml(md, name, RelPath(p))).Show();
                         Log("md viewer opened: " + p);
-                        return;
+                        return OpenResult.Good();
                     }
-                    catch (Exception ex) { Log("md viewer FAILED: " + ex.Message); }
+                    catch (Exception ex)
+                    {
+                        Log("md viewer FAILED: " + ex.Message);
+                        Warn(owner, "内置阅读器打不开：\n" + p + "\n\n" + ex.Message);
+                        return OpenResult.Fail("内置阅读器打不开：" + ex.Message);
+                    }
                 }
-                OpenWithSystem(owner, p);
+                if (route == OpenRoute.System) return OpenWithSystem(owner, p);
+                /* 类型被拒：**不交系统程序**，只在资源管理器里定位（用户仍能自己决定怎么处理）。
+                   回执必须是 ok:false —— 这不是"打开成功"，页面前端靠回执判失败并提示（不再静默）。
+                   这一路**不弹模态框**：定位本身是成功动作，页面的 toast 就是用户可见反馈。 */
+                string rel = RelPath(p);
+                if (Reveal(p)) { Log("dispatch: 类型不直接打开（" + ext + "），已定位 " + p); return OpenResult.Fail("该类型不直接打开，已在文件夹中定位：" + rel); }
+                Log("dispatch: 类型不直接打开（" + ext + "），且定位失败 " + p);
+                return OpenResult.Fail("该类型不直接打开，且在文件夹中定位失败：" + rel);
             }
-            catch (Exception ex) { Log("dispatch FAILED [" + uri + "]: " + ex); Warn(owner, ex.Message); }
+            catch (Exception ex) { Log("dispatch FAILED [" + uri + "]: " + ex); Warn(owner, ex.Message); return OpenResult.Fail(ex.Message); }
         }
         public static string RelPath(string path)
         {
@@ -2062,10 +2270,21 @@ namespace CTBShell2
             }
             catch { return path; }
         }
-        public static void OpenWithSystem(Form owner, string target)
+        /// <summary>交系统关联程序打开。**唯一**一处「把文件交给 ShellExecute 打开」；返回值即真实成败。
+        /// （`Reveal` 也用了 `UseShellExecute`，但它跑的是 `explorer.exe /select` —— 只定位，不打开文件。）</summary>
+        public static OpenResult OpenWithSystem(Form owner, string target)
         {
-            try { Process.Start(new ProcessStartInfo { FileName = target, UseShellExecute = true }); Log("openWithSystem OK: " + target); }
-            catch (Exception ex) { Log("openWithSystem FAILED [" + target + "]: " + ex.Message); Warn(owner, "系统程序打不开：\n" + target + "\n\n" + ex.Message); }
+            /* 纵深防御：调用方（Dispatch）已经判过一次类型，这里再判一次 —— 将来谁新增一条调用链
+               而忘了走 Dispatch，也不至于把 .bat/.exe/.lnk 直接交给 ShellExecute。
+               只对**本机已存在的文件路径**判（http 链接形态没有扩展名语义，不在这里管）。 */
+            string ext = "";
+            if (!string.IsNullOrEmpty(target) && File.Exists(target) && RouteFor(target, out ext) != OpenRoute.System)
+            {
+                Log("openWithSystem REFUSED（类型不在放行表 " + ext + "）: " + target);
+                return OpenResult.Fail("该类型不交系统程序：" + RelPath(target));
+            }
+            try { Process.Start(new ProcessStartInfo { FileName = target, UseShellExecute = true }); Log("openWithSystem OK: " + target); return OpenResult.Good(); }
+            catch (Exception ex) { Log("openWithSystem FAILED [" + target + "]: " + ex.Message); Warn(owner, "系统程序打不开：\n" + target + "\n\n" + ex.Message); return OpenResult.Fail("系统程序打不开：" + ex.Message); }
         }
         static void Warn(Form owner, string msg)
         {
