@@ -542,12 +542,20 @@
     });
   };
 
-  /* ================= 灯箱（裁图 ⇄ 整页原卷 + 红框定位 + 问题上下文/就地办结） =================
-     item 字段：src 当前显示图 URL ｜ rel 裁图相对路径 ｜ orig 整页原卷相对路径 ｜ origBox 归一化红框[x,y,w,h]
-               ｜ origImport 导入原件相对路径 ｜ origBy 溯源规则 ｜ title ｜ box 裁图像素红框[x,y,w,h]
+  /* ================= 灯箱（裁图 ⇄ 原图 + 红框定位 + 问题上下文/就地办结） =================
+     界面上只有两个看图概念（2026-10-15 用户定案）：**裁图** = 按题裁下的单题图；
+     **原图** = 这道题所在的那一整页。
+     item 字段：src 当前显示图 URL ｜ rel 裁图相对路径 ｜ orig 原图（整页）相对路径 ｜ origBox 归一化红框[x,y,w,h]
+               ｜ origBy 溯源规则 ｜ title ｜ box 裁图像素红框[x,y,w,h]
                ｜ chips HTML 徽章 ｜ q 问题正文 ｜ detail 补充 ｜ hint 怎么办指引 ｜ foot HTML 操作区 ｜ onMount(el) 绑事件
-     语义铁律（2026-10-09）：🗂 只打开**整页原卷**（用户当初导入的那一页），绝不打裁图冒充原图；
-     未定位到整页时按钮显式禁用并说明原因，不静默降级——「按钮写着原图、打开是特写」就是这次的坑。 */
+     语义铁律（2026-10-09）：🗂 只打开**整页**，绝不打裁图冒充原图；
+     未定位到整页时按钮显式禁用并说明原因，不静默降级——「按钮写着原图、打开是特写」就是这次的坑。
+     ⚠ 2026-11-01 下线「📥 原件」（origImport）。理由是全库实测，不是感觉：346 条 import 与 origPage
+       **逐字节相同**（其中 114 条干脆指向同一个文件），内容不同的 0 条；而真正会不同的那种情况
+       （库里那页被动过）根本写不进这个字段——_原卷台账.mjs:503 匹配失败时沿用上轮旧值。
+       ⇒ 它对用户零信息量，还制造了「同一个界面，有的学生每张都有这颗按钮、有的学生一大半没有」的困惑
+       （覆盖与否纯看台账旧记录，与功能无关）。
+       数据层 `import` 字段与台账对账**照旧保留**（它是影像备份分母的来源），只是不再暴露到界面。 */
   let lb = null;
   const lbBase = p => String(p || '').split('/').pop();
   const lbCur = () => (lb ? lb.items[lb.idx] : null);
@@ -559,12 +567,11 @@
     el.innerHTML =
       '<div class="lb-hd"><b id="lbTitle"></b><span id="lbChips"></span><span class="x" id="lbNote"></span>' +
       '<div class="lb-tools">' +
-      '<button class="iconbtn" id="lbMode" title="在「裁图」与「原图（整页原卷）」之间切换（快捷键 P）">⇄ 原图</button>' +
+      '<button class="iconbtn" id="lbMode" title="在「裁图」与「原图（整页）」之间切换（快捷键 P）">⇄ 原图</button>' +
       '<button class="iconbtn" id="lbFit" title="复位">⤢</button>' +
       '<button class="iconbtn" id="lbZoomOut" title="缩小">－</button>' +
       '<button class="iconbtn" id="lbZoomIn" title="放大（滚轮）">＋</button>' +
-      '<button class="iconbtn" id="lbOpen" title="用系统程序打开原图（整页原卷）">🗂 原图</button>' +
-      '<button class="iconbtn" id="lbImp" title="用系统程序打开导入原件">📥 原件</button>' +
+      '<button class="iconbtn" id="lbOpen" title="用系统程序打开原图（整页）">🗂 原图</button>' +
       '<button class="iconbtn" id="lbReveal" title="在文件夹中显示">📁 位置</button>' +
       '<button class="iconbtn" id="lbClose" title="关闭（Esc）">✕</button></div></div>' +
       '<div class="lb-src" id="lbSrc"></div>' +
@@ -576,8 +583,7 @@
     U.$id('lbZoomOut').onclick = () => zoomAt(0.8);
     U.$id('lbMode').onclick = () => S.lbToggleMode();
     U.$id('lbOpen').onclick = () => { const it = lbCur(); if (it && it.orig) H.openFile(it.orig); };
-    U.$id('lbImp').onclick = () => { const it = lbCur(); if (it && it.origImport) H.openFile(it.origImport); };
-    U.$id('lbReveal').onclick = () => { const it = lbCur(); if (!it) return; H.reveal(lb.mode === 'orig' && it.orig ? it.orig : (it.rel || it.orig || it.origImport)); };
+    U.$id('lbReveal').onclick = () => { const it = lbCur(); if (!it) return; H.reveal(lb.mode === 'orig' && it.orig ? it.orig : (it.rel || it.orig)); };
     /* ⚠ 2026-10-12（BUG-16·中）：原先这里是 `el.addEventListener('keydown', lbKey)`，
        而 el 是 index.html 里的**常驻节点** `#lightbox`，关闭只清 innerHTML（:447）
        ⇒ 每开一次灯箱就叠加一个监听器。实测开过 13 次后按一次 `→`，页码从 0 跳到 **13**；
@@ -630,17 +636,14 @@
     const openBtn = U.$id('lbOpen');
     openBtn.style.display = (it.rel || it.orig) ? '' : 'none';
     openBtn.disabled = !it.orig;
-    openBtn.title = it.orig ? '用系统程序打开原图（整页原卷）：' + it.orig : '这张卡还没定位到整页原卷（原卷台账标「未定位」），只能看裁图';
-    const impBtn = U.$id('lbImp');
-    impBtn.style.display = it.origImport ? '' : 'none';
-    impBtn.title = it.origImport ? '用系统程序打开导入原件：' + it.origImport : '无导入原件记录（原图与 _收件箱 里的件 sha256 不同源）';
-    U.$id('lbReveal').style.display = (it.rel || it.orig || it.origImport) ? '' : 'none';
+    openBtn.title = it.orig ? '用系统程序打开原图（整页）：' + it.orig : '这张卡还没定位到原图（台账标「未定位」），只能看裁图';
+    U.$id('lbReveal').style.display = (it.rel || it.orig) ? '' : 'none';
     U.$id('lbSrc').innerHTML = showOrig
-      ? '<span class="tag ok">原图（整页原卷）</span><code>' + U.esc(it.orig) + '</code>' +
+      ? '<span class="tag ok">原图（整页）</span><code>' + U.esc(it.orig) + '</code>' +
         (it.origBy ? '<span class="muted small">溯源：' + U.esc(it.origBy) + '</span>' : '') +
         (it.origBox ? '<span class="muted small">红框=这道题，已对准</span>' : '<span class="muted small">原图已定位，题目位置未登记（无红框）</span>')
       : ((it.rel ? '<span class="tag gray">裁图</span><code>' + U.esc(it.rel) + '</code>' : '') +
-        (canSwitch ? '<span class="muted small">⇄ 原图（P）看这一刀是从哪一页裁的</span>' : (it.orig ? '' : '<span class="tag warn">未定位到整页原卷</span>')));
+        (canSwitch ? '<span class="muted small">⇄ 原图（P）看这一刀是从哪一页裁的；要读清字就看裁图，它比整页同一位置大一倍</span>' : (it.orig ? '' : '<span class="tag warn">未定位到原图</span>')));
     /* 上下文面板：这条在问什么 → 就看这块图，绝不让用户对着图猜任务 */
     let ctx = '';
     if (it.q) ctx += '<div class="lb-q">' + U.esc(it.q) + '</div>';

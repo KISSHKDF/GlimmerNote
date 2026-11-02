@@ -36,8 +36,8 @@
  * ══ 快照为什么只存清单、不存字节（以及它**不**能替代什么）══
  * 能这么做的唯一理由是**不变量①**：对象永不被改写 ⇒ "某时刻的库" == "那一刻的 sha 清单"。
  * **但它不能替代字节备份。** 清单只能证明"丢了什么"，不能把字节变回来。
- * 所以本工具的前提是：库里的字节另有 `_影像备份\` + `C:\CTB-影像离机备份` 两层副本
- * （见 `_影像备份.mjs`）。**清单是护栏，不是备份。**
+ * 所以本工具的前提是：库里的字节另有 `_影像备份\` 本机副本（见 `_影像备份.mjs`）。
+ * **清单是护栏，不是备份。**
  * 而且库写锁只约束"愿意配合的程序"，挡不住资源管理器删除、磁盘位损坏、绕开工具的脚本 ——
  * 所以 `快照 --diff` 的意义正是：事后能**精确定位**是哪几个对象没了。
  */
@@ -387,7 +387,7 @@ function cmdVerify() {
       if (orphans.length > 10) say('      … 另有 ' + (orphans.length - 10) + ' 个');
     }
   }
-  if (bad.length) { console.error('✖ 有 ' + bad.length + ' 个对象校验失败 —— 请对照 `_影像备份\\` 与离机镜像核查。'); process.exit(1); }
+  if (bad.length) { console.error('✖ 有 ' + bad.length + ' 个对象校验失败 —— 请对照 `_影像备份\\` 备份核查。'); process.exit(1); }
   return 0;
 }
 
@@ -478,7 +478,7 @@ function cmdSnapshot(argv) {
       console.error('✖ ★ 有 ' + gone.length + ' 个对象从库里**非正常消失**（只增不改变量被破坏）：');
       for (const s of gone.slice(0, 20)) console.error('    ' + s + '  ' + (old.get(s).rel || ''));
       if (gone.length > 20) console.error('    … 另有 ' + (gone.length - 20) + ' 个');
-      console.error('  怎么办：从 `_影像备份\\` 或离机镜像按 sha 找回，再跑 `入库`。');
+      console.error('  怎么办：从 `_影像备份\\` 按 sha 找回，再跑 `入库`。');
     }
     if (gone.length || resized.length) process.exit(1);
     say('  ✅ 快照里的对象一个都没少、字节数没变。');
@@ -496,7 +496,7 @@ function cmdSnapshot(argv) {
   })];
   fs.writeFileSync(path.join(SNAP_DIR, name), lines.join('\n') + '\n', 'utf8');
   say('【原图保全库 · 快照】已写 ' + name + '（' + keys.length + ' 个对象）');
-  say('  ⚠ 清单只证明"有哪些对象"，**不能替代字节备份**：真正的副本靠 `_影像备份\\` 与离机镜像。');
+  say('  ⚠ 清单只证明"有哪些对象"，**不能替代字节备份**：真正的副本靠 `_影像备份\\`。');
   return 0;
 }
 

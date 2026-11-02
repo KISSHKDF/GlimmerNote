@@ -265,16 +265,30 @@ const S = (name, why) => { skipped++; P('[SKIP]' + name + '  → ' + why); };
   A('每张卡的索引都有 origPage 或明确标未定位', OS.withPage + OS.noPage.length === OS.n, OS.n);
   A('origPage 不指向裁图（禁拿特写冒充原图）', OS.badTarget === 0, OS.badTarget);
   A('整页原卷定位率 ≥ 95%', OS.withPage >= OS.n * 0.95, OS.withPage + '/' + OS.n);
-  const pageImg = await cdp.evalJs(`(async function(){
-    var xs=CTB.model.cards.filter(function(x){return x.card.origPage}).slice(0,3),res=[];
+  /* ★ 2026-11-01：把"能不能显示"与"路径解析态"分开判。
+     旧版只打 file:// 加载、且固定取前 3 张：历史上前 3 张恰好全是收件箱老路径，
+     一旦状态包没重解析过 origPage（正是 2026-11-01 实测到的缺陷：包里有死路径、
+     无 origResolve）这条就红，而且红得没有归因。现在：抽样扩到 6 张；
+     另加一条"解析态"断言 —— 有整页的卡里 origResolve 不得为 'lost'、也不得缺字段
+     （真断了才算数据问题；缺字段说明包是旧的，指向 _状态刷新.mjs 的自愈没生效）。 */
+  const pageImg = JSON.parse(await cdp.evalJs(`(async function(){
+    var xs=CTB.model.cards.filter(function(x){return x.card.origPage}).slice(0,6),res=[];
     for(var i=0;i<xs.length;i++){
-      res.push(await new Promise(function(r){var im=new Image();
-        im.onload=function(){r('OK '+im.naturalWidth+'x'+im.naturalHeight)};im.onerror=function(){r('ERR')};
-        im.src=CTB.host.asset(xs[i].card.origPage);setTimeout(function(){r('TIMEOUT')},8000);}));
+      var r=await new Promise(function(done){var im=new Image();
+        im.onload=function(){done('OK '+im.naturalWidth+'x'+im.naturalHeight)};im.onerror=function(){done('ERR')};
+        im.src=CTB.host.asset(xs[i].card.origPage);setTimeout(function(){done('TIMEOUT')},8000);});
+      res.push({id:xs[i].card.id,resolve:xs[i].card.origResolve||null,load:r});
     }
-    return JSON.stringify(res);
-  })()`);
-  A('整页原卷 file:// 真能加载（抽样 3 张）', JSON.parse(pageImg).every(s => String(s).startsWith('OK')), pageImg);
+    var withPage=CTB.model.cards.filter(function(x){return x.card.origPage});
+    return JSON.stringify({items:res,
+      lost:withPage.filter(function(x){return x.card.origResolve==='lost'}).length,
+      noResolve:withPage.filter(function(x){return !x.card.origResolve}).length});
+  })()`));
+  A('整页原卷 file:// 真能加载（抽样 6 张）', pageImg.items.every(s => String(s.load).startsWith('OK')),
+    JSON.stringify(pageImg.items.map(s => s.id + ':' + String(s.load).slice(0, 12) + '/' + s.resolve)));
+  A('整页原卷解析态：不得有 lost，也不得缺 origResolve',
+    pageImg.lost === 0 && pageImg.noResolve === 0,
+    'lost=' + pageImg.lost + ' 缺字段=' + pageImg.noResolve);
 
   const LB = JSON.parse(await cdp.evalJs(`(async function(){
     var xs=CTB.model.cards.filter(function(c){return c.card.origPage&&c.card.origBox&&c.card.img});
@@ -286,8 +300,7 @@ const S = (name, why) => { skipped++; P('[SKIP]' + name + '  → ' + why); };
     var out={id:x.card.id,norm:x.card.origBox},g=function(i){return document.getElementById(i)};
     out.openTitle=(g('lbOpen')||{}).title||''; out.openDisabled=!!(g('lbOpen')||{}).disabled;
     out.srcTag0=(g('lbSrc')||{}).textContent||''; out.mode0=CTB.shell.lbMode(); out.img0=g('lbImg').src;
-    out.hasImp=!!g('lbImp')&&g('lbImp').style.display!=='none'; out.hasReveal=!!g('lbReveal');
-    out.impExpected=!!x.card.origImport;
+    out.hasReveal=!!g('lbReveal');
     CTB.shell.lbToggleMode(); await new Promise(r=>setTimeout(r,1800));
     out.mode1=CTB.shell.lbMode(); out.img1=g('lbImg').src; out.srcTag1=(g('lbSrc')||{}).textContent||'';
     var b=g('lbBox'),w=g('lbWrap'),st=g('lbStage');
@@ -303,9 +316,9 @@ const S = (name, why) => { skipped++; P('[SKIP]' + name + '  → ' + why); };
     CTB.shell.closeLightbox();
     return JSON.stringify(out);
   })()`));
-  A('灯箱 🗂 语义=打开整页原卷（且可用）', /整页原卷/.test(LB.openTitle) && LB.openDisabled === false, LB.openTitle);
+  A('灯箱 🗂 语义=打开整页（且可用）', /整页/.test(LB.openTitle) && LB.openDisabled === false, LB.openTitle);
   A('灯箱默认显示裁图并提示可切整页', LB.mode0 === 'crop' && /裁图/.test(LB.srcTag0), LB.mode0 + ' ' + (LB.srcTag0 || '').slice(0, 40));
-  A('切到整页后图片源真的换页了', LB.mode1 === 'orig' && LB.img1 !== LB.img0 && /整页原卷/.test(LB.srcTag1), (LB.img0 || '').slice(-40) + ' → ' + (LB.img1 || '').slice(-40));
+  A('切到整页后图片源真的换页了', LB.mode1 === 'orig' && LB.img1 !== LB.img0 && /整页/.test(LB.srcTag1), (LB.img0 || '').slice(-40) + ' → ' + (LB.img1 || '').slice(-40));
   /* 红框换算：像素框必须 = 归一化框 × 整页 naturalWidth/Height（±2px）。全页框 x=0 是合法值，判据不能写 >0 */
   const expBox = [LB.norm[0] * LB.img[0], LB.norm[1] * LB.img[1], LB.norm[2] * LB.img[0], LB.norm[3] * LB.img[1]];
   const boxErr = Math.max(...LB.box.map((v, i) => Math.abs(v - expBox[i])));
@@ -314,24 +327,28 @@ const S = (name, why) => { skipped++; P('[SKIP]' + name + '  → ' + why); };
   /* 自动对准 = 「打开整页就看见这道题」：红框中心换算到屏幕坐标必须落在可视区内 */
   const inView = !!(LB.center && LB.view) && LB.center[0] > LB.view[0] && LB.center[0] < LB.view[2] && LB.center[1] > LB.view[1] && LB.center[1] < LB.view[3];
   A('打开整页自动对准到该题（红框中心在视口内）', inView, '中心 ' + (LB.center || []).map(v => Math.round(v)).join(',') + ' 视口 ' + (LB.view || []).map(v => Math.round(v)).join(','));
-  /* 📥 原件按钮是「数据驱动显隐」（shell.js：有 origImport 才显示，没有的隐藏并给提示）——
-     机制断言不能绑死在一张恰好没有原件的卡上（实测某张卡无 import ⇒ 按钮隐藏是**设计行为**）。
-     正确判据：①「📁 位置」恒在；②「📥 原件」=（该卡有 origImport）——两者必须一致；
-     ③ 全库至少一张带原件的卡能真实出现按钮（数据无关的机制验证）。 */
+  A('📁 位置 入口在位（恒显）', LB.hasReveal === true, LB.hasReveal);
+  /* 2026-11-01：「📥 原件」按钮下线（界面只留 裁图 / 原图 两个概念；原因见 shell.js 灯箱注释：
+     全库 346 条 import 与 origPage 逐字节相同，零信息量）。这里改成**防漂移**断言：
+     ① 灯箱工具条不得再存在 #lbImp 节点、文案不得再出现「原件」二字；
+     ② M.origOf 不得再吐 origImport 字段（界面与数据层解耦）；
+     ③ 数据层 origImport 仍在（影像备份的分母不许被顺手删掉）。
+     旧断言「原件显隐与数据一致」绑的就是这个已下线的概念，一并撤掉。 */
   const LB2 = JSON.parse(await cdp.evalJs(`(async function(){
-    var xs=CTB.model.cards.filter(function(x){var c=x.card;return c.origPage&&c.origBox&&c.img&&c.origImport;});
-    if(!xs.length) return JSON.stringify({skip:'no-card-with-import'});
-    var x=xs[0];
+    var xs=CTB.model.cards.filter(function(x){var c=x.card;return c.origPage&&c.img;});
+    var x=xs[0]; if(!x) return JSON.stringify({skip:'no-card'});
     CTB.shell.lightbox([Object.assign({src:CTB.host.asset(x.card.img),rel:x.card.img,title:x.card.id+' 原卷'},CTB.model.origOf(x.card))]);
-    await new Promise(r=>setTimeout(r,900));
+    await new Promise(r=>setTimeout(r,700));
     var g=function(i){return document.getElementById(i)};
-    var out={id:x.card.id,hasImp:!!g('lbImp')&&g('lbImp').style.display!=='none',hasReveal:!!g('lbReveal')&&g('lbReveal').style.display!=='none'};
+    var out={id:x.card.id,impNode:!!g('lbImp'),tools:(document.querySelector('.lb-tools')||{}).textContent||'',
+             impField:('origImport' in CTB.model.origOf(x.card)),
+             dataImportN:CTB.model.cards.filter(function(y){return y.card.origImport;}).length};
     CTB.shell.closeLightbox();
     return JSON.stringify(out);
   })()`));
-  A('📁 位置 入口在位（恒显）', LB.hasReveal === true, LB.hasReveal);
-  A('📥 原件按钮显隐与数据一致', LB.hasImp === !!LB.impExpected, JSON.stringify({shown: LB.hasImp, hasImport: LB.impExpected}));
-  A('📥 原件按钮在有原件的卡上真实出现', LB2.skip ? true : (LB2.hasImp === true && LB2.hasReveal === true), JSON.stringify(LB2));
+  A('「📥 原件」已从灯箱下线（防漂移）', LB2.skip ? true : (LB2.impNode === false && LB2.tools.indexOf('原件') < 0), (LB2.tools || '').replace(/\\s+/g, ' ').slice(0, 60));
+  A('M.origOf 不再吐 origImport 字段', LB2.skip ? true : LB2.impField === false, LB2.impField);
+  A('数据层 origImport 仍在（只下线界面，备份分母不受影响）', LB2.skip ? true : LB2.dataImportN > 0, '带 import 的卡 ' + LB2.dataImportN + ' 张');
 
   // revealFile 探针：用一个不存在的路径，绝不开资源管理器窗口，只看壳日志有没有走到 C# Reveal
   /* ★ 2026-10-23：日志已搬到 %LOCALAPPDATA%\拾光小册\shell.log（程序目录可能只读） */

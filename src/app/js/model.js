@@ -886,13 +886,13 @@
     }
     return hits.sort((a, b) => b.sc - a.sc).slice(0, limit || 20).map(h => h.x);
   };
-  /* 卡片 → 原卷溯源三件套（索引 origPage/origImport 是 URL 编码形态，壳要的是解码相对路径）。
-     三处灯箱调用点共用这一个实现，禁止各写一份——漂移过一次（裁图冒充原图）就是教训。 */
+  /* 卡片 → 原图溯源（orig 整页 / origBox 红框 / origBy 定位方式）。索引里是 URL 编码形态，壳要解码相对路径。
+     三处灯箱调用点共用这一个实现，禁止各写一份——漂移过一次（裁图冒充原图）就是教训。
+     2026-11-01：不再吐 origImport（「📥 原件」按钮已下线，见 shell.js 灯箱注释；数据层字段照旧保留）。 */
   M.origOf = function (x) {
     const c = M.cardOf(x);              // 形状统一（2026-10-25 D-063）
     return {
       orig: c && c.origPage ? H.relPath(c.origPage) : null,
-      origImport: c && c.origImport ? H.relPath(c.origImport) : null,
       origBox: (c && c.origBox && c.origBox.length === 4) ? c.origBox : null,
       origBy: (c && c.origBy) || null,
     };

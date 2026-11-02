@@ -47,6 +47,15 @@ export function normRel(p) {
   return String(p || '').replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '').toLowerCase();
 }
 
+/* 库根相对路径 → 前端消费的 URL 形态：反斜杠转正斜杠，再逐段 encodeURIComponent。
+   ★ 2026-11-01：这份编码口径原先只活在 `生成状态.mjs:99` 的一行 const 里。
+   `_状态刷新.mjs` 的"原图路径自愈"也要写同一个字段，两份实现一漂移就会出现
+   "同一个文件两种写法"（前端 decode 后等效、断言/门禁却对不上）。所以搬到这里做
+   **唯一实现**，两边 import 同一份。 */
+export function encRel(rel) {
+  return String(rel).split(path.sep).join('/').split('/').map(encodeURIComponent).join('/');
+}
+
 function sha256File(file) {
   const h = crypto.createHash('sha256');
   const fd = fs.openSync(file, 'r');

@@ -155,7 +155,11 @@ A('★ 自证 · 如果把新判据里"唯一豁免"扩成 {3,4}，损坏清单�
 console.log('\n══ ④ pre-commit 的 case 分支必须与判据逐条对齐 ══');
 const hook = fs.readFileSync(path.join(REPO, '.githooks', 'pre-commit'), 'utf8');
 const seg0 = hook.indexOf('③ 运行区部署一致性');
-const seg1 = hook.indexOf('[pre-commit] 全部通过');
+/* ★ 2026-11-02 R12：改用 **lastIndexOf**。原来用 indexOf，找的是"第一次出现"`[pre-commit] 全部通过`
+   —— 而 R12 给钩子加的说明注释里（文件头部）逐字引用了这句话，于是第一次出现跑到 §③ **之前**，
+   段区间被算反（seg=2496..1008）、后面 5 条断言全成空转。要找的语义本来就是"文件末尾那句收尾 echo"，
+   lastIndexOf 才是对的口径。 */
+const seg1 = hook.lastIndexOf('[pre-commit] 全部通过');
 A('钩子里能找到 verify-deploy 的分支段', seg0 >= 0 && seg1 > seg0, 'seg=' + seg0 + '..' + seg1);
 const seg = seg0 >= 0 && seg1 > seg0 ? hook.slice(seg0, seg1) : '';
 /** 粗解析 case 臂：`\n    4)` 开头、到下一个臂或 esac 之前 */

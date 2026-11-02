@@ -8,7 +8,7 @@
  *
  * 本次**不引入 token**（会让现有不带 token 的 v1/v2 页面当场不可用），只做不破坏现有客户端的加固：
  *   X-Frame-Options/CSP、CORS 只回显白名单（绝不再发 `*`）、POST 只收 `application/json`。
- *   残余风险与"后续该怎么上 token"见 docs\修复说明-服务端-20261011.md §4。
+ *   残余风险与"后续该怎么上 token"见 docs\服务端安全边界.md §2 / §3（判据索引 + 残余风险，2026-11-02 建）。
  *
  * ★ 2026-10-30 S02（本轮）：上面的"残余风险"被审计落实了 —— `null` 的信任被**整体取消**，
  *   并补上了 token（见 tests\neg-server-host-and-token.cjs）。本文件 ② 节因此**改写**：
@@ -112,8 +112,12 @@ const JSONH = { 'Content-Type': 'application/json' };
       A('X-Content-Type-Options: nosniff', h.headers['x-content-type-options'] === 'nosniff', String(h.headers['x-content-type-options']));
       /* ★ 2026-10-23：原来固定取 `/_安全写.mjs` —— 那是**程序文件**，只存在于老布局（程序与数据同目录）里；
          程序与数据分家后它住在 src\tools\，库根里没有 ⇒ 对着运行区库跑必然 404。
-         本断言要证的是「静态文件响应也带 XFO DENY」，取哪个文件无所谓，所以从库里挑一个确实存在的。 */
-      const STATIC_CAND = ['_状态.json', '_待确认.json', '_组卷台账.json', '_索引.json', '九年级/_索引.json', '_安全写.mjs'];
+         本断言要证的是「静态文件响应也带 XFO DENY」，取哪个文件无所谓，所以从库里挑一个确实存在的。
+         ★ 2026-11-02 R2：候选顺序**必须**把 `_组卷台账.json` 排在最前 —— 库内静态路由白名单
+         （`_服务端.mjs::staticAllowed`）四道判据里，根台账只放行这一个（UI 唯一静态读的根台账，
+         `src\app\js\views\paper.js:127/:720`）；`_状态.json`/`_待确认.json`/`_索引.json` 现在一律 403，
+         再拿它们当"静态文件样本"会让这条断言恒红。 */
+      const STATIC_CAND = ['_组卷台账.json', '_状态.json', '_待确认.json', '_索引.json', '九年级/_索引.json', '_安全写.mjs'];
       const staticRel = STATIC_CAND.find((rel) => { try { return fs.statSync(path.join(E.LIB, rel)).isFile(); } catch { return false; } });
       A('库里有可用来验静态响应的文件（前置）', !!staticRel, staticRel || ('候选全不在：' + STATIC_CAND.join(' / ')));
       const s = H(await req(PORT, '/' + staticRel.split('/').map(encodeURIComponent).join('/')));

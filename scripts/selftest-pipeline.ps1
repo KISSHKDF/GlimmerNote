@@ -5,11 +5,20 @@
 #   ★ 2026-10-31 E04：回滚之后必须再跑一次 verify-deploy（部署一致性），
 #     并把它的失败记成断言红。改前本脚本**全文不调用** verify-deploy ⇒
 #     "回滚不写清单、门禁必然误红"这个缺陷在自检里永远看不见（自检恒绿 = 假绿）。
-#   铁律：绝不碰真实运行区（GlimmerNote）
+#   铁律：绝不碰真实运行区。手段是**显式参数优先**——本脚本给 deploy/rollback 传 -ProdRoot、
+#     给 verify-deploy 传 --prod，全部指向临时沙箱（$env:TEMP）。所以运行区就算搬到别的盘、
+#     或本机 GLIMMERNOTE_PROD 指向哪里，演练都碰不到真实运行区（解析顺序见 scripts\_运行区.ps1）。
 #   用法：powershell -File scripts\selftest-pipeline.ps1 [-Keep]
 # ═══════════════════════════════════════════════════════════
 param([switch]$Keep)
 $ErrorActionPreference = 'Stop'
+
+# ★ 2026-11-02 R21：5.1 宿主环境自愈（见 scripts\_PS环境.ps1 的说明）
+#   ⚠ 只在文件真存在时 dot-source：本文件会被部分用例/工具**单独**复制到沙箱里跑，
+#     那时没有 _PS环境.ps1。缺了就**显式告警**继续（可见降级），不静默、也不硬崩。
+$psEnvSelfHeal = Join-Path $PSScriptRoot '_PS环境.ps1'
+if (Test-Path -LiteralPath $psEnvSelfHeal) { . $psEnvSelfHeal }
+else { Write-Host '  ⚠ 缺少 scripts\_PS环境.ps1（5.1 宿主环境自愈）：沿用当前 PSModulePath 继续' -ForegroundColor Yellow }
 
 # ── 回退耗时上限（判据 L-05：「回退耗时已知且有上限」）──
 # 依据：2026-10-29 审计轮实测 场景一 0.528 s / 场景二 3.893 s（40 MB 包），各留约 3~4 倍余量。

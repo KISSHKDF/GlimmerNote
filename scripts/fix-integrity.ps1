@@ -25,13 +25,17 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
-# 默认：运行区 <仓库上一级>\GlimmerNote 与开发区本身（两者并列）。
+# 默认：运行区（解析顺序：-Path 未给时 ② $env:GLIMMERNOTE_PROD ③ 兜底 <仓库上一级>\GlimmerNote）
+#       与开发区本身（两者并列，只处理存在的那些）。
 # ⚠ 不能在 param() 默认值里用 $PSScriptRoot（Windows PowerShell 5.1 求值默认值时它还是空）。
+# 解析顺序的唯一实现在 scripts\_运行区.ps1（与 deploy/rollback/verify-deploy 同一份契约）。
 if (-not $Path -or $Path.Count -eq 0) {
   $repoRoot = Split-Path -Parent $PSScriptRoot
-  $Path = @((Split-Path -Parent $repoRoot), $repoRoot) |
-    ForEach-Object { if ($_ -eq (Split-Path -Parent $repoRoot)) { Join-Path $_ 'GlimmerNote' } else { $_ } } |
-    Where-Object { Test-Path $_ }
+  . (Join-Path $PSScriptRoot '_运行区.ps1')
+  # 注意这里**不传** -Explicit：-Path 是"要处理哪些目录"的显式参数，
+  # 它的"没给"正是"要我按契约解析运行区"的意思；运行区本身没有第二个显式入口。
+  $prodRoot = Resolve-ProdRoot -RepoRoot $repoRoot
+  $Path = @($prodRoot, $repoRoot) | Where-Object { Test-Path $_ }
 }
 
 Write-Host '拾光小册 · 完整性标签复位' -ForegroundColor Cyan
@@ -39,7 +43,13 @@ $failed = 0
 foreach ($p in $Path) {
   if (-not (Test-Path $p)) { Write-Host "  跳过（不存在）：$p" -ForegroundColor Yellow; continue }
   $full = (Resolve-Path -LiteralPath $p).Path
-  $before = (icacls.exe $full 2>&1 | Select-String -Pattern 'Mandatory').ToString().Trim()
+  # ⚠ 2026-11-01 修（既有缺陷，D-xxx）：目录**还没有显式强制标签 ACE** 时，
+  #   `icacls | Select-String 'Mandatory'` 无命中 ⇒ 返回 $null ⇒ 链式 .ToString() 抛
+  #   "You cannot call a method on a null-valued expression"，脚本 exit 1。
+  #   "没有该行"本身是合法状态（下面 /setintegritylevel 正是要补上它），必须显式降级成文字，
+  #   不许让它变成崩溃，也不许静默吞掉（打印出来才看得见）。
+  $m = @(icacls.exe $full 2>&1 | Select-String -Pattern 'Mandatory')
+  $before = if ($m.Count -gt 0) { $m[0].ToString().Trim() } else { '(当前无 Mandatory 行)' }
   Write-Host "  $full"
   Write-Host "    现在：$before"
   if ($WhatIf) {
@@ -53,7 +63,8 @@ foreach ($p in $Path) {
     Write-Host "    ✖ 复位失败：$($out | Select-Object -Last 1)" -ForegroundColor Red
     continue
   }
-  $after = (icacls.exe $full 2>&1 | Select-String -Pattern 'Mandatory').ToString().Trim()
+  $m2 = @(icacls.exe $full 2>&1 | Select-String -Pattern 'Mandatory')
+  $after = if ($m2.Count -gt 0) { $m2[0].ToString().Trim() } else { '(复位后仍无 Mandatory 行)' }
   Write-Host "    之后：$after" -ForegroundColor Green
 }
 

@@ -18,7 +18,11 @@
  *   0 = 一致（运行区就是清单里那一版）                                  → 通过
  *   1 = 漂移（有文件被改/增/删，或版本号与清单不符）                      → 阻断
  *   2 = 用法错误（参数不认识）                                          → 阻断（fail-closed）
- *   3 = **本机没有运行区**（没有 <运行区> 目录，或其中没有 app\）        → 唯一可豁免：无法评估 ≠ 有漂移
+ *   3 = **解析到的运行区路径不存在**（或存在但没有 app\）                → 唯一可豁免：无法评估 ≠ 有漂移
+ *       ★ 2026-11-02 R12：措辞从"**本机**没有运行区"改为"**解析到的路径**不存在" ——
+ *         本脚本的判据只能证明这一个路径不存在，证明不了"这台机器上没有运行区"
+ *         （运行区完全可能在别处，只是没解析对；实测就是这样：进程没继承 GLIMMERNOTE_PROD
+ *         时兜底指向不存在的目录，而本机其实有运行区）。
  *   4 = **清单损坏 / 形状不对**（有清单但读不懂：JSON 解析失败、缺 files 字典…）→ 阻断
  *   5 = 运行区在、但尚无清单（建立本机制之前部署的历史状态）              → 阻断（走一次正规部署建基线）
  *
@@ -36,7 +40,8 @@
  *   node scripts\verify-deploy.mjs                 人类可读
  *   node scripts\verify-deploy.mjs --json          机器可读
  *   node scripts\verify-deploy.mjs --quiet         只在失败时输出（pre-commit 用）
- *   node scripts\verify-deploy.mjs --prod D:\x\y   指定运行区（默认 <仓库上一级>\GlimmerNote）
+ *   node scripts\verify-deploy.mjs --prod D:\x\y   指定运行区
+ *     （运行区解析顺序：--prod → 环境变量 GLIMMERNOTE_PROD → 兜底 <仓库上一级>\GlimmerNote）
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -67,7 +72,17 @@ for (let i = 0; i < argv.length; i++) {
 const JSON_OUT = has('--json');
 const QUIET = has('--quiet');
 
-const PROD = path.resolve(valOf('--prod', path.join(REPO, '..', 'GlimmerNote')));
+/* ---- 运行区路径 ----
+ * 解析顺序（唯一契约，与 scripts\_运行区.ps1 的 Resolve-ProdRoot 同序；改一处必须同步另一处）：
+ *   ① --prod <目录>  ② 环境变量 GLIMMERNOTE_PROD  ③ 兜底 <仓库上一级>\GlimmerNote
+ * ★ 2026-11-01：运行区不再保证与开发仓库同级（可以整套搬到别的盘）。原先只按
+ *   「<仓库上一级>\GlimmerNote」推导 ⇒ 运行区一搬走，校验/部署/回滚/急救全部指向
+ *   同一个不存在的目录。机器差异用**用户级环境变量**承载，留在仓库外。
+ * ⚠ 本仓库是公开仓：这里不许写任何本机绝对路径（加目录请用 --prod / 环境变量）。
+ * 空字符串按"没给"处理（setx 尾部空格、`GLIMMERNOTE_PROD=` 都退回下一档），
+ * 否则会 resolve 成当前工作目录，变成一个"看着正常、其实在查别处"的结论。 */
+const ENV_PROD = String(process.env.GLIMMERNOTE_PROD || '').trim();
+const PROD = path.resolve(valOf('--prod', ENV_PROD || path.join(REPO, '..', 'GlimmerNote')));
 const APP = path.join(PROD, 'app');
 const MANIFEST = path.join(PROD, '_deploy-manifest.json');
 
@@ -89,13 +104,21 @@ function die(code, msg, extra) {
 }
 
 /* ---- 环境 ----
- * ★ 2026-10-31 E03：这两个分支才是「本机没有运行区」，独占 exit 4（唯一可豁免的码）。
+ * ★ 2026-10-31 E03：这两个分支才是「解析到的运行区路径不存在」，独占 exit 3（唯一可豁免的码）。
+ *   （本行 2026-11-01 修：原写"exit 4"，与本文件第 21 行的权威表及 `RC.NO_RUNTIME: 3` 不符。）
+ *   ★ 2026-11-02 R12 文案整改：原话是「✖ **本机**没有运行区：<path>」。这句话**超出了判据能证明的范围** ——
+ *   `fs.existsSync(PROD)` 只能证明「解析到的这个路径不存在」。把"路径没解析对"说成"本机没有运行区"，
+ *   会把排查方向带偏（实测就是这样：那个进程没继承用户级 GLIMMERNOTE_PROD，兜底指向不存在的目录，
+ *   而本机其实有运行区并通过了校验），客观上还鼓励"那就放手吧"。现在只说判据证明得了的那件事。
  *   不要再和"清单损坏"共用同一个码 —— 那正是本轮缺陷的根因。 */
-if (!fs.existsSync(PROD)) die(RC.NO_RUNTIME, '✖ 本机没有运行区：' + PROD, {
-  hint: '这是新克隆 / 换机 / CI 的**预期状态**（无法评估 ≠ 有漂移），门禁会显示跳过。',
+if (!fs.existsSync(PROD)) die(RC.NO_RUNTIME, '✖ 解析到的运行区路径不存在：' + PROD + '（干净克隆 / 换机 / CI 的预期状态）', {
+  hint: '判据只能证明这一个路径不存在，**证明不了"本机没有运行区"**：运行区可能在别处，只是没解析对。\n' +
+    '  解析顺序（唯一契约）：--prod <目录> → 用户级环境变量 GLIMMERNOTE_PROD → 兜底 <仓库上一级>\\GlimmerNote。\n' +
+    '  干净克隆 / 换机 / CI 里这是**预期状态**（无法评估 ≠ 有漂移），门禁会显示跳过。',
 });
-if (!fs.existsSync(APP)) die(RC.NO_RUNTIME, '✖ 运行区里没有 app\\：' + APP, {
-  hint: '运行区存在但没有程序目录 ⇒ 等同于"没有运行区"（还没部署过），门禁会显示跳过。',
+if (!fs.existsSync(APP)) die(RC.NO_RUNTIME, '✖ 解析到的运行区路径存在，但其中没有 app\\：' + APP, {
+  hint: '解析到的路径确实在，只是里面没有程序目录 ⇒ 还没部署过，同样属于"无法评估"（门禁会显示跳过）。\n' +
+    '  若"本机明明有运行区"，先把 --prod / GLIMMERNOTE_PROD 指对再跑。',
 });
 
 /* ---- 清单 ----

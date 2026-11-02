@@ -14,6 +14,11 @@
  *      （证明这条断言有牙齿，不是恒真；同 `tests\neg-shell-path.cjs` 对 C# 侧的做法）；
  *   ② 端到端（独立端口实例）：`..%2f` 编码穿越到兄弟目录 → 403；多级逃逸 → 403；
  *   ③ 不过度拦截：根内文件、根内子目录、默认首页（`/`）、URL 编码中文路径都必须照常 200。
+ *      ★ 2026-11-02 R2：这一段只换样本、不改意图 —— 库内静态路由多了一层**业务白名单**
+ *      （`_服务端.mjs::staticAllowed`）：`.`/`_` 开头的目录与内部台账一律 403，
+ *      只放行 `_原图`/`_收件箱` 两条取图目录 + `_组卷台账.json` 一个根台账。
+ *      所以本段"必须 200"的样本改用 R2 放行的文件，`_索引.json` 这类内部件改成**必须 403**；
+ *      包含性判据本身的断言（① 纯路径自证、② 越界/同前缀兄弟目录 403）一字未动。
  *
  * 只发 GET，不写任何文件（也不需要在盘上真的造一个兄弟目录：判据在 `fs.readFile` **之前**，
  *   所以"403 而不是 404"本身就是判据生效的证据）。
@@ -97,10 +102,16 @@ const asJoined = rel => path.normalize(path.join(ROOT, rel));   // 服务端等�
       const E = require('./_测试环境.cjs');
       const exists = (rel) => { try { return fs.statSync(path.join(E.LIB, rel)).isFile(); } catch { return false; } };
 
-      /* ① 下划线开头的根内文件：从库里现挑一个 */
-      const underFile = ['_状态.json', '_待确认.json', '_组卷台账.json', '_索引.json', '_安全写.mjs']
+      /* ① 下划线开头的根内文件：从库里现挑一个。
+         ★ 2026-11-02 R2：候选顺序**必须**把 `_组卷台账.json` 排最前 —— 库内静态白名单
+         （`_服务端.mjs::staticAllowed`）只放行这一个根台账，`_状态.json`/`_待确认.json`/`_索引.json`
+         现在一律 403，拿它们当"必须 200"的样本会让本段恒红。 */
+      const underFile = ['_组卷台账.json', '_状态.json', '_待确认.json', '_索引.json', '_安全写.mjs']
         .find(exists);
-      /* ② 中文文件名 + 连字符：在库里找一个文件名同时含中文与 '-' 的 */
+      /* ② 中文文件名 + 连字符：在库里找一个文件名同时含中文与 '-' 的。
+         ★ 2026-11-02 R2：必须排除 `_` 开头与含 `.bak` 的名字 —— 否则这里会挑中
+         `_原卷台账.json.bak-41-63-20261026052853`（本轮实测就是它），而它正是 R2 第 ④ 道
+         判据（文件名含 `.bak`）要杀的形态，必然 403。本段要证的是"包含性判据不误伤中文长文件名"。 */
       const zhDash = (() => {
         let hit = null;
         const walk = (d, rel, depth) => {
@@ -110,7 +121,8 @@ const asJoined = rel => path.normalize(path.join(ROOT, rel));   // 服务端等�
             if (hit) return;
             const r = rel ? rel + '/' + e.name : e.name;
             if (e.isDirectory()) { if (!/^(_|\.)/.test(e.name)) walk(path.join(d, e.name), r, depth - 1); continue; }
-            if (/[\u4e00-\u9fa5]/.test(e.name) && e.name.includes('-')) hit = r;
+            if (/[\u4e00-\u9fa5]/.test(e.name) && e.name.includes('-') &&
+              !/^[_.]/.test(e.name) && !e.name.includes('.bak')) hit = r;
           }
         };
         walk(E.LIB, '', 2);
@@ -118,10 +130,10 @@ const asJoined = rel => path.normalize(path.join(ROOT, rel));   // 服务端等�
       })();
 
       const inside = [];
-      if (underFile) inside.push(['/' + encodeURIComponent(underFile), 200, '根内下划线开头的文件']);
+      if (underFile) inside.push(['/' + encodeURIComponent(underFile), 200, '根内下划线开头的文件（R2 放行的根台账）']);
       else console.log('  [SKIP] 根内下划线开头的文件 —— 库里一个都没有');
-      inside.push(['/九年级/_索引.json', 200, '根内中文子目录']);
-      inside.push(['/九年级/' + encodeURIComponent('_索引.json'), 200, '中文目录段']);
+      inside.push(['/九年级/_索引.json', 403, '根内下划线台账：R2 第 ③ 道判据明令 403（内部件不下发）']);
+      inside.push(['/九年级/' + encodeURIComponent('_索引.json'), 403, '中文目录段 + 下划线台账（同上）']);
       if (zhDash) inside.push(['/' + zhDash.split('/').map(encodeURIComponent).join('/'), 200, '根内中文文件名 + 连字符']);
       else console.log('  [SKIP] 根内中文文件名 + 连字符 —— 库里找不到这类文件');
       if (exists('首页.html')) inside.push(['/' + encodeURIComponent('首页.html'), 200, '根内中文文件名（首页）']);

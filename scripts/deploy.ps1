@@ -12,13 +12,13 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
-# 默认运行区 = <仓库上一级>\GlimmerNote（开发区与运行区并列），可用 -ProdRoot 覆盖。
+# 运行区解析顺序（唯一契约，实现见 scripts\_运行区.ps1）：
+#   ① -ProdRoot  ② $env:GLIMMERNOTE_PROD  ③ 兜底 <仓库上一级>\GlimmerNote
 # ⚠ 不能写成 param() 的默认值：Windows PowerShell 5.1 求值 param 默认值时 $PSScriptRoot 仍为空，
 #   会报 "Cannot bind argument to parameter 'Path' because it is an empty string"（2026-10-23 实测）。
-if (-not $ProdRoot) {
-  $repoRoot = Split-Path -Parent $PSScriptRoot
-  $ProdRoot = Join-Path (Split-Path -Parent $repoRoot) 'GlimmerNote'
-}
+$repoRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot '_运行区.ps1')
+$ProdRoot = Resolve-ProdRoot -Explicit $ProdRoot -RepoRoot $repoRoot
 Add-Type -AssemblyName System.IO.Compression.FileSystem | Out-Null
 
 # ── 清单写入的唯一实现（与 rollback.ps1 共用，避免两份实现漂移；2026-10-31 E04）──

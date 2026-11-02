@@ -360,7 +360,7 @@
         '<div class="row" style="margin:8px 0"><button class="btn sm primary" id="igCopy">📋 复制任务单</button>' +
         (st.shot ? '<button class="btn sm primary" id="igReveal">📂 定位这张图</button>' : '') +
         '<button class="btn sm ghost" id="igToggle">展开 / 收起预览</button>' +
-        '<span class="small muted">发给 AI 的是<b>两样</b>：照片用「📂 定位这张图」选中后发出去，文字用「复制任务单」。</span></div>' +
+        '<span class="small muted">点「📋 复制任务单」把文字发给 AI：<b>本机代理</b>（能跑命令的，如 ZCode）会按任务单「第 0 步」自己取图，<b>不用你发照片</b>；<b>网页版</b> AI 才要用「📂 定位这张图」选中后作为附件发出去。</span></div>' +
         (st.shot
           ? '<div class="small muted" style="margin-bottom:8px">要发的那一张：' + U.esc(st.shot.name) +
             '　指纹 <b>' + U.esc(String(st.shot.sha256 || '').slice(0, 12)) + '</b>' +

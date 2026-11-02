@@ -10,10 +10,18 @@
  *     LIB  = 库根（用户数据，测试的**数据源**）
  *
  * LIB 优先级：
- *   ① 环境变量 CTB_TEST_LIB
- *   ② 仓库的同级目录 ..\错题本（本机的真库；只在开发机存在）
- *   ③ 仓库的同级目录 ..\GlimmerNote\数据（运行区的库）
+ *   ① 环境变量 CTB_TEST_LIB（显式指定）
+ *   ② 运行区的库 = <运行区>\数据。运行区根按**与四个发布脚本同一份契约**解析：
+ *        $env:GLIMMERNOTE_PROD → 兜底 <仓库上一级>\GlimmerNote（唯一实现 scripts\_运行区.ps1）
+ *      ★ 2026-11-01（运行区搬出仓库同级目录之后修的真缺陷）：原先这里把
+ *        "运行区与仓库同级"写死成相对路径，运行区一搬就找不到真库 ⇒ **静默落到合成库**
+ *        ⇒ `quick` 常态红（restore-drill 的"真源可恢复"在合成库上无备份无 git，天然不满足），
+ *        而且回归门禁**不再对着真库跑**。个人绝对路径不进 tracked 文件（公开仓），
+ *        机器差异只放环境变量。
+ *   ③ 仓库的同级目录 ..\错题本（迁移前的旧冻结区，观察期兜底）
+ *   ④/⑤ 仓库自带合成库 fixtures\库-形状 / 库-最小（新克隆、无真库的机器上的兜底）
  *   都没有就响亮失败——**绝不**静默指向一个空目录然后让测试"全绿"。
+ *   选中的是哪一个记在 LIB_SOURCE，并由门禁入口 tests\run.mjs 打印出来（落到合成库必须可见）。
  *
  * ⚠ 铁律：真库只读。任何会写盘的测试必须先 assertWritableLib()，
  *   它会在 LIB 指向真库时**直接抛错**，逼你把测试跑在副本上（见 makeTempLib）。
@@ -37,8 +45,10 @@ function resolveLib() {
        否则"显式指定"反而绕开影像生成，门禁在合成库上永远缺图（实测踩过）。 */
     if (p.startsWith(path.join(REPO, 'fixtures'))) {
       const { materialize } = require('./_合成库.cjs');
+      LIB_SOURCE = 'CTB_TEST_LIB → fixtures';
       return materialize();
     }
+    LIB_SOURCE = 'CTB_TEST_LIB';
     return p;
   }
   /* ★ 2026-10-24 审计修复（F-06 / DEFECT-REGISTRY D-051）：
@@ -50,13 +60,21 @@ function resolveLib() {
    * 而在没有真库的机器上自动落到合成库。
    * ★ 2026-10-24 迁移：真库已迁至运行区 GlimmerNote\数据（对账全绿），候选序对调；
    *   旧冻结区（已改名 错题本-冻结-20261024）保留为观察期兜底候选，目录不在则自然跳过。 */
+  const envProd = String(process.env.GLIMMERNOTE_PROD || '').trim();
   const cands = [
-    path.resolve(REPO, '..', 'GlimmerNote', '数据'),        // 运行区库（真库所在）
+    path.resolve(envProd || path.resolve(REPO, '..', 'GlimmerNote'), '数据'),  // 运行区库（真库所在）
     path.resolve(REPO, '..', '错题本'),                    // 旧冻结区（观察期兜底）
     path.join(REPO, 'fixtures', '库-形状'),                 // ★ 仓库自带合成形状库（新克隆默认；影像运行时物化）
     path.join(REPO, 'fixtures', '库-最小'),                 // 合成最小库（形状库缺失时的兜底）
   ];
-  for (const c of cands) {
+  const sources = [
+    envProd ? 'GLIMMERNOTE_PROD 指向的运行区' : '仓库上一级\\GlimmerNote（兜底）',
+    '旧冻结区 ..\\错题本',
+    'fixtures 合成库（库-形状）',
+    'fixtures 合成库（库-最小）',
+  ];
+  for (let ci = 0; ci < cands.length; ci++) {
+    const c = cands[ci];
     if (!isDir(c)) continue;
     /* 像库的判据：有索引 / 有学生目录 / 有状态包，任一成立。
        ★ 2026-10-24 B-09：目录名判据不再写死某个真实学生目录名，
@@ -74,17 +92,24 @@ function resolveLib() {
         const { materialize } = require('./_合成库.cjs');
         const m = materialize();
         if (process.env.CTB_TEST_LIB) process.env.CTB_TEST_LIB = m;
+        LIB_SOURCE = sources[ci];
         return m;
       }
+      LIB_SOURCE = sources[ci];
       return c;
     }
   }
-  throw new Error('[测试环境] 找不到库。三种办法任选其一：' +
+  throw new Error('[测试环境] 找不到库。四种办法任选其一：' +
     '\n  ① 什么都不做 —— 仓库自带的 fixtures\\库-最小 应当被自动选中（若报这个错说明它缺文件）' +
     '\n  ② 设 CTB_TEST_LIB 指向一个库目录（含 _索引.json / 学生目录）' +
-    '\n  ③ 在本仓同级放一个 错题本\\ 或 GlimmerNote\\数据\\ 目录' +
+    '\n  ③ 设 GLIMMERNOTE_PROD 指向运行区根（库 = <它>\\数据）' +
+    '\n  ④ 在本仓同级放一个 错题本\\ 或 GlimmerNote\\数据\\ 目录' +
     '\n  试过：' + cands.join(' 、 '));
 }
+
+/* 库是从哪来的（CTB_TEST_LIB / GLIMMERNOTE_PROD 运行区 / 旧冻结区 / fixtures 合成库）。
+   门禁入口 tests\run.mjs 会把它打印出来 —— 落到合成库必须**可见**，不许静默降级。 */
+let LIB_SOURCE = '未判定';
 
 const LIB = resolveLib();
 
@@ -277,12 +302,14 @@ function semanticallyEqual(rel, beforeAbs, afterAbs) {
    现在退出码拆开、判据收在一处，两个调用方都调本函数，不再各自抄一份 if/else
    （两份实现必然漂移，本仓 L-286）。
      ESC 语义：只有 `skip` 是"无法评估"；`block` 一律按失败处理（fail-closed）。
+     ★ 2026-11-02 R12：标签文案同步 verify-deploy 的新口径 ——「解析到的运行区路径不存在」，
+     不再写「本机没有运行区」（那个判据证明不了这件事：运行区可能在别处、只是没解析对）。
    ══════════════════════════════════════════════════════════════════════ */
 const VERIFY_DEPLOY_CODES = {
   OK: 0,            // 一致
   DRIFT: 1,         // 有文件被改/增/删，或版本与清单不符
   USAGE: 2,         // 用法错误（参数不认识）
-  NO_RUNTIME: 3,    // 本机没有运行区（没有 <仓库上一级>\GlimmerNote 或其中没有 app\）—— **唯一可豁免**
+  NO_RUNTIME: 3,    // 解析到的运行区路径不存在（或存在但没有 app\）—— **唯一可豁免**
   BAD_MANIFEST: 4,  // 清单损坏 / 形状不对 —— **必须阻断**（不许当成"没有运行区"）
   NO_MANIFEST: 5,   // 运行区在、但尚无清单（机制建立前的历史状态）—— 阻断，但不与"没有运行区"混为一谈
 };
@@ -290,7 +317,7 @@ const VERIFY_DEPLOY_MEANING = {
   0: '运行区与部署清单一致',
   1: '运行区被绕过 deploy.ps1 改动过（或版本与清单不符）',
   2: '用法错误',
-  3: '本机没有运行区（干净克隆 / 换机 / CI 的预期状态）',
+  3: '解析到的运行区路径不存在（干净克隆 / 换机 / CI 的预期状态）',
   4: '清单损坏或形状不对（读不懂的运行区基线 = 无法证明，必须阻断）',
   5: '运行区尚无部署清单（机制建立之前的历史状态）',
 };
@@ -475,7 +502,7 @@ async function serverBase() {
 }
 
 module.exports = {
-  REPO, TOOLS, LIB, isFrozen, findIndexes,
+  REPO, TOOLS, LIB, LIB_SOURCE, isFrozen, findIndexes,
   lib, tool, makeTempLib, runToolSync,
   /* 写盘准入（E01）：三种形态共用 writeGuard 一个判据 */
   writeGuard, assertWritableLib, guardWriteTest, backupRotationAllowed,
@@ -485,5 +512,5 @@ module.exports = {
   VERIFY_DEPLOY_CODES, VERIFY_DEPLOY_MEANING, classifyVerifyDeploy,
   startServer, serverBase, freePort,
   isAppUrl, isFileAppUrl,
-  describe: () => '仓库=' + REPO + '　库=' + LIB,
+  describe: () => '仓库=' + REPO + '　库=' + LIB + '（来源=' + LIB_SOURCE + '）',
 };
