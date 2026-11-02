@@ -639,6 +639,14 @@ const unitTests = [
   /* ★ 2026-11-02：`neg-orig-store.cjs` 此前是**游离文件**（写了但没挂进任何档 ⇒ 能绿但没人跑，
      同 L-175「可选工具 ≠ 机械化」）。本轮登记进 quick。 */
   ['neg-orig-store.cjs'],
+  /* ★ 2026-11-02（批次 1「任务绑定」）：把 A 的结果贴进 B 必须被拒——错配是最危险的静默错误。
+     三层：① 格式交给 `_配方.mjs 校验`（唯一实现，界面与 CLI 共用）② 信封 taskId / 原图 sha /
+     卡内 sourceImageSha256 三重匹配 ③ 人工确认只能由 `确认` 子命令写。含 11 条反例。 */
+  ['neg-task-binding.cjs'],
+  /* ★ 2026-11-02（批次 0 尾项「过程件卫生」）：① `_作答门禁` 的作答工单默认落 `procPath()`（不再写库根）
+     ② 测试夹具临时目录集中登记 + 进程退出统一删 + 启动清扫 ③ `neg-v2-pagesmoke` 的 profile 清理挪进 finally。
+     为什么值得单挂一档：实测曾一次压出 10.2 GB 残留（%TEMP% 8.3 GB / 仓库 `_probe` 1.29 GB）。 */
+  ['neg-proc-hygiene.cjs'],
 ];
 for (const [name] of unitTests) {
   worst = Math.max(worst, run(name));

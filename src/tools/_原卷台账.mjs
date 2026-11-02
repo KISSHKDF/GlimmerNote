@@ -502,6 +502,21 @@ function resolveImport(pageRel, shaCache) {
 }
 
 /* ---------- 生成 ---------- */
+
+/* ★ 2026-11-02（P1-1）：重建时**已知字段按规则重算、未知字段原样保留**。
+   改前 `out[c.key] = {…固定字段集…}` ⇒ 台账里既有的 `sha256`（52 条遗留）与 `lost`
+   （10 条"素材灭失豁免"）会被下一次 生成/采集 **静默吃掉**——`lost` 一丢，10 张卡就从免检名单里消失。
+   新增字段（例如规划中的区域 `regions[]`）同样会被吃掉，所以"往台账加字段"这件事的前置就是这条。
+   白名单里放"本函数会重算的字段"，其余一律透传；合并视觉定位写入的 `locFile` 这类也靠它保住。 */
+const KNOWN_CARD_FIELDS = new Set([
+  'key', 'student', 'subject', 'cardDir', 'source', 'page', 'box', 'by', 'need', 'note', 'import', 'pagePx', 'cropPx',
+]);
+function unknownOf(prev) {
+  const out = {};
+  if (prev && typeof prev === 'object') for (const [k, v] of Object.entries(prev)) if (!KNOWN_CARD_FIELDS.has(k)) out[k] = v;
+  return out;
+}
+
 function build({ dry, force }) {
   /* ⚠ 2026-10-12 修（审计 BUG-07·中）：原先是 `readJson(LEDGER).cards || {}`，**没有形状守卫**。
      若 cards 变成数组（PowerShell 的 ConvertFrom/To-Json 往返就会造成这种形状），
@@ -531,6 +546,7 @@ function build({ dry, force }) {
       key: c.key, student: c.student, subject: c.subject, cardDir: c.cardDir, source: c.source,
       page: r.page || null, box: r.box || null, by: r.by, need: !!r.need, note: r.note || '',
       import: r.page ? (resolveImport(r.page, shaCache) || (prev && prev.import) || null) : null,
+      ...unknownOf(prev),           /* P1-1：sha256 / lost / locFile / 将来的 regions … 一律不许丢 */
     };
   }
   if (!dry) writeIfChanged(SHA_CACHE, shaCache);   /* --dry 连缓存也不写（铁律） */

@@ -122,7 +122,23 @@ function main() {
 
     const mutDir = path.join(TMP, 'mut');
     fs.mkdirSync(mutDir, { recursive: true });
-    for (const f of ['_配方.mjs', '_库根.mjs']) fs.copyFileSync(path.join(ROOT, 'src', 'tools', f), path.join(mutDir, f));
+    /* 把 `_配方.mjs` 实际 import 的兄弟模块一并复制，变异体才能独立跑起来。
+       2026-11-02 教训：原先是**写死** `['_配方.mjs','_库根.mjs']`——当天给 `_配方.mjs` 加了
+       `import … from './_录题任务.mjs'` 之后，变异体在 mut 目录里解析不到该模块 ⇒ exit=1 ⇒
+       这条阴性自证静默失效（红的是"对照"，不是被测逻辑）。改为**从源码解析 import 清单**，
+       以后再新增兄弟模块不必回来改这里。 */
+    const deps = new Set();
+    const queue = ['_配方.mjs'];
+    while (queue.length) {
+      const f = queue.shift();
+      if (deps.has(f)) continue;
+      const src = path.join(ROOT, 'src', 'tools', f);
+      if (!fs.existsSync(src)) continue;
+      deps.add(f);
+      const body = f === '_配方.mjs' ? ORIG : fs.readFileSync(src, 'utf8');
+      for (const m of body.matchAll(/from\s+'\.\/([^']+\.mjs)'/g)) if (!deps.has(m[1])) queue.push(m[1]);
+    }
+    for (const f of deps) fs.copyFileSync(path.join(ROOT, 'src', 'tools', f), path.join(mutDir, f));
     const mutEngine = path.join(mutDir, '_配方.mjs');
     fs.writeFileSync(mutEngine, mutSrc, 'utf8');           // UTF-8 无 BOM + LF（源文件就是 LF）
     const chk = spawnSync(process.execPath, ['--check', mutEngine], { encoding: 'utf8' });

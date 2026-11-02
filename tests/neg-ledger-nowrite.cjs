@@ -90,14 +90,25 @@ const makeLib = ({ cropMissing = false, badImage = false } = {}) => {
     '测试|T0002': {
       key: '测试|T0002', student: '测试', subject: '数学', source: '合成第2题',
       cardDir: '九年级/数学/T0002-合成', page: '九年级/数学/原卷/页-2.jpg',
-      box: [0.1, 0.1, 0.4, 0.3], by: '手工', need: false, note: '合成', import: null,
+      box: [0.1, 0.1, 0.4, 0.3], by: '批次导入', need: false, note: '合成', import: null,
+      xProbe: 'keep-me',            /* P1-1：未知字段，重建后必须还在 */
+    },
+    '测试|T0003': {
+      key: '测试|T0003', student: '测试', subject: '数学', source: '合成第3题',
+      cardDir: '九年级/数学/T0003-合成', page: null, box: null,
+      by: '批次导入', need: false, note: '合成', import: null,
+      lost: true,                   /* P1-1：素材灭失豁免，重建后必须还在（真实库 10 条） */
     },
   };
   put('_原卷台账.json', Buffer.from(JSON.stringify({ version: 1, note: '合成', generatedAt: '2026-11-02T00:00:00.000Z', cards }, null, 1)));
   /* `生成` 走 loadCards()：它直接扫「非 `_` 开头目录下的 _索引.json」⇒ 合成库必须给一份最小索引 */
   put('九年级/_索引.json', Buffer.from(JSON.stringify({
     student: '测试', subject: '数学',
-    items: [{ id: 'T0001', dir: '数学/T0001-合成', source: '合成第1题' }],
+    items: [
+      { id: 'T0001', dir: '数学/T0001-合成', source: '合成第1题' },
+      { id: 'T0002', dir: '数学/T0002-合成', source: '合成第2题' },
+      { id: 'T0003', dir: '数学/T0003-合成', source: '合成第3题' },
+    ],
   }, null, 1)));
   /* T0001：页 1000×1400、裁图 800×600（比例接近 ⇒ 不应可疑） */
   put('九年级/数学/原卷/页-1.jpg', badImage ? Buffer.alloc(0) : jpeg(1000, 1400));
@@ -118,7 +129,7 @@ const newEnv = () => ({ GLIMMERNOTE_PROC: fs.mkdtempSync(path.join(os.tmpdir(), 
   const r = run(['_原卷台账.mjs', '门禁'], probe, ENV);
   A('1a 合成库上门禁能跑通（exit 0）', r.code === 0, 'exit=' + r.code);
   A('1b 体检真的比了 1 张（不是 0 张）', /已比 1 张/.test(r.out), (r.out.match(/长宽比体检[^\n]*/) || ['(无体检行)'])[0]);
-  A('1c 缺裁图的那张被计入"未比"，没被当通过', /另 1 张缺尺寸未比/.test(r.out));
+  A('1c 缺裁图/缺页的那两张被计入"未比"，没被当通过', /另 2 张缺尺寸未比/.test(r.out), (r.out.match(/长宽比体检[^\n]*/) || ['(无体检行)'])[0]);
   fs.rmSync(probe, { recursive: true, force: true });
 }
 
@@ -162,6 +173,17 @@ const newEnv = () => ({ GLIMMERNOTE_PROC: fs.mkdtempSync(path.join(os.tmpdir(), 
     A('2n 缓存里裁图尺寸 = [800,600]（PNG IHDR 解析正确）',
       JSON.stringify(cache['九年级/数学/T0001-合成/原卷截图.jpg']) === JSON.stringify([800, 600]),
       JSON.stringify(cache['九年级/数学/T0001-合成/原卷截图.jpg']));
+  }
+  /* P1-1：重建必须保住未知字段（改前是固定字段集 ⇒ `sha256`×52 / `lost`×10 会被静默吃掉）。
+     阴性自证：把 `...unknownOf(prev)` 拿掉，下面两条必须红。 */
+  {
+    const led = JSON.parse(fs.readFileSync(ledger, 'utf8'));
+    A('2o 未知字段 xProbe 未被重建吃掉（P1-1）',
+      !!(led.cards && led.cards['测试|T0002'] && led.cards['测试|T0002'].xProbe === 'keep-me'),
+      JSON.stringify((led.cards || {})['测试|T0002'] || null).slice(0, 160));
+    A('2p 素材灭失豁免 lost 未被重建吃掉（P1-1）',
+      !!(led.cards && led.cards['测试|T0003'] && led.cards['测试|T0003'].lost === true),
+      JSON.stringify((led.cards || {})['测试|T0003'] || null).slice(0, 160));
   }
   fs.rmSync(lib, { recursive: true, force: true });
 }

@@ -38,6 +38,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { APP_ROOT, libraryRoot, toolPath } from './_库根.mjs';
+import { createTask, newTaskId } from './_录题任务.mjs';
 
 /* ⚠ 2026-10-31：**不要**在模块顶层 import `_路径护栏.mjs`。
  *   那个模块在**导入时**就求值 `libraryRoot()` 并缓存，于是它会抢在下面
@@ -1217,6 +1218,26 @@ function cmdCompose() {
   head.push(c.text);
   head.push('');
 
+  /* ★ 2026-11-02（批次 1）：--task ⇒ 留一条本地任务记录，并把任务号写进任务单 + 要求信封回传。 */
+  const wantTask = argv.includes('--task');
+  let taskId = null;
+  if (wantTask) {
+    taskId = newTaskId();
+    head.push('## 五、任务号（回传时必须原样带回来）');
+    head.push('');
+    head.push('| 项 | 值 |');
+    head.push('|---|---|');
+    head.push('| 任务号 | `' + taskId + '` |');
+    head.push('');
+    head.push('回传时请用**外层信封**携带任务号与本次原图 sha256，`result` 里仍按第三节的格式填：');
+    head.push('');
+    head.push('```json');
+    head.push('{ "envelope": { "schema": "glimmernote.ingest-result/v1", "taskId": "' + taskId + '", "imageSha256": "' + (imgSha || '') + '" }, "result": { /* 第三节那套格式 */ } }');
+    head.push('```');
+    head.push('');
+    head.push('**不要**把 taskId 塞进 `cards`（cards 的字段是冻结契约，程序按 `additionalProperties:false` 拒收）。');
+    head.push('');
+  }
   const text = head.join('\n');
   if (out && out !== '-') {
     const abs = path.resolve(out);
@@ -1233,6 +1254,23 @@ function cmdCompose() {
     process.stderr.write('配方=' + id + ' v' + c.meta.version + '  指纹=' + c.hash + '  层数=' + c.layerFiles.length +
       '  提示词=' + text.length + ' 字符' + (imgSha ? '  原图sha256=' + imgSha.slice(0, 16) + '…' : '') + '\n');
   }
+  if (wantTask) {
+    /* contractDigest 覆盖：实际拼入的正文（layers+prompt+反例）+ **schema 摘要**
+       —— 现有"指纹"不含 schema.json，故另立一个摘要，专供"这批卡是按哪版契约收的"追溯。 */
+    const { dir } = loadMeta(id);
+    const schemaFile = path.join(dir, 'schema.json');
+    const schemaText = isFile(schemaFile) ? fs.readFileSync(schemaFile, 'utf8') : '';
+    const rec = createTask({
+      taskId,
+      recipe: { id, version: c.meta.version, fingerprint: c.hash },
+      subject,
+      image: { sha256: imgSha || null, rel: valOf('--image', '') || null },
+      cards: [],
+      contractDigest: crypto.createHash('sha256').update(c.text + '\0' + schemaText).digest('hex'),
+      taskText: text,
+    });
+    process.stderr.write('任务记录：' + rec.taskId + '（<库根>\\_录题\\' + rec.taskId + '.json）\n');
+  }
   return 0;
 }
 
@@ -1245,6 +1283,12 @@ function cmdValidate() {
   let obj;
   try { obj = readJson(abs); }
   catch (e) { console.error('✖ 不是合法 JSON：' + e.message + '\n  提示：AI 常常在 JSON 外裹一段解释文字，只保留花括号内内容。'); return 1; }
+
+  /* ★ 2026-11-02（批次 1「任务绑定」）：外层信封 `{envelope:{schema,taskId,imageSha256}, result:{…}}`
+     —— 用信封携带"这是哪个任务"的身份，而**不动** cards 上已设的 additionalProperties:false（建议书 §4）。
+     这里剥壳后按原契约校验 `result`；没信封的老 JSON 走原路（= "仅格式校验"）。 */
+  let env = null;
+  if (obj && typeof obj === 'object' && obj.envelope && obj.result) { env = obj.envelope; obj = obj.result; }
 
   /* 默认按配方推断：有 pageSummary 走整页配方，否则走单题配方。
      ⚠ 推断必须**说出口**（不静默）：整页输出若漏了 pageSummary，会被误判成单题配方，
@@ -1262,10 +1306,11 @@ function cmdValidate() {
   const skipped = Array.isArray(obj && obj.skipped) ? obj.skipped : [];
 
   if (JSON_OUT) {
-    process.stdout.write(JSON.stringify({ ok: errs.length === 0, recipe: id, inferred, cards: cards.length, skipped: skipped.length, errors: errs }) + '\n');
+    process.stdout.write(JSON.stringify({ ok: errs.length === 0, recipe: id, inferred, cards: cards.length, skipped: skipped.length, errors: errs, envelope: env ? { taskId: env.taskId || null, imageSha256: env.imageSha256 || null } : null }) + '\n');
     return errs.length ? 1 : 0;
   }
 
+  if (env) console.log('信封：taskId=' + (env.taskId || '(空)') + (env.imageSha256 ? '　imageSha256=' + String(env.imageSha256).slice(0, 12) + '…' : '') + '（与任务的匹配由 _录题任务.mjs 绑定校验 判定）');
   console.log('配方：' + id + (inferred ? '（未指定 --recipe，按输入形态推断：' + (obj && obj.pageSummary ? '有 pageSummary' : '无 pageSummary') + '）' : ''));
   console.log('记录：' + cards.length + ' 条　跳过：' + skipped.length + ' 条');
   if (!errs.length) {

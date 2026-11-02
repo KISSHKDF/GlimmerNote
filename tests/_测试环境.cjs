@@ -46,6 +46,7 @@ function resolveLib() {
     if (p.startsWith(path.join(REPO, 'fixtures'))) {
       const { materialize } = require('./_合成库.cjs');
       LIB_SOURCE = 'CTB_TEST_LIB → fixtures';
+      LIB_MATERIALIZED_HERE = true;
       return materialize();
     }
     LIB_SOURCE = 'CTB_TEST_LIB';
@@ -93,6 +94,7 @@ function resolveLib() {
         const m = materialize();
         if (process.env.CTB_TEST_LIB) process.env.CTB_TEST_LIB = m;
         LIB_SOURCE = sources[ci];
+        LIB_MATERIALIZED_HERE = true;
         return m;
       }
       LIB_SOURCE = sources[ci];
@@ -110,6 +112,9 @@ function resolveLib() {
 /* 库是从哪来的（CTB_TEST_LIB / GLIMMERNOTE_PROD 运行区 / 旧冻结区 / fixtures 合成库）。
    门禁入口 tests\run.mjs 会把它打印出来 —— 落到合成库必须**可见**，不许静默降级。 */
 let LIB_SOURCE = '未判定';
+/* ★ 2026-11-02 批次0尾项：库是不是**本进程亲自物化**出来的临时库（见下方临时夹具切除表）。
+   只有"亲生的"才允许在退出时删 —— 别人通过 CTB_TEST_LIB 传进来的路径绝不动。 */
+let LIB_MATERIALIZED_HERE = false;
 
 const LIB = resolveLib();
 
@@ -337,9 +342,101 @@ const COPY_FILES = [
   '_词表.md', '_复习队列.md', '_待确认清单.md',
 ];
 
+/* ══════════════════════════════════════════════════════════════════════
+   临时夹具的登记 / 清扫（2026-11-02 批次0尾项：「过程件做完就该处理掉」）
+   为什么要有（实测代价）：夹具目录此前**只建不删** —— makeTempLib 的 `gn-testlib-*`、
+   _合成库 的 `gn-synthlib-*`、run.mjs 的 `gn-libsnap-*`、neg-v2-ui-* 的 WebView2 profile
+   （`ctb-neg-v2-ui-*` / `ctb-neg-rb-*`）、neg-v2-pagesmoke 的 `v2fix-profile-*`。
+   跑多了在 %TEMP% 累积 **418 个目录 / 7.43 GB**，仓库 `_probe\` 另积 16 394 文件 / 1.29 GB。
+   ──────────────────────────────────────────────────────────────────────
+   两条互补的机制（缺任一条都会漏）：
+     ① **本次进程自建**的夹具 ⇒ registerTempDir()/allocTempDir() 登记，
+        `process.on('exit')` 统一删 —— 正常退出、抛错、`process.exit(n)` 都覆盖；
+     ② **上次崩溃/被杀**留下的（SIGKILL、任务管理器结束、断电）⇒ exit 钩子根本不会跑，
+        只能靠**启动清扫**：require 本文件时扫 %TEMP% 里登记过的前缀，按"主进程是否还活着
+        + 是否够陈旧"删 —— 与 `src\_tools\_原图.mjs` 的 sweepTmp() 同一思路。
+   ⚠ 清扫判据必须是**双向**的：既要清得掉真残留，又绝不能删**并发在跑的另一轮**的夹具
+     （同机并行跑两个门禁是常态）。所以：
+       · 名字里带 pid（`…-<pid>` 或 `…-<pid>-<随机>`）且那个 pid 还活着 ⇒ 留着；
+       · 主已死（崩溃残留）⇒ 立刻删；无主且够陈旧（>24h）⇒ 删；无主又很新 ⇒ 留着（保守）。
+   ⚠ 只认**已知前缀**、只在 os.tmpdir() 下、只删目录 —— 不做通配清理，不跟随重解析点。
+   ══════════════════════════════════════════════════════════════════════ */
+const TMP_PREFIXES = [
+  'gn-testlib-',      // makeTempLib()（本文件）
+  'gn-synthlib-',     // tests\_合成库.cjs materialize()
+  'gn-libsnap-',      // tests\run.mjs 语义等价快照
+  'v2fix-profile-',   // tests\neg-v2-pagesmoke.cjs 的 Edge profile
+  'ctb-neg-v2-ui-',   // tests\neg-v2-ui-*.cjs 的 WebView2 profile
+  'ctb-neg-rb-',      // tests\neg-v2-ui-review-bank.cjs 的 WebView2 profile
+  'gn-fixlib-',       // tests\fixtures-smoke.cjs 的合成库副本（它自己在末尾删，但被杀就漏）
+];
+const TMP_STALE_MS = 24 * 60 * 60 * 1000;
+const _ownedTmp = new Set();
+
+/** 从目录名里取 pid：`gn-testlib-4242-Ab3x` / `ctb-neg-v2-ui-4242` 都认；取不到返回 0 */
+function tmpPidOf(name) {
+  const m = String(name).match(/-(\d+)(?:-[^-]*)?$/);
+  return m ? Number(m[1]) : 0;
+}
+/** pid 还活着吗（EPERM = 活着但不属于我；ESRCH = 已死） */
+function tmpPidAlive(pid) {
+  const n = Number(pid);
+  if (!Number.isFinite(n) || n <= 0) return false;
+  if (n === process.pid) return true;
+  try { process.kill(n, 0); return true; } catch (e) { return !!e && e.code === 'EPERM'; }
+}
+/** 登记一个**本次进程拥有**的临时目录：退出时统一切除。返回原路径（便于链式使用）。 */
+function registerTempDir(dir) {
+  if (dir) _ownedTmp.add(path.resolve(String(dir)));
+  return dir;
+}
+/** mkdtemp + 登记，一步到位。前缀里嵌 pid ⇒ 被 SIGKILL 后下一轮清扫能认出"主已死"。 */
+function allocTempDir(prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), String(prefix || 'gn-tmp-') + process.pid + '-'));
+  registerTempDir(dir);
+  return dir;
+}
+/** 退出钩子：删掉本次进程登记过的全部夹具（删不掉也不抛 —— 退出路径必须干净收尾） */
+function cleanupTempDirs() {
+  for (const d of [..._ownedTmp]) {
+    try { fs.rmSync(d, { recursive: true, force: true }); } catch { }
+  }
+  _ownedTmp.clear();
+}
+/** 启动清扫：清 %TEMP% 里**已知前缀**的崩溃残留。返回 {removed, kept}（供测试直接对拍）。 */
+function sweepStaleTempDirs() {
+  const base = os.tmpdir();
+  const removed = [], kept = [];
+  let ents; try { ents = fs.readdirSync(base, { withFileTypes: true }); } catch { return { removed, kept }; }
+  const now = Date.now();
+  for (const e of ents) {
+    if (!e.isDirectory()) continue;    // withFileTypes 的 isDirectory 对符号链接/重解析点为 false ⇒ 天然不跟随
+    if (!TMP_PREFIXES.some(p => e.name.startsWith(p))) continue;
+    const full = path.join(base, e.name);
+    if (_ownedTmp.has(path.resolve(full))) continue;          // 本轮自己的，绝不动
+    let st; try { st = fs.lstatSync(full); } catch { continue; }
+    const pid = tmpPidOf(e.name);
+    const live = pid ? tmpPidAlive(pid) : false;
+    const stale = now - st.mtimeMs > TMP_STALE_MS;
+    /* 留着：主还活着且不算陈旧（可能在并发跑）；或名字里没 pid 又很新（可能是别人的老式夹具） */
+    if ((live && !stale) || (!pid && !stale)) { kept.push(e.name); continue; }
+    try { fs.rmSync(full, { recursive: true, force: true }); removed.push(e.name); } catch { kept.push(e.name); }
+  }
+  return { removed, kept };
+}
+process.on('exit', cleanupTempDirs);
+sweepStaleTempDirs();
+
+/* fixtures 物化出来的临时库（`gn-synthlib-*`，含现场生成的 PNG，是体积最大的一类夹具）
+   也是本进程的夹具 ⇒ 登记进切除表。**只登记本进程亲自物化那份**：
+   别人用 CTB_TEST_LIB 传进来的路径不是我们建的，删它会把并发/父进程正在用的库挖掉。 */
+if (LIB_MATERIALIZED_HERE && path.resolve(LIB).startsWith(path.join(os.tmpdir(), 'gn-synthlib-'))) {
+  registerTempDir(LIB);
+}
+
 function makeTempLib(extraDirs, opts) {
   const o = opts || {};
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-testlib-'));
+  const dir = allocTempDir('gn-testlib-');
   for (const f of COPY_FILES) {
     const s = path.join(LIB, f);
     if (fs.existsSync(s)) fs.copyFileSync(s, path.join(dir, f));
@@ -504,6 +601,8 @@ async function serverBase() {
 module.exports = {
   REPO, TOOLS, LIB, LIB_SOURCE, isFrozen, findIndexes,
   lib, tool, makeTempLib, runToolSync,
+  /* 临时夹具的登记 / 清扫（2026-11-02 批次0尾项）：TMP_PREFIXES 供测试对拍前缀表 */
+  registerTempDir, allocTempDir, cleanupTempDirs, sweepStaleTempDirs, TMP_PREFIXES, TMP_STALE_MS,
   /* 写盘准入（E01）：三种形态共用 writeGuard 一个判据 */
   writeGuard, assertWritableLib, guardWriteTest, backupRotationAllowed,
   /* 语义等价（E02）：纯函数，可被 neg-semantic-equivalence.cjs 直接对拍 */

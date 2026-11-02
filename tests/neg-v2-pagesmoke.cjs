@@ -51,23 +51,32 @@ class Cdp {
 let fails = 0;
 const A = (name, ok, detail) => { P((ok ? '[OK]  ' : '[FAIL]') + name + (detail !== undefined ? '  → ' + String(detail).slice(0, 240) : '')); if (!ok) fails++; };
 
-(async () => {
+/* ★ 2026-11-02 批次0尾项：过程件（Edge profile / Edge 子进程 / CDP 连接）声明在模块级，
+   好让**任何**退出路径都能在 finally 里收尾；profile 落 %TEMP% 并登记进统一切除表。 */
+let cdp = null, child = null, profile = null;
+
+/** 主流程：只做断言与取值。收尾（关 CDP / 杀 Edge / 删 profile / 停服务端）全在下面的 finally。 */
+async function main() {
   if (!URL) {
     __srv = await E.startServer();
     URL = __srv.base + '/index.html?ctbPort=' + __srv.port;
     A('测试服务端就绪（自带实例）', true, URL);
   }
-  const profile = path.join(path.join(ROOT, '_probe'), 'v2fix-profile-' + Date.now());
-  const child = spawn(EDGE, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
+  /* ★ 2026-11-02：profile 不再落仓库 `_probe\`（那是"过程件落库"，实测积到 16 394 文件 / 1.29 GB），
+     改落 %TEMP% 并经 E.allocTempDir 登记 —— 前缀带 pid ⇒ 被 SIGKILL 后下一轮启动清扫也认得出。 */
+  profile = E.allocTempDir('v2fix-profile-');
+  child = spawn(EDGE, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
     '--remote-debugging-port=' + PORT, '--user-data-dir=' + profile, URL], { stdio: 'ignore', detached: false });
   let home = null;
   for (let i = 0; i < 40 && !home; i++) {
     try { const ts = await listTargets(); home = ts.find(t => /index\.html/.test(t.url) && t.type === 'page'); } catch (e) { }
     if (!home) await sleep(500);
   }
-  if (!home) { P('[EXC] headless Edge 没起来（端口 ' + PORT + '）'); fs.writeFileSync(OUT, log.join('\r\n'), 'utf8'); child.kill(); process.exit(2); }
+  /* 早退也必须走 finally：原来这条路径直接 `process.exit(2)`，把 profile 和 Edge 留在盘上。
+     退出码语义保留：2 = Edge 没起来（基础设施缺失），3 = 其它未捕获异常。 */
+  if (!home) { const e = new Error('headless Edge 没起来（端口 ' + PORT + '）'); e.exitCode = 2; throw e; }
   P('[A] 页面目标: ' + home.url);
-  const cdp = await Cdp.connect(home.webSocketDebuggerUrl);
+  cdp = await Cdp.connect(home.webSocketDebuggerUrl);
   await cdp.send('Runtime.enable');
   await cdp.send('Page.enable');
 
@@ -144,10 +153,39 @@ const A = (name, ok, detail) => { P((ok ? '[OK]  ' : '[FAIL]') + name + (detail 
   /* 全页无 JS 异常 */
   A('全程无 JS 异常/console.error', cdp.errs.length === 0, cdp.errs.slice(0, 4).join(' || '));
 
-  cdp.close();
-  child.kill();
-  try { fs.rmSync(profile, { recursive: true, force: true }); } catch (e) { }
-  P('RESULT=' + (fails ? 'FAIL(' + fails + ')' : 'PASS'));
-  fs.writeFileSync(OUT, log.join('\r\n'), 'utf8');
-  process.exit(fails ? 1 : 0);
-})().then(async () => { if (__srv) await __srv.stop(); }).catch(async e => { if (__srv) await __srv.stop(); P('[EXC] ' + (e && e.stack || e)); try { fs.writeFileSync(OUT, log.join('\r\n'), 'utf8'); } catch (_) { } process.exit(3); });
+}
+
+/* 收尾**一律**在 finally（2026-11-02 批次0尾项）：
+   改前 `cdp.close() / child.kill() / rmSync(profile)` 写在直线末尾，中途抛错或进程被杀就永久残留
+   —— 仓库 `_probe\` 实测积到 16 394 文件 / 1.29 GB，源头就是被 kill 的 pagesmoke。
+   finally 覆盖：断言抛错、Edge 没起来、CDP 超时、Ctrl-C（SIGINT/SIGTERM）；
+   只有 SIGKILL（taskkill /F）绕过它 —— 那种残留由 `_测试环境.cjs` 的启动清扫按 pid 兜底。
+   RESULT 行也挪进 finally：**每条**退出路径都会在 tests\out 留下结论，不再有"跑挂了但报告空白"。 */
+/* Edge 被杀后它手里的 profile 句柄**不是**立刻释放的：紧接着 rmSync 会 EBUSY/EPERM
+   （实测：光靠 finally 清时清不掉，只有 exit 钩子跑得更晚才碰巧成功）。
+   所以这里是"重试到真没了"，而不是"调一次就算清过"—— 清不掉还当成功，正是这次要修的那类静默失败。 */
+async function rmProfileEventually(dir) {
+  for (let i = 0; i < 10; i++) {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { }
+    if (!fs.existsSync(dir)) return true;
+    await sleep(200);
+  }
+  return !fs.existsSync(dir);
+}
+(async () => {
+  let exitCode = 0;
+  try {
+    await main();
+  } catch (e) {
+    P('[EXC] ' + (e && e.stack || e));
+    exitCode = Number(e && e.exitCode) || 3;   // 2=Edge 没起来，3=其它异常
+  } finally {
+    try { if (cdp) cdp.close(); } catch { }
+    try { if (child) child.kill(); } catch { }
+    try { if (profile) await rmProfileEventually(profile); } catch { }
+    try { if (__srv) await __srv.stop(); } catch { }
+    P('RESULT=' + ((exitCode || fails) ? 'FAIL(' + (exitCode || fails) + ')' : 'PASS'));
+    try { fs.writeFileSync(OUT, log.join('\r\n'), 'utf8'); } catch { }
+  }
+  process.exit(exitCode || (fails ? 1 : 0));
+})();
