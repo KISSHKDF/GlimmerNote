@@ -628,6 +628,17 @@ const unitTests = [
      现在 `src\shell\webview2-deps.lock.json` 是受控预期哈希（两次独立官方下载一致），
      解包前校验 nupkg、解包后校验每个 DLL，缺锁文件 fail-closed。 */
   ['neg-deps-lock.cjs'],
+  /* ★ 2026-11-02（用户当天两条质问，都是真缺陷）：
+     ① `_原卷台账.mjs` 的"只读"承诺不成立——`sizesOf()` 失败分支（量尺寸脚本缺失 ⇒ catch ⇒ break）
+        后没有 return，控制流穿透到 `writeJsonAtomic(_probe\_图尺寸.json)`，即**只读报告往真库写文件**，
+        于是收尾的真库零写入断言判红 ⇒ `quick` 在干净 HEAD 上恒 red；
+     ② 长宽比体检**假绿**：它要的 `<库根>\_工具\图尺寸.ps1` 仓库与运行区都不存在 ⇒ 永远零输入，
+        却每次都打印"长宽比体检：全部通过"。现已改为纯 Node 读文件头（`_图尺寸.mjs`）+ 零输入打印 SKIP。
+     本用例用合成库守这两条，并含"库根多出 `_probe\` 必须被抓到"的阴性自证。 */
+  ['neg-ledger-nowrite.cjs'],
+  /* ★ 2026-11-02：`neg-orig-store.cjs` 此前是**游离文件**（写了但没挂进任何档 ⇒ 能绿但没人跑，
+     同 L-175「可选工具 ≠ 机械化」）。本轮登记进 quick。 */
+  ['neg-orig-store.cjs'],
 ];
 for (const [name] of unitTests) {
   worst = Math.max(worst, run(name));

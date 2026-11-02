@@ -71,6 +71,16 @@ function resolveLibraryRoot() {
   const inApp = path.join(APP_ROOT, '数据');
   if (isDir(inApp)) return path.resolve(inApp);
   // ④ 老布局：程序与数据同目录（迁移期兼容，不改老库一行）
+  /* ★ 2026-11-02（P0-5 实测）：**在开发区跑工具却不给库**时，四级回退会落到 APP_ROOT。
+     开发区里 APP_ROOT = <仓库>\src ⇒ 库根解析成源码树，工具随即在里面建 _probe\ 之类的过程件：
+     既污染仓库，又让"我到底在改哪个库"没有判据（实测：不带 CTB_DATA 跑 `_影像备份.mjs` 会这么落）。
+     这种"静默写错地方"正是本仓最忌讳的形态，故**硬失败**并给出修法。 */
+  if (path.basename(APP_ROOT).toLowerCase() === 'src' && fs.existsSync(path.join(APP_ROOT, 'tools', '_库根.mjs'))) {
+    throw new Error('[库根] 拒绝把**源码树**当作库根：' + APP_ROOT + '\n' +
+      '  这通常是因为在开发区跑工具却没给库。请设 CTB_DATA（或该工具的 --data）指向 <运行区>\\数据，例如：\n' +
+      '    $env:CTB_DATA = "<运行区>\\数据"; node src\\tools\\_原卷台账.mjs 门禁\n' +
+      '  为什么硬失败：静默落到源码树会在这里写出过程件，污染仓库且无法判读"改的是哪个库"。');
+  }
   return APP_ROOT;
 }
 

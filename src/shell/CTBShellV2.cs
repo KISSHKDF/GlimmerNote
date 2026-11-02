@@ -10,7 +10,7 @@
 //   pendingResolve → payload.resolves=[{id,action,answer}] → _待确认.mjs 同步 + 刷 pending → {ok,results,state}
 //   pendingAdd     → payload 扁平字符串 → _待确认.mjs 加 + 刷 pending → {ok,newId,state,toolOut}
 //   mark           → payload.action∈{组卷,批改,撤批,归档,撤归档,状态} + 扁平 flag → _标记复习.mjs → {ok,code,out,err}
-//   recipe         → payload.action∈{清单,收件箱,组装,校验,自检,指纹} + 扁平 flag → _配方.mjs → {ok,code,out,err}
+//   recipe         → payload.action∈{清单,收件箱,找图,组装,校验,自检,指纹} + 扁平 flag → _配方.mjs → {ok,code,out,err}
 //                    （code 是工具的**真实退出码**：校验通过=0 / 拒收=1 / 参数错=2；2026-10-29 R2 修）
 //   readFile       → payload.path（题库根内相对路径）→ {ok,text}
 //   openFile       → payload.path → 类型准入（图片/pdf 交系统程序；.md 走内置阅读器；其余只"定位文件"）
@@ -731,12 +731,17 @@ namespace CTBShell2
              · 壳不认识"配方/学科/错因"，它只负责把白名单动作 + 白名单参数转成命令行；
              · 配方在哪、怎么拼、怎么校验，全由 _配方.mjs 决定 —— 这样加一条反例不用重编壳。
            安全边界：
-             · 动作白名单（清单/收件箱/组装/校验/自检/指纹），别的一律拒；
+             · 动作白名单（清单/收件箱/找图/组装/校验/自检/指纹），别的一律拒；
              · 参数逐个 AddFlag（不接受任意拼接）；
              · 库根**显式**用 --data 传进去，不依赖环境变量继承；
              · **不进写闸**：本工具只读配方与收件箱、只写调用方指定的临时文件，不写用户库。
            超时 60s：组装是一次纯文本拼接，校验是一次 JSON 比对，都远低于这个量级。 */
-        static readonly HashSet<string> RECIPE_ACTIONS = new HashSet<string> { "清单", "收件箱", "组装", "校验", "自检", "指纹" };
+        /* ★ 2026-11-02：白名单由 6 个补到 7 个，加入「找图」（按内容指纹定位收件箱原图）。
+           起因：引擎 `_配方.mjs` 的 switch 早就有 7 个子命令，壳的 RECIPE_ACTIONS 只列了 6 个，
+           差集 {找图} 静默存在 —— 前端只能退回"内存里按 sha 查表"（`ingest.js:158`），
+           照片被导入改名后再想按指纹找回那一张就走不通。两个清单**必须**同集合，
+           `tests\neg-shell-args.mjs` 现在有一条机读的差集断言钉住它（不再靠人眼比对）。 */
+        static readonly HashSet<string> RECIPE_ACTIONS = new HashSet<string> { "清单", "收件箱", "找图", "组装", "校验", "自检", "指纹" };
         public string Recipe(string payload)
         {
             string action = ExtractString(payload, "action");
@@ -750,6 +755,14 @@ namespace CTBShell2
                 AddFlag(args, payload, "subject", "--subject");
                 AddFlag(args, payload, "textbook", "--textbook");
                 AddFlag(args, payload, "image", "--image");
+                /* 找图（2026-11-02 加）用的唯一参数：payload.sha = 内容指纹（64 位 sha256，或它的前 12 位起）。
+                   与上面四处同一条路：**固定键名 → 固定 flag** 的逐项映射，壳不解析这个值的语义，
+                   也**不接受** payload 里出现的任意其他键 —— 没有通用透传、没有反射、不拼命令行字符串
+                   （值一律作为独立 argv 元素交给 QuoteArgs，注入不进 flag 位）。
+                   格式校验（^[0-9a-f]{12,64}$）在 `_配方.mjs` 的 cmdLocate 里做：非法值返回 2，
+                   壳按真实退出码回 code=2，前端据此显示拒绝原因而不是"找不到图"。
+                   找图是只读动作（不改名/不移动/不删除/不写任何文件），因此不进写闸。 */
+                AddFlag(args, payload, "sha", "--sha");
                 /* 校验/自检的输入：页面传的是**文本**（用户从自己的 AI 粘回来的 JSON），
                    先落临时文件再让工具读 —— 避免把上万字符塞进命令行（Windows 命令行上限 32767）。 */
                 string text = ExtractString(payload, "text");

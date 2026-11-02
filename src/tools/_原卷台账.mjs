@@ -25,7 +25,8 @@
  *   node _原卷台账.mjs 回填 --key "学生A|P0001" --page "…" [--box x,y,w,h] [--note "…"] [--by 视觉定位]
  *   node _原卷台账.mjs 门禁                     # 未定位>0 / 路径失效 / box 越界 → exit 1
  *
- * 铁律：--dry 必须真的不写盘（用文件哈希自证，教训 L-312）；写盘前把旧台账复制到 _备份-原卷台账-*。
+ * 铁律：--dry 既不写真源也不写缓存（预览件落过程目录，见 `_过程目录.mjs`；用文件哈希自证，教训 L-312）；
+ *       写真源前把旧台账复制到 _备份-原卷台账-*。
  */
 import fs from 'fs';
 import path from 'path';
@@ -33,6 +34,8 @@ import crypto from 'crypto';
 import { execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { readJsonStrict, writeJsonAtomic, acquireLibLock } from './_安全写.mjs';
+import { procPath } from './_过程目录.mjs';
+import { displaySize, jpegOrientation } from './_图尺寸.mjs';
 import { libraryRoot, toolPath } from './_库根.mjs';
 import { resolver as origResolver } from './_原图寻址.mjs';
 /* ⚠ 2026-10-15 修（F-P0 治本）：库根包含性判据。**刻意复用** _路径护栏.mjs 的纯判据，
@@ -49,7 +52,7 @@ const ROOT = libraryRoot();
 const __releaseLibLock = acquireLibLock(ROOT, { label: '_原卷台账' });
 process.on('exit', __releaseLibLock);
 const LEDGER = path.join(ROOT, '_原卷台账.json');
-const SHA_CACHE = path.join(ROOT, '_probe', '_sha256缓存.json');
+const SHA_CACHE = procPath('_sha256缓存.json');   /* 过程件不落库根（2026-11-02） */
 const BY = 'agent-原卷台账-20261009';
 
 /* ---------- 小工具 ---------- */
@@ -420,47 +423,74 @@ function reconcilePage(c) {
   return a || b;
 }
 
-/* ---------- 像素尺寸（System.Drawing 取，缓存到 _probe/_图尺寸.json）：红框换算与长宽比体检都要用 ---------- */
-const PX_CACHE = path.join(ROOT, '_probe', '_图尺寸.json');
-function sizesOf(rels) {
+/* ---------- 像素尺寸（纯 Node 读文件头，缓存落**过程目录**）：红框换算与长宽比体检都要用 ----------
+ * 2026-11-02 重写（用户质问「体检假绿」）：
+ *   ① 旧实现调 `<库根>\_工具\图尺寸.ps1`，而该脚本**仓库与运行区都不存在** ⇒ 永远量不到 ⇒ 体检恒假绿；
+ *      现在用 `_图尺寸.mjs` 在进程内读文件头（PNG/JPEG/GIF/BMP/WebP，JPEG 带 EXIF 方向）；
+ *   ② 缓存原写在 `库根\_probe\`（库里！）⇒ 撞「真库零写入」门禁导致 quick 恒红，现移出库根；
+ *   ③ 写缓存判据：**只有真的量到新条目**才写，且 `persist=false`（门禁 / --dry）时一律不写。 */
+const PX_CACHE = procPath('_图尺寸.json');
+
+/** 只在内容真的变了才写（原子写会让 mtime 必变 ⇒「没改也写」会被零写入判据抓成写事件） */
+function writeIfChanged(file, obj) {
+  const next = JSON.stringify(obj, null, 1);
+  const cur = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
+  if (cur === next) return false;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  writeJsonAtomic(file, obj);
+  return true;
+}
+function sizesOf(rels, { persist = false, resolve = null } = {}) {
   const cache = fs.existsSync(PX_CACHE) ? readJson(PX_CACHE) : {};
-  const uniq = [...new Set(rels.filter(Boolean).map(norm))].filter(r => !cache[r] && exists(r));
-  /* ⚠ 2026-10-12 修（审计 BUG-08·中）：原先无论 uniq 是否为空都 `writeJsonAtomic(PX_CACHE, cache)`
-     ⇒ 号称"只读报告"的 `覆盖` 动作其实**无条件改写缓存文件**（内容常不变、但 mtime 变，
-     属"只读"承诺的破口）。上一次的修复只给 `门禁` 加了 `--px-cache` 开关，`覆盖` 走的
-     `report()→aspectAudit()→sizesOf()` 没跟上。现在：没量到新东西就不写。 */
-  if (!uniq.length) return cache;
-  for (let i = 0; i < uniq.length; i += 30) {
-    const chunk = uniq.slice(i, i + 30);
-    let out = '';
-    try {
-      out = execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
-        path.join(ROOT, '_工具', '图尺寸.ps1'), '-Paths', chunk.map(r => toAbs(r)).join(';')], { encoding: 'utf8' });
-    } catch (e) { console.log('图尺寸.ps1 失败：' + e.message); break; }
-    for (const line of out.split(/\r?\n/)) {
-      const m = line.match(/^(.*?)\|(\d+)x(\d+)$/);
-      if (m) cache[norm(relOf(m[1].trim()))] = [+m[2], +m[3]];
-    }
+  const uniq = [...new Set(rels.filter(Boolean).map(norm))].filter(r => !cache[r]);
+  let failed = 0, gone = 0;
+  for (const r of uniq) {
+    /* 路径失效但保全库里有同内容副本时也要能量（`_原图寻址` 的 resolver 兜底）——
+       否则"原路径全失效"的那批卡会整批退出体检，看起来像"都通过"。 */
+    const abs = resolve ? resolve(r) : (exists(r) ? toAbs(r) : null);
+    if (!abs) { gone++; continue; }
+    const s = displaySize(abs);
+    if (s) cache[r] = [s.w, s.h];
+    else failed++;
   }
-  fs.mkdirSync(path.dirname(PX_CACHE), { recursive: true });
-  writeJsonAtomic(PX_CACHE, cache);
+  if (failed) console.log('  ⚠ 像素尺寸：' + failed + ' 张读不出尺寸（格式不支持或文件头异常），这些条目不参与长宽比体检');
+  if (gone) console.log('  ⚠ 像素尺寸：' + gone + ' 张文件找不到（原路径失效且保全库无同内容副本）');
+  if (persist && uniq.length) writeIfChanged(PX_CACHE, cache);
   return cache;
 }
-/** 长宽比体检：卡片裁图与「整页×归一化红框」的宽高比应当同量级，差太多说明页或框错了 */
-function aspectAudit(cards) {
+/** 长宽比体检：卡片裁图与「整页×归一化红框」的宽高比应当同量级，差太多说明页或框错了。
+ *  三态：measured=真正比过几张；skipped=缺 px 没比的张数。**零输入不许当"通过"**。 */
+function aspectAudit(cards, { persist = false } = {}) {
   const rels = [];
   for (const e of Object.values(cards)) { if (e.page) rels.push(e.page); if (e.cardDir) rels.push(e.cardDir + '/原卷截图.jpg'); }
-  const px = sizesOf(rels);
+  /* 解析顺序：盘上原路径 → 保全库按内容找回（同一份字节，尺寸当然一样）。 */
+  const resolve = (rel) => {
+    const a = toAbs(rel);
+    if (fs.existsSync(a)) return a;
+    try { const hit = ORIG_RESOLVER.resolve(rel); return (hit && hit.path) ? hit.path : null; } catch { return null; }
+  };
+  const px = sizesOf(rels, { persist, resolve });
   const bad = [];
+  let measured = 0, skipped = 0;
   for (const e of Object.values(cards)) {
     const pg = e.page && px[norm(e.page)], cp = e.cardDir && px[norm(e.cardDir + '/原卷截图.jpg')];
-    if (!e.box || !pg || !cp) continue;
+    if (!e.box || !pg || !cp) { skipped++; continue; }
+    measured++;
     const boxAR = (e.box[2] * pg[0]) / (e.box[3] * pg[1]);
     const cropAR = cp[0] / cp[1];
     const r = cropAR / boxAR;
     if (r < 0.45 || r > 2.2) bad.push({ key: e.key, r: +r.toFixed(2), boxAR: +boxAR.toFixed(2), cropAR: +cropAR.toFixed(2), page: e.page });
   }
-  return { px, bad };
+  return { px, bad, measured, skipped };
+}
+
+/** 体检结论的唯一出口：三态之一，**禁止"零输入 ⇒ 通过"**（旧实现就是这么假绿的） */
+function auditLine({ bad, measured, skipped }) {
+  if (!measured) return '长宽比体检：SKIP=无px数据（0 张可比，' + skipped + ' 张缺尺寸）—— 这不是"通过"';
+  const tail = skipped ? '，另 ' + skipped + ' 张缺尺寸未比' : '';
+  return bad.length
+    ? '长宽比体检：' + bad.length + ' 张可疑 / 已比 ' + measured + ' 张' + tail
+    : '长宽比体检：通过（已比 ' + measured + ' 张' + tail + '）';
 }
 
 /* ---------- 导入原件：sha256 相同才算，绝不靠猜名字 ---------- */
@@ -503,11 +533,11 @@ function build({ dry, force }) {
       import: r.page ? (resolveImport(r.page, shaCache) || (prev && prev.import) || null) : null,
     };
   }
-  writeJsonAtomic(SHA_CACHE, shaCache);
+  if (!dry) writeIfChanged(SHA_CACHE, shaCache);   /* --dry 连缓存也不写（铁律） */
   /* 补像素尺寸（红框换算 + 长宽比体检用） */
   const rels = [];
   for (const e of Object.values(out)) { if (e.page) rels.push(e.page); rels.push(e.cardDir + '/原卷截图.jpg'); }
-  const px = sizesOf(rels);
+  const px = sizesOf(rels, { persist: !dry });
   for (const e of Object.values(out)) {
     e.pagePx = e.page ? (px[norm(e.page)] || null) : null;
     e.cropPx = px[norm(e.cardDir + '/原卷截图.jpg')] || null;
@@ -519,7 +549,7 @@ function build({ dry, force }) {
   };
   const before = fs.existsSync(LEDGER) ? sha256(LEDGER) : '(无)';
   if (dry) {
-    const tmp = path.join(ROOT, '_probe', '_原卷台账.dry.json');
+    const tmp = procPath('_原卷台账.dry.json');
     fs.mkdirSync(path.dirname(tmp), { recursive: true });
     fs.writeFileSync(tmp, JSON.stringify(doc, null, 1), 'utf8');
     console.log(`[dry] 未写 ${LEDGER}（旧文件哈希 ${before}）；预览 → ${tmp}`);
@@ -528,9 +558,9 @@ function build({ dry, force }) {
     writeJsonAtomic(LEDGER, doc, { backup: true, indent: 1 });
     console.log(`写 ${LEDGER}（${cards.length} 条）；旧哈希 ${before} → 新哈希 ${sha256(LEDGER)}`);
   }
-  report(doc.cards);
+  report(doc.cards, { persist: !dry });
 }
-function report(cards) {
+function report(cards, { persist = false } = {}) {
   const keys = Object.keys(cards);
   const withPage = keys.filter(k => cards[k].page);
   const withBox = withPage.filter(k => boxOk(cards[k].box));
@@ -546,11 +576,12 @@ function report(cards) {
     console.log(`\n未定位 ${need.length} 张（按批次）：`);
     for (const [note, ks] of Object.entries(g)) console.log(`   ${String(ks.length).padStart(3)}  ${note.slice(0, 130)}\n         ${ks.slice(0, 8).join(', ')}`);
   }
-  const { bad } = aspectAudit(cards);
-  if (bad.length) {
-    console.log(`\n长宽比可疑（裁图与红框比例差 >2.2 倍，页或框可能错）：${bad.length} 张`);
-    for (const b of bad.slice(0, 20)) console.log(`   ${b.key}  r=${b.r} 红框AR=${b.boxAR} 裁图AR=${b.cropAR}  ${b.page}`);
-  } else console.log('\n长宽比体检：全部通过（红框与裁图比例同量级）');
+  const audit = aspectAudit(cards, { persist });
+  if (audit.bad.length) {
+    console.log(`\n长宽比可疑（裁图与红框比例差 >2.2 倍，页或框可能错）：${audit.bad.length} 张`);
+    for (const b of audit.bad.slice(0, 20)) console.log(`   ${b.key}  r=${b.r} 红框AR=${b.boxAR} 裁图AR=${b.cropAR}  ${b.page}`);
+  }
+  console.log('\n' + auditLine(audit));
 }
 
 /* ---------- 定位单：给未定位的卡产出「带网格候选页 + 任务单」 ---------- */
@@ -559,7 +590,7 @@ function locateSheet({ per }) {
   const cards = loadCards();
   const need = cards.filter(c => !doc.cards[c.key] || !doc.cards[c.key].page);
   if (!need.length) { console.log('全部卡片都已定位到整页，无需生成定位单'); return; }
-  const outDir = path.join(ROOT, '_probe', '定位单');
+  const outDir = procPath('定位单');
   fs.mkdirSync(outDir, { recursive: true });
   const groups = {};
   for (const c of need) {
@@ -671,7 +702,7 @@ function backfill(argv) {
   if (next.page && !next.import) {
     const shaCache = fs.existsSync(SHA_CACHE) ? readJson(SHA_CACHE) : {};
     next.import = resolveImport(next.page, shaCache);
-    writeJsonAtomic(SHA_CACHE, shaCache);
+    writeIfChanged(SHA_CACHE, shaCache);
   }
   doc.cards[key] = next;
   doc.generatedAt = new Date().toISOString();
@@ -679,9 +710,9 @@ function backfill(argv) {
   console.log('已回填', key, JSON.stringify({ page: next.page, box: next.box, import: next.import, by: next.by }));
 }
 
-/* ---------- 合并视觉定位结果：_probe/定位单/结果-*.json ---------- */
+/* ---------- 合并视觉定位结果：<过程目录>/定位单/结果-*.json（过程目录见 _过程目录.mjs）---------- */
 function mergeLocated() {
-  const dir = path.join(ROOT, '_probe', '定位单');
+  const dir = procPath('定位单');
   const sheet = readJson(path.join(dir, '任务单.json'));
   const allowed = {};                       /* key → 该任务允许的候选页集合 */
   for (const t of sheet) for (const c of t.cards) allowed[c.key] = t.pages.map(p => norm(p.page));
@@ -717,15 +748,15 @@ function mergeLocated() {
       ok++;
     }
   }
-  writeJsonAtomic(SHA_CACHE, shaCache);
+  writeIfChanged(SHA_CACHE, shaCache);
   const rels = Object.values(doc.cards).flatMap(e => [e.page, e.cardDir + '/原卷截图.jpg'].filter(Boolean));
-  const px = sizesOf(rels);
+  const px = sizesOf(rels, { persist: true });
   for (const e of Object.values(doc.cards)) { e.pagePx = e.page ? (px[norm(e.page)] || null) : null; e.cropPx = px[norm(e.cardDir + '/原卷截图.jpg')] || null; }
   doc.generatedAt = new Date().toISOString();
   writeJsonAtomic(LEDGER, doc, { backup: true, indent: 1 });
   console.log(`合并视觉定位：采纳 ${ok} ｜ 拒绝 ${rej.length}`);
   for (const r of rej) console.log('  ✗ ' + r);
-  report(doc.cards);
+  report(doc.cards, { persist: true });
 }
 function inboxImages() {
   const out = [];
@@ -748,37 +779,12 @@ function inboxImages() {
  *     （判据②弱于①：有些卷面本来就横排版，所以②只对**竖版卷面**warning。
  *      主判据是①；补拍/重拍时按"文字正立可读"为准。）
  * 修复方式：把页面照转正（内容正立、无 EXIF 标记）后重算该页上所有归一化框。 */
-function jpegOrientation(abs) {
-  const b = fs.readFileSync(abs);
-  if (b[0] !== 0xFF || b[1] !== 0xD8) return null;   // 非 JPEG（png 等）不检查
-  let o = 2;
-  while (o < b.length - 4) {
-    if (b[o] !== 0xFF) { o++; continue; }
-    const m = b[o + 1];
-    if (m === 0xD8 || m === 0x01 || (m >= 0xD0 && m <= 0xD7)) { o += 2; continue; }
-    if (m === 0xDA) break;                            // 扫描数据开始，EXIF 在前面
-    const len = (b[o + 2] << 8) | b[o + 3];
-    if (m === 0xE1 && b[o + 4] === 0x45 && b[o + 5] === 0x78 && b[o + 6] === 0x69 && b[o + 7] === 0x66) {
-      const tiff = o + 10, le = b[tiff] === 0x49 && b[tiff + 1] === 0x49;
-      const rd16 = p => le ? (b[p] | b[p + 1] << 8) : (b[p] << 8 | b[p + 1]);
-      const rd32 = p => le ? (b[p] | b[p + 1] << 8 | b[p + 2] << 16 | b[p + 3] << 24 >>> 0) : ((b[p] << 24 | b[p + 1] << 16 | b[p + 2] << 8 | b[p + 3]) >>> 0);
-      const ifd = tiff + rd32(tiff + 4), n = rd16(ifd);
-      for (let i = 0; i < n; i++) {
-        const e = ifd + 2 + i * 12;
-        if (rd16(e) === 0x0112) return rd16(e + 8);
-      }
-      return null;                                    // 有 EXIF 无方向标记
-    }
-    o += 2 + len;
-  }
-  return null;
-}
+/* jpegOrientation 已移入 `_图尺寸.mjs`（与尺寸解析同一趟扫描，避免两处各解一遍文件头）。 */
 
 /* ---------- 门禁（**真只读**）----------
- *   把像素尺寸缓存写进 `_probe/_图尺寸.json`。于是"挂在 tests\run.mjs 最前面的只读门禁"
- *   其实会写盘——既让人误判它的副作用，也在多个门禁并发时引入无谓的写竞争。
- *   现在门禁默认只用**已有的**缓存：缺尺寸就跳过那条长宽比体检（并在输出里说明），
- *   需要补缓存就显式加 `--px-cache`。 */
+ *   长宽比体检现在**每次都在内存里量**（纯 Node 读文件头，见 `_图尺寸.mjs`），不写盘；
+ *   显式加 `--px-cache` 才把量到的尺寸落进过程目录的缓存（下次更快）。
+ *   零输入时打印 SKIP —— 旧实现"脚本缺失 ⇒ 量不到 ⇒ 仍打印全部通过"就是用户 2026-11-02 指出的假绿。 */
 function gate(allowPxWrite = false) {
   if (!fs.existsSync(LEDGER)) { console.error('缺 _原卷台账.json（先跑 生成）'); process.exit(1); }
   const doc = readJson(LEDGER);
@@ -875,13 +881,9 @@ function gate(allowPxWrite = false) {
   const orphan = Object.keys(doc.cards).filter(k => !cards.some(c => c.key === k));
   if (orphan.length) warns.push('台账里有索引已无的卡：' + orphan.join(', '));
   const noBox = Object.values(doc.cards).filter(e => e.page && !boxOk(e.box)).length;
-  if (allowPxWrite) {
-    for (const b of aspectAudit(doc.cards).bad) warns.push(`${b.key} 长宽比可疑 r=${b.r}（${b.page}）`);
-  } else {
-    const px = fs.existsSync(PX_CACHE) ? readJson(PX_CACHE) : {};
-    const stale = Object.values(doc.cards).filter(e => e.box && e.page && !px[norm(e.page)]).length;
-    if (stale) console.log(`（只读模式：${stale} 张缺像素尺寸缓存，已跳过长宽比体检；要补缓存跑 \`node _原卷台账.mjs 门禁 --px-cache\`）`);
-  }
+  const audit = aspectAudit(doc.cards, { persist: allowPxWrite });
+  for (const b of audit.bad) warns.push(`${b.key} 长宽比可疑 r=${b.r}（${b.page}）`);
+  console.log('  ' + auditLine(audit));
   console.log(`门禁：卡 ${cards.length} ｜ 未定位 ${nUnlocated} ｜ 有整页无红框 ${noBox} ｜ 告警 ${warns.length}` +
     (nViaStore ? ` ｜ **已从保全库按内容兜底 ${nViaStore} 条**（原路径失效但字节还在，不是断链）` : ''));
   for (const w of warns) console.log('  ⚠ ' + w);

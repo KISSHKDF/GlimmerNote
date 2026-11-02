@@ -10,7 +10,9 @@
  *   现在改为读本仓真源，用仓库相对路径。见 DEFECT-REGISTRY D-044。
  */
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
+import crypto from 'crypto';
 import { spawnSync } from 'child_process';
 
 const REPO = path.resolve(import.meta.dirname, '..');
@@ -129,6 +131,107 @@ A('Recipe 用真实退出码拼 code（不再硬编码 code:0）', /"\{\\"ok\\":
 A('Recipe 里已无 {"ok":true,"code":0 硬编码', !/\{\\"ok\\":true,\\"code\\":0/.test(CS));
 A('Mark 那行无条件覆盖退出码已删除（D-09：超时 124 不再被抹成被杀进程的码）',
   !/else code = p\.ExitCode\.ToString\(\);\s*\r?\n\s*code = p\.ExitCode\.ToString\(\);/.test(CS));
+
+console.log('\n═══ 配方动作白名单：壳 vs 引擎的机读差集（2026-11-02 加，钉住"找图"这一类漏项）═══');
+/* 现象（修复前实测）：引擎 `_配方.mjs` 的 switch 早就有 7 个子命令，壳的 RECIPE_ACTIONS 只列了 6 个，
+   差集 {找图} 静默存在 —— 前端只能退回"内存里按 sha 查表"（src\app\js\views\ingest.js:158），
+   照片被导入改名（sha256 不变、文件名变）后按指纹找回那一张就走不通。
+   教训族 L-441（声明与消费者之间必须有一条**机读**的差集检查）/ L-716（对齐要下沉到最细一级）：
+   把 6 改成 7 只是"这次对了"，**下次引擎加子命令照样会漂**。所以这里把三处声明都解析出来互相对齐：
+     ① 引擎的分派 switch（消费者真正认的命令）；
+     ② 引擎的用法清单（`--help` 与文件头，人读的那份）；
+     ③ 壳的 RECIPE_ACTIONS（生产者准入白名单）。
+   任一处多一个或少一个 ⇒ 这条断言红。 */
+const RECIPE_FILE = path.join(REPO, 'src', 'tools', '_配方.mjs');
+const RECIPE = fs.readFileSync(RECIPE_FILE, 'utf8');
+const CJK = s => /^[\u4e00-\u9fa5]+$/.test(s);
+const engineDispatch = new Set([...RECIPE.matchAll(/case\s+'([^']+)':\s*return\s+cmd/g)].map(m => m[1]).filter(CJK));
+const engineUsage = new Set();
+for (const raw of RECIPE.split('\n')) {
+  const line = raw.replace(/^\s*[*']+\s*/, '').trim();   // 去掉注释星号与字符串引号
+  if (!/^node\s/.test(line)) continue;                   // 只认"命令样例"行
+  const m = /_配方\.mjs\s+([^\s']+)/.exec(line);
+  if (m && CJK(m[1])) engineUsage.add(m[1]);
+}
+const shellLit = /RECIPE_ACTIONS\s*=\s*new HashSet<string>\s*\{([^}]*)\}/.exec(CS);
+const shellActions = new Set(shellLit ? [...shellLit[1].matchAll(/"([^"]+)"/g)].map(m => m[1]) : []);
+const sorted = s => [...s].sort().join('/');
+const only = (a, b) => [...a].filter(x => !b.has(x));
+
+A('壳的 RECIPE_ACTIONS 字面量可解析（判据不是恒真）', !!shellLit && shellActions.size > 0, sorted(shellActions));
+A('引擎 switch 解析出 ≥7 个子命令（判据不是恒真）', engineDispatch.size >= 7, engineDispatch.size + ' 个：' + sorted(engineDispatch));
+A('壳白名单 == 引擎 switch（双向差集均为空；壳多{' + only(shellActions, engineDispatch) + '} 壳少{' + only(engineDispatch, shellActions) + '}）',
+  only(shellActions, engineDispatch).length === 0 && only(engineDispatch, shellActions).length === 0);
+A('引擎用法清单 == 引擎 switch（文档也不许漂）',
+  only(engineUsage, engineDispatch).length === 0 && only(engineDispatch, engineUsage).length === 0,
+  sorted(engineUsage));
+A('「找图」在壳白名单里（本轮补的动作，回归锁）', shellActions.has('找图'));
+
+console.log('\n═══ 「找图」下沉到最细一级：壳的逐项映射 + 引擎真正要的 flag（L-716）═══');
+/* 外层"动作集合相等"不等于"参数已对齐"：找图的契约是 {--sha 必填, --json 可选, --data 壳注入}。
+   壳必须**逐项固定映射**；这里把 Recipe() 里的 AddFlag 映射解析出来逐条核对，
+   并锁死"没有通用透传"（不遍历 payload 的键、无反射、不拼命令行字符串）。 */
+const recipeMethod = (/public string Recipe\(string payload\)[\s\S]*?\n        \}/.exec(CS) || [''])[0];
+const RECIPE_MAP = [...recipeMethod.matchAll(/AddFlag\(args,\s*payload,\s*"([^"]+)",\s*"(--[^"]+)"\)/g)].map(m => [m[1], m[2]]);
+A('Recipe() 的 AddFlag 映射恰为 5 项、键名与 flag 逐个固定',
+  RECIPE_MAP.length === 5 && RECIPE_MAP.map(p => p.join('→')).join(',') === 'recipe→--recipe,subject→--subject,textbook→--textbook,image→--image,sha→--sha',
+  RECIPE_MAP.map(p => p.join('→')).join(' '));
+A('找图的参数只走 sha→--sha 这一条（不是别的通道或别名）', RECIPE_MAP.some(p => p[0] === 'sha' && p[1] === '--sha'));
+A('壳不做通用透传/反射（无 args.Add(payload)、无反射取值）',
+  !/args\.Add\(\s*payload/.test(CS) && !/System\.Reflection|GetProperty\(|GetFields\(/.test(CS));
+A('库根仍显式用 --data 注入（不靠环境变量继承）', /args\.Add\("--data"\);\s*args\.Add\(DataRoot\)/.test(CS));
+
+console.log('\n═══ 阴性/阳性对照：真跑引擎的「找图」（非法参数必须被拒）═══');
+/* 判据不是"壳里写了正则"，是"工具真的会拒"。用例的 argv 按**壳声明的映射**（上面解析出的 RECIPE_MAP
+   ＋ --data ＋ json）拼 —— 只映射白名单里的键，payload 里多出来的键（下例 bogus）**必须**被丢掉，
+   这本身就是"没有通用透传"的行为侧证据。库用 %TEMP% 下的合成库，不碰真库、不进运行区。 */
+const RECIPE_TOOL = path.join(REPO, 'src', 'tools', '_配方.mjs');
+const libRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-locate-'));
+const inboxSub = path.join(libRoot, '_收件箱', 'p042');
+fs.mkdirSync(inboxSub, { recursive: true });
+const imgAbs = path.join(inboxSub, 'p042.jpg');
+fs.writeFileSync(imgAbs, Buffer.from('glimmer-note-locate-fixture-2026-11-02'));
+const imgSha = crypto.createHash('sha256').update(fs.readFileSync(imgAbs)).digest('hex');
+
+const shellArgv = (payload) => {
+  const args = [RECIPE_TOOL, '找图'];
+  for (const [key, flag] of RECIPE_MAP) if (payload[key] !== undefined && payload[key] !== '') args.push(flag, payload[key]);
+  args.push('--data', libRoot);
+  if (payload.json === '1') args.push('--json');
+  return args;
+};
+const runLocate = (payload) => {
+  const r = spawnSync(process.execPath, shellArgv(payload), { encoding: 'utf8' });
+  return { code: r.status, out: r.stdout || '', err: r.stderr || '' };
+};
+
+const noSha = runLocate({});
+A('缺 --sha → 退出 2 且给出用法（不是被当成"找不到图"）',
+  noSha.code === 2 && /用法/.test(noSha.err), 'code=' + noSha.code + ' err=' + JSON.stringify((noSha.err || '').trim().split('\n')[0]));
+A('非十六进制 sha → 退出 2', runLocate({ sha: 'zzz-not-hex' }).code === 2);
+A('不足 12 位 → 退出 2（下限有牙齿）', runLocate({ sha: imgSha.slice(0, 11) }).code === 2, 'sha=' + imgSha.slice(0, 11));
+A('超过 64 位 → 退出 2', runLocate({ sha: imgSha + 'ff' }).code === 2);
+const flagLike = runLocate({ sha: '--json' });
+A('把 flag 伪造成 sha 的值 → 仍退出 2 且 stdout 无 JSON（值进不了 flag 位）',
+  flagLike.code === 2 && !/^\{/.test(flagLike.out.trim()), 'code=' + flagLike.code + ' stdout=' + JSON.stringify(flagLike.out.trim()));
+const injected = runLocate({ sha: imgSha.slice(0, 12), bogus: '--out ../x.md' });
+A('白名单外的键被丢弃：带 bogus 与不带 bogus 的 argv 逐字相同',
+  JSON.stringify(shellArgv({ sha: imgSha.slice(0, 12), bogus: '--out ../x.md' })) === JSON.stringify(shellArgv({ sha: imgSha.slice(0, 12) })),
+  shellArgv({ sha: imgSha.slice(0, 12), bogus: '--out ../x.md' }).slice(1).join(' '));
+
+const hit = runLocate({ sha: imgSha.slice(0, 12) });
+A('合法前缀（前 12 位）→ 退出 0 且 stdout 给出可读的绝对路径',
+  hit.code === 0 && hit.out.includes(imgAbs), 'code=' + hit.code + ' out=' + JSON.stringify(hit.out.trim()));
+const hitJson = runLocate({ sha: imgSha.slice(0, 12), json: '1' });
+let hitObj = null; try { hitObj = JSON.parse(hitJson.out.trim()); } catch { }
+A('--json → 退出 0 且结构化结果里 sha256/abs 与真值逐字相等',
+  hitJson.code === 0 && !!hitObj && hitObj.ok === true && Array.isArray(hitObj.matches) &&
+  !!hitObj.matches[0] && hitObj.matches[0].sha256 === imgSha && hitObj.matches[0].abs === imgAbs,
+  String(hitJson.out || '').trim().slice(0, 160));
+const miss = runLocate({ sha: 'f'.repeat(64) });
+A('格式合法但库里没有 → 退出 1（与"参数非法=2"分得开）', miss.code === 1, 'code=' + miss.code);
+A('带白名单外键的真实结果不受影响（仍退出 0）', injected.code === 0, 'code=' + injected.code);
+fs.rmSync(libRoot, { recursive: true, force: true });
 
 console.log('\nRESULT=' + (fail ? 'FAIL' : 'PASS') + ' 断言=' + (pass + fail));
 process.exit(fail ? 1 : 0);

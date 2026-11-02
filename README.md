@@ -333,6 +333,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\fix-integrity.ps1
 
 **完整声明、N/A 清单、当前阻断项、以及"标准自身的缺陷"在哪里** → [`docs\等级与NA清单.md`](docs\等级与NA清单.md)。
 **维护者与决策机制、路线（含"不做"清单）、架构高层视图** → [`docs\治理与架构.md`](docs\治理与架构.md)。
+**缓存/预览/派发单这类过程件住在哪、谁清、库根只许放什么** → [`docs\过程文件规范.md`](docs\过程文件规范.md)。
 
 > ⚠ 本仓 `L1/L2/L3` 在**配方文本**里另有含义（错因代码：分类不全 / 推理断链 / 转化不等价，见 `src\recipes\_core\cause.md`），
 > 与上面的严格性等级**无关**。看到 `L2` 先确认是哪一套——这条歧义警告本身是 GSE-STD §3 的要求。
