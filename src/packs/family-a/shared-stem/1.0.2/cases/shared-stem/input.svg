@@ -42,12 +42,16 @@
   <rect x="60" y="600" width="780" height="180" fill="#ffffff" stroke="#d0d0d0" stroke-width="1" stroke-dasharray="6 4"/>
   <text x="60" y="638" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="18" fill="#111111">（2）把两段 20 cm 的电阻丝串联后接在同一电源上，求电路中的电流。</text>
   <text x="76" y="678" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="18" fill="#b42318">作答：串联后总电阻仍算 4 Ω，I = U ÷ R = 1.2 V ÷ 4 Ω = 0.30 A</text>
-  <text x="76" y="716" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="18" fill="#b42318">（错在把两段电阻当成一段：总电阻应是 4 Ω + 4 Ω = 8 Ω，I 应为 0.15 A）</text>
-  <text x="640" y="716" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="24" fill="#b42318">✘</text>
-  <text x="676" y="716" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="17" fill="#b42318">批改：错</text>
+  <text x="76" y="710" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="18" fill="#b42318">（错在把两段电阻当成一段：总电阻应是 4 Ω + 4 Ω = 8 Ω，I 应为 0.15 A）</text>
+  <!-- ⚠ 2026-11-03：红叉与「批改：错」原与上一行说明文字**同一基线**（y=716）且 x 重叠 ⇒
+       渲染出来读成「0.1✘A)批改: 错」。合成案例是给人判断「脱离原页能否读懂」的素材，
+       批改痕迹压住正文会直接把判断带偏。改：说明行上移 6px，批改痕迹另起一行（y=752），
+       仍在「错误位置」区域（y 0.5~0.65 ⇒ 600~780）之内，区域契约与 expected.json 不变。 -->
+  <text x="640" y="752" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="24" fill="#b42318">✘</text>
+  <text x="676" y="752" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="17" fill="#b42318">批改：错</text>
 
   <!-- 页脚：合成与化名声明 -->
   <line x1="60" y1="1108" x2="840" y2="1108" stroke="#999999" stroke-width="1"/>
   <text x="60" y="1140" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="15" fill="#666666">合成案例：自造题面，不来自任何真实试卷；不含真实姓名、学校、班级。</text>
-  <text x="60" y="1168" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="15" fill="#666666">用途：演示「整页拆分」时区域怎么定（见 1.0.0/expected 的 cases/shared-stem/expected.json）。</text>
+  <text x="60" y="1168" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="15" fill="#666666">用途：演示「整页拆分」时区域怎么定（见 1.0.2/expected 的 cases/shared-stem/expected.json）。</text>
 </svg>

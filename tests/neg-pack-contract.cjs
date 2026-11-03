@@ -35,7 +35,14 @@ const ROOT = E.REPO;
 const ENGINE = E.tool('_经验包.mjs');
 const GUARD = E.tool('_路径护栏.mjs');
 /* 仓库内样本包（**不随发布包分发**；安装＝手工复制这个文件夹）。相对路径写，别写死本机绝对路径。 */
-const PILOT = path.join(ROOT, 'src', 'packs', 'family-a', 'shared-stem', '1.0.0');
+/* ⚠ 试点包版本号**从目录里读最高那个**，不写死：pack.json 在 `<packId>/<version>/` 里面，
+   写死版本号会在包升版时变成假红（1.0.0→1.0.1→1.0.2 已连撞两次）。
+   按数值排序取最高版本 ⇒ 仓库里同时留着几个版本目录时，样本＝最新那个。 */
+const PILOT_ROOT = path.join(ROOT, 'src', 'packs', 'family-a', 'shared-stem');
+const PILOT_VER = fs.readdirSync(PILOT_ROOT)
+  .filter((d) => /^\d+\.\d+\.\d+$/.test(d) && fs.existsSync(path.join(PILOT_ROOT, d, 'pack.json')))
+  .sort((a, b) => a.localeCompare(b, 'en', { numeric: true })).pop();
+const PILOT = path.join(PILOT_ROOT, PILOT_VER);
 const SRC_PACKS = path.join(ROOT, 'src', 'packs');
 
 let pass = 0, fail = 0, skip = 0;
@@ -131,7 +138,7 @@ const errText = (v) => (v && v.json && v.json.errors ? v.json.errors.map((e) => 
     A('试点包 校验 exit 0', r.code === 0, 'code=' + r.code + (r.json ? ' ok=' + r.json.ok : ''));
     const j = r.json || {};
     A('试点包 id/version/formatVersion 正确',
-      j.id === 'family-a/shared-stem' && j.version === '1.0.0' && j.formatVersion === 1,
+      j.id === 'family-a/shared-stem' && j.version === PILOT_VER && j.formatVersion === 1,
       JSON.stringify({ id: j.id, version: j.version, formatVersion: j.formatVersion }));
     const card = (j.cards || [])[0] || {};
     A('试点包恰好 1 张卡且 id=shared-stem', (j.cards || []).length === 1 && card.id === 'shared-stem',
@@ -149,7 +156,7 @@ const errText = (v) => (v && v.json && v.json.errors ? v.json.errors.map((e) => 
     const l = runJson(['清单'], { packs: SRC_PACKS });
     A('清单 exit 0 且列出 1 个包（id/version/启用状态/校验结论）',
       l.code === 0 && l.json && l.json.packs.length === 1 &&
-      l.json.packs[0].id === 'family-a/shared-stem' && l.json.packs[0].version === '1.0.0' &&
+      l.json.packs[0].id === 'family-a/shared-stem' && l.json.packs[0].version === PILOT_VER &&
       l.json.packs[0].enabled === true && l.json.packs[0].verdict.ok === true,
       l.json ? JSON.stringify(l.json.packs.map((p) => [p.id, p.version, p.enabled, p.verdict.ok])) : 'out=' + l.out.slice(0, 120));
 
@@ -188,10 +195,13 @@ const errText = (v) => (v && v.json && v.json.errors ? v.json.errors.map((e) => 
       JSON.stringify(exp.expected.registerQuestions) === '["(2)"]'
       && JSON.stringify(exp.expected.skipQuestions) === '["(1)"]',
       JSON.stringify({ reg: exp.expected.registerQuestions, skip: exp.expected.skipQuestions }));
-    A('案例带两个对照（小问互不依赖不扩区域 / 条件在未提供的下一页 ⇒ 待确认）',
-      (exp.controls || []).length === 2
+    /* ⚠ 判据是"必需的三条对照**都在**"，不是"恰好两条"：1.0.2 按家长人工判断回流又加了一条
+       （批改痕迹只有符号 ⇒ 错因必须写进记录字段）。写死条数会让"加一条更好的对照"变成假红。 */
+    A('案例带必需的三条对照（互不依赖不扩区域 / 条件在下一页 ⇒ 待确认 / 批改只有符号 ⇒ 错因进记录）',
+      (exp.controls || []).length >= 3
       && exp.controls.some((c) => /independent/.test(c.id))
-      && exp.controls.some((c) => /next-page/.test(c.id) && /待确认/.test(c.expect)),
+      && exp.controls.some((c) => /next-page/.test(c.id) && /待确认/.test(c.expect))
+      && exp.controls.some((c) => /mark-without-text/.test(c.id) && /causeNote|notes/.test(c.expect)),
       (exp.controls || []).map((c) => c.id).join(','));
   }
 
@@ -558,7 +568,7 @@ const errText = (v) => (v && v.json && v.json.errors ? v.json.errors.map((e) => 
   {
     const root = mkRoot('isolation');
     /* 好包：路径必须与它 pack.json 里的 id 对上（`family-a/shared-stem`），否则会因"目录/id 不一致"判红 */
-    const good = path.join(root, 'family-a', 'shared-stem', '1.0.0');
+    const good = path.join(root, 'family-a', 'shared-stem', PILOT_VER);
     fs.mkdirSync(path.dirname(good), { recursive: true });
     fs.cpSync(PILOT, good, { recursive: true });
     const bad = mkValidPack(root, { packId: 'bad/pack' });

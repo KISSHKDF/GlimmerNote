@@ -156,8 +156,15 @@ async function waitFor(cdp, expr, ok, tries, gap) {
      复制进来，再靠 `CTB_PACKS` 让壳起 node 子进程时继承（**不写用户真目录**
      `%LOCALAPPDATA%\拾光小册\经验包`，实机验收不该在用户机器上留副作用）。 */
   const PACKS = E.allocTempDir('gn-ingest-e2e-packs-');
-  const PILOT_SRC = path.join(ROOT, 'src', 'packs', 'family-a', 'shared-stem', '1.0.0');
-  const PILOT_DST = path.join(PACKS, 'family-a', 'shared-stem', '1.0.0');
+  const PILOT_SRC_ROOT = path.join(ROOT, 'src', 'packs', 'family-a', 'shared-stem');
+  /* ⚠ 版本号**从目录里读最高那个**（pack.json 在 `<packId>/<version>/` 里），不写死：
+     写死会在包升版时变成假红（1.0.0→1.0.1→1.0.2 已连撞两次）。
+     判据仍有牙齿 —— 它比的是"页面选卡后写进任务记录的那个版本"与"包里声明的版本"是否一致。 */
+  const PILOT_VER = fs.readdirSync(PILOT_SRC_ROOT)
+    .filter((d) => /^\d+\.\d+\.\d+$/.test(d) && fs.existsSync(path.join(PILOT_SRC_ROOT, d, 'pack.json')))
+    .sort((a, b) => a.localeCompare(b, 'en', { numeric: true })).pop();
+  const PILOT_SRC = path.join(PILOT_SRC_ROOT, PILOT_VER);
+  const PILOT_DST = path.join(PACKS, 'family-a', 'shared-stem', PILOT_VER);
   fs.mkdirSync(path.dirname(PILOT_DST), { recursive: true });
   fs.cpSync(PILOT_SRC, PILOT_DST, { recursive: true });
   const jpg = (last) => Buffer.from([0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x05, 0x78, 0x03, 0xE8, 0x03, 0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01, 0xFF, 0xD9, last]);
@@ -184,9 +191,20 @@ async function waitFor(cdp, expr, ok, tries, gap) {
     const up = await waitPort(45000);
     A('壳起来且 CDP 就绪（pid=' + shellPid + '）', up);
     if (!up) { console.log('RESULT=FAIL'); process.exit(2); }
-    const list = await (await fetch('http://127.0.0.1:' + PORT + '/json/list')).json();
-    const page = list.find(t => t.type === 'page');
-    A('拿到 page target', !!page, page ? page.url.slice(0, 100) : JSON.stringify(list.map(t => t.type)));
+    /* ⚠ `waitPort()` 只看 `/json/list` **应答**（HTTP 200），而壳刚起来时那个列表可能是**空的**
+       —— 2026-11-03 实测撞上：`拿到 page target → []`，整轮 quick 因此红（不是产品缺陷，是竞态）。
+       这里改成**有界轮询**等 page target 出现（最多 20s），拿到再断言。 */
+    let page = null;
+    for (let i = 0; i < 40 && !page; i++) {
+      try {
+        const list = await (await fetch('http://127.0.0.1:' + PORT + '/json/list')).json();
+        page = (Array.isArray(list) ? list : []).find((t) => t.type === 'page') || null;
+      } catch { /* 还没起来，继续等 */ }
+      if (!page) await sleep(500);
+    }
+    A('拿到 page target（有界等待 ≤20s，允许壳先有 CDP 再有页面）', !!page,
+      page ? page.url.slice(0, 100) : '20s 内没等到 page（壳起来了但没建页面）');
+    if (!page) { console.log('RESULT=FAIL'); process.exit(2); }
     cdp = await Cdp.connect(page.webSocketDebuggerUrl);
     await cdp.send('Runtime.enable');
     await cdp.send('Log.enable');
@@ -252,8 +270,10 @@ async function waitFor(cdp, expr, ok, tries, gap) {
     A('勾了卡的任务单生成成功（选卡没被壳或工具拒掉）',
       /已选卡/.test(String(themed)) && !/生成失败|选卡有问题/.test(String(themed)), String(themed || '').slice(0, 150));
     const pre = await cdp.evalJs('(document.querySelector("#igPre")||{}).textContent||""');
+    /* ⚠ 这里**不写死版本号**：写死 `@1.0.0` 会在包里升到 1.0.1 时变成假红（本轮实测撞上）。
+       版本号的精确判据在下一条（读任务记录 cards[].version），这里只证明"卡身份串进了任务单"。 */
     A('卡正文真的进了任务单（`### 本次追加的方法（经验包）` + 卡身份串）',
-      /本次追加的方法（经验包）/.test(pre) && /family-a\/shared-stem\/shared-stem@1\.0\.0/.test(pre),
+      /本次追加的方法（经验包）/.test(pre) && /family-a\/shared-stem\/shared-stem@[0-9]+\.[0-9]+\.[0-9]+/.test(pre),
       '任务单 ' + String(pre).length + ' 字符');
     const tid2 = (/t-[0-9]{8}-[0-9]{6}-[0-9a-f]{6}/.exec(String(themed)) || [])[0];
     A('带卡生成也是一次新任务（任务号上屏）', /^t-[0-9]{8}-[0-9]{6}-[0-9a-f]{6}$/.test(String(tid2)), String(tid2));
@@ -261,7 +281,7 @@ async function waitFor(cdp, expr, ok, tries, gap) {
     try { recCards = JSON.parse(fs.readFileSync(path.join(LIB, '_录题', String(tid2) + '.json'), 'utf8')).cards; } catch (e) { }
     A('任务记录里 cards[] 记下这次用了哪张卡（packId/cardId/version/sha256）',
       Array.isArray(recCards) && recCards.length === 1 && recCards[0].packId === 'family-a/shared-stem' &&
-      recCards[0].cardId === 'shared-stem' && recCards[0].version === '1.0.0' && /^[0-9a-f]{64}$/.test(String(recCards[0].sha256 || '')),
+      recCards[0].cardId === 'shared-stem' && recCards[0].version === PILOT_VER && /^[0-9a-f]{64}$/.test(String(recCards[0].sha256 || '')),
       JSON.stringify(recCards));
 
     console.log('═══ ③c 停用：放一个 `.停用` → 生成被拒且点名原因（"能停即回退"的实机证据）═══');

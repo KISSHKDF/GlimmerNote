@@ -81,8 +81,14 @@ if (!fs.existsSync(SAMPLES)) {
 } else {
   const PACKS = path.join(TMP, 'packs');
   fs.cpSync(SAMPLES, PACKS, { recursive: true });
-  const samplePack = readJ(path.join(PACKS, 'family-a', 'shared-stem', '1.0.0', 'pack.json'));
-  const SAMPLE_DIR = path.join(PACKS, 'family-a', 'shared-stem', '1.0.0');
+  /* ⚠ 试点包版本号**从目录里读最高那个**（pack.json 在 `<packId>/<version>/` 里），不写死：
+     写死会在包升版时变成假红（1.0.0→1.0.1→1.0.2 已连撞两次）。 */
+  const PILOT_ROOT = path.join(SAMPLES, 'family-a', 'shared-stem');
+  const PILOT_VER = fs.readdirSync(PILOT_ROOT)
+    .filter((d) => /^\d+\.\d+\.\d+$/.test(d) && fs.existsSync(path.join(PILOT_ROOT, d, 'pack.json')))
+    .sort((a, b) => a.localeCompare(b, 'en', { numeric: true })).pop();
+  const samplePack = readJ(path.join(PACKS, 'family-a', 'shared-stem', PILOT_VER, 'pack.json'));
+  const SAMPLE_DIR = path.join(PACKS, 'family-a', 'shared-stem', PILOT_VER);
   const v = run(['校验', SAMPLE_DIR, '--json', '--packs', PACKS], { engine: PACK_ENGINE });
   const vj = v.code === 0 || v.code === 1 ? JSON.parse(String(v.out).trim()) : null;
   A('样本包校验通过（工具体与经验包引擎对同一份样本结论一致）',
@@ -255,7 +261,7 @@ if (!fs.existsSync(SAMPLES)) {
   {   /* 停用包：包目录里放 `.停用`（内容随意，建议写原因）⇒ 选它 exit 2，且原因是"已停用" */
     const P_DIS = path.join(TMP, 'packs-disabled');
     fs.cpSync(SAMPLES, P_DIS, { recursive: true });
-    fs.writeFileSync(path.join(P_DIS, 'family-a', 'shared-stem', '1.0.0', '.停用'), '测试：临时停用\n', 'utf8');
+    fs.writeFileSync(path.join(P_DIS, 'family-a', 'shared-stem', PILOT_VER, '.停用'), '测试：临时停用\n', 'utf8');
     bad('停用包 → exit 2 且说清"已停用"（不是"包不存在"）', CARD_ARGS(SEL0), /已停用/, P_DIS, 'disabled');
     const lj = run(['清单', '--json', '--packs', P_DIS, '--data', mkLib('dis-list')]);
     let listed = null; try { listed = JSON.parse(lj.out).packs.find((p) => p.id === PID); } catch { }
@@ -268,13 +274,13 @@ if (!fs.existsSync(SAMPLES)) {
   {   /* 坏包：pack.json 不是合法 JSON ⇒ 包损坏 ⇒ 选它 exit 2 且说出是结构错 */
     const P_BROKEN = path.join(TMP, 'packs-broken');
     fs.cpSync(SAMPLES, P_BROKEN, { recursive: true });
-    fs.writeFileSync(path.join(P_BROKEN, 'family-a', 'shared-stem', '1.0.0', 'pack.json'), '{ 这不是 JSON\n', 'utf8');
+    fs.writeFileSync(path.join(P_BROKEN, 'family-a', 'shared-stem', PILOT_VER, 'pack.json'), '{ 这不是 JSON\n', 'utf8');
     bad('坏包（pack.json 不是合法 JSON）→ exit 2 且点名"内容不合法/结构"', CARD_ARGS(SEL0), /内容不合法|结构/, P_BROKEN, 'broken');
   }
   {   /* 缺卡正文文件：校验层就要拒（不是"读到空正文"） */
     const P_MISS = path.join(TMP, 'packs-missing-body');
     fs.cpSync(SAMPLES, P_MISS, { recursive: true });
-    fs.rmSync(path.join(P_MISS, 'family-a', 'shared-stem', '1.0.0', 'cards', samplePack.cards[0].body.split('/').pop()));
+    fs.rmSync(path.join(P_MISS, 'family-a', 'shared-stem', PILOT_VER, 'cards', samplePack.cards[0].body.split('/').pop()));
     bad('卡正文文件缺失 → exit 2 且点名缺文件', CARD_ARGS(SEL0), /缺文件|不存在|内容不合法/, P_MISS, 'missing-body');
   }
   {   /* 同版异内容：契约 §2.1 把它归在 `校验` 的判据里（候选目录与已安装的同 id@version 内容不同）。

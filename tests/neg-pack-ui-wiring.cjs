@@ -389,7 +389,17 @@ function mkPage(over) {
       /* 「怎么停」的机制实测：临时包根里放 `.停用` ⇒ 工具报 enabled=false ⇒ 页面显示「已停用」。 */
       const TMPROOT = E.allocTempDir('gn-w3-packs-');
       fs.cpSync(path.join(PACKS_ROOT, 'family-a'), path.join(TMPROOT, 'family-a'), { recursive: true });
-      fs.writeFileSync(path.join(TMPROOT, 'family-a', 'shared-stem', '1.0.0', '.停用'), '本用例临时停用\n', 'utf8');
+      /* ⚠ 版本目录名**从样本里读最高那个**（pack.json 在 `<packId>/<version>/` 里），不许写死：
+         写死 `1.0.0` 会在包升版时 `ENOENT` 崩在夹具准备阶段（本轮实测撞上，整轮 quick 因此红）。
+         夹具崩掉与断言失败要分得开 —— 所以这里先断言"目录真的存在"，再往里放标记。 */
+      const pilotRoot = path.join(PACKS_ROOT, 'family-a', 'shared-stem');
+      const pilotVer = fs.readdirSync(pilotRoot)
+        .filter((d) => /^\d+\.\d+\.\d+$/.test(d) && fs.existsSync(path.join(pilotRoot, d, 'pack.json')))
+        .sort((a, b) => a.localeCompare(b, 'en', { numeric: true })).pop();
+      const pilotDir = path.join(TMPROOT, 'family-a', 'shared-stem', String(pilotVer));
+      A('G6 前置：临时包根里的版本目录与 pack.json 的 version 对得上（夹具没配好要看得见）',
+        fs.existsSync(pilotDir), pilotDir);
+      fs.writeFileSync(path.join(pilotDir, '.停用'), '本用例临时停用\n', 'utf8');
       const r2 = runList(TMPROOT);
       const q0 = (r2.j && r2.j.packs && r2.j.packs[0]) || null;
       A('G6 `.停用` 文件 ⇒ 工具报 enabled=false（README/页面写的"怎么停"就是这个机制）',
