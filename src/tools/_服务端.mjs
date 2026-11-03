@@ -71,6 +71,12 @@ import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { libraryRoot, toolPath, TOOL_DIR, APP_ROOT, WEB_ROOT } from './_库根.mjs';
 import { readJsonStrict } from './_安全写.mjs';
+/* ★ 2026-11-03（批次 2 / P2-2「统一坐标系」）：pending 条目附加归一化坐标。
+   换算的唯一实现在 `src\tools\_区域坐标.mjs`（契约 `docs\区域契约.md`）——**本文件不得再写第二份除法**。
+   它是零副作用纯函数模块（不求值库根、不抢锁），所以服务端 import 它是安全的；
+   同一段逻辑**刻意不**放在 `_待确认.mjs` 里导出：那支脚本导入期就 `libraryRoot()` + `acquireLibLock()`，
+   服务端 import 它会当场抢占库锁（而服务端本来要靠 spawn 它的子命令干活）。 */
+import { normEvidenceBox, evidenceAbs } from './_区域坐标.mjs';
 
 /* ★ 2026-10-23 程序与数据分家：ROOT 现在是**用户库根**，不再是"本脚本所在目录"。
    兄弟工具一律用 toolPath(...)，见 _库根.mjs。 */
@@ -143,6 +149,45 @@ function parseJsonText(text, what) {
 
 let state = null;
 try { state = readStateFile(); } catch (e) { state = null; }
+
+/* ---------- P2-2（2026-11-03）：pending 条目附加归一化坐标（**只加不改**） ----------
+   为什么要在这里补一次：`_状态.json` 的 pending 分区可能是**旧版** `_待确认.mjs` 写下的
+   （那时还没有 `boxNorm/imgW/imgH`），而页面灯箱只认这三个字段。三条纪律：
+     ① 只**附加**：旧字段一个不改，缺字段/量不出图时保持今天的形状（前端不因此报错）；
+     ② 量不出尺寸写 `boxNormWhy`（**具体原因**，带图路径），**绝不写 0**（教训 L-530）；
+     ③ GET 是只读的（BUG-16）：绝不改内存里的 `state` 快照，逐条目新建对象。
+   缓存：按 `abs|mtimeMs|size` 记住换算结果——`GET /api/state` 是页面启动/刷新的高频路由，
+   每次重读所有证据图的文件头（每张最多 512 KB）是白烧 IO。图被换掉时 mtime/size 变 ⇒ 自动失效。 */
+const BOX_NORM_CACHE = new Map();
+const BOX_NORM_CACHE_MAX = 512;
+function boxNormOfItem(it) {
+  if (!it || !Array.isArray(it.box) || it.box.length !== 4) return null;
+  const abs = evidenceAbs(it.evidence, ROOT);
+  let key = null;
+  if (abs) { try { const st = fs.statSync(abs); key = abs + '|' + st.mtimeMs + '|' + st.size; } catch { key = null; } }
+  if (key && BOX_NORM_CACHE.has(key)) return BOX_NORM_CACHE.get(key);
+  const r = normEvidenceBox({ boxPx: it.box, imgAbs: abs });
+  const out = r.ok ? { boxNorm: r.boxNorm, imgW: r.imgW, imgH: r.imgH } : { boxNormWhy: r.why };
+  if (key) {
+    if (BOX_NORM_CACHE.size >= BOX_NORM_CACHE_MAX) BOX_NORM_CACHE.clear();
+    BOX_NORM_CACHE.set(key, out);
+  }
+  return out;
+}
+/** pending 分区 → 附加了归一化坐标的新分区；形状不对或无需附加时**原样返回同一个对象** */
+function withBoxNorm(pending) {
+  if (!pending || !Array.isArray(pending.items)) return pending;
+  return Object.assign({}, pending, {
+    items: pending.items.map(it => {
+      if (!it || typeof it !== 'object') return it;
+      /* 上游（新版 `_待确认.mjs`）已经附过就不覆盖：状态包是页面取数的真源，
+         两处各算一遍只会引入"同一个条目两个答案"的风险。 */
+      if (it.boxNorm !== undefined || it.boxNormWhy !== undefined) return it;
+      const ex = boxNormOfItem(it);
+      return ex ? Object.assign({}, it, ex) : it;   // 没 box ⇒ 同一个对象，一个字段都不加
+    }),
+  });
+}
 
 /* ---------- 静态文件包含性判据（BUG-18） ----------
    旧写法 `abs.startsWith(ROOT)` 的 ROOT 无结尾分隔符 ⇒ `D:\…\错题本-备份` 这类**同前缀兄弟目录**
@@ -877,6 +922,12 @@ const server = http.createServer(async (req, res) => {
         await serialized(async () => { if (pendingNeedsRefresh()) await refreshPendingSection(); });
       }
       const body = Object.assign({}, state || { error: 'no state' });
+      /* ★ 2026-11-03（P2-2）：pending 条目**附加** boxNorm/imgW/imgH（唯一实现 `_区域坐标.mjs`）。
+         只加不改、量不出不给 0、内存快照不动（详见上面 withBoxNorm 的注释）。 */
+      {
+        const wp = withBoxNorm(body.pending);
+        if (wp !== body.pending) body.pending = wp;
+      }
       if (stateFail) {
         body.degraded = stateFail.code;
         body.stateStale = true;

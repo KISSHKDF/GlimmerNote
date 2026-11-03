@@ -219,6 +219,25 @@
       orig = three.orig; origBox = three.origBox; origBy = three.origBy || '原卷台账';
     }
     const hasOrig = !!orig;
+    /* ★ 2026-11-03（批次 2 · 区域契约 §6，docs\区域契约.md）：把后端读取侧附加的坐标字段送到灯箱。
+       形状来自 W4：`boxNorm`（0~1 归一化，与 `box` 是**同一块区域**）+ `imgW/imgH`（登记该坐标时那张图的显示宽高）。
+       `shell.js` 的 `lbFocusPx` 在这两个都可用时走归一化路，否则回落 `box`（缺字段不报错、不猜）。
+       ⚠ 本处**只加字段**：下面 `box:` 的语义一个字不改（用例钉住）。
+       数值统一 `Number()` 容错（后端将来给字符串 "800" 也认）；给不出可用数值时**不静默当 0** ——
+       在徽章上说明"按像素框显示"，用户至少知道坐标是退化的，而不是以为红框对准了。 */
+    const bwN = Number(p.imgW), bhN = Number(p.imgH);
+    const bNorm = (p.boxNorm && p.boxNorm.length === 4) ? p.boxNorm : null;
+    const bNormOk = !!bNorm && bwN > 0 && bhN > 0;
+    const bPix = (p.box && p.box.length === 4) ? p.box : null;
+    /* 后端量不出尺寸时给的是 `boxNormWhy`（具体原因，**不写 0**，见 _待确认.mjs / _服务端.mjs）。
+       有框却没归一化坐标 ⇒ 把原因摆到徽章上（用户能问"为什么这个红框算不出坐标"，
+       而"声明了没人读"正是本仓老毛病）；本来就没框的记录不提示，免得噪音。 */
+    const bWhy = String(p.boxNormWhy || '').trim();
+    const bNormNote = (bNorm && !bNormOk)
+      ? '<span class="tag warn" title="归一化框算不出像素：imgW/imgH 缺失或不可用">坐标字段不全：按像素框显示</span>'
+      : ((!bNorm && bWhy && bPix)
+        ? '<span class="tag warn" title="' + U.esc(bWhy) + '">红框按像素显示（算不出归一化坐标）</span>'
+        : '');
     return {
       src: H.asset(p.evidence), rel: p.evidence,
       orig: hasOrig ? orig : p.evidence,
@@ -227,9 +246,11 @@
       title: '待办 ' + p.id + ' · ' + (p.student || '') + (p.subject ? '·' + p.subject : '') + ' · ' + (p.source || ''),
       chips: '<span class="tag warn">' + U.esc(p.id) + '</span><span class="tag gray">' + U.esc(p.kind || '') + '</span>' +
         '<span class="tag info">' + (M.ASK_IC[p.askWho] || '') + ' 问' + U.esc(p.askWho || '') + '</span>' +
-        (p.qRef ? '<span class="tag ok">📍 ' + U.esc(p.qRef) + '</span>' : ''),
+        (p.qRef ? '<span class="tag ok">📍 ' + U.esc(p.qRef) + '</span>' : '') + bNormNote,
       q: p.question, detail: p.detail || '', hint: howto(p),
       box: (p.box && p.box.length === 4) ? p.box : null,
+      /* 只在这两个有值时才给数：没有 = 0 ⇒ shell 侧 `w > 0 && h > 0` 判据自然回落像素框。 */
+      boxNorm: bNorm, imgW: bNormOk ? bwN : 0, imgH: bNormOk ? bhN : 0,
       foot: '<textarea id="lbAns" rows="2" placeholder="结论/答案（办结必填，作废必写理由）：放大后看到了什么 / 孩子口述了什么 / 老师怎么答…"></textarea>' +
         '<button class="btn ok" data-lbsolve>✓ 确认办结</button><button class="btn danger" data-lbvoid>🗑 作废</button>' +
         '<span class="small">Esc 关闭 ｜ ←→ 换条 ｜ 办结后自动跳下一条</span>',

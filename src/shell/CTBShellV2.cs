@@ -742,6 +742,16 @@ namespace CTBShell2
            照片被导入改名后再想按指纹找回那一张就走不通。两个清单**必须**同集合，
            `tests\neg-shell-args.mjs` 现在有一条机读的差集断言钉住它（不再靠人眼比对）。 */
         static readonly HashSet<string> RECIPE_ACTIONS = new HashSet<string> { "清单", "收件箱", "找图", "组装", "校验", "自检", "指纹" };
+        /* ★ 2026-11-03（批次 2「经验包试点」）：选卡串 `<packId>/<cardId>@<version>` 的形状门禁。
+           与 TASK_ID_SHAPE 同一条纪律：页面传来的东西先过形状，形状不对在**壳层**就回 code=2，
+           而不是落到 `_经验包.mjs` 里变成"包不存在"（同码不同因，用户看不出是自己打错了）。
+           `packId` 可以多段（例 `family-a/shared-stem`），`cardId` 是**最后一段**，`version` 必须是 x.y.z。
+           ⚠ 每段的**首字符不许是 `.`**：首版写成 `[A-Za-z0-9._\-]+` 时 `../evil/card@1.0.0`
+             能整条通过形状门禁（`.` 属于字符类，`..` 自然合法）——`tests\neg-shell-card-passthrough.mjs`
+             在真 exe 上当场抓到。路径穿越的第一道拦在**形状**上，比只靠下游 realpath 判据更早、更好归因；
+             下游 `_经验包.mjs` 另有包含性判据（纵深，不互相替代）。 */
+        static readonly System.Text.RegularExpressions.Regex CARD_SEL_SHAPE =
+            new System.Text.RegularExpressions.Regex(@"^[A-Za-z0-9_\-][A-Za-z0-9._\-]*(/[A-Za-z0-9_\-][A-Za-z0-9._\-]*)+@[0-9]+\.[0-9]+\.[0-9]+$");
         public string Recipe(string payload)
         {
             string action = ExtractString(payload, "action");
@@ -763,6 +773,35 @@ namespace CTBShell2
                    壳按真实退出码回 code=2，前端据此显示拒绝原因而不是"找不到图"。
                    找图是只读动作（不改名/不移动/不删除/不写任何文件），因此不进写闸。 */
                 AddFlag(args, payload, "sha", "--sha");
+                /* ★ 2026-11-03（批次 2「经验包试点」）：选卡透传。
+                   交付物要求"能装、能选、能停、能回退"，"选"这一半必须送到引擎才算数 ——
+                   与批次 1 的 `--task` 同族（动作在引擎里有、壳没有通道）。两条纪律不变：
+                     · 固定键名 → 固定 flag 的逐项映射，无通用透传、无反射、不拼命令行字符串；
+                     · 值一律作为**独立 argv 元素**，注入不进 flag 位。
+                   形状：`payload.cards` = 逗号分隔的 `<packId>/<cardId>@<version>`（可多项）。
+                   为什么用逗号而不是数组：桥上的 payload 是**扁平字符串表**（ExtractString 语义），
+                   数组要另造一套解析；选卡串本身不含逗号（CARD_SEL_SHAPE 已钉死字符集），
+                   逗号分隔无歧义，且每项仍先过形状正则 —— 不合法的项**当场**回 code=2。
+                   冲突策略 `payload.cardConflict`（deny/first/all）走常规 AddFlag；
+                   合法值由 `_配方.mjs` 判（本层不解释语义，只透传），语义判定归引擎那一份实现。
+                   两个键都**只在 `组装` 动作**下生效：指纹/收件箱/校验/自检收选卡参数没有意义，
+                   放行会让"传了但没用"变成静默忽略。 */
+                if (action == "组装")
+                {
+                    AddFlag(args, payload, "cardConflict", "--card-conflict");
+                    string cards = ExtractString(payload, "cards");
+                    if (!string.IsNullOrEmpty(cards))
+                    {
+                        foreach (string raw in cards.Split(','))
+                        {
+                            string sel = raw.Trim();
+                            if (sel.Length == 0) continue;
+                            if (!CARD_SEL_SHAPE.IsMatch(sel))
+                                return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"选卡串形状不对（应为 <包id>/<卡id>@<主>.<次>.<修订>，例 family-a/shared-stem/shared-stem@1.0.0）：" + Esc(sel) + "\"}";
+                            args.Add("--card"); args.Add(sel);
+                        }
+                    }
+                }
                 /* ★ 2026-11-03（批次 1 收尾「页面接线」）：`--task` 布尔透传 —— 录题页「生成任务单」
                    勾了照片时带 task=1，引擎 `组装 --task` 会落一条任务记录（<库根>\_录题\<taskId>.json，
                    用户数据，走 _安全写）并把任务号写进任务单、要求 AI 用外层信封回传。

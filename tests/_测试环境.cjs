@@ -167,6 +167,38 @@ function lib(...parts) { return path.join(LIB, ...parts); }
 function tool(name) { return path.join(TOOLS, name); }
 
 /* ══════════════════════════════════════════════════════════════════════
+   工具依赖树复制（2026-11-03 批次 2 立，第二次踩同一个坑之后）
+   为什么要有：几条服务端用例要在**隔离程序目录**里起 `_服务端.mjs`，它们把依赖写死成
+   `['_服务端.mjs','_库根.mjs','_安全写.mjs']` 这类固定清单。工具之间加了新的兄弟 import 之后，
+   隔离树里解析不到 ⇒ `ERR_MODULE_NOT_FOUND` ⇒ 红的是"对照实例起不来"，症状出现在别人的用例上。
+   同一坑的第一次：2026-11-02 给 `_配方.mjs` 加 `import './_录题任务.mjs'`
+   （`tests\neg-inbox-transposed-evidence.cjs:126` 已改为**从源码解析 import 清单**）；
+   第二次：2026-11-03 给 `_服务端.mjs` 加 `import './_区域坐标.mjs'`。
+   本函数把"从源码解析相对 import、递归取传递闭包"做成**唯一实现**，供所有隔离树用例复用。
+   ⚠ 只解析 `from './x.mjs'` 形式的相对 import（本仓工具间一律这样写）；不执行任何代码。 */
+function toolDeps(names) {
+  const seen = new Set();
+  const queue = [...names];
+  while (queue.length) {
+    const f = queue.shift();
+    if (seen.has(f)) continue;
+    const src = path.join(TOOLS, f);
+    if (!fs.existsSync(src)) continue;                 // 名字写错 ⇒ 交给调用方的存在性断言去报，不在这里静默吞
+    seen.add(f);
+    const body = fs.readFileSync(src, 'utf8');
+    for (const m of body.matchAll(/from\s+'\.\/([^']+\.mjs)'/g)) if (!seen.has(m[1])) queue.push(m[1]);
+  }
+  return [...seen];
+}
+/** 把 names 及其**传递依赖**复制进 destDir（平铺）。返回实际复制的文件名数组。 */
+function copyToolDeps(names, destDir) {
+  const files = toolDeps(names);
+  fs.mkdirSync(destDir, { recursive: true });
+  for (const f of files) fs.copyFileSync(path.join(TOOLS, f), path.join(destDir, f));
+  return files;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
    写盘准入守卫（2026-10-31 E01 整改的唯一判据）
    为什么要有唯一判据：改前 `assertWritableLib` 全仓**真实调用点 = 0**（只有定义与注释），
    于是这道"真库拒写守卫"是死代码，写路径用例照样往用户真库写（实测吃掉 24 份已跟踪备份）。
@@ -369,6 +401,15 @@ const TMP_PREFIXES = [
   'ctb-neg-v2-ui-',   // tests\neg-v2-ui-*.cjs 的 WebView2 profile
   'ctb-neg-rb-',      // tests\neg-v2-ui-review-bank.cjs 的 WebView2 profile
   'gn-fixlib-',       // tests\fixtures-smoke.cjs 的合成库副本（它自己在末尾删，但被杀就漏）
+  /* ★ 2026-11-03（批次 2「经验包试点」）：五条新用例各自的夹具前缀。登记的理由不是"好看"：
+     本表的判据是"被杀之后下一轮能认领并清掉"，没登记的前缀会永久留在 %TEMP% 里
+     （2026-11-02 实测过一次 8.3 GB 残留）。新用例**必须**在这里登记自己的前缀。 */
+  'gn-packneg-',      // tests\neg-pack-contract.cjs 的临时包根 + 临时库
+  'gn-card-neg-',     // tests\neg-card-select.cjs 的临时包根 + 临时库
+  'gn-rg-',           // tests\neg-region-contract.cjs 的临时库 / 合成图
+  'gn-w3-packs-',     // tests\neg-pack-ui-wiring.cjs 的临时包根
+  'gn-shell-card-',   // tests\neg-shell-card-passthrough.mjs 的反射脚本 + 替身工具目录
+  'gn-ingest-e2e-packs-', // tests\neg-v2-ingest-task-e2e.cjs 的临时**经验包根**（批次 2）
 ];
 const TMP_STALE_MS = 24 * 60 * 60 * 1000;
 const _ownedTmp = new Set();
@@ -601,6 +642,9 @@ async function serverBase() {
 module.exports = {
   REPO, TOOLS, LIB, LIB_SOURCE, isFrozen, findIndexes,
   lib, tool, makeTempLib, runToolSync,
+  /* ★ 2026-11-03（批次 2）：隔离树复制 —— 把工具**及其相对 import 的传递闭包**一起搬走，
+     免得"新增一个兄弟模块"就让别人的对照实例 ERR_MODULE_NOT_FOUND（已踩两次）。 */
+  toolDeps, copyToolDeps,
   /* 临时夹具的登记 / 清扫（2026-11-02 批次0尾项）：TMP_PREFIXES 供测试对拍前缀表 */
   registerTempDir, allocTempDir, cleanupTempDirs, sweepStaleTempDirs, TMP_PREFIXES, TMP_STALE_MS,
   /* 写盘准入（E01）：三种形态共用 writeGuard 一个判据 */

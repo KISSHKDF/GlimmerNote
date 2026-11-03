@@ -173,10 +173,11 @@ console.log('\n═══ 「找图」下沉到最细一级：壳的逐项映射 
    并锁死"没有通用透传"（不遍历 payload 的键、无反射、不拼命令行字符串）。 */
 const recipeMethod = (/public string Recipe\(string payload\)[\s\S]*?\n        \}/.exec(CS) || [''])[0];
 const RECIPE_MAP = [...recipeMethod.matchAll(/AddFlag\(args,\s*payload,\s*"([^"]+)",\s*"(--[^"]+)"\)/g)].map(m => [m[1], m[2]]);
-A('Recipe() 的 AddFlag 映射恰为 5 项、键名与 flag 逐个固定',
-  RECIPE_MAP.length === 5 && RECIPE_MAP.map(p => p.join('→')).join(',') === 'recipe→--recipe,subject→--subject,textbook→--textbook,image→--image,sha→--sha',
+A('Recipe() 的 AddFlag 映射恰为 6 项、键名与 flag 逐个固定',
+  RECIPE_MAP.length === 6 && RECIPE_MAP.map(p => p.join('→')).join(',') === 'recipe→--recipe,subject→--subject,textbook→--textbook,image→--image,sha→--sha,cardConflict→--card-conflict',
   RECIPE_MAP.map(p => p.join('→')).join(' '));
 A('找图的参数只走 sha→--sha 这一条（不是别的通道或别名）', RECIPE_MAP.some(p => p[0] === 'sha' && p[1] === '--sha'));
+A('选卡冲突策略只走 cardConflict→--card-conflict 这一条', RECIPE_MAP.some(p => p[0] === 'cardConflict' && p[1] === '--card-conflict'));
 A('壳不做通用透传/反射（无 args.Add(payload)、无反射取值）',
   !/args\.Add\(\s*payload/.test(CS) && !/System\.Reflection|GetProperty\(|GetFields\(/.test(CS));
 A('库根仍显式用 --data 注入（不靠环境变量继承）', /args\.Add\("--data"\);\s*args\.Add\(DataRoot\)/.test(CS));
@@ -191,6 +192,79 @@ A('json→--json 布尔透传仍在（回归锁）',
 A('Recipe() 里布尔开关只有这两个固定键（没有第三把）',
   (recipeMethod.match(/ExtractString\(payload, "(\w+)"\) == "1"/g) || []).length === 2,
   (recipeMethod.match(/ExtractString\(payload, "(\w+)"\) == "1"/g) || []).join(','));
+
+console.log('\n═══ 选卡透传（2026-11-03 批次 2）：cards 逗号串 → 重复 --card，形状不合法当场 code=2 ═══');
+/* 契约（批次2 接口契约 §4）：`payload.cards` = 逗号分隔的 `<packId>/<cardId>@<version>`，
+   **仅当 action == "组装"** 时逐项展开成重复的 `--card <项>`（值作为独立 argv 元素，仍不拼命令行字符串），
+   每项先过形状正则；不匹配则在**壳层**就回 `code:2` —— 不许落进 `_经验包.mjs` 变成"包不存在"
+   （同码不同因，用户看不出是自己打错了）。为什么用逗号而不是数组：桥上的 payload 是**扁平字符串表**
+   （ExtractString 语义），数组要另造一套解析；而选卡串本身不含逗号（形状正则已钉死字符集），
+   逗号分隔无歧义。
+   判据分三层（沿用本文件既有手法：源码级结构 + **从源码里解析出**正则 + 真跑 argv）：
+     ① 形状正则必须从 C# 源码里解析出来（不是在这里另写一份 —— 两份实现必然漂移，L-286）；
+     ② 展开必须是**两次独立 Add**（值进不了 flag 位、不拼命令行字符串）；
+     ③ 用解析出的同一条正则复刻展开，再用真实 node.exe 观察它最终收到的 argv。 */
+const shapeLit = /CARD_SEL_SHAPE\s*=\s*\r?\n\s*new System\.Text\.RegularExpressions\.Regex\(@"([^"]+)"\)/.exec(CS);
+A('壳的选卡串形状正则可从源码解析（判据不是恒真）', !!shapeLit && shapeLit[1].length > 10, shapeLit ? shapeLit[1] : '(解析不到)');
+const CARD_SEL_RE = shapeLit ? new RegExp(shapeLit[1]) : /$^/;    // 解析不到 ⇒ 恒不匹配，下面几条必红
+A('形状正则：合法选卡串通过（判据不是恒假）',
+  CARD_SEL_RE.test('family-a/shared-stem/shared-stem@1.0.0') && CARD_SEL_RE.test('p/c@0.0.0'),
+  String(CARD_SEL_RE));
+A('形状正则：缺版本 / 缺包段 / 空段 / 带空格 / 带逗号 / 退回上一级 一律不通过',
+  ['family-a/shared-stem/shared-stem', 'shared-stem@1.0.0', 'a//b@1.0.0', ' a/b@1.0.0', 'a/b@1.0.0 ',
+    'a/b@1.0', 'a/b@1.0.0.1', '../x@1.0.0', 'a/b@1.0.0,c/d@1.0.0', 'a\\b@1.0.0', 'a/b@1.0.0/']
+    .every(s => !CARD_SEL_RE.test(s)),
+  '11 个阴性样本全部被拒');
+
+const cardsBlock = (/if \(action == "组装"\)[\s\S]*?\n                \}/.exec(recipeMethod) || [''])[0];
+A('选卡与冲突策略只在 action == "组装" 分支里（别的动作收不到选卡参数）',
+  /action == "组装"/.test(cardsBlock) && /AddFlag\(args, payload, "cardConflict", "--card-conflict"\);/.test(cardsBlock),
+  cardsBlock ? '分支长度 ' + cardsBlock.length : '(解析不到组装分支)');
+A('展开是**两次独立 Add**（值作为独立 argv 元素，不拼命令行字符串）',
+  /args\.Add\("--card"\);\s*args\.Add\(sel\);/.test(cardsBlock), '');
+A('每项先过形状正则；不匹配在**壳层**就回 code:2（不落进引擎变成"包不存在"）',
+  /if \(!CARD_SEL_SHAPE\.IsMatch\(sel\)\)/.test(cardsBlock) &&
+  /return "\{\\"ok\\":false,\\"code\\":2,/.test(cardsBlock), '');
+A('展开不遍历 payload 的键（没有通用透传；回归锁）',
+  !/foreach\s*\(\s*var\s+\w+\s+in\s+payload/.test(CS) && !/args\.Add\(\s*payload\s*\)/.test(CS), '');
+
+/* 行为侧：用**从源码解析出的同一条正则**复刻壳的展开，再真跑 node 看它实收的 argv。
+   判据是"引擎真收到了两个独立的 --card 元素"，不是"壳里写了 split"。 */
+const shellCardsArgv = (payload, action) => {
+  const args = [];
+  if (action !== '组装' || !payload.cards) return { code: 0, args, bad: null };
+  for (const raw of String(payload.cards).split(',')) {
+    const sel = raw.trim();
+    if (!sel.length) continue;                     // 空项跳过（与壳一致）
+    if (!CARD_SEL_RE.test(sel)) return { code: 2, args, bad: sel };   // 壳在这里 return code:2
+    args.push('--card', sel);
+  }
+  return { code: 0, args, bad: null };
+};
+const echoArgv = (extra) => {
+  /* 前置一个占位位置参数 'x'：node 从第一个非选项参数起才不再解析自己的 CLI 选项，
+     否则开头的 `--card` 会被 node 当成它自己的参数（实测：`node -e … --card …` 直接报 bad option）。 */
+  const r = spawnSync(process.execPath, ['-e', 'console.log(JSON.stringify(process.argv.slice(1)))', 'x', ...extra], { encoding: 'utf8' });
+  return JSON.parse(r.stdout.trim()).slice(1);
+};
+const two = shellCardsArgv({ cards: 'family-a/shared-stem/a@1.0.0,family-a/shared-stem/b@1.0.0' }, '组装');
+A('逗号串逐项展开成重复的 --card（值独立 argv）',
+  JSON.stringify(two.args) === JSON.stringify(['--card', 'family-a/shared-stem/a@1.0.0', '--card', 'family-a/shared-stem/b@1.0.0']),
+  JSON.stringify(two.args));
+A('真跑 node.exe：四项 argv 逐字送达（不是"一项一个拼接串"，注入不了 flag 位）',
+  JSON.stringify(echoArgv(two.args)) === JSON.stringify(two.args), JSON.stringify(echoArgv(two.args)));
+const withBlank = shellCardsArgv({ cards: ' family-a/shared-stem/a@1.0.0 , ,family-a/shared-stem/b@1.0.0 ' }, '组装');
+A('每项先 trim、空项跳过（空白不会造出空 --card 元素）',
+  JSON.stringify(withBlank.args) === JSON.stringify(['--card', 'family-a/shared-stem/a@1.0.0', '--card', 'family-a/shared-stem/b@1.0.0']),
+  JSON.stringify(withBlank.args));
+A('非组装动作不带 --card（指纹/清单/校验收到选卡参数没有意义，壳层不放行）',
+  shellCardsArgv({ cards: 'family-a/shared-stem/a@1.0.0' }, '指纹').args.length === 0 &&
+  shellCardsArgv({ cards: 'family-a/shared-stem/a@1.0.0' }, '清单').args.length === 0, '');
+const badShape = shellCardsArgv({ cards: 'family-a/shared-stem/a@1.0.0,not-a-sel@1' }, '组装');
+A('形状不合法的选卡串在壳层被拒（code=2），且它前面的合法项已按序展开',
+  badShape.code === 2 && badShape.bad === 'not-a-sel@1' &&
+  JSON.stringify(badShape.args) === JSON.stringify(['--card', 'family-a/shared-stem/a@1.0.0']),
+  'code=' + badShape.code + ' bad=' + JSON.stringify(badShape.bad));
 
 console.log('\n═══ 阴性/阳性对照：真跑引擎的「找图」（非法参数必须被拒）═══');
 /* 判据不是"壳里写了正则"，是"工具真的会拒"。用例的 argv 按**壳声明的映射**（上面解析出的 RECIPE_MAP

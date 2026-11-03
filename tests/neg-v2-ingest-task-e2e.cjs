@@ -152,6 +152,14 @@ async function waitFor(cdp, expr, ok, tries, gap) {
     process.exit(0);
   }
   const LIB = E.allocTempDir('gn-ingest-e2e-');
+  /* ★ 2026-11-03（批次 2「经验包试点」）：临时**经验包根** —— 把仓库里那份试点包按安装布局
+     复制进来，再靠 `CTB_PACKS` 让壳起 node 子进程时继承（**不写用户真目录**
+     `%LOCALAPPDATA%\拾光小册\经验包`，实机验收不该在用户机器上留副作用）。 */
+  const PACKS = E.allocTempDir('gn-ingest-e2e-packs-');
+  const PILOT_SRC = path.join(ROOT, 'src', 'packs', 'family-a', 'shared-stem', '1.0.0');
+  const PILOT_DST = path.join(PACKS, 'family-a', 'shared-stem', '1.0.0');
+  fs.mkdirSync(path.dirname(PILOT_DST), { recursive: true });
+  fs.cpSync(PILOT_SRC, PILOT_DST, { recursive: true });
   const jpg = (last) => Buffer.from([0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x05, 0x78, 0x03, 0xE8, 0x03, 0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01, 0xFF, 0xD9, last]);
   fs.mkdirSync(path.join(LIB, '_收件箱', '批次E2E'), { recursive: true });
   fs.writeFileSync(path.join(LIB, '_收件箱', '批次E2E', 'p001.jpg'), jpg(0x21));
@@ -167,6 +175,8 @@ async function waitFor(cdp, expr, ok, tries, gap) {
       env: Object.assign({}, process.env, {
         WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: '--remote-debugging-port=' + PORT,
         CTB_DEV: '1', CTB_DATA: LIB,
+        /* 批次 2：经验包根走环境变量（壳起 node 子进程时继承），默认则是 %LOCALAPPDATA%。 */
+        CTB_PACKS: PACKS,
       }),
     });
     shellPid = p.pid;          /* 本用例唯一允许杀的进程（改前是 taskkill /IM 全杀，见文件头） */
@@ -223,6 +233,57 @@ async function waitFor(cdp, expr, ok, tries, gap) {
     const recExists = tid ? fs.existsSync(path.join(LIB, '_录题', String(tid) + '.json')) : false;
     A('任务记录真的落在临时库 _录题\\（用户数据，走 _安全写）', recExists, String(tid));
 
+    /* ═══════ ★ 2026-11-03（批次 2）选卡 → 任务单带卡正文（真 exe + 真页面 + 真工具）═══════
+       这一段顶掉的是"门禁全绿≠用户看得见"（L-435）里最要紧的一格：批次 2 的选卡是**新界面**，
+       只看源码与行为级用例证明不了"壳里那条 --card 透传真的通到页面上"。链路：
+       临时包根(CTB_PACKS) → 页面「清单」→ 选卡 → 组装 --card → 任务单正文 + 任务记录 cards[]。 */
+    console.log('═══ ③b 选卡：临时包根 → 页面选卡 → 任务单带卡正文 ═══');
+    const packRow = await waitFor(cdp,
+      '(function(){var i=document.querySelector("#igPackBox input[data-pack]");return i?i.dataset.pack:((document.querySelector("#igPackBox")||{}).textContent||"");})()',
+      v => typeof v === 'string' && (v === 'family-a/shared-stem' || /读不到|无法/.test(v)), 30, 500);
+    A('页面读到了临时包根里的试点包（CTB_PACKS 真的继承到 node 子进程）',
+      packRow === 'family-a/shared-stem', JSON.stringify(packRow));
+    const typedOk = await cdp.evalJs('(function(){var i=document.querySelector("#igPackBox input[data-pack=\\"family-a/shared-stem\\"]");' +
+      'if(!i) return false; i.value="shared-stem"; i.oninput(); return i.value === "shared-stem";})()');
+    A('选卡区可填卡 ID（oninput 把选择交给页面状态，不是生成时读 DOM）', typedOk === true, String(typedOk));
+    await cdp.evalJs('document.querySelector("#igGen").click()');
+    const themed = await waitFor(cdp, '(document.querySelector("#igTaskBox")||{}).textContent||""',
+      v => /已选卡/.test(String(v)) || /生成失败|选卡有问题/.test(String(v)), 40, 500);
+    A('勾了卡的任务单生成成功（选卡没被壳或工具拒掉）',
+      /已选卡/.test(String(themed)) && !/生成失败|选卡有问题/.test(String(themed)), String(themed || '').slice(0, 150));
+    const pre = await cdp.evalJs('(document.querySelector("#igPre")||{}).textContent||""');
+    A('卡正文真的进了任务单（`### 本次追加的方法（经验包）` + 卡身份串）',
+      /本次追加的方法（经验包）/.test(pre) && /family-a\/shared-stem\/shared-stem@1\.0\.0/.test(pre),
+      '任务单 ' + String(pre).length + ' 字符');
+    const tid2 = (/t-[0-9]{8}-[0-9]{6}-[0-9a-f]{6}/.exec(String(themed)) || [])[0];
+    A('带卡生成也是一次新任务（任务号上屏）', /^t-[0-9]{8}-[0-9]{6}-[0-9a-f]{6}$/.test(String(tid2)), String(tid2));
+    let recCards = null;
+    try { recCards = JSON.parse(fs.readFileSync(path.join(LIB, '_录题', String(tid2) + '.json'), 'utf8')).cards; } catch (e) { }
+    A('任务记录里 cards[] 记下这次用了哪张卡（packId/cardId/version/sha256）',
+      Array.isArray(recCards) && recCards.length === 1 && recCards[0].packId === 'family-a/shared-stem' &&
+      recCards[0].cardId === 'shared-stem' && recCards[0].version === '1.0.0' && /^[0-9a-f]{64}$/.test(String(recCards[0].sha256 || '')),
+      JSON.stringify(recCards));
+
+    console.log('═══ ③c 停用：放一个 `.停用` → 生成被拒且点名原因（"能停即回退"的实机证据）═══');
+    fs.writeFileSync(path.join(PILOT_DST, '.停用'), '实机验收：临时停用（删掉即恢复）\n', 'utf8');
+    await cdp.evalJs('document.querySelector("#igPacksReload").click()');
+    const disBox = await waitFor(cdp, '(document.querySelector("#igPackBox")||{}).textContent||""',
+      v => /已停用/.test(String(v)), 30, 500);
+    A('重新读经验包后该包显示「已停用」', /已停用/.test(String(disBox)), String(disBox || '').replace(/\s+/g, ' ').slice(0, 120));
+    await cdp.evalJs('document.querySelector("#igGen").click()');
+    const blocked = await waitFor(cdp, '(document.querySelector("#igTaskBox")||{}).textContent||""',
+      v => /选卡有问题|生成失败/.test(String(v)), 30, 500);
+    A('停用后**不生成**任务单，且原因点名 `.停用`（不是静默少卡）',
+      /选卡有问题/.test(String(blocked)) && /停用/.test(String(blocked)), String(blocked || '').replace(/\s+/g, ' ').slice(0, 170));
+    fs.unlinkSync(path.join(PILOT_DST, '.停用'));
+    A('删掉 `.停用` 即恢复（回退动作只有这一步）', !fs.existsSync(path.join(PILOT_DST, '.停用')));
+
+    /* ⚠ 本段（③b/③c）会**再生成两次任务单**，页面句柄因此指向最新那次生成的带卡任务（`tid2`）。
+       ④ 是桥级调用（不依赖页面句柄），⑤ 的"粘回"必须用页面**当前**的任务号，故这里给出 `tidUi`。
+       ⑥ 的"`_录题` 里只多出 B 一个文件"也要把 `tid2` 排除掉（否则断言假红）。
+       这段耦合写在这里，别在别处再引一份。 */
+    const tidUi = tid2 || tid;
+
     console.log('═══ ④ 桥级：三层校验（正例 / 错配 / 任务不存在）═══');
     const mkEnv = (t, sha) => JSON.stringify({
       envelope: { schema: 'glimmernote.ingest-result/v1', taskId: t, imageSha256: sha },
@@ -246,7 +307,7 @@ async function waitFor(cdp, expr, ok, tries, gap) {
     A('任务不存在 ⇒ code 2', missing && missing.code === 2, JSON.stringify(missing).slice(0, 200));
 
     console.log('═══ ⑤ UI：粘回 → 三层显示 → 人工确认（第三层由人写）═══');
-    await cdp.evalJs('document.querySelector("#igIn").value = ' + JSON.stringify(mkEnv(tid, SHA_A, null)));
+    await cdp.evalJs('document.querySelector("#igIn").value = ' + JSON.stringify(mkEnv(tidUi, SHA_A, null)));
     await cdp.evalJs('document.querySelector("#igCheck").click()');
     const resultBox = await waitFor(cdp, '(document.querySelector("#igResult")||{}).textContent||""',
       v => /绑定校验通过|不匹配|不通过/.test(String(v)), 30, 500);
@@ -260,7 +321,7 @@ async function waitFor(cdp, expr, ok, tries, gap) {
     A('点确认后第三层变"已人工确认"（confirmedAt 由人写进记录）',
       /已人工确认/.test(String(afterConfirm)) && !/第三层未完成/.test(String(afterConfirm)),
       String(afterConfirm || '').slice(0, 110));
-    const recAfter = JSON.parse(fs.readFileSync(path.join(LIB, '_录题', String(tid) + '.json'), 'utf8'));
+    const recAfter = JSON.parse(fs.readFileSync(path.join(LIB, '_录题', String(tidUi) + '.json'), 'utf8'));
     A('记录里 confirmedAt 真的写入了', !!recAfter.confirmedAt, String(recAfter.confirmedAt));
 
     console.log('═══ ⑥ UI：把 A 的结果贴成 B 的（错配红显 + 不要入库）═══');
@@ -270,7 +331,8 @@ async function waitFor(cdp, expr, ok, tries, gap) {
     spawnSync(process.execPath, [path.join(ROOT, 'src', 'tools', '_配方.mjs'), '组装', '--recipe', 'ingest-page',
       '--subject', '数学', '--task', '--image', '_收件箱/批次E2E/p002.jpg', '--out', path.join(LIB, 'taskB.md'), '--data', LIB],
       { encoding: 'utf8' });
-    const recBDir = fs.readdirSync(path.join(LIB, '_录题')).filter(f => f !== String(tid) + '.json');
+    /* 排除本轮造过的任务记录：`tid`（首次）、`tid2`（带卡那次）。剩下的才是 CLI 侧新造的 B。 */
+    const recBDir = fs.readdirSync(path.join(LIB, '_录题')).filter(f => f !== String(tid) + '.json' && f !== String(tid2) + '.json');
     A('B 任务记录已生成（CLI 侧）', recBDir.length === 1, recBDir.join(','));
     const tidB = recBDir[0].replace(/\.json$/, '');
     await cdp.evalJs('document.querySelector("#igIn").value = ' + JSON.stringify(mkEnv(tidB, shaB, null)));

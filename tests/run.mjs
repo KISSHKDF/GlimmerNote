@@ -802,6 +802,29 @@ const unitTests = [
      ② 测试夹具临时目录集中登记 + 进程退出统一删 + 启动清扫 ③ `neg-v2-pagesmoke` 的 profile 清理挪进 finally。
      为什么值得单挂一档：实测曾一次压出 10.2 GB 残留（%TEMP% 8.3 GB / 仓库 `_probe` 1.29 GB）。 */
   ['neg-proc-hygiene.cjs'],
+  /* ════════ ★ 2026-11-03 批次 2「经验包试点（可插拔）」五条新用例 ════════
+     为什么必须挂进门禁：经验包是**用户自己往目录里放东西**的一条新入口，坏包、越界、停用、
+     同版异内容这些形态全靠这几条判据守着；而"能绿但没人跑"是本仓记过账的缺陷形态（L-175）。 */
+  /* ① 经验包引擎（`_经验包.mjs` 只读）：形状门禁 / 四道包含性判据（含 realpath 重解析点逃逸）/
+     限值 / 重复卡 ID / 未知 formatVersion / 缺文件 / `.停用` / 同版异内容 / 坏包只影响自身。
+     80 断言，含"掏掉实现必须变红"的变异自证（W1 实跑过 3 组）。 */
+  ['neg-pack-contract.cjs'],
+  /* ② 选卡接进任务单（`_配方.mjs --card/--card-conflict`）：卡正文进提示词、卡摘要进 contractDigest、
+     冲突三策略、坏包各自 exit 2。兼容红线用**真引擎对拍**（基线取自不可变提交 83dbe5c，
+     只归一化 tools 目录与随机 taskId 两处）证明"不选卡时逐字节不变"。64 断言。 */
+  ['neg-card-select.cjs'],
+  /* ③ 区域契约 + 统一坐标系：`regions[]` 六类违规判红 / 重建保留 / 像素 box 读取时归一化
+     （boxNorm×imgW 与原像素一致）/ `/api/state` 只附加不改旧行为 / `_区域坐标.mjs` 无导入期副作用。 */
+  ['neg-region-contract.cjs'],
+  /* ④ 前端接线（选卡区 / 经验包页 / 侧栏入口 / 灯箱两条坐标路等价 + pending 透传）。
+     纯源码级 + 真跑 `_经验包.mjs 清单`，不需要 exe。 */
+  ['neg-pack-ui-wiring.cjs'],
+  /* ⑤ **已编译壳**的选卡透传：反射加载 exe 调 `Recipe()`，用替身工具把真实收到的 argv 打回来
+     ——判据是 argv 逐字相等（"源码改了但 exe 旧"是本仓常态事故）。缺 exe 时打印 RESULT=SKIP。 */
+  ['neg-shell-card-passthrough.mjs'],
+  /* 未做（如实记）：这五条**没有**先进 HERMETIC 白名单 —— 规矩是"要进必须先干净克隆实测"，
+     本轮没做那一步（同 2026-10-30 那次的口径）。它们全部只依赖本仓源码 + %TEMP% 夹具，够格进的
+     概率很高，但"没实测就不写进白名单"。 */
 ];
 for (const [name] of unitTests) {
   worst = Math.max(worst, run(name));

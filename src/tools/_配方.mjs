@@ -24,10 +24,11 @@
  *   导致单题配方永远进不了 trusted、每条都被迫跑两遍。
  *
  * 用法：
- *   node src\tools\_配方.mjs 清单
+ *   node src\tools\_配方.mjs 清单 [--packs <经验包根>]
  *   node src\tools\_配方.mjs 收件箱
  *   node src\tools\_配方.mjs 找图 --sha <内容指纹或前12位>   （照片改名后按指纹找回那一张）
  *   node src\tools\_配方.mjs 组装 --recipe ingest-single --subject 数学 --image <原图路径> [--out <任务.md>]
+ *                              [--card <包id>/<卡id>@<版本>]… [--card-conflict deny|first|all] [--packs <经验包根>]
  *   node src\tools\_配方.mjs 校验 --in cards.json [--recipe <id>] [--json]
  *     （输入允许在 JSON 外裹一段说明文字：容错抽取的**唯一实现**是本文件的 extractJsonText，
  *       录题页与 `_录题任务.mjs 绑定校验` 共用它 —— 页面不再自己截花括号）
@@ -68,6 +69,134 @@ const JSON_OUT = has('--json');
    （本仓踩过：工具搬走后 ROOT 算成了程序目录，对空库报绿）。*/
 const explicitData = valOf('--data', null);
 if (explicitData) process.env.CTB_DATA = path.resolve(explicitData);
+
+/* ══════════════ 经验包（批次 2「经验包试点」）：选卡进提示词 ══════════════
+ * 分层：**包文件长什么样、怎么校验、怎么装载** 全归 `_经验包.mjs`（导出面见 `批次2-接口契约` §2.2）；
+ *   本文件只做三件事：把 `--card` 解析成选卡串（形状/失败原因由它给）、按 `steps[]` 处置冲突、
+ *   把卡正文与摘要接进任务单与任务记录。**本文件不解析 pack.json、不写任何经验包文件。**
+ *
+ * ★ 为什么**惰性**装载（而不是顶层 `import`）：
+ *   本文件同时是 `校验/自检/指纹/收件箱/找图` 这些**与经验包无关**的子命令的入口，还被
+ *   `_录题任务.mjs` import（导出 extractJsonText）。顶层静态 import 会把"经验包文件缺失/写坏"
+ *   升级成"整个配方层一起失效"——那些子命令一行都不该受影响。
+ *   惰性装载后：不用经验包的命令**一个字节都不碰它**（无 `--card` 的 `组装`、`指纹` 也因此
+ *   与今天逐字节相同）；真要用而装载失败时**响亮退 2**并给出原因，不静默降级。
+ *
+ * 冲突判据（契约 §3.1）：两张被选卡声明了**同一个 `steps[]` 元素** ⇒ 冲突。
+ *   deny（默认）⇒ exit 2 并点名「步骤 X 被两张卡同时覆盖：A 与 B」；first ⇒ 保留先给的，
+ *   让位的卡**打印一行**（不静默）；all ⇒ 全部按顺序拼入。 */
+let _packsMod = null;
+async function packsEngine() {
+  if (_packsMod) return _packsMod;
+  const url = new URL('./_经验包.mjs', import.meta.url);
+  try { _packsMod = await import(url.href); }
+  catch (e) {
+    throw new Error('经验包引擎装载失败：' + String((e && e.message) || e) +
+      '\n  --card / 清单里的经验包段落需要它（<程序目录>\\tools\\_经验包.mjs）；其余子命令不受影响。');
+  }
+  return _packsMod;
+}
+
+/** `--packs <目录>` 显式经验包根（测试与命令行用；不传则由 `_经验包.mjs` 按 CTB_PACKS → 默认目录解析） */
+function packsExplicit() {
+  const v = valOf('--packs', '');
+  return v ? path.resolve(v) : undefined;
+}
+
+/** 取可重复参数（`--card` 可多次）的全部值：`--card` 后面没有值 ⇒ 参数错（不静默当成"没给"） */
+function allOf(k) {
+  const vals = [];
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] !== k) continue;
+    const v = argv[i + 1];
+    if (v === undefined || v.startsWith('--')) return { ok: false, why: '参数 ' + k + ' 缺少值' };
+    vals.push(v); i++;
+  }
+  return { ok: true, vals };
+}
+
+const cardName = (c) => c.packId + '/' + c.cardId + '@' + c.version;
+
+/** 选卡 + 冲突处置（本文件唯一实现）。返回 { ok:true, cards, conflict, yielded } | { ok:false, code, msg } */
+async function selectCards() {
+  const got = allOf('--card');
+  if (!got.ok) return { ok: false, code: 2, msg: got.why };
+  const sels = got.vals.map((s) => String(s).trim());
+  const ccIdx = argv.indexOf('--card-conflict');
+  const conflict = ccIdx >= 0 ? argv[ccIdx + 1] : 'deny';
+  if (ccIdx >= 0 && (conflict === undefined || conflict.startsWith('--'))) {
+    return { ok: false, code: 2, msg: '--card-conflict 缺少值（应为 deny|first|all）' };
+  }
+  if (!['deny', 'first', 'all'].includes(conflict)) {
+    return { ok: false, code: 2, msg: '--card-conflict 只接受 deny|first|all，收到「' + conflict + '」' };
+  }
+  if (!sels.length) return { ok: true, cards: [], conflict, yielded: [] };
+
+  const root = packsExplicit();
+  let P;
+  try { P = await packsEngine(); }
+  catch (e) { return { ok: false, code: 2, msg: String((e && e.message) || e) }; }
+
+  const cards = [];
+  const seenSel = new Set();
+  for (const sel of sels) {
+    if (!sel) return { ok: false, code: 2, msg: '--card 的值为空' };
+    /* 同一张卡选两次：不是"冲突策略"能处置的事（两个 `--card` 指向同一份正文），
+       当参数错拒掉，而不是给出「A 与 A 冲突」这种看不懂的报错。 */
+    if (seenSel.has(sel)) return { ok: false, code: 2, msg: '同一张卡被选了两次：' + sel };
+    seenSel.add(sel);
+    const r = P.loadCard(sel, root);
+    if (!r || !r.ok) {
+      return { ok: false, code: 2, msg: (r && r.why ? r.why : '选卡失败') + '（选卡串：' + sel + '）' };
+    }
+    const c = r.card || {};
+    const sha = String(c.bodySha256 || '');
+    /* 摘要与任务记录都要写进这个值；契约 §2.2 的 loadCard 必须带 bodySha256。
+       缺了就直接拒 —— 绝不把 undefined 拼进 contractDigest（那会算出一个看似合法的错摘要）。 */
+    if (!/^[0-9a-f]{64}$/.test(sha)) {
+      return { ok: false, code: 2, msg: '经验包引擎没给出卡正文 sha256（' + sel + '）—— 契约 §2.2 的 loadCard 必须带 bodySha256' };
+    }
+    cards.push({
+      packId: c.packId, cardId: c.cardId, version: c.version,
+      body: String(c.body || ''), sha256: sha,
+      steps: Array.isArray(c.steps) ? c.steps.map(String) : [],
+      title: c.title || '',
+    });
+  }
+
+  /* 冲突判定：按 `--card` 出现顺序扫一遍，同一个 `steps[]` 元素被两张卡声明即冲突。 */
+  const owner = new Map();
+  const conflicts = [];
+  for (const c of cards) {
+    for (const s of c.steps) {
+      if (owner.has(s)) conflicts.push({ step: s, a: owner.get(s), b: c });
+      else owner.set(s, c);
+    }
+  }
+  if (!conflicts.length) return { ok: true, cards, conflict, yielded: [] };
+
+  if (conflict === 'deny') {
+    return {
+      ok: false, code: 2,
+      msg: '选卡冲突：\n  ' + conflicts.map((x) => '步骤「' + x.step + '」被两张卡同时覆盖：' + cardName(x.a) + ' 与 ' + cardName(x.b)).join('\n  '),
+      conflicts,
+    };
+  }
+  if (conflict === 'all') return { ok: true, cards, conflict, yielded: [] };
+
+  /* first：保留先给的，让位的卡**整卡**不进提示词，但必须打印一行（不许静默丢卡）。 */
+  const kept = [], yielded = [], owner2 = new Map();
+  for (const c of cards) {
+    const dup = c.steps.filter((s) => owner2.has(s));
+    if (dup.length) {
+      yielded.push({ card: c, steps: [...new Set(dup)], by: [...new Set(dup.map((s) => owner2.get(s)))] });
+      continue;
+    }
+    kept.push(c);
+    for (const s of c.steps) owner2.set(s, c);
+  }
+  return { ok: true, cards: kept, conflict, yielded };
+}
 
 /* ══════════════ 配方根：与 _库根.mjs 的 APP_ROOT 同口径 ══════════════
  * 发布包：<AppRoot>\recipes\        （build-release.ps1 把 src\recipes 平移到 app\recipes）
@@ -1046,9 +1175,24 @@ function cmdLocate() {
 
 /* ══════════════ 命令实现 ══════════════ */
 
-function cmdList() {
+/* ★ 批次 2（2026-11-03）：`清单` 追加**经验包段落**（人读 + `--json.packs`）。
+   经验包是"方法与案例"的可插拔资产，与配方并列；用户要能一眼看出装了哪些、哪版、启用没有。
+   纪律：**经验包段落失败不影响配方清单**（它是报告不是门禁）——读不出来就打印原因 + `packsError`，
+   配方那一段照常输出。 */
+async function packsListing() {
+  try {
+    const P = await packsEngine();
+    const root = P.packsRoot(packsExplicit());
+    return { root, packs: P.listPacks(packsExplicit()), error: '' };
+  } catch (e) {
+    return { root: '', packs: null, error: String((e && e.message) || e).replace(/\n[\s\S]*$/, '') };
+  }
+}
+
+async function cmdList() {
   const root = recipesRoot();
   const list = listRecipeDirs();
+  const pk = await packsListing();
   if (JSON_OUT) {
     process.stdout.write(JSON.stringify({
       root,
@@ -1056,6 +1200,9 @@ function cmdList() {
         const { meta } = loadMeta(id);
         return { id, version: meta.version, title: meta.title, kind: meta.kind, layers: meta.layers };
       }),
+      packs: pk.packs,
+      packsRoot: pk.root || null,
+      packsError: pk.error || null,
     }) + '\n');
     return 0;
   }
@@ -1070,14 +1217,49 @@ function cmdList() {
     console.log('     样本：' + ex + ' 个　反例：' + (isFile(path.join(dir, 'anti-patterns.md')) ? '有' : '**缺**'));
     console.log('');
   }
+  if (pk.error) {
+    console.log('经验包：读不出来 —— ' + pk.error);
+    console.log('  （配方清单不受影响；`组装 --card` 在经验包可用之前也会拒。）');
+    return 0;
+  }
+  console.log('经验包根：' + pk.root);
+  if (!pk.packs.length) {
+    console.log('（没有安装任何经验包）把包目录整个复制到上面这个根下即可；停用 = 在包目录里放一个 `.停用` 文件。');
+    return 0;
+  }
+  console.log('共 ' + pk.packs.length + ' 个经验包（选它：组装 --card <包id>/<卡id>@<版本>）：\n');
+  for (const p of pk.packs) {
+    const v = p.verdict || {};
+    console.log('  ' + p.id + '  v' + p.version + (p.title ? '　' + p.title : ''));
+    console.log('     状态：' + (p.enabled ? '启用' : '**已停用**（包目录里有 .停用）') +
+      '　校验：' + (v.ok ? '✔ 通过' : '✖ ' + ((v.errors || []).length) + ' 处问题'));
+    if (!v.ok) for (const e of (v.errors || []).slice(0, 5)) console.log('       - ' + (e && e.why ? e.why : String(e)));
+    console.log('');
+  }
   return 0;
 }
 
-function cmdCompose() {
+async function cmdCompose() {
   const id = valOf('--recipe', '');
-  if (!id) { console.error('用法：组装 --recipe <id> --subject <学科> [--image <路径>] [--out <文件>]'); return 2; }
+  if (!id) { console.error('用法：组装 --recipe <id> --subject <学科> [--image <路径>] [--out <文件>] [--card <包id>/<卡id>@<版本>]… [--card-conflict deny|first|all] [--packs <经验包根>]'); return 2; }
   const img = valOf('--image', '');
   const out = valOf('--out', '');
+
+  /* ★ 批次 2：先把选卡与冲突处置完，再拼任务单 —— 选卡失败不该产出半份产物。 */
+  const pick = await selectCards();
+  if (!pick.ok) {
+    console.error('✖ ' + pick.msg);
+    if (pick.conflicts) {
+      console.error('  处置：--card-conflict=first（保留先给的，让位的卡**整卡**不进提示词并打印一行）');
+      console.error('        或 --card-conflict=all（全部按 --card 顺序拼入）');
+    }
+    return pick.code;
+  }
+  for (const y of pick.yielded) {
+    console.error('⚠ 选卡冲突（--card-conflict=first）：步骤「' + y.steps.join('」「') + '」已由 ' +
+      y.by.map(cardName).join('、') + ' 覆盖 ⇒ 让位（整卡不进提示词）：' + cardName(y.card));
+  }
+  const cards = pick.cards;
 
   let imgAbs = '', imgSha = '';
   if (img) {
@@ -1234,6 +1416,27 @@ function cmdCompose() {
   head.push('---');
   head.push('');
   head.push(c.text);
+  /* ★ 批次 2（契约 §3.2）：经验包选卡的正文插在「二、任务指令」段内、配方正文**之后**，
+     标题固定为 `### 本次追加的方法（经验包）`，每卡 `#### <包id>/<卡id>@<版本>` + 正文 +
+     来源与 sha256 前 12 位一行。
+     ⚠ **无 `--card` 时这里一行的字节都不加**（兼容红线：任务单逐字节不变）。
+     来源里**不写包目录的绝对路径**：默认根在 `%LOCALAPPDATA%\<应用名>\…`，绝对路径会带上
+     本机用户名；溯源靠 `包id/卡id@版本` + 正文 sha256 就够。 */
+  if (cards.length) {
+    head.push('');
+    head.push('### 本次追加的方法（经验包）');
+    for (const card of cards) {
+      head.push('');
+      head.push('#### ' + cardName(card));
+      head.push('');
+      head.push(card.body.trim());
+      head.push('');
+      head.push('来源：经验包 `' + card.packId + '` v' + card.version +
+        (card.title ? '（' + card.title + '）' : '') +
+        '　正文 sha256 前 12 位 `' + card.sha256.slice(0, 12) + '`' +
+        (card.steps.length ? '　覆盖步骤：' + card.steps.join('、') : ''));
+    }
+  }
   head.push('');
   head.push('---');
   head.push('');
@@ -1294,17 +1497,23 @@ function cmdCompose() {
   }
   if (wantTask) {
     /* contractDigest 覆盖：实际拼入的正文（layers+prompt+反例）+ **schema 摘要**
-       —— 现有"指纹"不含 schema.json，故另立一个摘要，专供"这批卡是按哪版契约收的"追溯。 */
+       —— 现有"指纹"不含 schema.json，故另立一个摘要，专供"这批卡是按哪版契约收的"追溯。
+       ★ 批次 2（契约 §3.3）：每张被选卡按**选择顺序**再追加 `卡id@版本 + '\0' + sha256(卡正文) + '\0'`。
+       ⚠ 无卡时一行都不追加：同一串 `c.text + '\0' + schemaText` 走同一个 update ⇒ 摘要与今天
+         逐字节相同（兼容红线；`tests\neg-card-select.cjs` 拿改造前 HEAD 的产物对拍）。 */
     const { dir } = loadMeta(id);
     const schemaFile = path.join(dir, 'schema.json');
     const schemaText = isFile(schemaFile) ? fs.readFileSync(schemaFile, 'utf8') : '';
+    const dh = crypto.createHash('sha256');
+    dh.update(c.text + '\0' + schemaText);
+    for (const card of cards) dh.update(card.cardId + '@' + card.version + '\0' + card.sha256 + '\0');
     const rec = createTask({
       taskId,
       recipe: { id, version: c.meta.version, fingerprint: c.hash },
       subject,
       image: { sha256: imgSha || null, rel: valOf('--image', '') || null },
-      cards: [],
-      contractDigest: crypto.createHash('sha256').update(c.text + '\0' + schemaText).digest('hex'),
+      cards: cards.map((card) => ({ packId: card.packId, cardId: card.cardId, version: card.version, sha256: card.sha256 })),
+      contractDigest: dh.digest('hex'),
       taskText: text,
     });
     process.stderr.write('任务记录：' + rec.taskId + '（<库根>\\_录题\\' + rec.taskId + '.json）\n');
@@ -1437,7 +1646,23 @@ function cmdFingerprint() {
 /* ══════════════ 入口 ══════════════ */
 function main() {
   try {
+    /* ★ 批次 2：选卡参数只对「组装」生效（`--packs` 另给「清单」——它也要列经验包）。
+       别的命令带着它们 ⇒ 直接退 2：**收下不用**等于静默忽略，用户会以为"传了就该有用"
+       （壳侧同一条纪律：非组装动作带 cards/cardConflict 一律丢弃、不进 argv）。 */
+    if (cmd && !['组装', '清单', '--help', '-h'].includes(cmd)) {
+      const off = ['--card', '--card-conflict', '--packs'].filter((f) => has(f));
+      if (off.length) {
+        console.error('✖ ' + off.join(' / ') + ' 只对「组装」生效（`--packs` 另可用于「清单」），当前命令：' + cmd +
+          ' —— 收下不用等于静默忽略，因此直接拒。');
+        return 2;
+      }
+    }
     switch (cmd) {
+      /* ⚠ 分派这里必须保持 `case 'X': return cmdX();` 的字面形状：
+         `tests\neg-shell-args.mjs` 用它机读引擎的真子命令集合，再与壳的 RECIPE_ACTIONS 对差集
+         （L-441：声明与消费者之间必须有一条机读的差集检查）。
+         `清单`/`组装` 现在是 async ⇒ main() 返回 Promise，**由文件末尾的入口统一 await**，
+         不在这里写 `await`（那会改掉这个被解析的字面形状）。 */
       case '清单': return cmdList();
       case '收件箱': return cmdInbox();
       case '找图': return cmdLocate();
@@ -1452,15 +1677,20 @@ function main() {
           '拾光小册 · 配方引擎',
           '',
           '用法：',
-          '  node src\\tools\\_配方.mjs 清单',
+          '  node src\\tools\\_配方.mjs 清单 [--packs <经验包根>]',
           '  node src\\tools\\_配方.mjs 收件箱 [--json]',
           '  node src\\tools\\_配方.mjs 找图 --sha <内容指纹或前12位> [--json]   （照片改名后按指纹找回那一张）',
           '  node src\\tools\\_配方.mjs 组装 --recipe <id> --subject <学科> --image <原图路径> [--out <任务.md>] [--textbook <版本>]',
+          '                              [--card <包id>/<卡id>@<版本>]… [--card-conflict deny|first|all] [--packs <经验包根>]',
           '  node src\\tools\\_配方.mjs 校验 --in <cards.json> [--recipe <id>] [--json]',
           '  node src\\tools\\_配方.mjs 自检 --recipe <id> --in <cards.json> [--json]',
           '  node src\\tools\\_配方.mjs 指纹 [--recipe <id>] [--json]',
           '',
-          '本工具只读配方、只写你指定的 --out 文件，从不写入用户库。',
+          '--card 可多次（`<包id>/<卡id>@<版本>`，例 family-a/shared-stem/shared-stem@1.0.0）：',
+          '  两张卡声明同一个步骤时算冲突，--card-conflict 定处置：deny（默认，退 2）/ first（先到先得）/ all。',
+          '--packs 指定经验包根（默认 %LOCALAPPDATA%\\拾光小册\\经验包\\，或环境变量 CTB_PACKS）。',
+          '',
+          '本工具只读配方与经验包、只写你指定的 --out 文件，从不写入用户库、也从不写经验包目录。',
         ].join('\n'));
         return 0;
       default:
@@ -1479,4 +1709,15 @@ function main() {
    而那时 argv[0] 是「绑定校验」⇒ 命中 default 分支，打一行「未知命令」并把整个进程 exit 2
    —— `_录题任务.mjs` 的每一个子命令都会当场失效（本仓"导入期副作用"同族坑的又一例）。 */
 const __isMain = !!process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
-if (__isMain) process.exit(main());
+/* ★ 批次 2：`清单`/`组装` 是 async（经验包引擎**惰性**装载，见上面 packsEngine()），
+   其余子命令仍是同步。这里统一收口 —— main() 返回数字就直接退出，返回 Promise 才等它。
+   （promise 的 rejection 也要落成 exit 2，不能变成 unhandled rejection 的默认退出码。） */
+if (__isMain) {
+  const r = main();
+  if (r && typeof r.then === 'function') {
+    r.then((code) => process.exit(code), (e) => {
+      console.error('✖ ' + String((e && e.message) || e));
+      process.exit(2);
+    });
+  } else process.exit(r);
+}

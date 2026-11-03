@@ -56,7 +56,9 @@ fs.writeFileSync(path.join(APPDIR, 'index.html'),
 fs.mkdirSync(path.join(APPDIR, 'js'), { recursive: true });
 fs.writeFileSync(path.join(APPDIR, 'js', 'host.js'), '/* 探针：内容里绝不能出现 token */\n', 'utf8');
 
-for (const f of ['_服务端.mjs', '_库根.mjs', '_安全写.mjs']) fs.copyFileSync(E.tool(f), path.join(TOOLDIR, f));
+/* ★ 2026-11-03（批次 2）：依赖走 `E.copyToolDeps()` 的**传递闭包**，不再写死清单
+   （写死清单在 `_服务端.mjs` 新增 `_区域坐标.mjs` 时让隔离实例 ERR_MODULE_NOT_FOUND）。 */
+E.copyToolDeps(['_服务端.mjs', '_库根.mjs', '_安全写.mjs'], TOOLDIR);
 const SERVER = path.join(TOOLDIR, '_服务端.mjs');
 /* 假生成器：真生成器跑一次是分钟级、且会去读真题库。本用例要验的是"写路径的门禁与限流"，
    不是生成器本身，所以用一个"秒回、只写一份合法状态包"的替身（与 neg-server-bad-target.cjs ⑥ 同套路）。 */
@@ -406,7 +408,9 @@ const tokOf = html => { const m = /<meta name="__ctbToken" content="([0-9a-f]{16
       const src = fs.readFileSync(SERVER, 'utf8');
       const origLines = src.split('\n').length;
       const mutDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-s05-mut-'));
-      for (const f of ['_库根.mjs', '_安全写.mjs']) fs.copyFileSync(E.tool(f), path.join(mutDir, f));
+      /* ⚠ 带 `_服务端.mjs`：解析的是这些文件的依赖闭包，而新加的 `_区域坐标.mjs`
+         挂在它下面（它自己随后被下面的变异源码覆盖）。 */
+      E.copyToolDeps(['_服务端.mjs', '_库根.mjs', '_安全写.mjs'], mutDir);
       /* 变异实例用**同一套**程序根与库（只换 _服务端.mjs 的路径）：这样"变 200"只能归因于掏掉了门禁，
          而不是"另一个空程序目录 / 另一个库"造成的假象。 */
       const cases = [

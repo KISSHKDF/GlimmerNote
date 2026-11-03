@@ -1,0 +1,55 @@
+{
+  "schema": "glimmernote.pack-case/v1",
+  "caseId": "shared-stem",
+  "title": "一页实验题：(1) 已答对、(2) 错且依赖公共题干",
+  "input": {
+    "file": "input.svg",
+    "pageSha": "c2df9c19e7e51e7e9cf11fadaf69a1f7c730b66791ac5c6ddf6ed7d7a95508ed",
+    "imgW": 900,
+    "imgH": 1200,
+    "note": "区域坐标一律相对这一页原图自身像素归一化到 0~1；pageSha 是 input.svg 的字节 sha256（64 位十六进制）。口径真源：docs/区域契约.md。"
+  },
+  "expected": {
+    "registerQuestions": ["(2)"],
+    "skipQuestions": ["(1)"],
+    "regions": [
+      {
+        "role": "错误位置",
+        "x": 0.0667,
+        "y": 0.5,
+        "w": 0.8666,
+        "h": 0.15,
+        "pageSha": "c2df9c19e7e51e7e9cf11fadaf69a1f7c730b66791ac5c6ddf6ed7d7a95508ed",
+        "imgW": 900,
+        "imgH": 1200
+      },
+      {
+        "role": "公共条件",
+        "x": 0.0667,
+        "y": 0.1167,
+        "w": 0.8666,
+        "h": 0.2416,
+        "pageSha": "c2df9c19e7e51e7e9cf11fadaf69a1f7c730b66791ac5c6ddf6ed7d7a95508ed",
+        "imgW": 900,
+        "imgH": 1200
+      }
+    ],
+    "regionReason": {
+      "错误位置": "只圈 (2) 这一段（题干 + 作答 + 批改痕迹），不把 (1) 圈进来：(1) 是全对的，圈进来会让人以为 (1) 也错。",
+      "公共条件": "(1)、(2) 共用的实验条件与数据表只在本页出现一次；遮掉它 (2) 就无法复算（总电阻算不出来），所以它是「解题必需条件」，必须随错误位置一起裁进来。"
+    }
+  },
+  "controls": [
+    {
+      "id": "independent-subquestions",
+      "scene": "把 (2) 换成一个自带全部条件的独立小问（与 (1) 互不依赖）",
+      "expect": "「错误位置」只圈该小问自身；不再追加任何「公共条件」区域（没有必需的外部条件，就不要为了看起来完整去扩大区域）"
+    },
+    {
+      "id": "condition-on-next-page",
+      "scene": "解题必需的条件（或数据表的一半）写在**没有提供**的下一页",
+      "expect": "不猜、不补：把该区域标为「待确认」并把缺什么写进 notes，交给人看一眼；绝不按想象补一个坐标"
+    }
+  ],
+  "parentCheck": "家长人工判断（本案例不替人下结论）：把「错误位置 + 公共条件」两块单独拿出来以后，脱离原页还能不能读懂这一处错？读到「不能」就说明区域少了条件。"
+}

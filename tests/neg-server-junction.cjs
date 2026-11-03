@@ -174,7 +174,9 @@ const JUNCTIONS = [path.join(LIB, 'link-out'), path.join(LIB, 'link-in'), path.j
       A('变异只增删了个位数行（行数差 ≤ 2）—— 防"锚点打偏、整段代码被吃"', Math.abs(mutLines - origLines) <= 2, origLines + ' 行 → ' + mutLines + ' 行');
 
       const mutDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-h08b-mut-'));
-      for (const f of ['_库根.mjs', '_安全写.mjs']) fs.copyFileSync(E.tool(f), path.join(mutDir, f));
+      /* ★ 2026-11-03（批次 2）：依赖走传递闭包（见 `_测试环境.cjs::copyToolDeps` 的说明）。
+         ⚠ 带 `_服务端.mjs`：`_区域坐标.mjs` 是它的依赖，它自己随后被变异源码覆盖。 */
+      E.copyToolDeps(['_服务端.mjs', '_库根.mjs', '_安全写.mjs'], mutDir);
       const mutServer = path.join(mutDir, '_服务端.mjs');
       fs.writeFileSync(mutServer, mut);
       const chk = spawnSync(process.execPath, ['--check', mutServer], { encoding: 'utf8' });

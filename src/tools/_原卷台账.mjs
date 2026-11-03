@@ -72,6 +72,75 @@ function boxOk(b) {
     b[0] >= -0.001 && b[1] >= -0.001 && b[2] > 0 && b[3] > 0 && b[0] + b[2] <= 1.02 && b[1] + b[3] <= 1.02;
 }
 
+/* ---------- 区域对象判据（2026-11-03 · 批次 2 / P2-2「统一坐标系」）----------
+ * 契约（口径真源）：`docs\区域契约.md`。区域 = 条目上的 `regions[]`，每项
+ *   `{ role, x, y, w, h, pageSha, imgW, imgH }`：
+ *     · role ∈ REGION_ROLES（未知角色判红）
+ *     · x/y/w/h 归一化 0~1 且不越界（相对**该区域自己那张原图**的显示像素）
+ *     · imgW/imgH = **显示**宽高（正整数）且**必需**——没有它坐标就无法反算回像素（判红）
+ *     · pageSha = 该区域所属整页原图的内容 sha256（64 位十六进制）
+ *     · 跨页 ⇒ 多条，各自引用各自原图（同 pageSha 的两条必须给同一组 imgW/imgH）
+ * 判据是**纯函数**（零 IO）：只看向量自身，不读盘、不查哈希——所以它能在 门禁、
+ * 将来的写入闸、以及 `tests\neg-region-contract.cjs` 三处共用同一份判定。
+ * 返回 `{ ok, errors:[{index, code, why}] }`：`why` 必须带**具体数值**，不许只说"非法"。 */
+export const REGION_ROLES = ['错误位置', '公共条件', '配图'];
+const REGION_BOUND_EPS = 0.001;                /* 5 位小数的舍入误差是 5e-6，留三个数量级余量 */
+const PAGE_SHA_RE = /^[0-9a-fA-F]{64}$/;
+const isPosInt = n => Number.isInteger(n) && n > 0;
+
+export function regionsOk(regions) {
+  const errors = [];
+  const err = (index, code, why) => errors.push({ index, code, why });
+  /* 旧记录没有 regions ⇒ 一切照旧（兼容红线）。注意**只有 undefined** 算"没有"：
+     `regions: null` 是"写过但写坏/被清空"，属"存在但不是数组"，照样判红（失败必须说失败）。 */
+  if (regions === undefined) return { ok: true, errors };
+  if (!Array.isArray(regions)) {
+    return { ok: false, errors: [{ index: -1, code: 'regions-not-array', why: 'regions 必须是数组，实际是 ' + (regions === null ? 'null' : typeof regions) + '：' + JSON.stringify(regions).slice(0, 80) }] };
+  }
+  const bySha = new Map();                     /* pageSha（小写） → { index, imgW, imgH } */
+  regions.forEach((r, i) => {
+    if (!r || typeof r !== 'object' || Array.isArray(r)) {
+      err(i, 'region-not-object', '区域必须是对象，实际是 ' + JSON.stringify(r));
+      return;
+    }
+    if (!REGION_ROLES.includes(r.role)) {
+      err(i, 'role-unknown', 'role=' + JSON.stringify(r.role) + ' 不在枚举 [' + REGION_ROLES.join('/') + ']');
+    }
+    const bad = [];
+    for (const k of ['x', 'y', 'w', 'h']) {
+      if (typeof r[k] !== 'number' || !Number.isFinite(r[k])) bad.push(k + '=' + JSON.stringify(r[k]) + ' 不是有限数');
+    }
+    if (!bad.length) {
+      const { x, y, w, h } = r;
+      if (x < -REGION_BOUND_EPS || x > 1 + REGION_BOUND_EPS) bad.push('x=' + x + ' 越界（应 0≤x≤1）');
+      if (y < -REGION_BOUND_EPS || y > 1 + REGION_BOUND_EPS) bad.push('y=' + y + ' 越界（应 0≤y≤1）');
+      if (w <= 0 || w > 1 + REGION_BOUND_EPS) bad.push('w=' + w + ' 越界（应 0<w≤1）');
+      if (h <= 0 || h > 1 + REGION_BOUND_EPS) bad.push('h=' + h + ' 越界（应 0<h≤1）');
+      if (x + w > 1 + REGION_BOUND_EPS) bad.push('x+w=' + Math.round((x + w) * 1e6) / 1e6 + ' 越出右边界');
+      if (y + h > 1 + REGION_BOUND_EPS) bad.push('y+h=' + Math.round((y + h) * 1e6) / 1e6 + ' 越出下边界');
+    }
+    if (bad.length) err(i, 'bounds', bad.join('；') + '（ε=' + REGION_BOUND_EPS + '）');
+    if (r.imgW == null || r.imgH == null) err(i, 'imgw-missing', '缺 imgW/imgH（显示宽高必需，缺了坐标不可复算）：imgW=' + JSON.stringify(r.imgW) + ' imgH=' + JSON.stringify(r.imgH));
+    else if (!isPosInt(r.imgW) || !isPosInt(r.imgH)) err(i, 'imgw-nonpositive', 'imgW/imgH 必须是正整数：imgW=' + JSON.stringify(r.imgW) + ' imgH=' + JSON.stringify(r.imgH));
+    if (typeof r.pageSha !== 'string' || !PAGE_SHA_RE.test(r.pageSha)) {
+      err(i, 'pagesha', 'pageSha 必须是 64 位十六进制（该区域所属整页原图的内容 sha256）：' + JSON.stringify(r.pageSha));
+    }
+    /* 跨页引用：同一 pageSha 的多条 region 必须给同一组显示宽高。
+       同一张图不可能有两个显示宽高；出现两个 ⇒ 其中一条其实引用了另一张图（跨页请拆条各自引用）。
+       判红挂在**后出现**的那条上（前一条是基准）。 */
+    if (PAGE_SHA_RE.test(String(r.pageSha)) && isPosInt(r.imgW) && isPosInt(r.imgH)) {
+      const sha = String(r.pageSha).toLowerCase();
+      const prev = bySha.get(sha);
+      if (!prev) bySha.set(sha, { index: i, imgW: r.imgW, imgH: r.imgH });
+      else if (prev.imgW !== r.imgW || prev.imgH !== r.imgH) {
+        err(i, 'cross-page', '同一个 pageSha（' + sha.slice(0, 12) + '…）在区域[' + prev.index + ']是 ' + prev.imgW + 'x' + prev.imgH +
+          '、在本条是 ' + r.imgW + 'x' + r.imgH + ' —— 同一张原图不可能有两个显示宽高，说明其中一条引用了另一张图（跨页要各自引用各自原图）');
+      }
+    }
+  });
+  return { ok: errors.length === 0, errors };
+}
+
 /* ---------- 卡清单：直接扫 _索引.json（与生成器同源，不依赖 _状态.json 新鲜度） ---------- */
 function loadCards() {
   const out = [];
@@ -507,7 +576,10 @@ function resolveImport(pageRel, shaCache) {
    改前 `out[c.key] = {…固定字段集…}` ⇒ 台账里既有的 `sha256`（52 条遗留）与 `lost`
    （10 条"素材灭失豁免"）会被下一次 生成/采集 **静默吃掉**——`lost` 一丢，10 张卡就从免检名单里消失。
    新增字段（例如规划中的区域 `regions[]`）同样会被吃掉，所以"往台账加字段"这件事的前置就是这条。
-   白名单里放"本函数会重算的字段"，其余一律透传；合并视觉定位写入的 `locFile` 这类也靠它保住。 */
+   白名单里放"本函数会重算的字段"，其余一律透传；合并视觉定位写入的 `locFile` 这类也靠它保住。
+   ★ 2026-11-03（批次 2 / P2-2）：**`regions` 刻意不在本白名单里**——它是"透传字段"，不是"本函数重算的
+     字段"。谁把它加进来，下一次 生成/采集 就会把用户手工登记的区域**静默吃掉**（下面 build() 末尾
+     有一条针对 regions 的显式断言兜底，但根上别加）。 */
 const KNOWN_CARD_FIELDS = new Set([
   'key', 'student', 'subject', 'cardDir', 'source', 'page', 'box', 'by', 'need', 'note', 'import', 'pagePx', 'cropPx',
 ]);
@@ -548,6 +620,20 @@ function build({ dry, force }) {
       import: r.page ? (resolveImport(r.page, shaCache) || (prev && prev.import) || null) : null,
       ...unknownOf(prev),           /* P1-1：sha256 / lost / locFile / 将来的 regions … 一律不许丢 */
     };
+  }
+  /* ★ 2026-11-03（批次 2 / P2-2）：**针对 `regions[]` 的显式断言**（P1-1 的未知字段透传机制）。
+     为什么要有它：白名单一旦被人顺手加上 `regions`（看起来"更显式"），下一次生成就会把用户登记的
+     区域整段吃掉，而且**表面上完全正常**（工具 exit 0、覆盖率照报）——`lost` 字段当年就是这么
+     无声丢掉 10 张卡的免检资格。宁可当场抛错、一个字节都不写盘，也不许静默降级。 */
+  const droppedRegions = [];
+  for (const c of cards) {
+    const prev = old[c.key], next = out[c.key];
+    if (prev && prev.regions !== undefined && !(next && next.regions !== undefined)) droppedRegions.push(c.key);
+  }
+  if (droppedRegions.length) {
+    throw new Error('重建会吃掉 ' + droppedRegions.length + ' 条的 regions[]（P1-1 未知字段透传失效：'
+      + '检查 KNOWN_CARD_FIELDS 是否被误加 regions）：' + droppedRegions.slice(0, 5).join(', ')
+      + (droppedRegions.length > 5 ? ' 等' : ''));
   }
   if (!dry) writeIfChanged(SHA_CACHE, shaCache);   /* --dry 连缓存也不写（铁律） */
   /* 补像素尺寸（红框换算 + 长宽比体检用） */
@@ -825,6 +911,13 @@ function gate(allowPxWrite = false) {
   for (const c of cards) {
     const e = doc.cards[c.key];
     if (!e) { errs.push(`${c.key} 台账里没有条目`); continue; }
+    /* ★ 2026-11-03（批次 2 / P2-2）：区域对象判据（契约 `docs\区域契约.md`）。
+       放在"未定位/素材灭失"两道 continue **之前**：区域形状是否合法，与"这张卡的整页在不在"
+       是两件事——已经红了的卡不该把区域的红一起吞掉（否则"未定位 59 条"会把新增的区域错淹掉，
+       与 :914 那次"高严重级错误被截断遮蔽"是同一族）。 */
+    for (const x of regionsOk(e.regions).errors) {
+      errs.push(`${c.key} 区域[${x.index}] 非法（${x.code}）：${x.why}`);
+    }
     if (!e.page) {
       if (e.lost) { nLost++; continue; }        // 素材灭失：不阻断，但下面显式报告
       nUnlocated++; errs.push(`${c.key} 未定位到整页（${(e.note || '').slice(0, 60)}）`); continue;

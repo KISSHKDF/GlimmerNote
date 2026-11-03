@@ -58,6 +58,11 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { libraryRoot, toolPath } from './_库根.mjs';
 import { readJsonStrict, writeJsonAtomic, writeTextAtomic, acquireLibLock } from './_安全写.mjs';
+/* ★ 2026-11-03（批次 2 / P2-2「统一坐标系」）：像素框 ↔ 归一化框的换算**只有这一份实现**
+   （`src\tools\_区域坐标.mjs`，契约见 `docs\区域契约.md`）。本工具是**读取侧**：
+   磁盘上的像素 `box` 一个字不改，只在输出里附加 `boxNorm/imgW/imgH`。
+   ⚠ 该模块必须保持**零导入期副作用**（不求值库根、不抢锁）——见它自己的头注。 */
+import { normEvidenceBox, evidenceAbs } from './_区域坐标.mjs';
 
 /* ★ 2026-10-23 程序与数据分家：ROOT 现在是**用户库根**，不再是"本脚本所在目录"。
    兄弟工具一律用 toolPath(...)，见 _库根.mjs。 */
@@ -297,8 +302,24 @@ const sameFile = (a, b) => normEv(a) === normEv(b);
    两条铁律：① 通配符不是路径，一律拒收（exists 检查对它必错）；
             ② 写入时当场查文件在不在，不在就喊出来，不指望调用方后手去跑门禁。 */
 const GLOB_CH = /[*?\[\]]/;
-const evAbs = ev => path.join(ROOT, normEv(ev).replace(/\//g, path.sep));
+/* 证据图相对路径 → 绝对路径。**唯一实现**在 `_区域坐标.mjs::evidenceAbs`（与服务端同一份），
+   本行只是把库根绑上去：`证据`/`对位` 两条门禁、以及下面的 boxNorm 换算走的都是它。 */
+const evAbs = ev => evidenceAbs(ev, ROOT);
 const evOk = ev => { const s = normEv(ev); return !!s && !GLOB_CH.test(s) && fs.existsSync(evAbs(s)); };
+
+/* ===== P2-2（2026-11-03）像素 box 的**读取侧**归一化：只加字段，不改数据 =====
+   背景：`_待确认.json` 的 `box` 是源图像素，而 `_原卷台账.json` 是归一化 0~1 —— 两套并存、
+   没有契约（实测代价：T187~T192 把 0~1 当像素用，灯箱红框缩成 1 像素点）。
+   处置：**磁盘旧值一个字不改**（不迁移），读取时用 `_区域坐标.mjs` 量出显示宽高并附
+   `boxNorm`(0~1) + `imgW` + `imgH`；量不出尺寸时只附 `boxNormWhy`（**具体原因**），
+   **绝不写 0**（教训 L-530：缺失字段不许当值）。没有像素 box 的条目一个字段都不加（旧形状原样）。 */
+function boxNormFields(it) {
+  if (!it || !Array.isArray(it.box) || it.box.length !== 4) return null;
+  const r = normEvidenceBox({ boxPx: it.box, imgAbs: it.evidence ? evAbs(it.evidence) : null });
+  return r.ok
+    ? { boxNorm: r.boxNorm, imgW: r.imgW, imgH: r.imgH }
+    : { boxNormWhy: r.why };
+}
 
 /* ===== v2.7（2026-10-19）证据图与待办「对位」基础设施 =====
    起因：用户质询「错题库中的待办，你提出的问题，与你给出的切图，完全不对应」。
@@ -1036,6 +1057,10 @@ if (action === '清单') {
         /* false = 图上不了：缺图 / 通配符 / 文件不在。前端据此渲染显式红块并禁用「打开原图」。 */
         evidenceOk: evOk(it.evidence),
         qRef: it.qRef || '', box: Array.isArray(it.box) ? it.box : null,
+        /* ★ 2026-11-03（批次 2 / P2-2）：读取侧附加的归一化坐标（唯一实现 `_区域坐标.mjs`）。
+           有像素 box ⇒ `boxNorm/imgW/imgH`；量不出图 ⇒ 只 `boxNormWhy`（**不给 0**）；
+           没有 box ⇒ 一个字段都不加（旧形状原样，前端旧路径不受影响）。磁盘旧值一字未改。 */
+        ...(boxNormFields(it) || {}),
         /* v2.6：待办级整页定位（无卡待办的原图链路）。origPage 传**原始相对路径**（未编码），
            前端 H.asset 对未编码路径整段 encodeURI，与 evidence 同一通道；有卡条目此字段为空、照旧走 M.origOf。 */
         origPage: normEv(it.origPage || ''), origBox: Array.isArray(it.origBox) ? it.origBox : null,
