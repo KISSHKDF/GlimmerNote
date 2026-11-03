@@ -119,7 +119,20 @@ function healOrigPaths(s) {
            口径统一为：路径变了才换并记 via；路径没变只在缺 via 时补一个。 */
         if (c[f] !== want) { c[f] = want; c[rf] = r.via; n++; }
         else if (!c[rf]) { c[rf] = r.via; n++; }
-      } else if (c[rf] !== 'lost') { c[rf] = 'lost'; n++; }
+      } else {
+        /* ★ 2026-11-03（task-15）：找不回 ⇒ 写 `'lost'` **并把路径清成 null**。
+           只标 `'lost'` 不清路径时，状态包里留着一个打不开的死路径（旧包还可能是生成器写的
+           字符串 `"null"`），而消费侧 `model.js:895` 只看 `c.origPage` 的真假
+           ⇒ 界面照样去取那张不存在的图（破图），`'lost'` 这个标记**没有任何消费方看得见**
+           —— 注释里那句"可见，绝不静默"原本是落空的。
+           清成 null 后消费侧落到"未定位"，与 `生成状态.mjs`（同样写 null + `'lost'`）口径一致，
+           取值集合与 `docs\原图保全.md` 的 {direct, store, lost} 对齐。
+           台账 `_原卷台账.json` 里那条原始路径**不动**：真源在那儿，随时可查。 */
+        let ch = false;
+        if (c[rf] !== 'lost') { c[rf] = 'lost'; ch = true; }
+        if (c[f]) { c[f] = null; ch = true; }
+        if (ch) n++;
+      }
     }
   }
   return n;

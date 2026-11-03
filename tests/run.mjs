@@ -115,6 +115,18 @@ function run(script, args = []) {
  *   保证**每条退出路径**都结账；同时又在最终汇总前显式结账一次，好让违反并进退出码。 */
 const SNAP_TEXT_EXT = new Set(['.json', '.md', '.txt', '.html', '.htm', '.svg', '.css', '.js', '.mjs', '.cjs']);
 const DERIVED_CACHE = new Set(['_状态.json']);
+/* ★ 2026-11-03（偏差核对 P1-#3，补施工方案 §6「批次 1 风险」条漏做的那半）：
+   库内的**用户数据**目录登记表。它跟 `DERIVED_CACHE` 是**相反的一侧** ——
+   派生件（`_状态.json` / `_备份-真源\`）允许被重写但必须显式打印；
+   用户数据**一写就判红**（红线 2：`数据\` 是用户的）。
+   为什么要有这张显式名单（而不是靠"不在派生白名单里"这个默认）：
+     `_录题\` 是 批次 1 新增的写入路径（`_配方.mjs 组装 --task` 落任务记录）。
+     默认行为虽然正确（不在派生表 ⇒ 见到就红），但那是**隐式**的 ——
+     将来谁为了让某个用例过而把它塞进 `DERIVED_CACHE`，没有任何东西会拦他。
+     登记在这里之后，下面的阴性自证 ⑦⑧ 会当场变红。口径与 `docs\过程文件规范.md §一`、
+     `docs\录题任务契约.md §七.3` 三处一致（一处事实一个家：此处只放**机读名单**）。
+   新增任何"库内合法写入"都必须先加到这张表，再加门禁 —— 顺序不能反。 */
+const LIB_USER_DATA_DIRS = new Set(['_录题']);
 function libSnapshot(dir) {
   const out = new Map();
   (function walk(d, rel) {
@@ -400,6 +412,10 @@ let worst = 0;
  *   而旧断言只记文件 ⇒ 空目录对门禁**完全透明**（tests\_probe-writer-forensics-20261103.md §3）。
  * 做法：在 %TEMP% 上真造四种情形，要求判据分别"抓到 / 不误报"，另加两条源码级断言证明
  *   「分类函数不是死代码、判红真的会进退出码」。抓不到就判红 —— **不许只在心里认定它会红**。
+ * ★ 2026-11-03 追加 ⑦⑧（偏差核对 P1-#3）：把"**往别的路径写必须仍红**"也做成机读对照 ——
+ *   `_录题\` 是批次 1 新增的库内写入路径，当时只写了口径（`docs\录题任务契约.md §七.3`）没写判据；
+ *   现在断言它「已登记在 `LIB_USER_DATA_DIRS`、不在派生白名单、多出一个文件会被判红」，
+ *   并对照 `_状态.json` 仍按派生放行（防"顺手把放行改宽"）。
  * ⚠ 全程只碰 %TEMP%，不碰库。 */
 if (mode !== 'fixture') {
   const dp = E.allocTempDir('gn-testlib-dirprobe-');
@@ -439,6 +455,18 @@ if (mode !== 'fixture') {
     /if \(changed\.length \|\| gone\.length \|\| added\.length \|\| dirAdded\.length \|\| dirGone\.length\)/.test(self));
   dBad += B('⑥ 目录级判红会进退出码（return 里计入）',
     /return changed\.length \+ gone\.length \+ added\.length \+ dirAdded\.length \+ dirGone\.length;/.test(self));
+  /* ⑦⑧ 文件级：**"往别的路径写必须仍红"**的机读对照（施工方案 §6 批次 1 风险条要的那一条）。
+     起因：`_录题\` 是批次 1 新增的库内写入路径，当时只写了口径没写判据（偏差核对 P1-#3）。
+     这里用**真分类函数** `isDerivedPath`（不是另抄一份）跑两条样本：
+     用户数据 ⇒ 必须落进"非派生变化"（判红）；派生件 ⇒ 仍按派生放行（证明没把放行改宽）。 */
+  const clsLib = rel => (isDerivedPath(rel) ? 'derived' : 'red');
+  dBad += B('⑦ 库内用户数据目录已登记且**不在**派生白名单（`_录题`）',
+    LIB_USER_DATA_DIRS.has('_录题') && !DERIVED_CACHE.has('_录题') && !isDerivedPath('_录题/t-x.json'),
+    'registered=' + LIB_USER_DATA_DIRS.has('_录题') + ' inDerived=' + DERIVED_CACHE.has('_录题'));
+  dBad += B('⑧ 库里多出 数据\\_录题\\<taskId>.json ⇒ 必须判红（"往别的路径写仍红"）',
+    clsLib('_录题/t-20261103-120000-abcdef.json') === 'red', clsLib('_录题/t-20261103-120000-abcdef.json'));
+  dBad += B('⑧对照 派生件 `_状态.json` 仍按派生放行（没有把放行改宽）',
+    clsLib('_状态.json') === 'derived', clsLib('_状态.json'));
   if (dBad) console.log('✖ 目录级判据的阴性自证未过 —— 判据没有牙齿，等于没补');
   worst = Math.max(worst, dBad);
 }
@@ -643,6 +671,13 @@ const unitTests = [
      判据必须能红：①路径与保全库都没了 ⇒ 必须判红，不许兜底成"没事"；
      ②同路径换成**内容不同**的另一份 ⇒ 不许顶替（必须按内容核对，不是按路径猜）。 */
   ['neg-orig-fallback.cjs'],
+  /* ★ 2026-11-03（偏差核对 P3-#7 / 施工方案 §3 P1-2）：`_原图寻址.mjs` 的两条硬判据 ——
+     ①原路径在盘但**大小与台账不符**时不许再判 `direct`（旧代码那段是个空 if + 注释，字节不符也照用）；
+     ②一路径登记两个 sha 不许**静默取第一**（旧代码 `if (!rev.has(sha))` 保留先到的那个 ⇒ 悄悄给错人）。
+     含三级"零 IO 常态"自证（同尺寸异内容仍必须 `direct`、`hashed===0`、且有 `hashed>=1` 的反向自证防恒真），
+     以及"掏掉①/掏掉②必须分别变红"的变异自证（隔离副本里真变异，真文件零改动）。
+     回归基线：真库 `_原卷台账.mjs 门禁` 的"已从保全库按内容兜底 460 条"改前改后**输出逐字节相同**。 */
+  ['neg-orig-address-verify.cjs'],
   /* ═════════ 2026-10-31 外部复核 E 区四条整改的护栏（同一次改动里补，见 CONTRIBUTING §七）═════════
      E01：`full` 门禁真写用户真库、吃掉历史备份。根因链：`_测试环境.cjs` 的 LIB 在开发机上就是
      真库（isFrozen=true）→ launch-dev 把 CTB_DATA 传给壳 → e2e-writepath 通过 CDP 真跑组卷/批改/撤批
@@ -746,6 +781,13 @@ const unitTests = [
   /* ★ 2026-11-02：`neg-orig-store.cjs` 此前是**游离文件**（写了但没挂进任何档 ⇒ 能绿但没人跑，
      同 L-175「可选工具 ≠ 机械化」）。本轮登记进 quick。 */
   ['neg-orig-store.cjs'],
+  /* ★ 2026-11-03（偏差核对 P3-#6）：补施工方案 §6「批次 0」交付物 9 那条**当时没做**的欠账 ——
+     `_原图.mjs 核对 --from <备份根>`（只读三方逐字节对账）+ 隔离恢复演练。
+     演练：四情形（同图两次 / 同名异图 / 带 EXIF 方向 / 跨页题）→ 入库 → `_影像备份.mjs` 独立备份
+     → **换全新库目录恢复** → `核对 --from` 校验；含 5 条阴性对照（长度不变的 1 字节损坏、备份侧损坏、
+     库内/备份各删一个、只改台账 bytes、备份多出一个台账不认的对象），每条都真红且还原后回绿。
+     与既有 `restore-drill.cjs` 的分工：那份管 **JSON 真源**走 git 的恢复，这份管**原图字节**走独立备份的恢复。 */
+  ['neg-orig-restore-drill.cjs'],
   /* ★ 2026-11-02（批次 1「任务绑定」）：把 A 的结果贴进 B 必须被拒——错配是最危险的静默错误。
      三层：① 格式交给 `_配方.mjs 校验`（唯一实现，界面与 CLI 共用）② 信封 taskId / 原图 sha /
      卡内 sourceImageSha256 三重匹配 ③ 人工确认只能由 `确认` 子命令写。含 11 条反例。 */

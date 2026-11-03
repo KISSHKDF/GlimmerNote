@@ -122,7 +122,8 @@
       '</div>' +
       '<div class="card ig-step">' +
       '<div class="ig-h"><span class="ig-n">3</span>把 AI 的答案粘回来校验</div>' +
-      '<div class="small muted">把 AI 输出的那一整段 JSON 原样粘进来（多带了说明文字也没关系，只要里面有 JSON）。' +
+      '<div class="small muted">把 AI 输出的那一整段<b>原样</b>粘进来（外面裹了解释文字也没关系，程序会自己剥掉；' +
+      '一份 JSON 里用了 <code>envelope</code> 就必须同时有 <code>result</code>，缺哪样会直接点名）。' +
       '<b>生成任务单后走三层校验（格式 → 与任务及原图匹配 → 人工确认），不写进题库</b>；' +
       '没生成任务单时只校验格式，会明确标"未与任务关联"。</div>' +
       '<textarea id="igIn" class="ig-ta" placeholder="粘贴 cards.json 内容，例如 {&quot;envelope&quot;:{…},&quot;result&quot;:{&quot;cards&quot;:[…]}}"></textarea>' +
@@ -397,7 +398,7 @@
   /* ★ 2026-11-03（批次 1 收尾）：有任务句柄 ⇒ 走三层校验（`_录题任务.mjs 绑定校验`，
      唯一实现，界面与 CLI 共用同一份）。退出码：0 通过 / 1 格式不通过 / 2 任务不存在或用法 /
      3 与任务不匹配（契约见 docs\录题任务契约.md）。显示三层原文——工具已经逐层说清了，页面不转译。 */
-  async function onBoundCheck(box, text, btn, hadBraces) {
+  async function onBoundCheck(box, text, btn) {
     const r = await H.taskCheck(st.taskId, text);
     st.verdict = r;
     const code = r && r.code;
@@ -429,11 +430,14 @@
         '<pre class="ig-pre ig-bad">' + U.esc(out || err) + '</pre>';
       S.toast('与任务不匹配，看下面点名的原因', 'bad', 8000);
     } else {
-      box.innerHTML = '<div class="ig-warn">✖ ' + (code === 1 ? '格式不通过' : '校验请求失败（工具退出码 ' + code + '）') +
-        (code === 1 && !hadBraces ? '<br>提示：粘进来的内容里没找到 JSON 花括号' : '') + '</div>' +
+      /* 「粘进来的东西里没有 JSON」这类判词由**工具的原文**给出
+         （`_录题任务.mjs 绑定校验` / `_配方.mjs 校验` 都会打印「不是合法 JSON：…」，
+         连花括号都没有时还会补一行提示），页面不再自己数花括号 ——
+         P1-#1 之前页面自己截取、自己猜，猜错了用户也不知道为什么。 */
+      box.innerHTML = '<div class="ig-warn">✖ ' + (code === 1 ? '格式不通过' : '校验请求失败（工具退出码 ' + code + '）') + '</div>' +
         '<pre class="ig-pre ig-bad">' + U.esc(err || out) + '</pre>' +
         '<div class="small muted">逐条看上面的原因行，改完再粘一次。常见原因：错因写成中文、缺 confidence、' +
-        '缺 sourceImageSha256、多写了契约外字段。</div>';
+        '缺 sourceImageSha256、多写了契约外字段；外层用了 envelope 就必须同时给 result。</div>';
       S.toast(code === 1 ? '格式不通过，看逐条原因' : '校验失败，看原因', 'bad', 8000);
     }
   }
@@ -458,12 +462,18 @@
     const box = U.$id('igResult'); const ta = U.$id('igIn');
     const raw = String(ta.value || '').trim();
     if (!raw) { box.innerHTML = '<div class="ig-warn">先把 AI 的 JSON 粘进上面的框。</div>'; return; }
-    /* AI 常在 JSON 外裹一段解释：截取首个 { 到最后一个 } —— 与工具侧同一容错口径 */
-    const a = raw.indexOf('{'), b = raw.lastIndexOf('}');
-    const text = (a >= 0 && b > a) ? raw.slice(a, b + 1) : raw;
+    /* ★ 2026-11-03（批次 1 收尾 · P1-#1）：这里**不再**自己截取"首个 { 到最后一个 }"。
+       改前那段截取的注释自称「与工具侧同一容错口径」，而工具侧当时是**裸 JSON.parse**
+       —— 注释是假的（施工方案 §2.1 点名的 P1-5 类缺陷），而且两份实现必然漂移
+       （本仓 L-286）：页面放行、CLI 拒收，同一次粘贴的结论取决于从哪个入口进来。
+       现在页面只做一件事：把用户粘的**原文原样**交给工具（`H.taskCheck` / `H.recipe('校验')`
+       都把 text 原文落临时文件再 `--in`）。容错抽取的**唯一实现**在 `src\tools\_配方.mjs`
+       的 `extractJsonText`（`_录题任务.mjs 绑定校验` 也用同一个），"没找到花括号"这类判词
+       一律读工具的原文，页面不再自己猜。 */
+    const text = raw;
     const btn = U.$id('igCheck'); btn.disabled = true; btn.textContent = '⏳ 校验中…';
     try {
-      if (st.taskId) { await onBoundCheck(box, text, btn, a >= 0); return; }
+      if (st.taskId) { await onBoundCheck(box, text, btn); return; }
       const r = await H.recipe('校验', { recipe: st.recipe, text });
       st.verdict = r;
       const code = r && r.code;
@@ -477,8 +487,9 @@
           '<div class="small muted">下一步：按 `docs\\作答契约.md` 建卡入库（本页不写库）。</div>';
         S.toast('校验通过', 'ok');
       } else {
-        box.innerHTML = '<div class="ig-warn">✖ 未通过（工具退出码 ' + code + '）' +
-          (a < 0 ? '<br>提示：粘进来的内容里没找到 JSON 花括号' : '') + '</div>' +
+        /* 同上：判词读工具原文（`_配方.mjs 校验` 会打印「✖ 不是合法 JSON：…」/「连花括号都没有」），
+           页面不再自己 `indexOf('{')` 猜一次。 */
+        box.innerHTML = '<div class="ig-warn">✖ 未通过（工具退出码 ' + code + '）</div>' +
           '<pre class="ig-pre ig-bad">' + U.esc(err || out) + '</pre>' +
           '<div class="small muted">逐条看上面的「- 」行，改完再粘一次。常见原因：错因写成中文、缺 confidence、' +
           '缺 sourceImageSha256、多写了契约外字段。</div>';

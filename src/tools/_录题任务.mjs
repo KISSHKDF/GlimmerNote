@@ -27,6 +27,12 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { libraryRoot, toolPath } from './_库根.mjs';
 import { writeJsonAtomic, readJsonStrict } from './_安全写.mjs';
+/* ★ 2026-11-03（批次 1 收尾 · P1-#1）：容错文本抽取的**唯一实现**在 `_配方.mjs`。
+   于是这两个模块互相 import（`_配方.mjs` 也 import 本模块的 createTask/newTaskId）——
+   这是 ESM 循环，但两个方向都只在**运行时**用对方的导出（不在模块体里调用），因此安全。
+   ⚠ 前提是 `_配方.mjs` 有"被当脚本才执行入口"的闸（它以前没有：import 它就等于跑 main()
+   并 exit —— 那样本模块的每个子命令都会当场失效）。两侧都别把 import 期副作用加回来。 */
+import { extractJsonText } from './_配方.mjs';
 
 const argv = process.argv.slice(2);
 const cmd = argv[0] || '';
@@ -205,15 +211,74 @@ function cmdBind() {
   if (!rec) { console.error('✖ 任务不存在：' + id + '（跨任务贴错、或任务记录被删；先跑 `列` 看有哪些任务）'); return 2; }
   const abs = path.resolve(inFile);
 
-  let obj;
-  try { obj = JSON.parse(fs.readFileSync(abs, 'utf8').replace(/^\uFEFF/, '')); }
-  catch (e) { console.error('✖ 第一层不通过：不是合法 JSON（' + e.message + '）'); return 1; }
+  /* ★ 2026-11-03（批次 1 收尾 · P1-#1）：解析走**唯一实现**（`_配方.mjs` 的 extractJsonText）。
+     改前这里是裸 `JSON.parse`，而录题页自己写了一份"首个 { 到最后一个 }"的截取并自称"同一口径"
+     —— 页面放行、CLI 拒收，同一次粘贴的结论取决于从哪进（两份实现必然漂移，本仓 L-286）。
+     现在页面把原文原样交过来，容错只在这里（且由同一个函数）做。 */
+  const ex = extractJsonText(fs.readFileSync(abs, 'utf8'));
+  if (!ex.ok) {
+    console.error('✖ 第一层不通过：不是合法 JSON（' + ex.error.message + '）' +
+      (ex.how === 'none' ? '\n  提示：内容里连花括号都没有（AI 可能只回了一段话，没给 JSON）。'
+        : ex.how === 'braces' ? '\n  已剥掉花括号外的说明文字再试，仍未通过。' : ''));
+    return 1;
+  }
+  const obj = ex.value;
+  const extracted = ex.how;
 
   /* 信封：`{envelope:{schema,taskId,imageSha256}, result:{…原业务对象…}}`
-     —— 外层信封携带任务身份，**不动** cards 上已设的 additionalProperties:false（建议书 §4）。 */
-  const env = (obj && typeof obj === 'object' && obj.envelope && obj.result) ? obj.envelope : null;
+     —— 外层信封携带任务身份，**不动** cards 上已设的 additionalProperties:false（建议书 §4）。
+     ★ 2026-11-03（批次 1 收尾 · P1-#2）：**信封形状单独判**。
+     改前是 `const env = (… && obj.envelope && obj.result) ? obj.envelope : null;` ⇒
+     `{envelope:{…}}`（有信封、缺 result）被**静默降级成"裸对象"路径**，于是它被当成业务对象
+     送去格式层，报错是「root 缺必填字段「pageSummary」」——用户会以为自己的 cards 写错了，
+     而不是漏了 result 包装（Lead 实测：`work\_audit-envelope-missing-result.cjs`）。
+     现在只要 `envelope` 这个键**存在**就必须按信封处置：形状不对 ⇒ 明说哪里不对、退 1（格式层）、
+     `--json` 里带 `envelope:'malformed'`。**绝不**退回裸对象路径 —— 那正是"指错方向"的来源。
+     判据锚点：`tests\neg-task-binding.cjs` 的 5 段（把下面的 `envMalformed` 判据退回一行式，
+     那几条必须真红；同一份输入走"修复前的降级路径"= 把它交给 `_配方.mjs 校验` 的输出，
+     在该用例里也被真跑一遍作为判据自证）。 */
+  const isPlainObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+  const envPresent = isPlainObj(obj) && ('envelope' in obj);
+  let env = null, envMalformed = '';
+  if (envPresent) {
+    if (!isPlainObj(obj.envelope)) {
+      envMalformed = '「envelope」必须是对象（信封形如 {envelope:{…}, result:{…}}），实际是 ' + (Array.isArray(obj.envelope) ? 'array' : typeof obj.envelope);
+    } else if (!('result' in obj)) {
+      envMalformed = '返回 JSON 的信封不完整：缺 result（信封必须形如 {envelope:{…}, result:{…}}）';
+    } else if (!isPlainObj(obj.result)) {
+      envMalformed = '信封的 result 必须是对象（原业务对象：pageSummary / cards / skipped），实际是 ' + (Array.isArray(obj.result) ? 'array' : typeof obj.result);
+    } else {
+      env = obj.envelope;
+    }
+  }
   const result = env ? obj.result : obj;
   const reasons = [];
+
+  /* 信封畸形 ⇒ 在这里收口（**不**把它交给格式层，否则又会得到指错方向的 pageSummary 文案）。
+     退出码 1 = 格式层（契约 §五）：这份 JSON 的**外层包装**就不对，先改 JSON。
+     第二层记 `not-judged`（**不是** pass、也不是 `not-covered` —— 后者是"记录缺原图 sha"专用的语义）。 */
+  if (envMalformed) {
+    const reason = '信封畸形：' + envMalformed;
+    const confirmed0 = !!rec.confirmedAt;
+    if (JSON_OUT) {
+      process.stdout.write(JSON.stringify({
+        taskId: rec.taskId, format: 'fail', formatCode: 1, extracted,
+        envelope: 'malformed', envelopeError: envMalformed,
+        matched: false, layer2: 'not-judged', confirmed: confirmed0,
+        reasons: [reason], layer3: confirmed0 ? 'confirmed' : 'pending-human',
+      }) + '\n');
+      return 1;
+    }
+    console.log('绑定校验 · 任务 ' + rec.taskId);
+    if (extracted === 'braces') console.log('  输入：JSON 外裹了说明文字，已按首个 { 到最后一个 } 抽取');
+    console.log('  ① 格式：**不通过**（exit 1）');
+    console.log('     ✖ ' + reason);
+    console.log('     这一条**不是** cards 写错了：外层用 envelope 包了结果，就必须同时给 result —— 补上再粘一次。');
+    console.log('  ② 与任务及原图匹配：**未判定**（信封畸形，先把 result 补上；既不是"通过"，也不是"未覆盖"）');
+    console.log('  ③ 内容已人工确认：' + (confirmed0 ? '已确认（' + rec.confirmedAt + '）' : '**未确认**（人看过之后再跑 `确认 ' + rec.taskId + '`）'));
+    console.log('  ⇒ 结论：格式不通过，先改 JSON');
+    return 1;
+  }
 
   /* 第一层：格式 —— 交给 `_配方.mjs 校验`（唯一实现；它自己也会剥信封） */
   const tmp = path.join(os.tmpdir(), 'gn-bind-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex') + '.json');
@@ -270,7 +335,10 @@ function cmdBind() {
 
   if (JSON_OUT) {
     process.stdout.write(JSON.stringify({
-      taskId: rec.taskId, format: fmtCode === 0 ? 'pass' : 'fail', formatCode: fmtCode,
+      taskId: rec.taskId, format: fmtCode === 0 ? 'pass' : 'fail', formatCode: fmtCode, extracted,
+      /* envelope 三态（机器可读，P1-#2）：ok=信封齐且已识别 · absent=裸对象（旧格式）·
+         malformed=有 envelope 但形状不对（走上面对分支，只可能出现在那条 early return 里）。 */
+      envelope: env ? 'ok' : 'absent',
       matched: hard.length === 0, layer2, confirmed, reasons, layer3: confirmed ? 'confirmed' : 'pending-human',
     }) + '\n');
     return code;
@@ -281,6 +349,7 @@ function cmdBind() {
     'not-covered': '**未覆盖**（本任务记录没有原图 sha256 ⇒ 第二层无从核对，**不算通过**）',
   };
   console.log('绑定校验 · 任务 ' + rec.taskId);
+  if (extracted === 'braces') console.log('  输入：JSON 外裹了说明文字，已按首个 { 到最后一个 } 抽取（容错解析**只此一份**，页面与 CLI 同口径）');
   console.log('  ① 格式：' + (fmtCode === 0 ? '通过' : '**不通过**（exit ' + fmtCode + '）'));
   if (fmtCode !== 0) for (const line of String(fmtOut).trim().split('\n').slice(0, 20)) console.log('     ' + line);
   else console.log('     仅格式校验' + (env ? '（信封已识别）' : '（未与任务关联：返回 JSON 无信封）'));

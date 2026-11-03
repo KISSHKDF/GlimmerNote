@@ -28,6 +28,8 @@
  *   node _原图.mjs 入库 <文件或目录...> [--batch "批次名"] [--student X] [--subject Y] [--dry]
  *   node _原图.mjs 入库 --scan [--dry]  # 扫全库，把"应保全"的文件全部入库（见 scanLibrary 的判据）
  *   node _原图.mjs 校验 [--json]        # 逐字节核对每个登记对象；报告孤儿文件；有错 exit 1
+ *   node _原图.mjs 核对 --from <备份根> [--json]
+ *                                      # ★ 只读：备份 ↔ 库 ↔ 台账三方逐字节对账；有差异 exit 1
  *   node _原图.mjs 名册 [--list] [--json]
  *   node _原图.mjs 快照                 # 写一份 sha 清单（不是字节副本，见下）
  *   node _原图.mjs 快照 --list
@@ -54,8 +56,15 @@ const SNAP_DIR = path.join(STORE, '_快照');
 const JSON_OUT = process.argv.includes('--json');
 const DRY = process.argv.includes('--dry');
 
-/* 持锁：本工具是"读台账 → 改内存 → 写回"的模式，没有锁时与其它写入口并发会丢更新。 */
-const release = acquireLibLock(ROOT, { label: '_原图' });
+const [cmd, ...rest] = process.argv.slice(2);
+
+/* 持锁：本工具是"读台账 → 改内存 → 写回"的模式，没有锁时与其它写入口并发会丢更新。
+   ⚠ 例外：**只读子命令不取锁**。取锁本身虽然只写系统临时目录（`_安全写.mjs` 的 stateDirOf），
+   但取到之后 `recoverTransactions()` 会顺带回滚上一次没做完的写事务 —— 那是对库的写入。
+   `核对` 承诺"库 / 备份根 / 台账一个字节都不动"，就不能有任何这类副作用，
+   否则"只读"只是口号（本仓 2026-11-02 刚因为"只读命令往真库写文件"判过一次红）。 */
+const READONLY_CMDS = new Set(['核对']);
+const release = READONLY_CMDS.has(cmd) ? () => { } : acquireLibLock(ROOT, { label: '_原图' });
 process.on('exit', release);
 
 /* ── 小工具 ───────────────────────────────────────────── */
@@ -124,9 +133,27 @@ function loadLedger() {
   });
   return j;
 }
-function saveLedger(doc) {
+/**
+ * 落台账。★ 2026-11-03：**默认必须留 `_备份-真源\` 副本**（改前是 `backup: false`，且一字解释都没有）。
+ *
+ * 为什么它是①真源、必须有显式备份：台账记的是 `sha256 → {bytes, ext, addedAt, sources, names}`。
+ * 丢了以后，**扫 `_原图\` 只能复原对象本身**（内容寻址，文件名就是 sha），
+ * **`sources` / `names` 复原不出来** —— 而"台账里那条路径 → 是哪个对象"正是
+ * `_原图寻址.mjs` 兜底寻址链的另一半（真库实测有 460 条卡靠这条链从保全库按内容找回）。
+ * 实测改前的处境：真库 `_备份-真源\` 下 `*原图台账*` 副本 **0 份**，而工作区那份比 HEAD 新
+ * （292,865 B vs 303,986 B）⇒ 所谓"还有 git 恢复点"其实只是**一个提交前的旧版本**。
+ *
+ * ⚠ 但**不是每次写都留**（这才是当初写 `false` 的合理内核，不能一并丢掉）：
+ * 一轮 `入库 --scan` 会写 20+ 次（每 50 个文件一次检查点 + 收尾一次），
+ * 若每次都备份，`backupJson` 的 keep=8 会被**同一轮运行**的 8 个快照灌满，
+ * 反而把**入库前**那份恢复点挤掉。所以：默认 `backup: true`（收尾那次留一份），
+ * 中间检查点显式传 `{ backup: false }`。语义 = **每轮入库恰好一个恢复点**，
+ * keep=8 ⇒ 最近 8 轮，与其它真源"每次真实提交一份"完全一致。
+ * 体积：真库台账约 300 KB × 8 ≈ 2.4 MB，可接受。
+ */
+function saveLedger(doc, { backup = true } = {}) {
   doc.generatedAt = new Date().toISOString();
-  writeJsonAtomic(LEDGER, doc, { backup: false, indent: 1 });
+  writeJsonAtomic(LEDGER, doc, { backup, indent: 1 });
 }
 const kb = (n) => (n / 1024).toFixed(0) + ' KB';
 const mb = (n) => (n / 1048576).toFixed(1) + ' MB';
@@ -136,7 +163,7 @@ const mb = (n) => (n / 1048576).toFixed(1) + ' MB';
    于是 `入库 <目录> --batch "批次名"` 里的 "批次名" 被当成路径 ⇒ 报"路径不存在"。
    这里显式声明哪些选项吃值，其余一律当开关 —— 反面判据（`--dry` 后面跟路径）
    才不会把路径吃掉。 */
-const VALUE_OPTS = new Set(['batch', 'student', 'subject', 'diff']);
+const VALUE_OPTS = new Set(['batch', 'student', 'subject', 'diff', 'from']);
 function parseArgs(argv) {
   const opts = {}; const positional = [];
   for (let i = 0; i < argv.length; i++) {
@@ -319,8 +346,11 @@ function cmdIngest(argv) {
       doc.objects[r.sha] = o;
       if (r.status === 'copy') copiedBytes += r.bytes;
     }
-    /* 每 50 个落一次台账：中断后重跑是幂等的，不用从头再来 */
-    if (!DRY && processed % 50 === 0) { saveLedger(doc); say('  … 已处理 ' + processed + '/' + files.length); }
+    /* 每 50 个落一次台账：中断后重跑是幂等的，不用从头再来。
+       ⚠ 中间检查点**不留 `_备份-真源\` 副本**（`{ backup: false }`）：一轮入库会走到这里 20+ 次，
+       每次留一份就会把 keep=8 灌满同一轮运行的快照、把入库前那份恢复点挤掉。
+       恢复点由收尾那次（`saveLedger(doc)`，默认 true）产生 —— 每轮恰好一份。详见 saveLedger 的注释。 */
+    if (!DRY && processed % 50 === 0) { saveLedger(doc, { backup: false }); say('  … 已处理 ' + processed + '/' + files.length); }
   }
 
   if (!DRY && (tally.copy || tally.exists)) saveLedger(doc);
@@ -500,17 +530,171 @@ function cmdSnapshot(argv) {
   return 0;
 }
 
+/* ══════════════ 核对（备份 ↔ 库 ↔ 台账 三方对账，**只读**） ══════════════ */
+/**
+ * 为什么要有它（施工方案 §6「批次 0」交付物 9 的一条真欠账）：
+ *   `_影像备份.mjs --verify` 只回答"备份与源一致吗"，`校验` 只回答"库内字节对不对"。
+ *   两者都不回答那个真正决定"出事能不能救回来"的问题：
+ *   **这份备份里，是不是每一个登记对象都有、且逐字节等于台账记着的那一份？**
+ *   于是"有备份"与"能恢复"之间又隔着一层没验证过的假设 —— 与 2026-10-12 建
+ *   `tests\restore-drill.cjs` 时发现的那个缺口同型（当时只有"备份目录里有文件"，没有"能还原回去"）。
+ *
+ * 语义：`核对 --from <备份根>` 拿三份东西对账，三方必须逐字节一致：
+ *   ① 台账 `_原图台账.json`（sha → 字节数/扩展名，**它是分母**）
+ *   ② 库内 `_原图\<桶>\<sha>.<ext>`
+ *   ③ 备份根
+ * 备份根的形态**不做假设**：递归扫，**文件名是 64 位 sha 的文件**才算库对象。
+ *   （`_影像备份\` 的实际布局是 <根>\原件\_原图\<桶>\<sha>.<ext>；直接给一份 `_原图\` 的副本也认。
+ *    卡目录切片叫 `题图.jpg` 之类，天然不会被误收。）
+ *
+ * 差异分类（每条都指名到 sha + `[库]/[备份]` + 原因）：
+ *   缺文件 / 字节不符 / 大小不符 / 多出
+ * `多出` = 备份里有、台账不认的对象。**它判红**：那要么说明库里有未登记的残留对象
+ * （先跑 `校验` 看孤儿清单），要么说明备份里混进了不属于本库的东西 —— 两种都要人看一眼，
+ * 不能"反正用不上"就放过（这正是"清单是护栏不是备份"那句的同一条纪律）。
+ * 库内孤儿**不判红**（与 `校验` 同口径：中断残留可识别、不自动删），只作为可见提示列出。
+ *
+ * 退出码（与同级命令同风格）：0 三方一致 ／ 1 有差异或缺失 ／ 2 用法错。
+ * 覆盖边界（不许含糊）：只核 `_原图\` 的**库对象**。卡目录切片、原卷整页等其余备份内容
+ * 归 `_影像备份.mjs --verify`；"核对全绿"**不等于**"备份全好"。
+ */
+/** 备份根里"这是一个库对象"的判据：文件名就是 64 位 sha（扩展名保留原格式）。 */
+const OBJ_NAME_RE = /^([0-9a-f]{64})\.([a-z0-9]{1,8})$/i;
+
+/** 递归索引备份根里的库对象：sha(大写) → {path, bytes}，同时记下同一 sha 多份的情况。 */
+function indexBackupObjects(fromAbs) {
+  const objs = new Map();
+  const dups = [];
+  const walk = (d) => {
+    let es; try { es = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of es) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) { if (e.name !== '_快照') walk(p); continue; }
+      if (e.name.endsWith('.tmp')) continue;
+      const m = OBJ_NAME_RE.exec(e.name);
+      if (!m) continue;
+      const sha = m[1].toUpperCase();
+      let bytes = -1; try { bytes = fs.statSync(p).size; } catch { }
+      if (objs.has(sha)) dups.push(path.relative(fromAbs, p).split(path.sep).join('/'));
+      else objs.set(sha, { path: p, bytes });
+    }
+  };
+  walk(fromAbs);
+  return { objs, dups };
+}
+
+/** 一份副本 vs 台账登记：先比字节数、再**逐字节**验 sha256。返回 0~2 条差异。 */
+function checkCopy(sha, where, abs, label, o) {
+  const out = [];
+  let st;
+  try { st = fs.statSync(abs); } catch (e) { return [{ sha, where, why: '缺文件', detail: '读不到 ' + label + '：' + e.message }]; }
+  if (!st.isFile()) return [{ sha, where, why: '缺文件', detail: '不是一个文件：' + label }];
+  if (o.bytes != null && st.size !== o.bytes) {
+    out.push({ sha, where, why: '大小不符', detail: '台账登记 ' + o.bytes + 'B，实得 ' + st.size + 'B：' + label });
+  }
+  const h = sha256File(abs);
+  if (h !== sha) {
+    out.push({
+      sha, where, why: '字节不符',
+      detail: '实得 sha256 ' + h.slice(0, 16) + '…（台账与对象名都是 ' + sha.slice(0, 16) + '…）：' + label,
+    });
+  }
+  return out;
+}
+
+function cmdCrosscheck(argv) {
+  const { opts } = parseArgs(argv);
+  const from = typeof opts.from === 'string' ? opts.from : null;
+  if (!from) {
+    console.error('✖ 核对需要 `--from <备份根>`（形如 `_影像备份\\` 的目录树，或一份 `_原图\\` 的副本）。');
+    console.error('  用法：node _原图.mjs 核对 --from <备份根> [--json]');
+    return 2;
+  }
+  const fromAbs = path.isAbsolute(from) ? from : path.resolve(ROOT, from);
+  let isDir = false; try { isDir = fs.statSync(fromAbs).isDirectory(); } catch { }
+  if (!isDir) {
+    console.error('✖ --from 指的不是一个存在的目录：' + fromAbs);
+    return 2;
+  }
+
+  const doc = loadLedger();
+  const keys = Object.keys(doc.objects).sort();
+  const store = scanStore();
+  const { objs: backup, dups } = indexBackupObjects(fromAbs);
+
+  const diffs = [];
+  let okCount = 0, okBytes = 0;
+  for (const sha of keys) {
+    const o = doc.objects[sha] || {};
+    const live = store.get(sha) || null;
+    const bak = backup.get(sha) || null;
+    const before = diffs.length;
+    if (!live) diffs.push({ sha, where: '库', why: '缺文件', detail: '台账登记了它，但 `_原图\\` 里没有这个对象' });
+    else diffs.push(...checkCopy(sha, '库', path.join(STORE, live.rel), live.rel, o));
+    if (!bak) diffs.push({ sha, where: '备份', why: '缺文件', detail: '备份根里找不到这个 sha 的文件（这份备份不完整）' });
+    else diffs.push(...checkCopy(sha, '备份', bak.path, path.relative(fromAbs, bak.path).split(path.sep).join('/'), o));
+    if (diffs.length === before) { okCount++; okBytes += (o.bytes != null ? o.bytes : (live ? live.bytes : 0)); }
+  }
+
+  /* 多出：备份里有、台账不认的对象（陈旧件 / 混进来的东西 / 库里有未登记残留）。 */
+  for (const [sha, v] of backup) {
+    if (doc.objects[sha]) continue;
+    diffs.push({
+      sha, where: '备份', why: '多出',
+      detail: '备份里有它、台账里没有：' + path.relative(fromAbs, v.path).split(path.sep).join('/'),
+    });
+  }
+  const storeOrphans = [...store.keys()].filter((s) => !doc.objects[s]).sort();
+
+  const count = (why) => diffs.filter((d) => d.why === why).length;
+  const res = {
+    ok: diffs.length === 0, from: fromAbs, readOnly: true,
+    ledgerObjects: keys.length, storeObjects: store.size, backupObjects: backup.size,
+    verified: okCount, verifiedBytes: okBytes,
+    counts: { 缺文件: count('缺文件'), 字节不符: count('字节不符'), 大小不符: count('大小不符'), 多出: count('多出') },
+    diffs, storeOrphans, backupDuplicates: dups,
+  };
+
+  if (JSON_OUT) {
+    process.stdout.write(JSON.stringify(res, null, 1) + '\n');
+  } else {
+    say('【原图保全库 · 核对】备份根：' + fromAbs);
+    say('  台账 ' + keys.length + ' 个对象 ｜ 库内 ' + store.size + ' 个 ｜ 备份内 ' + backup.size + ' 个');
+    say('  三方逐字节核对：一致 ' + okCount + ' ／ 差异 ' + diffs.length +
+      '（缺文件 ' + res.counts['缺文件'] + ' / 字节不符 ' + res.counts['字节不符'] +
+      ' / 大小不符 ' + res.counts['大小不符'] + ' / 多出 ' + res.counts['多出'] + '）');
+    for (const d of diffs.slice(0, 40)) {
+      say('  ✖ ' + d.why + '[' + d.where + '] ' + d.sha.slice(0, 16) + '…：' + d.detail);
+    }
+    if (diffs.length > 40) say('  … 另有 ' + (diffs.length - 40) + ' 条');
+    if (storeOrphans.length) {
+      say('  ⚠ 库内未登记对象 ' + storeOrphans.length + ' 个（孤儿；与 `校验` 同口径，不算差异、不自动删）');
+    }
+    if (dups.length) say('  ⚠ 备份内同一对象多份 ' + dups.length + ' 个（只核了第一份）：' + dups.slice(0, 5).join('、'));
+  }
+
+  if (diffs.length) {
+    console.error('✖ 有 ' + diffs.length + ' 处差异 —— **这份备份不能证明能把库原样恢复**。' +
+      '按上面的 [库]/[备份] 定位：库内缺 ⇒ 从备份按 sha 拷回；备份缺/不符 ⇒ 立刻重跑 `_影像备份.mjs`。');
+    return 1;
+  }
+  say('  ✅ 台账 / 库内 / 备份三方逐字节一致（' + mb(okBytes) + '）。');
+  say('  ⚠ 边界：只覆盖 `_原图\\` 的库对象；卡目录切片等其余备份内容归 `_影像备份.mjs --verify`。');
+  return 0;
+}
+
 /* ══════════════ 入口 ══════════════ */
-const [cmd, ...rest] = process.argv.slice(2);
 switch (cmd) {
   case '入库': process.exit(cmdIngest(rest));
   case '校验': process.exit(cmdVerify());
+  case '核对': process.exit(cmdCrosscheck(rest));
   case '名册': process.exit(cmdRoster(rest));
   case '快照': process.exit(cmdSnapshot(rest));
   default:
     console.error('用法：');
     console.error('  node _原图.mjs 入库 <文件或目录...> [--batch 名] [--student X] [--subject Y] [--dry]');
     console.error('  node _原图.mjs 校验 [--json]');
+    console.error('  node _原图.mjs 核对 --from <备份根> [--json]   # 只读：备份 ↔ 库 ↔ 台账 三方逐字节对账');
     console.error('  node _原图.mjs 名册 [--list] [--json]');
     console.error('  node _原图.mjs 快照 [--list | --diff <清单名>]');
     process.exit(2);

@@ -7,7 +7,7 @@
  * "仅格式校验"——A 贴进 B 的防线在界面上失效，而 CLI 测试全绿（防线烂在最后一厘米，
  * 同 L-441/L-716"声明与消费者必须机读对齐"家族）。
  *
- * 本用例五段：
+ * 本用例六段：
  *   A 源码级·壳：taskCheck / taskConfirm 两个 op 已注册；taskId 有形状门禁；固定映射不透传；
  *     绑定校验不进写闸（只读）、确认进写闸（写用户库）；两把都显式 --data、回真实退出码。
  *   B 源码级+**行为级**·前端：host.js 暴露 H.taskCheck/H.taskConfirm 且走 bridge；ingest.js
@@ -17,6 +17,9 @@
  *       改成 `if (true)`、把确认逻辑塞进 onCheck、把三层校验整段删掉，旧断言**照样绿**
  *       （守的是"源码里还留着那行字"，不是"页面真的这么干"）。现在真的把 ingest.js 里四个
  *       函数**切出来驱动**（`new Function` + 桩），断言它们**实际送出的参数**与**实际绑定的回调**。
+ *   B3 源码级+行为级·P1-#1：ingest.js **不再自己写一份容错解析** —— 它只把用户粘的原文原样
+ *     交给工具（`H.taskCheck` / `H.recipe('校验')` 收到的 text 与粘贴内容逐字相同）；花括号截取
+ *     的**唯一实现**在 `src\tools\_配方.mjs` 的 `extractJsonText`（页面侧判据附"塞回旧代码必判有"的自证）。
  *   C 行为级·--data：`_录题任务.mjs 列/绑定校验 --data <临时库>` 真跑（壳就是走这个参数传库根）。
  *   D 行为级·合成 A/B：临时库上 A、B 两个任务，A 的结果贴给 B 必须 exit 3 且点名原因；
  *     换当前配方不影响旧任务校验（建议书 §7 批次 1 完成判据的 CLI 侧证据）。
@@ -95,6 +98,23 @@ A('ingest.js：无任务句柄走格式校验并显式标"仅格式校验（未�
   /仅格式校验（未与任务关联）/.test(INGEST));
 A('ingest.js：确认入口调用 H.taskConfirm（人显式点）', /H\.taskConfirm\(st\.taskId/.test(INGEST));
 A('ingest.js：错配渲染"不要入库"（exit 3 的 UI 语义）', /与任务不匹配/.test(INGEST) && /不要入库/.test(INGEST));
+
+/* ★ 2026-11-03（批次 1 收尾 · P1-#1）：页面**不再自己写一份容错解析**。
+   施工方案 §2.1 点名为 P1-5 类缺陷、§6 批次 1 交付物 4 明确"禁止页面侧再写一份容错解析"。
+   判据两半：① 源码里不再有花括号截取；② "没找到花括号"这类判词改成读工具原文（页面不再自己猜）。
+   判据自证（T-1 同族）：把那一行原样塞回源码文本，判据必须判有 —— 否则它是恒假断言。 */
+/* 判据锚在**真正的截取表达式**上（`raw.indexOf(…)` = 对用户粘的那段文本扫花括号），
+   不是"源码里出现过 indexOf 这几个字"——否则注释里提一句就会假红（本轮实测踩过：
+   新注释里写了 `indexOf('{')` 作反例，宽松判据当场判有）。 */
+const hasOwnBraceSlice = (src) => /\braw\.(indexOf|lastIndexOf)\(/.test(src);
+A('ingest.js 里不再有自己的花括号截取（容错解析唯一实现在 src\\tools\\_配方.mjs 的 extractJsonText）',
+  !hasOwnBraceSlice(INGEST));
+A('P1-#1 判据自证：把旧那一行塞回源码 ⇒ 判据必须判有（否则它也是死的）',
+  hasOwnBraceSlice(INGEST.replace('const text = raw;',
+    "const a = raw.indexOf('{'), b = raw.lastIndexOf('}'); const text = raw.slice(a, b + 1);")));
+A('ingest.js 把原文原样交出去（`const text = raw;`，不再有中间的截取变量）',
+  /const text = raw;/.test(INGEST) && !/const text = \(a >= 0/.test(INGEST));
+A('ingest.js 不再自己猜"没找到花括号"（这类判词改读工具原文）', !/没找到 JSON 花括号/.test(INGEST));
 
 /* ═════════ B2 · 行为级：真的驱动一次页面逻辑（T-2 的正面判据） ═════════
    切片：把 ingest.js 里四个函数**按函数声明锚点**切出来（不用脆弱的注释锚点），
@@ -287,6 +307,35 @@ const mkPage = (over) => {
   A('绑定校验的配方取自任务记录（rec.recipe.id），不接受外部配方参数',
     /'校验', '--recipe', \(rec\.recipe && rec\.recipe\.id\)/.test(
       fs.readFileSync(path.join(ROOT, 'src', 'tools', '_录题任务.mjs'), 'utf8')));
+
+  /* ═════════ B3 · 行为级：页面把用户粘的**原文**原样交出去（P1-#1） ═════════
+     缺陷复现：旧 onCheck 自己截"首个 { 到最后一个 }"再交出去 ⇒ 下面 B3a/B3b 收到的 text
+     会是被截过的短串（不含"好的""希望有帮助"）⇒ 两条直接红。
+     这一条守的是"页面不再自己写一份容错解析"，容错本身由工具侧的 extractJsonText 负责。 */
+  console.log('\n═══ B3 · 行为级：onCheck 交出去的是原文（页面不自己截 JSON）═══');
+  const RAW_PROSE = '好的，以下是识别结果：\n{ "cards": [] }\n希望有帮助！';
+  const p5 = mkPage({ st: { taskId: TID_FAKE } });
+  p5.$id('igIn').value = RAW_PROSE;
+  await p5.fns.onCheck();
+  A('B3a 行为级·有任务句柄：H.taskCheck 收到的是**原文**（花括号外的说明文字也在）',
+    p5.calls.taskCheck.length === 1 && p5.calls.taskCheck[0].text === RAW_PROSE,
+    JSON.stringify((p5.calls.taskCheck[0] || {}).text));
+  const p6 = mkPage();
+  p6.$id('igIn').value = RAW_PROSE;
+  await p6.fns.onCheck();
+  A('B3b 行为级·无任务句柄：H.recipe(校验) 的 text 同样是原文（两条路的页面口径一致）',
+    p6.calls.recipe.length === 1 && p6.calls.recipe[0].action === '校验' && p6.calls.recipe[0].flags.text === RAW_PROSE,
+    JSON.stringify((p6.calls.recipe[0] || {}).flags));
+
+  /* B3c 整条行为链：页面交出的**原文** + 真工具的容错抽取 ⇒ exit 0。
+     缺陷复现：页面若仍自己截取，这段原文到了工具手里就是被截过的串（这条仍会绿）；
+     所以 B3c 单独不够，它和 B3a/B3b、以及工具侧的 neg-task-binding 6b/6h 合起来才闭环：
+     页面给原文（B3a/b）+ 工具能剥说明文字（6b）+ 旧两份口径确实不同（6h）。 */
+  const prosePure = '好的，以下是识别结果：\n' + JSON.stringify(envelope(tid, SHA)) + '\n希望有帮助！';
+  const proseFile2 = w(LIB, 'r-prose-wiring.json', Buffer.from(prosePure, 'utf8'));
+  const rProse2 = bind(tid, proseFile2);
+  A('B3c 行为级链：页面原文口径 + 真工具容错抽取 ⇒ exit 0（同一次粘贴在页面与 CLI 同一个结论）',
+    rProse2.code === 0 && /抽取/.test(rProse2.out), 'exit=' + rProse2.code + ' ｜ ' + rProse2.out.split('\n')[0].slice(0, 80));
 
   /* ═════════ E · D-4 阴性对照：记录没有原图 sha ⇒ 第二层"未覆盖"，绝不"通过" ═════════
      缺陷复现路径（改前实测）：`组装 --task` 不带 `--image` ⇒ 记录 image.sha256=null；

@@ -31,6 +31,19 @@
  *   避免"路径被复用成另一个文件"导致张冠李戴。
  * · 找不到就**明确报"这条断了"**，不许静默返回空 —— 藏掉一条断链比报错危害大得多。
  * · 本文件**只读**：不写任何文件、不改任何台账。
+ *
+ * ══ ★ 2026-11-03（P1-2 整改）两处"静默"被拿掉 ══
+ * ① `opts.expectBytes` 给了却**不比**：旧 `resolveByPath` 在原路径还在时只 `statSync` 一下
+ *    就 `return direct`，`expectBytes` 与真实大小不符也照样"直接可用"（那段是个空 if + 注释）
+ *    ⇒ 台账路径被复用成另一个文件时，调用方会拿到**字节不符**的路径。
+ *    现在：给了 `expectBytes` 就必须比大小；不符 ⇒ 不再判 direct，落 ② 按内容找回；
+ *    找不回 ⇒ null + 可归因原因。**`expectBytes` 为 null 时保持"零 IO 常态"**（热路径语义，
+ *    见下面 explain() 的 ① 分支注释）—— 那正是 452 张卡每次解析都走的路径。
+ * ② 一个来源路径登记了**多个不同 sha** 时旧代码 `if (!rev.has(k)) rev.set(k, sha)`
+ *    ＝**静默取第一个**。现在：有歧义的路径**不进** rev（任何 resolve 都拿不到它 ⇒ fail-closed，
+ *    宁可报"这条定位不了"也不猜），全部 sha 留在 revAll 里由 `pathShas()` 如实报出，
+ *    并在 stderr 打一条**可见**告警（去重，每路径一次）。真库实测：1162 条来源路径全部互不相同，
+ *    即本改动**不动**既有兜底结果（回归基线见 tests\neg-orig-address-verify.cjs）。
  */
 import fs from 'fs';
 import path from 'path';
@@ -70,11 +83,16 @@ function sha256File(file) {
   return h.digest('hex').toUpperCase();
 }
 
-/* ══ 反查表：库根相对路径（小写）→ sha ══ */
+/* ══ 反查表：库根相对路径（小写）→ sha ══
+   ★ 2026-11-03（P1-2）：一个来源路径可能登记**多个不同 sha**（同名件二次入库、路径被复用）。
+   旧实现保留第一个 ⇒ 调用方拿到的是"猜的"身份，猜错就是把**另一份字节**当成这张卡的整页
+   （本文件头号忌讳）。现在 rev 只收**唯一**映射；歧义路径一律不进 rev。
+   revAll 是全量（含歧义），供 pathShas()/explain() 如实报出"到底有几个、分别是哪些"。 */
 let _revCache = null;
 function reverseIndex() {
   if (_revCache) return _revCache;
-  const rev = new Map();          // normRel(来源路径) → sha
+  const rev = new Map();          // normRel(来源路径) → sha（**仅唯一**；歧义路径不在其中）
+  const revAll = new Map();       // normRel(来源路径) → Set(sha)（全量，含歧义）
   const objAt = new Map();        // sha → 保全库内对象的相对路径
   if (fs.existsSync(LEDGER)) {
     let doc = null;
@@ -82,14 +100,16 @@ function reverseIndex() {
     const objects = (doc && doc.objects && typeof doc.objects === 'object') ? doc.objects : {};
     for (const sha of Object.keys(objects)) {
       const o = objects[sha] || {};
+      const up = String(sha).toUpperCase();
       for (const s of (o.sources || [])) {
         const k = normRel(s);
-        /* 同一个来源路径可能登记了多个 sha（理论上不该发生：内容寻址下同路径同内容）。
-           保留**第一个**，并在冲突时以内容核对为准（见 resolveByPath）。 */
-        if (!rev.has(k)) rev.set(k, sha.toUpperCase());
+        if (!k) continue;
+        if (!revAll.has(k)) revAll.set(k, new Set());
+        revAll.get(k).add(up);
       }
     }
   }
+  for (const [k, set] of revAll) if (set.size === 1) rev.set(k, [...set][0]);
   /* 保全库内的物理对象 */
   const walk = (d) => {
     let es; try { es = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
@@ -101,85 +121,175 @@ function reverseIndex() {
     }
   };
   if (fs.existsSync(STORE)) walk(STORE);
-  _revCache = { rev, objAt };
+  _revCache = { rev, revAll, objAt };
   return _revCache;
 }
 
-/** 库里这个 sha 的对象在不在盘（且内容对不对） */
-function objectUsable(sha, expectBytes) {
+/** 这个路径在台账里登记了哪些 sha（0 个 / 1 个 / N 个都如实返回，已排序去重）。
+ *  与 `shaOfPath` 的分工：`shaOfPath` 只回答"能不能**唯一**定位"（歧义 ⇒ null），
+ *  本函数回答"到底有几个、分别是哪些"——诊断与歧义信号用它。 */
+export function pathShas(rel) {
+  const { revAll } = reverseIndex();
+  const set = revAll.get(normRel(rel));
+  return set ? [...set].sort() : [];
+}
+
+/** 告警去重（每类问题每个路径只喊一次）：stderr 可见，但不会在 452 张卡的循环里刷屏 */
+const _warned = new Set();
+function warnOnce(key, msg) {
+  if (_warned.has(key)) return;
+  _warned.add(key);
+  try { process.stderr.write('⚠ 原图寻址：' + msg + '\n'); } catch { /* 告警通道写不出去不该打断解析 */ }
+}
+
+/** 保全库里这个 sha 的对象在不在盘（且内容对不对）。
+ *  verifyContent=false 只比大小 —— 批量版（resolver）走这条路：它被 452 张卡的热路径调用，
+ *  每次都重算 sha256 会把"零 IO 常态"彻底毁掉（`_状态刷新.mjs` 的 pending 自愈就在这条路上）。
+ *  单条版 `resolveByPath` 仍然默认 verifyContent=true（它本来就是核对路径）。 */
+function lookupStore(sha, expectBytes, verifyContent) {
   const { objAt } = reverseIndex();
   const rel = objAt.get(String(sha).toUpperCase());
   if (!rel) return null;
   const abs = path.join(ROOT, rel);
   try {
-    if (!fs.statSync(abs).isFile()) return null;
-    if (expectBytes != null && fs.statSync(abs).size !== expectBytes) return null;
-    /* 内容核对：这是"路径被复用"这一类张冠李戴的唯一防线。
-       代价是读一遍字节 —— 但只在**路径已失效**的兜底路径上发生（常态零成本）。 */
-    if (sha256File(abs) !== String(sha).toUpperCase()) return null;
+    const st = fs.statSync(abs);
+    if (!st.isFile()) return null;
+    if (expectBytes != null && st.size !== expectBytes) return null;
+    /* 内容核对：这是"路径被复用/对象被改写"这一类张冠李戴的唯一防线。 */
+    if (verifyContent && sha256File(abs) !== String(sha).toUpperCase()) return null;
     return rel;
   } catch { return null; }
 }
 
 /**
+ * 一次解析的**可归因**结论（`resolveByPath` / `resolver().resolve` 共用同一个判据，
+ * 避免两份实现漂移）。**不做任何 IO 之外的副作用**。
+ * @returns {{status:string, code:string, path?:string, via?:string, sha?:string, shas?:string[], reason?:string}}
+ *   status：
+ *     'direct'       原路径在盘且（给了 expectBytes 时）字节数相符 —— 常态，**不读一个字节**
+ *     'store'        原路径不可用（不存在 / 字节数不符）⇒ 已按内容从保全库找回
+ *     'empty'        没给路径
+ *     'ambiguous'    该路径在台账里对应**多个** sha ⇒ 拒绝猜（旧实现静默取第一个）
+ *     'size-mismatch' 原路径还在但字节数不符，且按内容也找不回（两侧字节数都写进 reason）
+ *     'store-missing' 台账里有唯一 sha，但保全库里没有可用对象（或对象字节数不符）
+ *     'no-sha'       台账反查表里没有这个路径的任何线索
+ */
+function explain(rel, opts = {}) {
+  const expect = opts.expectBytes;
+  const verifyContent = opts.verifyContent !== false;   // 单条版默认核对内容；批量版按性能口径传 false
+  if (!rel) return { status: 'empty', code: 'empty', reason: '没有给路径' };
+  const relPosix = String(rel).replace(/\\/g, '/');
+  const abs = path.join(ROOT, relPosix);
+  let statOk = false, sizeOnDisk = null;
+  try { const st = fs.statSync(abs); if (st.isFile()) { statOk = true; sizeOnDisk = st.size; } } catch { }
+  /* ① 原路径在盘。★ `expectBytes == null` ⇒ **零 IO 常态**：一次 stat 直接放行，
+        不读字节（452 张卡每次解析都走这里；这条性能语义不许破）。
+        给了 `expectBytes` 才多比一个 size（仍是零字节读取）—— 大小不符意味着"路径可能被
+        复用成别的文件"，此时**不许**再判 direct（P1-2 缺陷原状），落到 ② 按内容找回。 */
+  if (statOk && (expect == null || sizeOnDisk === expect)) {
+    return { status: 'direct', code: 'direct', path: relPosix, via: 'direct' };
+  }
+  /* ② 原路径不可用 ⇒ 用反查表找 sha，再从保全库按内容找回 */
+  const shas = pathShas(rel);
+  if (!shas.length) {
+    return {
+      status: 'no-sha', code: 'no-sha',
+      reason: (statOk
+        ? '原路径在盘但字节数 ' + sizeOnDisk + ' ≠ 期望 ' + expect + '；'
+        : '原路径不在盘；') + '台账反查表里没有这个路径的任何 sha 线索 ⇒ 没有按内容找回的抓手',
+    };
+  }
+  if (shas.length > 1) {
+    return {
+      status: 'ambiguous', code: 'ambiguous', shas,
+      reason: '这个路径在 _原图台账.json 里同时对应 ' + shas.length + ' 个不同 sha（' +
+        shas.map(s => s.slice(0, 12) + '…').join(' / ') + '）⇒ 判不出这份结果指哪一份字节，**拒绝猜**' +
+        '（要么修正台账，要么按 sha 直接指定）',
+    };
+  }
+  const sha = shas[0];
+  const usable = lookupStore(sha, expect, verifyContent);
+  if (usable) return { status: 'store', code: 'store', path: usable, via: 'store', sha };
+  const sizeMismatch = statOk && expect != null;
+  return {
+    status: sizeMismatch ? 'size-mismatch' : 'store-missing',
+    code: sizeMismatch ? 'size-mismatch' : 'store-missing',
+    sha,
+    reason: (sizeMismatch
+      ? '原路径在盘但字节数 ' + sizeOnDisk + ' ≠ 期望 ' + expect + '；'
+      : '原路径不在盘；') +
+      '按内容找回 ' + sha.slice(0, 12) + '… 也失败（保全库里没有这个 sha 的可用对象' +
+      (expect != null ? '，或它的字节数 ≠ ' + expect : '') + '）⇒ 真的断了，**不给字节不符的路径**',
+  };
+}
+
+
+/**
  * 把一条"库根相对路径"解析成**当前真正可用的路径**。
  * @param {string} rel        台账里记的路径（可能是收件箱里的旧路径）
  * @param {object} opts
- * @param {number} opts.expectBytes  该文件的已知字节数（可选，用于先按大小筛）
+ * @param {number} opts.expectBytes  该文件的已知字节数（可选）。**给了就必须相符**：
+ *   原路径在盘但大小不符 ⇒ 不再判 direct，改按内容找回；找不回 ⇒ null（附原因，见 explainPath）。
+ *   不给 ⇒ 零 IO 常态（只 stat，不读字节）。
  * @returns {{path:string, via:string, sha?:string}|null}
- *   via = 'direct'（原路径还在）／'store'（原路径没了，从保全库按内容找回）
- *   null = 真的断了（没有 sha 线索，或保全库里也没有匹配内容）
+ *   via = 'direct'（原路径还在且字节数相符）／'store'（原路径不可用，从保全库按内容找回）
+ *   null = 真的断了（没有 sha 线索 / 歧义 / 保全库里也没有匹配内容）——原因走 explainPath()，
+ *          同时在 stderr 留一条**去重的可见告警**（静默返回 null 正是 P1-2 那一类"藏掉断链"）
  */
 export function resolveByPath(rel, opts = {}) {
-  if (!rel) return null;
-  const abs = path.join(ROOT, String(rel).replace(/\\/g, '/'));
-  /* ① 原路径还在 —— 常态，零 IO */
-  try {
-    const st = fs.statSync(abs);
-    if (st.isFile()) {
-      if (opts.expectBytes != null && st.size !== opts.expectBytes) {
-        /* 大小都对不上：可能路径被复用成别的文件。仍按"直接可用"处理，
-           但调用方若在意可以再用 verify 复核。 */
-      }
-      return { path: String(rel).replace(/\\/g, '/'), via: 'direct' };
-    }
-  } catch { /* 落到②*/ }
-
-  /* ② 原路径没了 ⇒ 用反查表找 sha，再从保全库按内容找回 */
-  const { rev } = reverseIndex();
-  const sha = rev.get(normRel(rel));
-  if (!sha) return null;
-  const usable = objectUsable(sha, opts.expectBytes);
-  if (!usable) return null;
-  return { path: usable, via: 'store', sha };
+  const ex = explain(rel, opts);
+  if (ex.status === 'direct' || ex.status === 'store') {
+    /* direct 不带 sha（旧形态就是这样，调用方可能逐字段比对）：只有 store 兜底才有确定的 sha */
+    return ex.sha ? { path: ex.path, via: ex.via, sha: ex.sha } : { path: ex.path, via: ex.via };
+  }
+  if (ex.status !== 'empty') warnOnce(ex.status + '|' + normRel(rel), normRel(rel) + '：' + ex.reason);
+  return null;
 }
 
-/** 这个路径在保全库里有没有对应对象（不读字节，只查表） */
+/** 解析的**可归因**结论（不改任何状态、不写任何东西）。
+ *  为什么要有它：`resolveByPath` 只回 null，调用方分不清"没有这条线索 / 有线索但歧义 /
+ *  字节对不上"——P1-2 的告警要求就是"别让调用方只能看到一个空"。 */
+export function explainPath(rel, opts = {}) {
+  return explain(rel, opts);
+}
+
+/** 这个路径在保全库里有没有对应对象（不读字节，只查表）。
+ *  ★ 2026-11-03（P1-2）：歧义路径返回 **null**（旧实现返回第一个 sha）。
+ *  要区分"没有线索"与"有多个线索"，用 pathShas() / explainPath()。 */
 export function shaOfPath(rel) {
   const { rev } = reverseIndex();
-  return rev.get(normRel(rel)) || null;
+  const hit = rev.get(normRel(rel)) || null;
+  if (!hit) {
+    const shas = pathShas(rel);
+    if (shas.length > 1) warnOnce('sha-ambiguous|' + normRel(rel), normRel(rel) + '：登记了 ' + shas.length + ' 个不同 sha ⇒ shaOfPath 返回 null（不做静默取第一个）');
+  }
+  return hit;
 }
 
-/** 批量版：一次建表，多条查（生成状态包时用，避免每张卡重建索引） */
+/** 批量版：一次建表，多条查（生成状态包时用，避免每张卡重建索引）。
+ *  ★ 2026-11-03（P1-2）：两条入口共用上面同一个 explain() 判据（原件里这里是**第二套实现**，
+ *  与单条版口径不一致：direct 分支不比 expectBytes）。性能口径保留：
+ *  expectBytes 为 null 时零 IO；expectBytes 给了才比大小；只有显式给了 expectBytes 才做内容核对
+ *  （热路径被 452 张卡调用，每次都重算 sha256 会把"零 IO 常态"毁掉，见 lookupStore 注释）。 */
 export function resolver() {
-  const { rev, objAt } = reverseIndex();
+  const { rev } = reverseIndex();
+  const shaOfPathFn = shaOfPath;   // 起个本地名：下面同名方法里直接写 shaOfPath() 读起来像递归
   return {
-    /** 路径 → 可用路径；命中保全库时返回 via='store' */
+    /** 路径 → 可用路径；命中保全库时返回 via='store'（direct 不带 sha，与单条版同形） */
     resolve(rel, expectBytes) {
-      if (!rel) return null;
-      const abs = path.join(ROOT, String(rel).replace(/\\/g, '/'));
-      try { if (fs.statSync(abs).isFile()) return { path: String(rel).replace(/\\/g, '/'), via: 'direct' }; } catch { }
-      const sha = rev.get(normRel(rel));
-      if (!sha) return null;
-      const rel2 = objAt.get(sha);
-      if (!rel2) return null;
-      try {
-        const st = fs.statSync(path.join(ROOT, rel2));
-        if (expectBytes != null && st.size !== expectBytes) return null;
-      } catch { return null; }
-      return { path: rel2, via: 'store', sha };
+      const ex = explain(rel, { expectBytes, verifyContent: expectBytes != null });
+      if (ex.status === 'direct' || ex.status === 'store') {
+        return ex.sha ? { path: ex.path, via: ex.via, sha: ex.sha } : { path: ex.path, via: ex.via };
+      }
+      if (ex.status !== 'empty') warnOnce(ex.status + '|' + normRel(rel), normRel(rel) + '：' + ex.reason);
+      return null;
     },
-    shaOfPath(rel) { return rev.get(normRel(rel)) || null; },
+    /** 同上但给可归因结论（与单条版 explainPath 同一判据） */
+    explain(rel, expectBytes) { return explain(rel, { expectBytes, verifyContent: expectBytes != null }); },
+    /** 这个路径登记的全部 sha（0/1/N） */
+    shasOf(rel) { return pathShas(rel); },
+    /** 与单条版同一条判据（歧义 ⇒ null + 可见告警），不是"再写一遍取第一个" */
+    shaOfPath(rel) { return shaOfPathFn(rel); },
     size: rev.size,
   };
 }

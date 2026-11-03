@@ -6,6 +6,14 @@
  * 卡却会挂到错的题上，而且事后无从回溯。所以每一条都必须有一个"故意违反它、必须报红"的证据。
  *
  * 退出码语义：0 通过 · 1 格式不通过 · 2 任务不存在/用法错 · 3 与任务不匹配
+ *
+ * ★ 2026-11-03（批次 1 收尾）补两段：
+ *   5 · 信封畸形（有 envelope、缺 result）必须**可归因**（P1-#2）：输出要点到"信封 + result"，
+ *       不得给出"缺必填字段 pageSummary"这类指错方向的文案；--json 带 envelope:'malformed'。
+ *       判据自证：把"修复前的降级路径"（外层对象直接进格式层）真跑一遍，判据对它的输出必须判红。
+ *   6 · 容错抽取（P1-#1）：唯一实现在工具侧。原样 JSON 与"裹了说明文字的 JSON"两种输入各跑一次
+ *       （`绑定校验` 与 `_配方.mjs 校验` 各一遍），放宽必须说出口（extracted/how）；
+ *       并真跑一次"裸 JSON.parse 失败 / 页面旧截取成功"，证明旧注释那句"与工具侧同口径"是假口径。
  */
 const fs = require('fs');
 const path = require('path');
@@ -124,6 +132,81 @@ A('4a 确认命令成功', conf.code === 0, 'exit=' + conf.code);
 A('4b 确认前第三层是"未确认"、确认后是"已确认"',
   /未确认/.test(before.out) && /已确认/.test(after.out) && !/未确认/.test(after.out));
 A('4c 确认不改变匹配结论（仍然 exit 0）', after.code === 0, 'exit=' + after.code);
+
+/* ---------- 5) P1-#2：信封畸形（有 envelope、缺 result）必须可归因 ---------- */
+console.log('\n═══ 5 · 信封畸形：有 envelope 缺 result ⇒ 点名信封与 result，不许指错方向 ═══');
+/* 判据（有牙齿）：输出里**必须**出现「信封」且点到 result；**不得**出现「缺必填字段…pageSummary」
+   这类指错方向的文案 —— P1-#2 的症状正是用户以为自己的 cards 写错了，其实是漏了 result 包装。
+   缺陷复现时它靠什么变红：`_录题任务.mjs` 的信封判据退回修复前那一行式
+   （`(obj.envelope && obj.result) ? obj.envelope : null`）⇒ 缺 result 这组被**降级成裸对象**、
+   外层对象被送去格式层 ⇒ 输出只剩 pageSummary 那一档 ⇒ 5b 直接红（5e 把这条路径真跑了一遍）。 */
+const envelopeDiagnosisOk = (out) => /信封/.test(out) && /result/.test(out) && !/缺必填字段/.test(out) && !/pageSummary/.test(out);
+put('r-env-noresult.json', { envelope: { schema: 'glimmernote.ingest-result/v1', taskId: tA, imageSha256: SHA_A } });
+const envNoResult = run(['_录题任务.mjs', '绑定校验', tA, '--in', path.join(LIB, 'r-env-noresult.json')]);
+A('5a 有 envelope 缺 result ⇒ exit 1（格式层；不是 0，也不是 3）', envNoResult.code === 1, 'exit=' + envNoResult.code);
+A('5b 输出必须出现「信封」且点到 result（判据 = envelopeDiagnosisOk）', envelopeDiagnosisOk(envNoResult.out),
+  envNoResult.out.split('\n').filter(l => /信封|pageSummary|缺必填/.test(l)).join(' ｜ ').slice(0, 160));
+A('5c **不得**出现「缺必填字段…pageSummary」这类指错方向的文案（P1-#2 的核心）',
+  !/缺必填字段/.test(envNoResult.out) && !/pageSummary/.test(envNoResult.out));
+const envNoResultJson = run(['_录题任务.mjs', '绑定校验', tA, '--in', path.join(LIB, 'r-env-noresult.json'), '--json']);
+let jEnv = null; try { jEnv = JSON.parse(envNoResultJson.out); } catch { /* 下面断言会红 */ }
+A('5d --json 带机器可读的 envelope=malformed、matched=false、layer2=not-judged',
+  envNoResultJson.code === 1 && !!jEnv && jEnv.envelope === 'malformed' && jEnv.matched === false && jEnv.layer2 === 'not-judged' && /result/.test(String(jEnv.envelopeError)),
+  JSON.stringify(jEnv && { envelope: jEnv.envelope, layer2: jEnv.layer2, err: String(jEnv.envelopeError).slice(0, 46) }));
+
+/* ★ 判据自证（本仓 T-1 同族：新判据必须说得出"缺陷复现时靠什么变红"）。
+   修复前的 `绑定校验` 对同一份输入走的就是"把外层对象当业务对象交给格式层"这条路
+   （`result = obj` ⇒ `JSON.stringify(result)` ⇒ `_配方.mjs 校验 --recipe <任务记录里的配方>`）。
+   这里把那条路径**真跑一遍**：它只可能给出 pageSummary / cards 那一档 ⇒ 5b 的判据必然判红。
+   （不真跑就无法证明 5b 不是一条恒真断言。） */
+const preFixPath = run(['_配方.mjs', '校验', '--recipe', (recA.recipe && recA.recipe.id) || 'ingest-page',
+  '--in', path.join(LIB, 'r-env-noresult.json')]);
+A('5e 判据自证：同一份输入走"修复前的降级路径"⇒ 输出只有 pageSummary 一档、没有信封诊断 ⇒ 5b 必然判红',
+  !envelopeDiagnosisOk(preFixPath.out) && /缺必填字段/.test(preFixPath.out) && /pageSummary/.test(preFixPath.out),
+  'exit=' + preFixPath.code + ' ｜ ' + preFixPath.out.split('\n').filter(l => /缺必填字段|信封/.test(l)).join(' ').slice(0, 130));
+
+put('r-env-str.json', { envelope: 'x', result: payload([card(SHA_A)]) });
+const envStr = run(['_录题任务.mjs', '绑定校验', tA, '--in', path.join(LIB, 'r-env-str.json')]);
+A('5f envelope 不是对象（字符串）同样按"信封畸形"处置，不退化成裸对象路径（也不指错方向）',
+  envStr.code === 1 && /信封/.test(envStr.out) && !/pageSummary/.test(envStr.out), 'exit=' + envStr.code);
+
+/* ---------- 6) P1-#1：容错抽取（唯一实现在工具侧） ---------- */
+console.log('\n═══ 6 · 容错抽取：唯一实现，行为只变宽、且放宽要说出口 ═══');
+const okText = JSON.stringify(payload([card(SHA_A)]), null, 1);
+const asisFile = w('r-asis.json', Buffer.from(okText, 'utf8'));
+const PROSE = '好的，以下是识别结果：\n' + okText + '\n希望有帮助！';
+const proseFile = w('r-prose.json', Buffer.from(PROSE, 'utf8'));
+const asis = run(['_录题任务.mjs', '绑定校验', tA, '--in', asisFile]);
+const prose = run(['_录题任务.mjs', '绑定校验', tA, '--in', proseFile]);
+A('6a 原样 JSON ⇒ exit 0（与修复前一致：行为没有变窄）', asis.code === 0, 'exit=' + asis.code);
+A('6b 裹了说明文字 ⇒ 同一个工具 exit 0（修复前这里是 exit 1：容错口径只在工具侧）', prose.code === 0, 'exit=' + prose.code);
+A('6c 抽取发生了就**说出口**（静默放宽比不放宽更坏）', /抽取/.test(prose.out), prose.out.split('\n')[0].slice(0, 90));
+const proseJson = run(['_录题任务.mjs', '绑定校验', tA, '--in', proseFile, '--json']);
+let jProse = null; try { jProse = JSON.parse(proseJson.out); } catch { }
+A('6d --json 里 extracted=braces（页面与 CLI 同口径的机读凭据）',
+  !!jProse && jProse.extracted === 'braces' && jProse.envelope === 'absent', JSON.stringify(jProse && { extracted: jProse.extracted, envelope: jProse.envelope }));
+const v1 = run(['_配方.mjs', '校验', '--in', asisFile]);
+const v2 = run(['_配方.mjs', '校验', '--in', proseFile]);
+A('6e `_配方.mjs 校验` 同一个函数：原样 exit 0 / 裹说明文字 exit 0（页面"没生成任务单"走的就是它）',
+  v1.code === 0 && v2.code === 0, 'asis=' + v1.code + ' prose=' + v2.code);
+let jV2 = null; try { jV2 = JSON.parse(run(['_配方.mjs', '校验', '--in', proseFile, '--json']).out); } catch { }
+A('6f `_配方.mjs 校验 --json` 也带 extracted=braces', !!jV2 && jV2.extracted === 'braces', JSON.stringify(jV2 && jV2.extracted));
+const noBraceFile = w('r-nobrace.json', Buffer.from('我没有看到图片，无法识别。', 'utf8'));
+const nb = run(['_录题任务.mjs', '绑定校验', tA, '--in', noBraceFile]);
+A('6g 连花括号都没有 ⇒ 仍 exit 1，且点名"连花括号都没有"（放宽 ≠ 放行）',
+  nb.code === 1 && /不是合法 JSON/.test(nb.out) && /连花括号都没有/.test(nb.out), 'exit=' + nb.code + ' ｜ ' + nb.out.split('\n')[0].slice(0, 80));
+/* ★ 判据自证（P1-#1 的"唯一实现"这件事本身）：同一段原文，
+   裸 JSON.parse（= 修复前工具的容错口径）**失败**，而页面旧截取**成功**
+   ⇒ 两份实现的口径确实不同 ⇒ ingest.js 里那句注释「与工具侧同一容错口径」是假的。
+   这条断言真跑两种解析，不是文字比对。 */
+{
+  const rawProse = fs.readFileSync(proseFile, 'utf8');
+  let bareFails = false; try { JSON.parse(rawProse); } catch { bareFails = true; }
+  const a0 = rawProse.indexOf('{'), b0 = rawProse.lastIndexOf('}');
+  let sliceOk = false; try { JSON.parse(rawProse.slice(a0, b0 + 1)); sliceOk = true; } catch { }
+  A('6h 判据自证：同段原文"裸 JSON.parse 失败 / 页面旧截取成功" ⇒ 旧注释"与工具侧同口径"确为假口径（差值就是这次单点化掉的）',
+    bareFails && sliceOk && a0 > 0 && b0 > a0, 'bareFails=' + bareFails + ' sliceOk=' + sliceOk);
+}
 
 fs.rmSync(LIB, { recursive: true, force: true });
 console.log('');

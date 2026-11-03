@@ -29,6 +29,8 @@
  *   node src\tools\_配方.mjs 找图 --sha <内容指纹或前12位>   （照片改名后按指纹找回那一张）
  *   node src\tools\_配方.mjs 组装 --recipe ingest-single --subject 数学 --image <原图路径> [--out <任务.md>]
  *   node src\tools\_配方.mjs 校验 --in cards.json [--recipe <id>] [--json]
+ *     （输入允许在 JSON 外裹一段说明文字：容错抽取的**唯一实现**是本文件的 extractJsonText，
+ *       录题页与 `_录题任务.mjs 绑定校验` 共用它 —— 页面不再自己截花括号）
  *   node src\tools\_配方.mjs 自检 --recipe <id> --in cards.json [--json]
  *   node src\tools\_配方.mjs 指纹 [--recipe <id>]
  *
@@ -37,6 +39,7 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { fileURLToPath } from 'node:url';
 import { APP_ROOT, libraryRoot, toolPath } from './_库根.mjs';
 import { createTask, newTaskId } from './_录题任务.mjs';
 
@@ -85,6 +88,41 @@ const isDir = (p) => { try { return fs.statSync(p).isDirectory(); } catch { retu
 const isFile = (p) => { try { return fs.statSync(p).isFile(); } catch { return false; } };
 const readText = (p) => fs.readFileSync(p, 'utf8').replace(/^\uFEFF/, '');
 const readJson = (p) => JSON.parse(readText(p));
+
+/* ══════════════ 容错文本抽取（**唯一实现**） ══════════════
+ * 立：2026-11-03（批次 1 收尾 · P1-#1）。输入不是机器产物，而是**用户从自己的 AI 粘回来的东西**：
+ * AI 常常在 JSON 外裹一段解释文字（「好的，以下是结果：{…} 希望有帮助」）⇒ 截取首个 `{`
+ * 到最后一个 `}` 能救回这一大类。
+ *
+ * ★ 为什么必须**只有一个实现**：录题页（`src\app\js\views\ingest.js`）此前自己写了一份同样的截取，
+ *   注释还自称「与工具侧同一容错口径」——而工具侧当时是**裸 JSON.parse**，注释是假的
+ *   （施工方案 §2.1 点名的 P1-5 类缺陷）。两份实现必然漂移（本仓 L-286）：页面放行、CLI 拒收
+ *   （或反过来），同一次粘贴的结论取决于从哪个入口进来。
+ *   现在口径只住在这里；页面的职责退化成"把用户粘的原文**原样**交出去"（只 trim）。
+ *
+ * 行为**只变宽、不变窄**（先原样试，失败才截取）：
+ *   · how='asis'            整段就是合法 JSON（= 原行为，一个字节都没变）
+ *   · how='braces'          剥掉花括号外的说明文字后合法
+ *   · how='none'            内容里连花括号都没有（ok=false）
+ *   · how='braces' & !ok    有花括号，但括号里面也不是合法 JSON（报错指向**截取后**的文本）
+ * `value` 只在 ok=true 时有意义（已解析好的值）。
+ *
+ * ⚠ 调用方**必须**把 how 说出口（`校验` 打印一行、`--json` 带 `extracted`）：
+ *   静默放宽比不放宽更坏 —— 用户会以为程序本来就这么严，出了事找不到原因。
+ */
+export function extractJsonText(raw) {
+  const src = String(raw == null ? '' : raw).replace(/^\uFEFF/, '');
+  const attempt = (t) => { try { return { ok: true, value: JSON.parse(t) }; } catch (e) { return { ok: false, err: e }; } };
+  const whole = attempt(src);
+  if (whole.ok) return { text: src, how: 'asis', ok: true, value: whole.value, error: null };
+  const a = src.indexOf('{'), b = src.lastIndexOf('}');
+  if (a >= 0 && b > a) {
+    const cut = src.slice(a, b + 1);
+    const inner = attempt(cut);
+    return { text: cut, how: 'braces', ok: inner.ok, value: inner.ok ? inner.value : null, error: inner.ok ? null : inner.err };
+  }
+  return { text: src, how: 'none', ok: false, value: null, error: whole.err };
+}
 
 /** 把目录里的 *.json 读成对象；任何解析失败都抛（绝不"当空的"） */
 function listRecipeDirs() {
@@ -1280,13 +1318,29 @@ function cmdValidate() {
   const abs = path.resolve(inFile);
   if (!isFile(abs)) { console.error('输入文件不存在：' + abs); return 2; }
 
-  let obj;
-  try { obj = readJson(abs); }
-  catch (e) { console.error('✖ 不是合法 JSON：' + e.message + '\n  提示：AI 常常在 JSON 外裹一段解释文字，只保留花括号内内容。'); return 1; }
+  /* ★ 2026-11-03（批次 1 收尾 · P1-#1）：解析走**唯一实现** extractJsonText（本文件顶部）。
+     改前这里是 `readJson`（裸 JSON.parse），而录题页自己写了一份"首个 { 到最后一个 }"的截取、
+     注释还自称"与工具侧同一容错口径"——注释不实：页面放行、CLI 拒收（施工方案 §2.1 P1-5）。
+     现在口径只住在这里，页面把原文原样交过来（只 trim）。
+     **行为只变宽**（先原样试，失败才截取），且"变宽"这件事**说出口**（how='braces' 打印一行、
+     `--json` 带 extracted 字段）——静默放宽比不放宽更坏。 */
+  const ex = extractJsonText(readText(abs));
+  if (!ex.ok) {
+    console.error('✖ 不是合法 JSON：' + ex.error.message +
+      (ex.how === 'braces' ? '\n  已剥掉花括号外的说明文字再试，仍未通过（花括号里也不是合法 JSON）。'
+        : ex.how === 'none' ? '\n  提示：内容里连花括号都没有（AI 可能只回了一段话，没给 JSON）。'
+          : '\n  提示：AI 常常在 JSON 外裹一段解释文字；花括号不配对则救不回来。'));
+    return 1;
+  }
+  let obj = ex.value;
+  const extracted = ex.how;
 
-  /* ★ 2026-11-02（批次 1「任务绑定」）：外层信封 `{envelope:{schema,taskId,imageSha256}, result:{…}}`
-     —— 用信封携带"这是哪个任务"的身份，而**不动** cards 上已设的 additionalProperties:false（建议书 §4）。
-     这里剥壳后按原契约校验 `result`；没信封的老 JSON 走原路（= "仅格式校验"）。 */
+  /* 外层信封 `{envelope:{schema,taskId,imageSha256}, result:{…}}`
+     —— 剥壳后按原契约校验 `result`；没信封的老 JSON 走原路（= "仅格式校验"）。
+     ⚠ 本命令**不判**"信封畸形"：信封的语义与三层校验归 `_录题任务.mjs 绑定校验`（契约 §三），
+     本命令只回答"这份东西能不能按某份 schema 验"。`{envelope:{…}}`（缺 result）在这里会被 schema
+     按契约外字段拒收（exit 1，绝不静默放行）——`tests\neg-task-binding.cjs` 正是拿这条路径做
+     "判据自证"的缺陷复现（修复前的 `绑定校验` 就是把外层对象原样喂到这里的）。 */
   let env = null;
   if (obj && typeof obj === 'object' && obj.envelope && obj.result) { env = obj.envelope; obj = obj.result; }
 
@@ -1306,10 +1360,11 @@ function cmdValidate() {
   const skipped = Array.isArray(obj && obj.skipped) ? obj.skipped : [];
 
   if (JSON_OUT) {
-    process.stdout.write(JSON.stringify({ ok: errs.length === 0, recipe: id, inferred, cards: cards.length, skipped: skipped.length, errors: errs, envelope: env ? { taskId: env.taskId || null, imageSha256: env.imageSha256 || null } : null }) + '\n');
+    process.stdout.write(JSON.stringify({ ok: errs.length === 0, recipe: id, inferred, extracted, cards: cards.length, skipped: skipped.length, errors: errs, envelope: env ? { taskId: env.taskId || null, imageSha256: env.imageSha256 || null } : null }) + '\n');
     return errs.length ? 1 : 0;
   }
 
+  if (extracted === 'braces') console.log('输入：JSON 外裹了说明文字，已按首个 { 到最后一个 } 抽取（容错解析**只此一份**，页面与 CLI 同口径）');
   if (env) console.log('信封：taskId=' + (env.taskId || '(空)') + (env.imageSha256 ? '　imageSha256=' + String(env.imageSha256).slice(0, 12) + '…' : '') + '（与任务的匹配由 _录题任务.mjs 绑定校验 判定）');
   console.log('配方：' + id + (inferred ? '（未指定 --recipe，按输入形态推断：' + (obj && obj.pageSummary ? '有 pageSummary' : '无 pageSummary') + '）' : ''));
   console.log('记录：' + cards.length + ' 条　跳过：' + skipped.length + ' 条');
@@ -1418,4 +1473,10 @@ function main() {
   }
 }
 
-process.exit(main());
+/* ★ 2026-11-03（批次 1 收尾 · P1-#1）：只有被当脚本跑时才执行入口。
+   本模块现在同时被 `_录题任务.mjs` import（导出 extractJsonText，见顶部注释"唯一实现"）。
+   ⚠ 没有这道闸时，`node _录题任务.mjs 绑定校验 …` 会在 **import 期**执行下面的 `main()`，
+   而那时 argv[0] 是「绑定校验」⇒ 命中 default 分支，打一行「未知命令」并把整个进程 exit 2
+   —— `_录题任务.mjs` 的每一个子命令都会当场失效（本仓"导入期副作用"同族坑的又一例）。 */
+const __isMain = !!process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+if (__isMain) process.exit(main());
