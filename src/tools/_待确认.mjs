@@ -25,6 +25,9 @@
  *   删    --id T025                          仅限「未确认且无答案」的误加条目（有答案的一律走 作废）
  *   改问题 --id T056 --q "完整问题文本" [--note "为什么改"]   订正/补全问题文本；新旧字数与理由留痕在 questionFix
  *   改详情 --id T082 --detail "改写后的说明全文" [--note "为什么改"]   把 detail 里的内部黑话换成人话；留痕在 detailFix
+ *   纠因  --id T003 --why "为什么纠正（家长/用户原话）" [--scope 卡|配方|流程] [--target <包/卡标识>]
+ *                                            追加式记录「纠正原因」→ 该条目 corrections[]（只追加、旧字段一字不动）；
+ *                                            同一条 why 重复提交幂等（不重复追加、不写盘）；条目不存在 / --why 空 ⇒ 退出码 2
  *   状态  [--student 学生A] [--ask 孩子]
  *   门禁                                     有未确认 → 退出码 1（--json 输出机器可读）
  *   证据 [--all-archived]                    有未确认项缺证据图 / 图路径失效 → 退出码 1（--json 输出机器可读）
@@ -50,7 +53,10 @@
  *    缺题号却静默通过，属同类漏洞第二次踩。现在：`加` 没给 --qref 就先按 cardId 自动推导（并明写出来），
  *    推不出才喊话；历史欠账用 `定位 --auto` 一次补齐；`门禁 --json` 同时输出 noQref/noBox 供自检消费。
  *
- * kind ∈ 笔迹归属 / 错因口述 / 老师漏判 / 卷面辨认 / 口径确认 / 系统维护 / 其他
+ * kind ∈ 笔迹归属 / 错因口述 / 老师漏判 / 卷面辨认 / 口径确认 / 系统维护 / 其他 / 经验线索
+ *        ⚠「经验线索」= 家长/用户对某道题或某条方法的**纠正理由**（`纠因` 记 corrections[]，或 加 --kind 经验线索）。
+ *          它与 `src\app\js\model.js` 的 `M.KINDS` 是**同一事实的两份拷贝**，改一处必须改两处
+ *          （一致性由 `tests\neg-reason-entry.cjs` 的「两份逐字相等」断言钉住：只改一份即红）。
  * askWho ∈ 孩子 / 老师 / 原卷 / 系统
  */
 import fs from 'fs';
@@ -76,7 +82,8 @@ process.on('exit', __releaseLibLock);
 const DB = path.join(ROOT, '_待确认.json');
 const MD = path.join(ROOT, '_待确认清单.md');
 
-const KINDS = ['笔迹归属', '错因口述', '老师漏判', '卷面辨认', '口径确认', '系统维护', '其他'];
+/* ⚠ 与 `src\app\js\model.js` 的 `M.KINDS` 逐字相同（两份拷贝，一致性由 tests\neg-reason-entry.cjs 钉住）。 */
+const KINDS = ['笔迹归属', '错因口述', '老师漏判', '卷面辨认', '口径确认', '系统维护', '其他', '经验线索'];
 
 /* ---------- 措辞门禁（2026-10-10）：给用户看的文本禁用 agent 内部黑话 ----------
  * 起因：用户质询「错题库待办，好多措辞说『答案键』，这是什么意思啊，我理解不过来」。
@@ -796,6 +803,49 @@ if (action === '清单') {
   console.log(`   留痕：${it.detailFix}`);
   console.log(`   原文已入库 detailBefore（${old.length} 字）`);
   render();
+} else if (action === '纠因') {
+  /* ★ 2026-11-03（批次 3 §2「家长纠正·记录原因」入口 · 接口契约 §2.1）：
+     家长/用户的「为什么纠正」按**原话**记在对应条目上，供 `_经验草稿.mjs 预览 --from-pending`
+     按白名单组装成「先看、再决定分享」的公开草稿。三条纪律与 `加`/`改详情` 同族：
+       ① append-only：只在条目上追加 `corrections[]`（元素恒为 {at, why, scope, target} 四字段），
+          question/detail/status/answer 一个字都不碰 —— 那是「答」「改问题」「改详情」的活。
+       ② 幂等：同一条 why 重复提交（家长重复点、脚本重跑）不重复追加、**不写盘**（连备份都不产生）。
+       ③ 响亮拒绝：条目不存在 / --why 空 / scope 非法 / corrections 已存在但不是数组 ⇒ 退出码 2。
+          最后一条是 BUG-02 那一族（"读不懂就当空的，随后覆盖掉"）：留痕被静默清空不可再生，宁可拒收。 */
+  const CORR_SCOPES = ['卡', '配方', '流程'];
+  const j = load();
+  if (!opt.id) { console.error('缺参数：--id 必填（记在哪条待办上，如 T003）'); process.exit(2); }
+  const it = findById(j, opt.id);
+  if (!it) { console.error(`找不到 ${opt.id}（纠正原因要挂在已存在的待办上：先「加」一条，再「纠因」）`); process.exit(2); }
+  const why = String(opt.why == null ? '' : opt.why).trim();
+  if (!why) { console.error('缺参数：--why 必填（把家长/用户的原话写进来，不要空着）'); process.exit(2); }
+  const scope = opt.scope === undefined ? '卡' : String(opt.scope);
+  if (!CORR_SCOPES.includes(scope)) { console.error('scope 必须是：' + CORR_SCOPES.join(' / ')); process.exit(2); }
+  const target = opt.target === undefined ? '' : String(opt.target);
+  if (it.corrections !== undefined && !Array.isArray(it.corrections)) {
+    console.error(`✖ ${it.id} 的 corrections 不是数组（实际 ${typeof it.corrections}）——拒绝继续。`);
+    console.error('   它可能是被 PowerShell 的 ConvertFrom/To-Json 往返成了 {value:[…]}，先手工改回数组；');
+    console.error('   本工具绝不把读不懂的留痕「当成空表」再覆盖（那会永久丢掉已记的纠正原因）。');
+    process.exit(2);
+  }
+  const list = Array.isArray(it.corrections) ? it.corrections : (it.corrections = []);
+  const dup = list.find(c => c && String(c.why) === why);
+  if (dup) {
+    console.log(`${it.id} 已记过同一条纠正原因，未重复追加（corrections 仍 ${list.length} 条，未写盘）`);
+    console.log(`   在册：at=${dup.at || ''}  scope=${dup.scope || ''}${dup.target ? '  target=' + dup.target : ''}`);
+    /* scope/target 与在册那条不同时**明写出来**：调用方以为记了新信息、实际什么都没变，
+       正是本仓最忌的「静默降级」。留痕是追加式的，改在册那条只能人工编辑 JSON。 */
+    if (String(dup.scope || '') !== scope || String(dup.target || '') !== target) {
+      console.log(`   ⚠ 本次 scope/target（${scope}${target ? '/' + target : ''}）与在册那条不同 —— **未收录**；`);
+      console.log('     corrections 是追加式留痕（不修改既有元素），要改在册那条请人工编辑 _待确认.json。');
+    }
+    process.exit(0);
+  }
+  list.push({ at: opt.date || today(), why, scope, target });
+  save(j);
+  console.log(`${it.id} 已记一条纠正原因（corrections ${list.length} 条）[${scope}${target ? '/' + target : ''}]：` +
+    (why.length > 60 ? why.slice(0, 60) + '…' : why));
+  render();
 } else if (action === '答' || action === '作废') {
   const j = load();
   const it = findById(j, opt.id);
@@ -1205,7 +1255,8 @@ if (action === '清单') {
   render();
 } else {
   console.error('未知动作：' + action);
-  console.error('可用：清单 / 加 / 定位 / 答 / 作废 / 撤回 / 删 / 改问题 / 改详情 / 状态 / 门禁 / 证据 / 措辞 / 去黑话 / 同步 / 判定 / 处置');
+  console.error('可用：清单 / 加 / 定位 / 答 / 作废 / 撤回 / 删 / 改问题 / 改详情 / 纠因 / 状态 / 门禁 / 证据 / 措辞 / 去黑话 / 同步 / 判定 / 处置');
+  console.error('  纠因 --id Txxx --why "为什么纠正（原话）" [--scope 卡|配方|流程] [--target <包/卡标识>]  ← 追加式留痕，同 why 幂等');
   console.error('  判定 --id Txxx --verdict "错|对|部分对|无法判定|不适用" --note "依据"  ← 将结论换算成对错，必填');
   console.error('  处置 --id Txxx --as "无需处置|已补建卡|已撤卡|已核销|待人工" [--note "..."]  ← 结论之后的后续动作，必填');
   console.error('  措辞 [--json] / 去黑话 --dry|--apply  ← 给人看的文本禁用内部黑话（答案键→标准答案 等）');

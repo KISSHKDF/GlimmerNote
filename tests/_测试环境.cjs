@@ -410,6 +410,7 @@ const TMP_PREFIXES = [
   'gn-w3-packs-',     // tests\neg-pack-ui-wiring.cjs 的临时包根
   'gn-shell-card-',   // tests\neg-shell-card-passthrough.mjs 的反射脚本 + 替身工具目录
   'gn-ingest-e2e-packs-', // tests\neg-v2-ingest-task-e2e.cjs 的临时**经验包根**（批次 2）
+  'gn-draft-',        // tests\neg-experience-draft.cjs 的临时库 + 临时经验包根（批次 3）
 ];
 const TMP_STALE_MS = 24 * 60 * 60 * 1000;
 const _ownedTmp = new Set();

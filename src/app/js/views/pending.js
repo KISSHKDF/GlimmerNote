@@ -380,6 +380,11 @@
         '<div class="opt-item">关联卡号 <input type="text" id="paCard" style="width:120px" placeholder="P0012">　类型 <select id="paKind">' + M.KINDS.map(k => '<option>' + k + '</option>').join('') + '</select>' +
         '　问谁 <select id="paAsk">' + M.ASK_ORDER.map(k => '<option>' + k + '</option>').join('') + '</select></div>' +
         '<textarea id="paQ" maxlength="800" placeholder="问题一句话（必填）"></textarea>' +
+        /* ★ 2026-11-03（批次 3 §2.2）：把家长/用户的「为什么纠正」引到类型「经验线索」上 ——
+           这类条目以后能按白名单整理成**先看、再决定分享**的公开草稿
+           （工具侧：`纠因 --id Txxx --why "原话"`，或 `加 --kind 经验线索 --detail "原话"`）。
+           契约要求这一行放在 paD（说明）输入框**上方**：写在下面会被当成"备注"忽略掉。 */
+        '<div class="small muted">如果是你对某道题/某条方法的纠正，把<b>为什么</b>写在这里，类型选「经验线索」—— 这条以后可以整理成公开草稿。</div>' +
         '<textarea id="paD" maxlength="2000" placeholder="证据/影响（可选）" rows="2"></textarea>' +
         /* F-35：C# AddFlag 支持 --box、_待确认.mjs:322 也读 opt.box，此前表单没有它 ⇒
            新建条目永远没有高亮框（灯箱里看不到红框）。现在补上并透传。 */
