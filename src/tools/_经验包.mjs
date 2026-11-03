@@ -394,6 +394,89 @@ export function validatePack(dir, explicitRoot) {
     });
   });
 
+  /* ── ⑥·补 学科/接口**扩展声明**（批次 5，「按实际贡献扩展」的机检落点）──
+   * 施工方案 §9.1 批次 5 的验收原文就一句：「**逐条扩展各自附反例**」。口号不是门禁 —— 所以把
+   * "每条扩展必须有：适用条件、能发现误伤的反例、维护者"变成这一段的判据。
+   *
+   * 三条设计口径（都不许放宽）：
+   *   ① **不声明就完全不受影响**：`extensions` 缺省 ⇔ 老包一字不改照样通过（向后兼容是硬要求）。
+   *   ② **声明了就必须四项齐全且非空**：`学科 / 适用条件 / 维护者` 是字符串，`反例` 是**非空数组**；
+   *      占位词（TODO/待补/TBD/…）一律拒 —— "写了但等于没写"比没写更坏（它占着"有反例"的位置）。
+   *   ③ **反例必须可跑**：每条反例要指到**包内真实存在的案例** + 该案例 `expected.json` 的
+   *      `controls[]` 里**真有一条**能发现误伤的对照（按 id 或场景关键词匹配）。
+   *      指向不存在的案例、或案例里没有那条对照 ⇒ 判红。**"能发现误伤"是判据，不是形容词。**
+   */
+  const extRaw = doc.extensions;
+  const extList = [];
+  if (extRaw !== undefined) {
+    if (!Array.isArray(extRaw)) {
+      E('扩展', 'extensions', '要声明扩展就得是数组（每个学科/接口一项），实际 ' +
+        (extRaw === null ? 'null' : typeof extRaw));
+    } else if (extRaw.length === 0) {
+      E('扩展', 'extensions', 'extensions 是空数组 —— 要么整条删掉（不声明扩展），要么写全一项；空壳不算扩展');
+    } else {
+      const PLACEHOLDER = /^(todo|tbd|fixme|待补|待填|待定|略|无|n\/a|na|-+)$/i;
+      const nonEmpty = (v, what, why) => {
+        if (typeof v !== 'string' || !v.trim()) { E('扩展', what, why + '（必须是非空字符串）'); return null; }
+        const t = v.trim();
+        if (PLACEHOLDER.test(t)) { E('扩展', what, why + '是占位词 ' + JSON.stringify(t) + ' —— 写了等于没写'); return null; }
+        return t;
+      };
+      extRaw.forEach((ex, i) => {
+        const at = 'extensions[' + i + ']';
+        if (!ex || typeof ex !== 'object' || Array.isArray(ex)) {
+          E('扩展', at, '必须是对象（{ 学科, 适用条件, 反例: [...], 维护者 }）');
+          return;
+        }
+        const subject = nonEmpty(ex['学科'], at + '.学科', '缺「学科」（或接口名），例如 "化学"');
+        const applies = nonEmpty(ex['适用条件'], at + '.适用条件', '缺「适用条件」—— 要说清什么题、什么前提下才该用这条扩展');
+        const who = nonEmpty(ex['维护者'], at + '.维护者', '缺「维护者」—— 没人认领的扩展坏掉时无人可问');
+        const ctr = ex['反例'];
+        if (!Array.isArray(ctr) || ctr.length === 0) {
+          E('扩展', at + '.反例', '缺「反例」（非空数组）—— 没有反例的扩展无法证明它只在适用条件下生效；' +
+            '「能发现误伤的反例」是本批的验收原文');
+        } else {
+          const seen = [];
+          ctr.forEach((c, j) => {
+            const wat = at + '.反例[' + j + ']';
+            if (!c || typeof c !== 'object' || Array.isArray(c)) {
+              E('扩展', wat, '必须是对象（{ 案例, 对照 }）');
+              return;
+            }
+            const caseRel = str(c['案例']);
+            const ctrlRef = str(c['对照']);
+            if (!caseRel) { E('扩展', wat + '.案例', '缺「案例」（包内相对目录，例 cases/periodic-symbols）'); return; }
+            if (!ctrlRef) {
+              E('扩展', wat + '.对照', '缺「对照」（该案例 expected.json 里 controls[] 的 id 或场景关键词）');
+              return;
+            }
+            const caseAbs = resolveInner(packDir, realPack, caseRel, wat + '.案例', E);
+            if (!caseAbs) return;
+            if (!isDir(caseAbs)) { E('扩展', wat + '.案例', '案例目录不存在：' + caseRel); return; }
+            const expFile = path.join(caseAbs, 'expected.json');
+            if (!isFile(expFile)) { E('扩展', wat + '.案例', '案例里没有 expected.json，反例无从核对：' + caseRel); return; }
+            let exp = null;
+            try { exp = JSON.parse(readText(expFile)); } catch (e) { E('扩展', wat + '.案例', 'expected.json 不是合法 JSON：' + e.message); return; }
+            const controls = Array.isArray(exp && exp.controls) ? exp.controls : [];
+            const hit = controls.some((k) => k && (String(k.id) === ctrlRef ||
+              String(k.scene || '').includes(ctrlRef) || String(k.expect || '').includes(ctrlRef)));
+            if (!hit) {
+              E('扩展', wat + '.对照', '案例 ' + caseRel + ' 的 controls[] 里找不到对照 ' + JSON.stringify(ctrlRef) +
+                '（现有：' + (controls.map((k) => k && k.id).filter(Boolean).join('、') || '（无）') + '）' +
+                ' —— 「能发现误伤的反例」必须真在案例里，不能只是嘴上说');
+              return;
+            }
+            seen.push(caseRel + '#' + ctrlRef);
+          });
+          if (subject && applies && who && seen.length) {
+            extList.push({ 学科: subject, 适用条件: applies, 反例: seen, 维护者: who });
+          }
+        }
+      });
+    }
+  }
+  out.extensions = extList;
+
   /* ── ⑥ 限值（给**实际数字**，不写"过大"）── */
   const files = collectDataFiles(packDir);
   if (files.length > MAX_FILES) {
@@ -747,6 +830,9 @@ function cmdValidate(dir) {
     process.stdout.write(JSON.stringify({
       ok: v.ok, dir: v.dir, id: v.id, version: v.version, formatVersion: v.formatVersion,
       cards: v.cards.map((c) => ({ id: c.id, body: c.body, bodySha256: c.bodySha256, steps: c.steps, cases: c.cases })),
+      /* ★ 2026-11-03（批次 5）：扩展声明要出现在**机读输出**里 —— 否则机检只能"看有没有报错"，
+         没法回答"这条扩展声明的四项分别是什么"（人读行里印了一份、JSON 里没有，两边必然漂移）。 */
+      extensions: v.extensions,
       errors: v.errors, notes: v.notes,
     }, null, 2) + '\n');
     return v.ok ? 0 : 1;

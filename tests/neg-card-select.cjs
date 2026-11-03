@@ -191,9 +191,34 @@ if (!fs.existsSync(SAMPLES)) {
       !!jb && !!jc && JSON.stringify(jb.recipes) === JSON.stringify(jc.recipes),
       jc ? 'recipes=' + jc.recipes.length + ' 个' : '(解析失败)');
   }
-  A('清单 --json 追加 packs 字段（listPacks() 结果；本用例指到临时根）',
-    lstCur.code === 0 && (() => { const j = JSON.parse(lstCur.out); return Array.isArray(j.packs) && j.packs.length === 1 && j.packs[0].id === PID; })(),
-    (() => { try { const j = JSON.parse(lstCur.out); return JSON.stringify(j.packs); } catch { return String(lstCur.err).slice(0, 120); } })());
+  /* ★ 2026-11-03（批次 5 集成时修正）：这条原先写死"packs 恰好 1 个"（当时样本根里只有试点包）。
+     批次 5 往 `src\packs` 加了第二个家族（`family-b/periodic-symbols`，学科扩展示例）⇒ 写死的条数当场假红。
+     要守的是："packs 字段存在、样本根里**每个包都在**、且 id/版本/启用状态/校验结论都对"。
+     改成从样本根**推出期望集合**（扫 `<packId>/<version>/pack.json`）：以后再加包不假红；
+     "漏列一个包 / 列错版本 / 把红的说成绿的"仍然会红。 */
+  const expectPacks = [];
+  (function walkPacks(root, prefix) {
+    for (const e of fs.readdirSync(root)) {
+      const p = path.join(root, e);
+      if (!fs.statSync(p).isDirectory()) continue;
+      const pj = path.join(p, 'pack.json');
+      /* ⚠ 期望值取 `pack.json` 自己的 `id`（**不是目录名**）：packId 可以是多段
+         （`family-a/shared-stem` 在磁盘上就是两层目录），按目录名拼会得到
+         `family-a/shared-stem/1.0.2@1.0.2` 这种错串 —— 本用例第一版就这么假红过。 */
+      if (fs.existsSync(pj)) { const d = JSON.parse(fs.readFileSync(pj, 'utf8')); expectPacks.push(d.id + '@' + d.version); continue; }
+      walkPacks(p, prefix + e + '/');
+    }
+  })(PACKS, '');
+  A('清单 --json 追加 packs 字段（listPacks() 结果；本用例指到临时根）—— 逐包对账，不写死条数',
+    lstCur.code === 0 && expectPacks.length > 0 && (() => {
+      const j = JSON.parse(lstCur.out);
+      const got = (j.packs || []).map((p) => p.id + '@' + p.version).sort();
+      return Array.isArray(j.packs) &&
+        JSON.stringify(got) === JSON.stringify(expectPacks.slice().sort()) &&
+        (j.packs || []).every((p) => p.enabled === true && p.verdict && p.verdict.ok === true) &&
+        (j.packs || []).some((p) => p.id === PID);
+    })(),
+    (() => { try { const j = JSON.parse(lstCur.out); return 'packs=' + JSON.stringify((j.packs || []).map((p) => p.id + '@' + p.version)) + ' 期望=' + JSON.stringify(expectPacks); } catch { return String(lstCur.err).slice(0, 120); } })());
 
   /* ══════════════════════ 三、选一张卡：正文进提示词 + 摘要变 ══════════════════════ */
   section('三、选一张卡：正文进「二、任务指令」段、摘要随卡变、任务记录带选卡数组');

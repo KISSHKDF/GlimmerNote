@@ -867,6 +867,12 @@ const unitTests = [
      6 进程同时采用 ⇒ 恰好 1 个真写入 + 5 个幂等、修订对象 1 份、`revisions[]` 1 条；双击重试字节不变；
      落点被 ENOTDIR 占住 ⇒ 整体回滚（台账逐字节一致）+ 排除障碍后重试成功。 */
   ['neg-revision-concurrency.cjs'],
+  /* ⑬ 批次 5「扩展」：`pack.json` 的 `extensions[]`（学科/接口扩展声明）机检 ——
+     §6 原文「每条扩展必须有：适用条件、能发现误伤的反例、维护者」+ §9.1「逐条扩展各自附反例」。
+     判据：不声明 ⇒ 老包一字不改照过（向后兼容）；声明了四项缺一/空值/占位词 ⇒ 红；
+     **反例必须可跑**（指到真实案例 + 该案例 controls[] 里真有那条对照）⇒ 反例失去支撑时当场红。
+     正向用真扩展包（化学 family-b/periodic-symbols）跑；装机路径（装/停）在临时包根抽查。 */
+  ['neg-pack-extensions.cjs'],
 ];
 for (const [name] of unitTests) {
   worst = Math.max(worst, run(name));

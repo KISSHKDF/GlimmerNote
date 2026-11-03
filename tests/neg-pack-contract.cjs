@@ -154,11 +154,32 @@ const errText = (v) => (v && v.json && v.json.errors ? v.json.errors.map((e) => 
       card.bodySha256 + ' vs ' + sha256(fs.readFileSync(bodyAbs)));
 
     const l = runJson(['清单'], { packs: SRC_PACKS });
-    A('清单 exit 0 且列出 1 个包（id/version/启用状态/校验结论）',
-      l.code === 0 && l.json && l.json.packs.length === 1 &&
-      l.json.packs[0].id === 'family-a/shared-stem' && l.json.packs[0].version === PILOT_VER &&
-      l.json.packs[0].enabled === true && l.json.packs[0].verdict.ok === true,
-      l.json ? JSON.stringify(l.json.packs.map((p) => [p.id, p.version, p.enabled, p.verdict.ok])) : 'out=' + l.out.slice(0, 120));
+    /* ★ 2026-11-03（批次 5 集成时修正）：这条原先写死"列出 **1** 个包"（当时样本里只有试点包）。
+       批次 5 往 `src\packs` 加了第二个家族（`family-b/periodic-symbols`，学科扩展示例）⇒ 写死的条数当场假红。
+       要守的其实是："**样本根里的每个包都被列出来**，且 id/version/启用状态/校验结论都对"。
+       改成**从样本目录推出期望集合**（数一数有几个 `<packId>/<version>/pack.json`），逐项对账 ——
+       这样以后再加包不会假红，而"漏列一个包 / 列错版本 / 把红的说成绿的"仍然会红。 */
+    const expectPacks = [];
+    for (const fam of fs.readdirSync(SRC_PACKS)) {
+      const famDir = path.join(SRC_PACKS, fam);
+      if (!fs.statSync(famDir).isDirectory()) continue;
+      for (const sub of fs.readdirSync(famDir)) {
+        const subDir = path.join(famDir, sub);
+        if (!fs.statSync(subDir).isDirectory()) continue;
+        for (const ver of fs.readdirSync(subDir)) {
+          const pj = path.join(subDir, ver, 'pack.json');
+          if (fs.existsSync(pj)) expectPacks.push(JSON.parse(fs.readFileSync(pj, 'utf8')).id + '@' + ver);
+        }
+      }
+    }
+    const listed = (l.json ? l.json.packs : []).map((p) => p.id + '@' + p.version);
+    A('清单 exit 0 且把样本根里的每个包都列出来（id/version/启用状态/校验结论逐项对）',
+      l.code === 0 && l.json && expectPacks.length > 0 &&
+      JSON.stringify(listed.slice().sort()) === JSON.stringify(expectPacks.slice().sort()) &&
+      l.json.packs.every((p) => p.enabled === true && p.verdict.ok === true) &&
+      l.json.packs.some((p) => p.id === 'family-a/shared-stem' && p.version === PILOT_VER),
+      l.json ? '列出=' + JSON.stringify(listed) + ' 期望=' + JSON.stringify(expectPacks)
+        : 'out=' + l.out.slice(0, 120));
 
     const s = runJson(['摘要', PILOT], { packs: SRC_PACKS });
     A('摘要 exit 0 且给整包摘要 + 每张卡正文 sha256 前 12 位',

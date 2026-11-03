@@ -413,6 +413,8 @@ const TMP_PREFIXES = [
   'gn-draft-',        // tests\neg-experience-draft.cjs 的临时库 + 临时经验包根（批次 3）
   'gn-w3-review-',    // tests\neg-v2-review-sidebyside.cjs 的临时库（批次 4）
   'gn-revconc-',      // tests\neg-revision-concurrency.cjs 的并发钻孔夹具（批次 4）
+  'gn-ext-',          // tests\neg-pack-extensions.cjs 的包副本夹具（批次 5；也覆盖 gn-ext-root- 那个空包根）
+  'gn-ext-packs-',    // 同上：装机路径抽查用的临时经验包根
 ];
 const TMP_STALE_MS = 24 * 60 * 60 * 1000;
 const _ownedTmp = new Set();
