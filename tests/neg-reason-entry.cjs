@@ -359,11 +359,31 @@ if (!OLD_SRC) {
 
   const ua = runTool(OLD_TOOL, OLD_LIB, ['不存在的动作']), ub = runTool(NEW_TOOL, NEW_LIB, ['不存在的动作']);
   const uea = norm(ua.err, OLD_LIB), ueb = norm(ub.err, NEW_LIB);
-  const uebCleaned = ueb.split('\n').filter(l => !/^\s*纠因 --id/.test(l)).map(l => l.replace('纠因 / ', '')).join('\n');
+  /* ★ 2026-11-03（批次 4 集成时修正）：这条判据原先写死"只多出 `纠因` 一个成员 + 一行用法提示"
+     （`uebCleaned === uea`）。批次 4 往同一份"可用列表"里又加了 `候选/修订/采用/作废候选`，
+     于是**逐字节相等**这条就假红了 —— 而它真正要守的是另一件事：
+       "**除帮助列表与用法提示之外**，输出一字不差；且列表只增不减"。
+     改成结构判据（对**后续批次继续加子命令**免疫，但对"删掉老命令"和"改到别的行"仍然有牙齿）：
+       ⓐ 只允许差异出现在「可用：…」那一行与 "  <命令> …" 的用法提示行；
+       ⓑ 可用列表里旧的那串必须**逐个**在新列表里（只增不减）；
+       ⓒ 旧实现里根本没有这些新命令名（证明"新增"是真的新增，不是改口径）。 */
+  const availLine = (t) => (t.split('\n').find(l => /可用：/.test(l)) || '');
+  const namesIn = (t) => availLine(t).replace(/^.*可用：/, '').split('/').map(s => s.trim()).filter(Boolean);
+  const usageLines = (t) => t.split('\n').filter(l => /^\s{2,}\S+\s+--/.test(l));
+  const restSame = (a, b) => {
+    const strip = (t) => t.split('\n').filter(l => !/可用：/.test(l) && !/^\s{2,}\S+\s+--/.test(l)).join('\n');
+    const kept = usageLines(a).every(l => usageLines(b).some(x => x.replace(/\s+/g, ' ') === l.replace(/\s+/g, ' ')));
+    return kept && strip(a) === strip(b);
+  };
+  const oldNames = namesIn(uea), newNames = namesIn(ueb);
   A('已知差异②（未知动作）：两边都 exit 2（行为不变）', ua.code === 2 && ub.code === 2, ua.code + '/' + ub.code);
-  A('★ 已知差异② 逐字节只差「可用列表新增 纠因 + 一行纠因用法提示」',
-    uebCleaned === uea && /纠因 --id/.test(ueb) && !/纠因/.test(uea),
-    firstDiff(uea, uebCleaned));
+  A('★ 已知差异② 差异只许出现在「可用列表 / 用法提示」，且列表**只增不减**（批次 4 加 4 个新子命令后仍成立）',
+    oldNames.filter(n => !newNames.includes(n)).length === 0 &&
+    newNames.filter(n => !oldNames.includes(n)).length > 0 &&
+    restSame(uea, ueb) && !/纠因/.test(uea),
+    '旧 ' + oldNames.length + ' 项 → 新 ' + newNames.length + ' 项　新增=[' +
+      newNames.filter(n => !oldNames.includes(n)).join(',') + ']　缺失=[' +
+      oldNames.filter(n => !newNames.includes(n)).join(',') + ']　其余行差异=' + (restSame(uea, ueb) ? '无' : firstDiff(uea, ueb)));
 
   /* ── 已知差异③：`加 --kind 经验线索` —— 本批**新增能力本身**带来的必然差异 ──
      它不能进对拍序列：旧实现不认识这个类型，会**拒收**（exit 2、不写盘）；新实现会落库。

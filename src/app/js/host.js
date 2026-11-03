@@ -306,6 +306,47 @@
     if (H.mode === 'shell') return bridge('taskConfirm', { taskId: taskId, note: note || '' }, 120000);
     throw new Error('「任务确认」需要桌面壳通道（拾光小册.exe）。');
   };
+  /* ★ 2026-11-03（批次 4「审核与正式入库」）：人工修订通道（候选 / 修订链 / 正式写入）。
+     与壳侧三把 op 一一对应，分工同 `_待确认.mjs`：
+       · reviewList      只读（读候选与修订链）
+       · reviewCandidate 写用户库（登记候选）⇒ 壳侧进写闸
+       · reviewAdopt     **正式写入入口**（把候选采纳进 `_修订\`）⇒ 壳侧进写闸
+     ⚠ 服务端/离线模式一律**不写**：这两把是"改用户库"的动作，只有桌面壳能做（同 taskConfirm）。
+     ⚠ 回传形状：壳给 `{ok, code, out, err}`，其中 `out` 是工具 stdout（`--json` 时是 JSON 文本）。
+       这里统一解析：`code !== 0` 或解析失败 ⇒ 抛错并把**工具原文**带出去（界面照原样上屏，不许吞）。 */
+  function reviewJson(res, what) {
+    const so = (res && typeof res.out === 'string') ? res.out : '';
+    /* ⚠ 解析口径：`_待确认.mjs 候选/修订/采用 --json` 的**人读行仍打在 stdout 上**，JSON 是**最后一行**
+       （与 `_原图.mjs`/`_经验草稿.mjs` 那种"`--json` 时人读走 stderr"的写法不同 —— 已登记为待统一的偏差）。
+       所以这里**按最后一行解析**，并优先取最后一个以 `{` 开头的行；不许假设 stdout 是纯 JSON
+       （那会在真机上表现为"读了候选却报解析失败"，而 JSON 就明明白白在上面几行）。 */
+    let j = null;
+    const lines = so.split(/\r?\n/).filter((l) => l.trim());
+    for (let i = lines.length - 1; i >= 0 && !j; i--) {
+      const t = lines[i].trim();
+      if (t.startsWith('{')) { try { j = JSON.parse(t); } catch { /* 继续往前找 */ } }
+    }
+    if (!res || res.code !== 0 || !j) {
+      const raw = [so, (res && res.err) || ''].filter(Boolean).join('\n').trim();
+      const e = new Error('「' + what + '」失败（exit=' + ((res && res.code) != null ? res.code : '?') + '）：\n' + (raw || '（工具没有输出）'));
+      e.code = res ? res.code : -1;
+      e.raw = raw;
+      throw e;
+    }
+    return j;
+  }
+  H.reviewList = async function (pendingId) {
+    if (H.mode !== 'shell') throw new Error('「候选修订」需要桌面壳通道（拾光小册.exe）。');
+    return reviewJson(await bridge('reviewList', { pendingId: pendingId }, 120000), '读候选修订');
+  };
+  H.reviewCandidate = async function (pendingId, kind, target, text) {
+    if (H.mode !== 'shell') throw new Error('「登记候选修订」需要桌面壳通道（拾光小册.exe）。');
+    return reviewJson(await bridge('reviewCandidate', { pendingId: pendingId, kind: kind, target: target, text: text }, 180000), '登记候选修订');
+  };
+  H.reviewAdopt = async function (pendingId, candId, dry) {
+    if (H.mode !== 'shell') throw new Error('「正式写入」需要桌面壳通道（拾光小册.exe）。');
+    return reviewJson(await bridge('reviewAdopt', { pendingId: pendingId, candId: candId, dry: dry ? '1' : '' }, 300000), '正式写入');
+  };
   /* 全量重建（生成器重跑），返回新 state；生成器实测 ~5 分钟，超时给 10.5 分钟 */
   H.regen = async function () {
     if (H.mode === 'shell') return bridge('regen', {}, 630000);

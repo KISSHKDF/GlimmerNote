@@ -204,6 +204,12 @@ function cardsOf(idx, idxDir, subjectName) {
     o.origBox = og && og.box ? og.box : null;
     o.origImport = (ri && ri.path) ? enc(String(ri.path)) : null;
     o.origBy = og && og.by ? og.by : null;
+    /* ★ 2026-11-03（批次 4「原图并排显示 + 区域高亮」）：把**区域**也递给界面。
+       之前只有 `origBox`（那一小块红框），界面画不出"角色分层"（错误位置/公共条件/配图）。
+       口径与 `docs\区域契约.md` 一致：`regions[]` 原样透传（归一化 0~1 + `pageSha` + `imgW/imgH`），
+       **磁盘旧值一律不改**、这里也不做换算（换算的唯一实现是前端 `normToPx`）。
+       为什么原样透传而不是挑字段：多一个字段前端不认识时它自己忽略，少一个字段界面就得猜 —— 猜必错。 */
+    o.origRegions = Array.isArray(og && og.regions) ? og.regions : null;
     /* 溯源状态：'direct'=原路径还在；'store'=原路径没了、从保全库按内容找回；
        'lost'=解析过但找不回（保全库里也没有 / 歧义 fail-closed）；null=台账里根本没这个字段。
        取值集合 {direct, store, lost} 与 `docs\原图保全.md`、`_状态刷新.mjs:122` **同一个词、同一语义**

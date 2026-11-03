@@ -93,6 +93,8 @@
       (p.source ? '<div class="small muted" style="margin-top:6px">来源：' + U.esc(p.source) + (p.evidenceNote ? ' · ' + U.esc(p.evidenceNote) : '') + '</div>' : '') +
       (done ? '<div class="ans" style="margin-top:8px"><b>结论：</b>' + U.esc(p.answer || '') + (p.note ? '（' + U.esc(p.note) + '）' : '') + '</div>' : '') +
       evBlock(p) +
+      pairBlock(p) +
+      reviewBlock(p) +
       (done ? '' :
         '<div class="pd-note"><textarea data-ans="' + U.esc(p.id) + '" placeholder="结论/答案（办结必填，作废必写理由）：孩子口述了什么 / 放大原卷看到了什么 / 老师怎么答…" rows="2"></textarea></div>' +
         '<div class="pd-foot">' +
@@ -176,6 +178,186 @@
       if (!x) return S.toast('关联卡不在当前范围（或还没入册）', 'warn');
       S.route('bank', { openKey: x.key });
     });
+    /* ★ 2026-11-03（批次 4）：原图并排（整页 + 区域高亮）与候选修订的接线。
+       时序同 `.pd-ev`：`innerHTML` 只发起图片请求，load 事件由事件循环派发 ⇒ 紧随其后的同步绑定一定先挂上。 */
+    box.querySelectorAll('[data-pair]').forEach(w => bindPair(w));
+    box.querySelectorAll('[data-rvload]').forEach(b => b.onclick = () => loadReview(b.dataset.rvload, b));
+  }
+
+  /* ---------- 原图并排：左＝整页原卷（区域高亮）／右＝证据截图（批次 4） ----------
+     为什么要有它：批次 2 把"区域"（角色 + 归一化坐标 + 页归属）做进了契约，但界面上一直只有
+     证据截图那一张 —— 看不出"这一块在整页的哪儿、周边还有什么条件"。并排显示 = 让人一眼对上。
+     换算**不在这里做**：调 `S.regionPx`（唯一实现在 shell.js，与灯箱同源）。 */
+  const ROLE_NAME = { 错误位置: '错误位置', 公共条件: '公共条件', 配图: '配图' };
+  function pairBlock(p) {
+    const regions = Array.isArray(p.origRegions) ? p.origRegions : [];
+    const hasOrig = !!p.origPage;
+    const boxOnly = !regions.length && Array.isArray(p.origBox) && p.origBox.length === 4;
+    if (!hasOrig && !regions.length && !boxOnly) return '';
+    if (!hasOrig) {
+      /* 有区域/红框但**没有整页路径**：不许画一张空图（那是静默失败），直接说清缺什么。 */
+      return '<div class="pd-pair" data-pair="' + U.esc(p.id) + '">' +
+        '<div class="pair-hd">原图并排</div>' +
+        '<div class="pd-evmiss">⚠ 有区域记录（' + (regions.length || 1) + ' 块）但**拿不到整页原卷路径**（`origPage` 为空）——' +
+        '不能画一张空图充数。<br>补法：<code>node _待确认.mjs 定位 --id ' + U.esc(p.id) + ' --page "&lt;库内相对路径&gt;" --box "x,y,w,h"</code></div></div>';
+    }
+    const chips = regions.length
+      ? regions.map((r, i) => '<span class="rp-chip ' + S.roleClass(r.role) + '" data-rp="' + i + '">' +
+        U.esc(ROLE_NAME[r.role] || r.role || '（无角色）') + '</span>').join('')
+      : '<span class="rp-chip r-other" data-rp="0">红框对准（无角色记录）</span>';
+    return '<div class="pd-pair" data-pair="' + U.esc(p.id) + '">' +
+      '<div class="pair-hd">原图并排　<span class="small muted">左＝整页原卷，右＝证据截图；点左侧小标签可只看某一角色</span></div>' +
+      '<div class="pair-row">' +
+      '<div class="pair-col"><div class="pair-cap">整页原卷' + (regions.length ? '（' + regions.length + ' 块区域）' : '') + '</div>' +
+      '<div class="pair-wrap"><img class="pair-orig" alt="整页原卷" src="' + U.esc(H.asset(p.origPage)) + '"' +
+      ' data-regions="' + U.esc(JSON.stringify(regions.length ? regions : (boxOnly ? [{ role: '', x: p.origBox[0], y: p.origBox[1], w: p.origBox[2], h: p.origBox[3] }] : []))) + '">' +
+      '<div class="pair-boxes"></div></div>' +
+      '<div class="pair-legend">' + chips + '</div></div>' +
+      '<div class="pair-col"><div class="pair-cap">证据截图</div>' +
+      (p.evidence && p.evidenceOk !== false
+        ? '<div class="pair-wrap"><img class="pair-ev" alt="证据截图" src="' + U.esc(H.asset(p.evidence)) + '"></div>'
+        : '<div class="pd-evmiss">⚠ 证据截图不可用（' + U.esc(p.evidenceOk === false ? '文件不在或路径非法' : '缺图（必有字段）') + '）</div>') +
+      '</div></div></div>';
+  }
+  /** 把归一化区域画成像素框。**必须等图 load**（没有 naturalWidth 算不出像素）；算不出/字段非法 ⇒ 明说，不静默。 */
+  function bindPair(w) {
+    const img = w.querySelector('img.pair-orig');
+    if (!img) return;
+    const holder = w.querySelector('.pair-boxes');
+    let regions = [];
+    try { regions = JSON.parse(img.dataset.regions || '[]'); } catch { regions = []; }
+    const draw = () => {
+      holder.innerHTML = '';
+      if (!img.naturalWidth) {
+        holder.innerHTML = '<div class="pair-warn">⚠ 整页原卷量不出尺寸（文件读不出宽高）——区域无法定位</div>';
+        return;
+      }
+      let bad = 0;
+      regions.forEach((r, i) => {
+        const px = S.regionPx(r, img);
+        if (!px) { bad++; return; }
+        const [x, y, ww, hh] = px;
+        const d = document.createElement('div');
+        d.className = 'pair-box ' + S.roleClass(r.role);
+        d.style.left = (x / img.naturalWidth * 100) + '%';
+        d.style.top = (y / img.naturalHeight * 100) + '%';
+        d.style.width = (ww / img.naturalWidth * 100) + '%';
+        d.style.height = (hh / img.naturalHeight * 100) + '%';
+        d.title = (ROLE_NAME[r.role] || r.role || '区域') + '　x=' + r.x + ' y=' + r.y + ' w=' + r.w + ' h=' + r.h;
+        d.dataset.rp = String(i);
+        holder.appendChild(d);
+      });
+      if (bad) {
+        const e = document.createElement('div');
+        e.className = 'pair-warn';
+        e.textContent = '⚠ 有 ' + bad + ' 块区域坐标不合法（算不出像素框）——已跳过，请核对记录';
+        holder.appendChild(e);
+      }
+      /* 只看某一角色：点标签切换（多选语义 = 高亮该角色，其余变淡；再点还原） */
+      w.querySelectorAll('.rp-chip').forEach((c) => {
+        c.onclick = () => {
+          const on = c.classList.toggle('on');
+          w.querySelectorAll('.rp-chip').forEach((o) => { if (o !== c) o.classList.remove('on'); });
+          holder.querySelectorAll('.pair-box').forEach((b) => b.classList.toggle('dim', on && b.dataset.rp !== c.dataset.rp));
+        };
+      });
+    };
+    img.onerror = () => {
+      holder.innerHTML = '<div class="pair-warn">⚠ 整页原卷打不开（路径：' + U.esc(img.getAttribute('src') || '') + '）——区域无法核对</div>';
+    };
+    if (img.complete && img.naturalWidth) draw(); else img.onload = draw;
+  }
+
+  /* ---------- 候选修订 + 正式写入入口（批次 4） ----------
+     两段式（与 `_待确认.mjs` 一致）：候选是**草案**，`采用` 才是写库。
+     为什么按需加载而不是渲染时全拉：每条待办一次壳往返，待办列表几十条 ⇒ 打开页面就几十次进程调用。
+     ⚠ 失败/空/现值缺失一律**上屏原文**，不许静默降级。 */
+  function reviewBlock(p) {
+    return '<div class="pd-review" data-review="' + U.esc(p.id) + '">' +
+      '<div class="pair-hd">候选修订　<span class="small muted">草案 → 人工看 → 点「采用」才写进库</span></div>' +
+      '<div class="rv-body small muted">未读。点下面按钮读这条待办的候选与修订链。</div>' +
+      '<div class="pd-foot"><button class="btn sm ghost" data-rvload="' + U.esc(p.id) + '">🔍 查候选修订</button></div>' +
+      '</div>';
+  }
+  function rvStatusTag(st) {
+    return st === '已采用' ? '<span class="tag ok">已采用</span>' : st === '已作废' ? '<span class="tag gray">已作废</span>' : '<span class="tag warn">待采用</span>';
+  }
+  function rvHtml(j) {
+    const cs = Array.isArray(j.candidates) ? j.candidates : [];
+    const rs = Array.isArray(j.revisions) ? j.revisions : [];
+    if (!cs.length && !rs.length) return '<div class="rv-body small muted">这条待办还没有候选修订，也没有修订链记录。</div>';
+    const cands = cs.map((c) => {
+      const grey = c.status !== '待采用';
+      return '<div class="rv-card' + (grey ? ' grey' : '') + '" data-cand="' + U.esc(c.candId) + '">' +
+        '<div class="rv-top">' + rvStatusTag(c.status) + '<span class="tag info">' + U.esc(c.kind) + '</span>' +
+        '<span class="small num">' + U.esc(c.target) + '</span><span class="small muted">' + U.esc(c.candId) + ' · ' + U.esc(c.at || '') + '</span></div>' +
+        '<div class="rv-sum">' + U.esc(c.summary || '') + '</div>' +
+        '<div class="rv-pair">' +
+        '<div class="rv-side"><div class="rv-cap">现值' + (c.currentPresence === 'read' ? '（' + U.esc(c.currentFrom || '') + '）' : '') + '</div>' +
+        '<pre class="rv-pre">' + U.esc(c.currentPresence === 'read' ? (c.current || '') : ('（读不到：' + (c.currentWhy || '未说明') + '）')) + '</pre></div>' +
+        '<div class="rv-side"><div class="rv-cap">候选</div><pre class="rv-pre">' + U.esc(c.payload || '') + '</pre></div>' +
+        '</div>' +
+        (grey ? '<div class="small muted">' + U.esc(c.reason || '（无说明）') + '</div>'
+          : '<div class="pd-foot"><button class="btn sm" data-rvadopt="' + U.esc(c.candId) + '">✅ 采用（写进库）</button>' +
+            '<button class="btn sm ghost" data-rvdry="' + U.esc(c.candId) + '">先看会写什么（不写盘）</button></div>') +
+        '</div>';
+    }).join('');
+    const revs = rs.length
+      ? '<div class="rv-revs"><div class="rv-cap">修订链（只增不改）</div>' + rs.map((r) =>
+        '<div class="small">' + U.esc(r.at || '') + ' · ' + U.esc(r.candId || '') + ' · ' + U.esc(r.kind || '') + ' ' + U.esc(r.target || '') +
+        '　写入：' + U.esc((r.written || []).join('、')) + '</div>').join('') + '</div>'
+      : '';
+    return '<div class="rv-count small muted">候选 ' + cs.length + '（待采用 ' + (j.counts && j.counts.pending || 0) +
+      ' / 已采用 ' + (j.counts && j.counts.adopted || 0) + ' / 已作废 ' + (j.counts && j.counts.void || 0) + '）· 修订链 ' + rs.length + ' 条</div>' +
+      cands + revs;
+  }
+  async function loadReview(id, btn) {
+    const w = btn.closest('.pd-review');
+    const body = w.querySelector('.rv-body');
+    const foot = w.querySelector('.pd-foot');
+    btn.disabled = true;
+    body.className = 'rv-body small muted';
+    body.textContent = '读取中…';
+    try {
+      const j = await H.reviewList(id);
+      body.className = 'rv-body';
+      body.innerHTML = rvHtml(j);
+      bindReview(w, id);
+    } catch (e) {
+      /* 失败**上屏工具原文**（含退出码），不吞、不美化 */
+      body.className = 'rv-body rv-err';
+      body.textContent = '✖ ' + (e && e.message ? e.message : String(e));
+    } finally { btn.disabled = false; if (foot) foot.style.display = ''; }
+  }
+  function bindReview(w, id) {
+    w.querySelectorAll('[data-rvdry]').forEach((b) => b.onclick = () => adopt(id, b.dataset.rvdry, true, w));
+    w.querySelectorAll('[data-rvadopt]').forEach((b) => b.onclick = () => adopt(id, b.dataset.rvadopt, false, w));
+  }
+  async function adopt(id, candId, dry, w) {
+    const card = w.querySelector('[data-cand="' + candId + '"]');
+    const out = card ? card.querySelector('.rv-out') || (() => {
+      const d = document.createElement('pre'); d.className = 'rv-out'; card.appendChild(d); return d;
+    })() : null;
+    if (!dry) {
+      const ok = await S.confirm({
+        title: '采用这条候选修订？', danger: false, ok: '采用（写进库）', cancel: '取消',
+        body: '候选 ' + candId + '\n\n这会把修订正文写进库：`_修订\\<类型>\\<目标>\\' + candId + '.md`，' +
+          '并在这条待办上追加一条修订链记录。**不会**改写卡正文/配方/流程文件。',
+      });
+      if (!ok) return;
+    }
+    if (out) out.textContent = '执行中…';
+    try {
+      const j = await H.reviewAdopt(id, candId, dry);
+      const txt = (dry ? '（不写盘）' : '✅ 已写入：') + (j.written || [j.relPath]).filter(Boolean).join('、') +
+        (j.idempotent ? '　（幂等：之前已采用过，未重复写）' : '') + '\n' + JSON.stringify(j, null, 1);
+      if (out) out.textContent = txt;
+      S.toast(dry ? '已列出将写入的内容（未写盘）' : '已采用，写进库并留痕', 'ok');
+      if (!dry) { const b = w.querySelector('[data-rvload]'); if (b) loadReview(id, b); }
+    } catch (e) {
+      if (out) out.textContent = '✖ ' + (e && e.message ? e.message : String(e));
+      S.toast(dry ? '预演失败' : '采用失败（详情见下方原文）', 'bad');
+    }
   }
 
   /* ---------- 灯箱办结流（rc.2：图上有红框，图下有这条的问题/判法/办结操作） ---------- */

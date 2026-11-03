@@ -126,7 +126,7 @@ const DERIVED_CACHE = new Set(['_状态.json']);
      登记在这里之后，下面的阴性自证 ⑦⑧ 会当场变红。口径与 `docs\过程文件规范.md §一`、
      `docs\录题任务契约.md §七.3` 三处一致（一处事实一个家：此处只放**机读名单**）。
    新增任何"库内合法写入"都必须先加到这张表，再加门禁 —— 顺序不能反。 */
-const LIB_USER_DATA_DIRS = new Set(['_录题']);
+const LIB_USER_DATA_DIRS = new Set(['_录题', '_修订']);
 function libSnapshot(dir) {
   const out = new Map();
   (function walk(d, rel) {
@@ -465,6 +465,15 @@ if (mode !== 'fixture') {
     'registered=' + LIB_USER_DATA_DIRS.has('_录题') + ' inDerived=' + DERIVED_CACHE.has('_录题'));
   dBad += B('⑧ 库里多出 数据\\_录题\\<taskId>.json ⇒ 必须判红（"往别的路径写仍红"）',
     clsLib('_录题/t-20261103-120000-abcdef.json') === 'red', clsLib('_录题/t-20261103-120000-abcdef.json'));
+  /* ★ 2026-11-03（批次 4）：`_修订\` 是"正式写入入口"的落点（`_待确认.mjs 采用`），
+     与 `_录题\` 同族 = **库内合法写入但当轮必须判红**（用户数据不是派生件）。
+     登记顺序纪律同 ⑦：先加名单、再加门禁，不许为了变绿塞进 DERIVED_CACHE。 */
+  dBad += B('⑦b 库内用户数据目录已登记且**不在**派生白名单（`_修订`，批次 4）',
+    LIB_USER_DATA_DIRS.has('_修订') && !DERIVED_CACHE.has('_修订') && !isDerivedPath('_修订/卡/P0012/c-0123456789ab.md'),
+    'registered=' + LIB_USER_DATA_DIRS.has('_修订') + ' inDerived=' + DERIVED_CACHE.has('_修订'));
+  dBad += B('⑧b 库里多出 数据\\_修订\\…\\<candId>.md ⇒ 必须判红（正式写入落点也不例外）',
+    clsLib('_修订/卡/P0012/c-0123456789ab.md') === 'red' && clsLib('_修订.json') === 'red',
+    clsLib('_修订/卡/P0012/c-0123456789ab.md'));
   dBad += B('⑧对照 派生件 `_状态.json` 仍按派生放行（没有把放行改宽）',
     clsLib('_状态.json') === 'derived', clsLib('_状态.json'));
   if (dBad) console.log('✖ 目录级判据的阴性自证未过 —— 判据没有牙齿，等于没补');
@@ -840,6 +849,24 @@ const unitTests = [
      labels 四档结论与 CONTRIBUTING 正文**互相锁定**（只写一边必红）、四档结论的**前提**也被断言
      （谁删标签或抬上限 ⇒ 当场红）。自写最小 YAML 解析、零依赖、fail-closed。63 断言。 */
   ['neg-contrib-templates.cjs'],
+  /* ════════ ★ 2026-11-03 批次 4「审核与正式入库」两条新用例 ════════ */
+  /* ⑨ 候选修订与**正式写入入口**：`候选/修订/采用/作废候选` 四子命令、`candidates[]`/`revisions[]`
+     只增不改、`_修订\<kind>\<目标>\<candId>.md` 落点、锁+事务+整体回滚、串行幂等；
+     既有子命令与真旧实现（不可变提交）**逐字节对拍**。224 断言（含 6 个真跑变异体）。 */
+  ['neg-revision-chain.cjs'],
+  /* ⑩ **恢复演练后半段**：自建 4 种形状（同图两次/同名异图/带 EXIF 方向/跨页题）→ 真跑入库 → 备份 →
+     删掉库内 `_原图\` → `恢复 --from` → 逐对象 sha256 零差异 → **用旧题引用复原"整页+红框+人工判断"**
+     （跨页指向另一张页、EXIF 显示宽高交换）；含"内容不同不许覆盖""复核不过不留半截""缺页/越界各给具体原因"
+     "派生件不改写原件"等阴性对照。25 断言。 */
+  ['neg-orig-restore-writeback.cjs'],
+  /* ⑪ 界面接线：`生成状态.mjs` 必须把 `_原卷台账.json` 的 `regions[]` 递给界面（真跑；没有 it 画不出角色分层），
+     `shell.js` 的坐标换算唯一实现 + `pending.js` 不许有第二份（反重复判据）、并排/候选/写入按钮接线齐；
+     含 **`--data` 必须压过继承的 CTB_DATA** 这条回归锁（本轮修掉"_原图寻址 导入期解析库根 ⇒ --data 静默失效"）。 */
+  ['neg-v2-review-sidebyside.cjs'],
+  /* ⑫ **并发对抗钻孔**（Lead 亲自做的那条，已固化成常驻）：4 进程同时登记同一候选 ⇒ 同一 candId、只 1 条；
+     6 进程同时采用 ⇒ 恰好 1 个真写入 + 5 个幂等、修订对象 1 份、`revisions[]` 1 条；双击重试字节不变；
+     落点被 ENOTDIR 占住 ⇒ 整体回滚（台账逐字节一致）+ 排除障碍后重试成功。 */
+  ['neg-revision-concurrency.cjs'],
 ];
 for (const [name] of unitTests) {
   worst = Math.max(worst, run(name));

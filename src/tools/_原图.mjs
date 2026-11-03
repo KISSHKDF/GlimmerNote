@@ -163,7 +163,7 @@ const mb = (n) => (n / 1048576).toFixed(1) + ' MB';
    于是 `入库 <目录> --batch "批次名"` 里的 "批次名" 被当成路径 ⇒ 报"路径不存在"。
    这里显式声明哪些选项吃值，其余一律当开关 —— 反面判据（`--dry` 后面跟路径）
    才不会把路径吃掉。 */
-const VALUE_OPTS = new Set(['batch', 'student', 'subject', 'diff', 'from']);
+const VALUE_OPTS = new Set(['batch', 'student', 'subject', 'diff', 'from', 'sha', 'derived-from', 'op', 'file', 'note']);
 function parseArgs(argv) {
   const opts = {}; const positional = [];
   for (let i = 0; i < argv.length; i++) {
@@ -683,11 +683,230 @@ function cmdCrosscheck(argv) {
   return 0;
 }
 
+/* ══════════════ 恢复（从备份根把对象写回库内） ══════════════ */
+/**
+ * 为什么要有它：`核对 --from` 只能证明"这份备份能不能证明库是完整的"，
+ * **证明完了之后呢？** 真丢了对象时没有任何写回入口 —— 本轮（批次 4）补上。
+ *
+ * 三条规矩与 `入库` 同源（它们保护的是同一件事：字节与名字必须一一对应）：
+ *   · 已存在且内容相同 ⇒ 跳过（**幂等**，报 skipped 计数）；
+ *   · 已存在但内容不同 ⇒ **报错不覆盖**（那是哈希碰撞或盘坏的信号，不是"顺手覆盖"能处理的）；
+ *   · 写完**逐字节复核**，对不上 ⇒ 删掉刚写的对象 + exit 1（**备份文件一个都不动**）。
+ * ⚠ 恢复**不改台账**：台账记录的是"这个库里有哪些对象"，恢复不是入库。
+ *   恢复出来但台账里没有的对象（孤儿）在报告里如实计数，交给 `校验` 复核。
+ */
+function cmdRestore(argv) {
+  const { opts } = parseArgs(argv);
+  const from = typeof opts.from === 'string' ? opts.from : null;
+  if (!from) {
+    console.error('✖ 恢复需要 `--from <备份根>`（形如 `_影像备份\\` 的目录树，或一份 `_原图\\` 的副本）。');
+    console.error('  用法：node _原图.mjs 恢复 --from <备份根> [--sha <前2位|完整>] [--dry] [--json]');
+    return 2;
+  }
+  const fromAbs = path.isAbsolute(from) ? from : path.resolve(ROOT, from);
+  let fromIsDir = false; try { fromIsDir = fs.statSync(fromAbs).isDirectory(); } catch { }
+  if (!fromIsDir) {
+    console.error('✖ --from 指的不是一个存在的目录：' + fromAbs);
+    return 2;
+  }
+  let want = null;
+  if (opts.sha !== undefined) {
+    if (typeof opts.sha !== 'string' || !/^[0-9a-fA-F]{2,64}$/.test(opts.sha.trim())) {
+      console.error('✖ --sha 形状不对（要 2~64 位十六进制，按前缀匹配）：' + String(opts.sha));
+      return 2;
+    }
+    want = opts.sha.trim().toUpperCase();
+  }
+
+  const { objs, dups } = indexBackupObjects(fromAbs);
+  const targets = [...objs.entries()]
+    .filter(([sha]) => !want || sha.startsWith(want))
+    .sort((a, b) => a[0].localeCompare(b[0]));
+
+  say('【原图保全库 · 恢复】' + (DRY ? '（--dry：不写盘）' : ''));
+  say('  备份根：' + fromAbs);
+  say('  库内：  ' + STORE);
+  say('  备份里可识别的库对象 ' + objs.size + ' 个' +
+    (want ? '，按 --sha ' + want + ' 前缀匹配到 ' + targets.length + ' 个' : ''));
+  if (dups.length) say('  ⚠ 备份内同一对象多份 ' + dups.length + ' 个（只取第一份）：' + dups.slice(0, 5).join('、'));
+  if (!targets.length) {
+    console.error('✖ 备份根里没有可恢复的对象' + (want ? '（--sha ' + want + ' 前缀没匹配上）' : '') + '。');
+    console.error('  判据：文件名必须是 64 位 sha256（扩展名保留原格式）—— 这是库对象的命名约定，认不出的一律不当对象。');
+    return 1;
+  }
+
+  const tally = { restored: 0, skipped: 0, dry: 0, error: 0 };
+  const errors = [];
+  let bytes = 0;
+  for (const [sha, o] of targets) {
+    const ext = (path.extname(o.path).slice(1) || 'bin').toLowerCase();
+    const rel = objectRel(sha, ext);
+    const dst = path.join(STORE, rel);
+    let exists = false; try { exists = fs.statSync(dst).isFile(); } catch { }
+    if (exists) {
+      if (sha256File(dst) === sha) { tally.skipped++; continue; }   // 幂等
+      tally.error++;
+      errors.push({ sha, error: '库里已有同名对象但内容不同（' + rel + '）—— **拒绝覆盖**（哈希碰撞或磁盘损坏的信号，请人工核查）。' });
+      continue;
+    }
+    if (DRY) { tally.dry++; continue; }
+    fs.mkdirSync(path.dirname(dst), { recursive: true });
+    const tmp = dst + '.tmp';
+    try {
+      fs.copyFileSync(o.path, tmp);
+      let fd = null;
+      try { fd = fs.openSync(tmp, 'r+'); try { fs.fsyncSync(fd); } catch { } } finally { if (fd !== null) fs.closeSync(fd); }
+      fs.renameSync(tmp, dst);
+    } catch (e) {
+      try { fs.unlinkSync(tmp); } catch { }
+      tally.error++;
+      errors.push({ sha, error: '写回失败（备份文件未动）：' + e.message });
+      continue;
+    }
+    const h2 = sha256File(dst);
+    if (h2 !== sha) {
+      try { fs.unlinkSync(dst); } catch { }
+      tally.error++;
+      errors.push({ sha, error: '★ 落盘复核失败：写回的对象与备份字节不符（期望 ' + sha.slice(0, 16) + '…，实得 ' + h2.slice(0, 16) + '…）。已删除刚写的对象。' });
+      continue;
+    }
+    tally.restored++;
+    bytes += fs.statSync(dst).size;
+  }
+
+  const doc = loadLedger();
+  const notInLedger = targets.filter(([sha]) => !doc.objects[sha]).length;
+  const res = {
+    ok: tally.error === 0, from: fromAbs, dry: DRY,
+    backupObjects: objs.size, matched: targets.length,
+    restored: tally.restored, skipped: tally.skipped, planned: tally.dry, failed: tally.error,
+    bytes, notInLedger,
+  };
+  if (JSON_OUT) process.stdout.write(JSON.stringify(res, null, 1) + '\n');
+  else {
+    say('  写回 ' + tally.restored + ' ｜ 已存在且内容相同（幂等跳过）' + tally.skipped +
+      ' ｜ 计划（--dry）' + tally.dry + ' ｜ 失败 ' + tally.error);
+    if (bytes) say('  写回字节：' + mb(bytes));
+    if (notInLedger) {
+      say('  ⚠ 其中 ' + notInLedger + ' 个**不在台账里**（孤儿对象）—— 按设计恢复不改台账，' +
+        '请用 `校验` 复核是否需要补登记。');
+    }
+    for (const e of errors.slice(0, 20)) console.error('  ✖ ' + e.sha.slice(0, 16) + '…：' + e.error);
+  }
+  if (tally.error) {
+    console.error('✖ 有 ' + tally.error + ' 个对象未恢复。**备份文件一个都没动**，修好后重跑即可（恢复是幂等的）。');
+    return 1;
+  }
+  say('  ✅ 恢复完成（备份文件与台账都未改动）。');
+  return 0;
+}
+
+/* ══════════════ 派生（旋转/增强/压缩的结果另存为独立对象） ══════════════ */
+/**
+ * 为什么要有它（建议书 §3 那一行）：派生件（转过向的、调过亮度的、压过的）**不是原件**，
+ * 但它们同样是"不能凭原件推出来"的字节（编码器版本/参数/质量任一不同，结果就不同）。
+ * 所以它们必须**另存为独立对象**，并且台账里记清"从谁派生、做了什么"——
+ * 而**原件的字节与记录一个字都不许动**。
+ *
+ * ⚠ 边界（诚实写明）：**怎么生成派生字节不属本工具**（零依赖铁律，不做图像编码）。
+ *   本工具只负责"另存 + 登记 + 不覆盖"这三件事；实际旋转/增强由外部工具（.NET/PowerShell 等）做完再喂进来。
+ */
+function cmdDerive(argv) {
+  const { opts } = parseArgs(argv);
+  const fromSha = typeof opts['derived-from'] === 'string' ? opts['derived-from'].trim().toUpperCase() : '';
+  const op = typeof opts.op === 'string' ? opts.op.trim() : '';
+  const file = typeof opts.file === 'string' ? opts.file : '';
+  const note = typeof opts.note === 'string' ? opts.note : '';
+  const OPS = new Set(['rotate', 'enhance', 'compress']);
+
+  if (!/^[0-9A-F]{64}$/.test(fromSha)) {
+    console.error('✖ --derived-from 要完整的 64 位 sha256（**原图对象**的内容哈希）。');
+    console.error('  用法：node _原图.mjs 派生 --derived-from <sha> --op rotate|enhance|compress --file <盘上文件> [--note 说明] [--dry] [--json]');
+    return 2;
+  }
+  if (!OPS.has(op)) {
+    console.error('✖ --op 必须是 rotate / enhance / compress 之一，收到：' + JSON.stringify(op));
+    return 2;
+  }
+  if (!file) {
+    console.error('✖ --file 必填：指向**已经生成好的**派生结果文件（怎么生成不属本工具）。');
+    return 2;
+  }
+  const fileAbs = path.isAbsolute(file) ? file : path.resolve(process.cwd(), file);
+  let st = null; try { st = fs.statSync(fileAbs); } catch { }
+  if (!st || !st.isFile()) {
+    console.error('✖ --file 不是一个存在的文件：' + fileAbs);
+    return 2;
+  }
+
+  const doc = loadLedger();
+  if (!doc.objects[fromSha]) {
+    console.error('✖ 台账里没有这个原图对象：' + fromSha.slice(0, 16) + '…');
+    console.error('  口径：--derived-from 必须是**已保全的原图** sha（派生件不能再当原件）；查法：node _原图.mjs 名册 --list');
+    return 2;
+  }
+
+  const r = ingestOne(fileAbs, { rel: '派生/' + op });
+  if (r.status === 'error') { console.error('✖ ' + r.error); return 1; }
+
+  const sha = r.sha;
+  const existing = doc.objects[sha];
+  const head = '【原图保全库 · 派生】' + (DRY ? '（--dry：不写盘）' : '');
+  const line = '  原件 ' + fromSha.slice(0, 16) + '… ／ 操作 ' + op + ' ／ 派生结果 ' + String(sha).slice(0, 16) +
+    '…（' + (r.bytes / 1024).toFixed(0) + ' KB）';
+
+  /* 同一份字节只能有一个身份：内容已在库里当**原图**存在 ⇒ 拒绝登记为派生件。 */
+  if (existing && !existing.derivedFrom) {
+    console.error('✖ 该内容的 sha 已在库里作为**原图**存在（' + String(sha).slice(0, 16) + '…）：派生件的字节必须与原件不同。');
+    console.error('  （本工具不允许把同一份字节同时当原件与派生件 —— 那会让"谁是原件"变成不可判的。）');
+    return 1;
+  }
+  if (existing && existing.derivedFrom) {
+    if (existing.derivedFrom === fromSha && existing.op === op) {
+      const res = { ok: true, dry: DRY, reused: true, derivedFrom: fromSha, op, sha, note };
+      if (JSON_OUT) process.stdout.write(JSON.stringify(res, null, 1) + '\n');
+      else { say(head); say(line); say('  ⏭ 已登记过同样的派生件（幂等复用）：' + String(sha).slice(0, 16) + '…'); }
+      return 0;
+    }
+    console.error('✖ 该内容已登记为**另一条**派生记录（derivedFrom=' + String(existing.derivedFrom).slice(0, 16) +
+      '…，op=' + existing.op + '）—— 同内容不同来源不许覆盖登记。');
+    return 1;
+  }
+
+  if (DRY) {
+    const res = { ok: true, dry: true, planned: true, derivedFrom: fromSha, op, sha, note };
+    if (JSON_OUT) process.stdout.write(JSON.stringify(res, null, 1) + '\n');
+    else { say(head); say(line); say('  （--dry）将登记派生件；**原件记录不变**。'); }
+    return 0;
+  }
+
+  const o = doc.objects[sha] || {
+    bytes: r.bytes, ext: extOf(path.basename(fileAbs)), addedAt: new Date().toISOString(), sources: [], names: [],
+  };
+  o.derivedFrom = fromSha;
+  o.op = op;
+  if (note) o.note = note;
+  if (!o.sources.includes('派生')) o.sources.push('派生');
+  doc.objects[sha] = o;
+  saveLedger(doc, { backup: true });
+
+  const res = { ok: true, dry: false, derivedFrom: fromSha, op, sha, note, bytes: o.bytes };
+  if (JSON_OUT) process.stdout.write(JSON.stringify(res, null, 1) + '\n');
+  else {
+    say(head);
+    say(line);
+    say('  ✅ 派生件已另存并登记；**原件（' + fromSha.slice(0, 16) + '…）的字节与记录一个字都没动。**');
+  }
+  return 0;
+}
+
 /* ══════════════ 入口 ══════════════ */
 switch (cmd) {
   case '入库': process.exit(cmdIngest(rest));
   case '校验': process.exit(cmdVerify());
   case '核对': process.exit(cmdCrosscheck(rest));
+  case '恢复': process.exit(cmdRestore(rest));
+  case '派生': process.exit(cmdDerive(rest));
   case '名册': process.exit(cmdRoster(rest));
   case '快照': process.exit(cmdSnapshot(rest));
   default:
@@ -695,6 +914,8 @@ switch (cmd) {
     console.error('  node _原图.mjs 入库 <文件或目录...> [--batch 名] [--student X] [--subject Y] [--dry]');
     console.error('  node _原图.mjs 校验 [--json]');
     console.error('  node _原图.mjs 核对 --from <备份根> [--json]   # 只读：备份 ↔ 库 ↔ 台账 三方逐字节对账');
+    console.error('  node _原图.mjs 恢复 --from <备份根> [--sha <前2位|完整>] [--dry] [--json]   # 写回：把备份里的对象拷回库（幂等、不覆盖、逐字节复核）');
+    console.error('  node _原图.mjs 派生 --derived-from <sha> --op rotate|enhance|compress --file <盘上文件> [--note 说明] [--dry] [--json]   # 派生件另存（原件不可变）');
     console.error('  node _原图.mjs 名册 [--list] [--json]');
     console.error('  node _原图.mjs 快照 [--list | --diff <清单名>]');
     process.exit(2);

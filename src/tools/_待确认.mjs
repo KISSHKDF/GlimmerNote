@@ -28,6 +28,16 @@
  *   纠因  --id T003 --why "为什么纠正（家长/用户原话）" [--scope 卡|配方|流程] [--target <包/卡标识>]
  *                                            追加式记录「纠正原因」→ 该条目 corrections[]（只追加、旧字段一字不动）；
  *                                            同一条 why 重复提交幂等（不重复追加、不写盘）；条目不存在 / --why 空 ⇒ 退出码 2
+ *   候选  --id T003 --kind 卡|配方|流程 --target <卡号/配方id/流程名> --payload "<正文>" | --payload-file <文件> [--date]
+ *                                            建/复用一条「修订草案」→ 该条目 candidates[]（只追加）；
+ *                                            稳定 ID = c-<sha256(kind|target|payloadDigest) 前12位>；
+ *                                            同 kind+target+正文重复提交 ⇒ 复用原 candId（不新增、不写盘）
+ *   修订  --id T003 [--json]                  列出该条目的候选与修订链（**只读**，一个字节都不写）
+ *   采用  --id T003 --candidate <candId> [--dry] [--json]
+ *                                            **正式写入入口**：持锁 + 事务落盘 → `<库根>\_修订\<kind>\<目标>\<candId>.md`
+ *                                            + 该条目 revisions[]（append-only，旧字段一字不动）；
+ *                                            同一 candId 重复采用幂等（不重复写、不重复追加）；--dry 一个字节都不写
+ *   作废候选 --id T003 --candidate <candId>  把候选标「已作废」（不改其它字段）；已采用/已作废 ⇒ 退出码 3
  *   状态  [--student 学生A] [--ask 孩子]
  *   门禁                                     有未确认 → 退出码 1（--json 输出机器可读）
  *   证据 [--all-archived]                    有未确认项缺证据图 / 图路径失效 → 退出码 1（--json 输出机器可读）
@@ -61,9 +71,14 @@
  */
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
-import { libraryRoot, toolPath } from './_库根.mjs';
-import { readJsonStrict, writeJsonAtomic, writeTextAtomic, acquireLibLock } from './_安全写.mjs';
+/* APP_ROOT：配方现值（`<AppRoot>\recipes\<id>\prompt.md`）要用它，与 `_配方.mjs::recipesRoot()` 同一个根口径
+   （那里也是 `path.join(APP_ROOT, 'recipes')`，唯一来源都是本模块导出的 APP_ROOT）。 */
+import { libraryRoot, toolPath, APP_ROOT } from './_库根.mjs';
+/* withLibWrite = 持锁 + 多文件事务的一次性包装（要么全成、要么全退）。`采用` 用它，
+   见 _安全写.mjs 顶部 D01/D02 两段。 */
+import { readJsonStrict, writeJsonAtomic, writeTextAtomic, acquireLibLock, withLibWrite } from './_安全写.mjs';
 /* ★ 2026-11-03（批次 2 / P2-2「统一坐标系」）：像素框 ↔ 归一化框的换算**只有这一份实现**
    （`src\tools\_区域坐标.mjs`，契约见 `docs\区域契约.md`）。本工具是**读取侧**：
    磁盘上的像素 `box` 一个字不改，只在输出里附加 `boxNorm/imgW/imgH`。
@@ -505,6 +520,238 @@ function guardEvidence(ev, where) {
   return s;
 }
 
+/* ══════════════════════════════════════════════════════════════════════════
+ * 候选修订 + 修订链（2026-11-03 · 批次 4 §1「审核与正式入库」）
+ *
+ * 是什么：`_待确认.json` 的条目上多两个**只增不改**的数组 ——
+ *   · `candidates[]`：人对某张卡 / 某个配方 / 某条流程的**修订草案**（还没进库）
+ *   · `revisions[]` ：**正式写入**的留痕（append-only，只由 `采用` 写）
+ *
+ * 为什么这么设计（都是踩过坑才这么定的，别随手改）：
+ *   ① 「草案」与「正式写入」必须分开：草案可以随口提、随手改；一旦进库就是用户数据，
+ *      要能被算法追认为"谁在什么时候把哪段正文写进了哪个路径"。两者挤在一个字段里
+ *      就没法回答"这条到底生效了没有"。
+ *   ② 稳定 ID 由**内容**决定（`c-<sha256(kind|target|payloadDigest) 前12位>`）：
+ *      双击/重试/换入口（页面 vs 命令行）提交同一份草案 ⇒ 同一条候选，
+ *      不靠"调用方记得先去查重"。这正是批次 4「幂等入库」的判据（不按时间、不按序号）。
+ *   ③ **不直接改写卡正文 / 配方 / 流程文件**：那一步不可逆，而卡正文常是家长自己写的。
+ *      本批的验收重点是"幂等 + 可追溯 + 故障后状态一致"，落点是**新增**的修订对象
+ *      `<库根>\_修订\<kind>\<目标>\<candId>.md`（只增不改）。"把修订记录应用回卡正文"
+ *      留作后续单独设计（批次 4 报告会写进未结案）。
+ *   ④ 形状读不懂一律**响亮拒绝**（exit 2）且台账一字不动 —— BUG-02 那一族：
+ *      "读不懂就当空表、随后覆盖"会永久丢掉人工修订链，不可再生。
+ * ══════════════════════════════════════════════════════════════════════════ */
+const CAND_KINDS = ['卡', '配方', '流程'];
+const CAND_ID_RE = /^c-[0-9a-f]{12}$/;
+const REV_DIR = '_修订';
+const sha256hex = s => crypto.createHash('sha256').update(String(s), 'utf8').digest('hex');
+/* 正文与摘要一律先做**行尾归一**（CRLF→LF、剥 BOM）再算 sha256：
+   同一份正文从页面（\n）与从 Windows 文件（\r\n）进来必须得到同一个 candId，
+   否则"双击/换入口不重复"这条就成了看运气（本仓 L-529 族）。 */
+const lfText = s => String(s == null ? '' : s).replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
+function candIdOf(kind, target, payloadDigest) {
+  return 'c-' + sha256hex(kind + '|' + target + '|' + payloadDigest).slice(0, 12);
+}
+/* 落点目录名：目标标识里的人话字符留着，路径分隔符/保留字符换成 `_`（防 `..` 逃逸与非法名） */
+const slugOf = t => String(t == null ? '' : t).trim().replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').replace(/^\.+$/, '_').slice(0, 80) || '_';
+function nowIsoLocal() {
+  const d = new Date(), p = n => String(n).padStart(2, '0');
+  const off = -d.getTimezoneOffset(), sign = off >= 0 ? '+' : '-', a = Math.abs(off);
+  return `${dstr(d)}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}${sign}${p(Math.floor(a / 60))}:${p(a % 60)}`;
+}
+/* 两个正文入口，**互斥**（2026-11-03 Lead 契约小修订）：不许"看着像路径就当文件读"——
+   正文本身就可能长得像路径。都不给、都给、或给空 ⇒ exit 2 且原因具体。 */
+function payloadOf(opt) {
+  const hasStr = opt.payload !== undefined;
+  const hasFile = opt['payload-file'] !== undefined;
+  if (hasStr && hasFile) { console.error('✖ --payload 与 --payload-file 互斥：正文要么直接给（--payload），要么从文件读（--payload-file）'); process.exit(2); }
+  if (!hasStr && !hasFile) { console.error('缺参数：--payload "<正文>" 或 --payload-file <文件> 必填（候选修订正文）'); process.exit(2); }
+  let s;
+  if (hasFile) {
+    if (opt['payload-file'] === true || !String(opt['payload-file']).trim()) { console.error('✖ --payload-file 后面要给文件路径'); process.exit(2); }
+    const f = String(opt['payload-file']);
+    let st = null; try { st = fs.statSync(f); } catch { st = null; }
+    if (!st || !st.isFile()) { console.error(`✖ --payload-file 指向的不是一个文件：${f}（不存在 / 是目录）`); process.exit(2); }
+    s = fs.readFileSync(f, 'utf8');
+  } else {
+    if (opt.payload === true) { console.error('✖ --payload 后面要给正文；若正文确实为空，本工具拒收（空草案没有任何意义）'); process.exit(2); }
+    s = String(opt.payload);
+  }
+  if (!lfText(s).trim()) { console.error('✖ 候选正文是空的（只有空白字符）——修订草案必须有内容'); process.exit(2); }
+  return s;
+}
+/* 形状守卫：`candidates`/`revisions` 读不懂 ⇒ exit 2 且**台账一字不动**（调用方保证不写盘） */
+function guardCandShapes(it) {
+  for (const [f, what] of [['candidates', '候选'], ['revisions', '修订链']]) {
+    const v = it[f];
+    if (v === undefined) continue;
+    if (!Array.isArray(v)) {
+      console.error(`✖ ${it.id} 的 ${f} 不是数组（实际 ${v === null ? 'null' : typeof v}）——拒绝继续。`);
+      console.error(`   它可能是被 PowerShell 的 ConvertFrom/To-Json 往返成了 {value:[…]}，先手工改回数组；`);
+      console.error(`   本工具绝不把读不懂的${what}「当成空表」再覆盖（那会永久丢掉已采纳的人工修订链）。`);
+      process.exit(2);
+    }
+  }
+}
+const candsOf = it => (Array.isArray(it.candidates) ? it.candidates : []);
+const revsOf = it => (Array.isArray(it.revisions) ? it.revisions : []);
+/* 候选记录形状（写的一刻就定型；读侧只信这个形状） */
+const candSummaryOf = payload => {
+  const line = lfText(payload).split('\n').map(x => x.trim()).find(x => x) || '';
+  return line.length > 60 ? line.slice(0, 60) + '…' : line;
+};
+/* ---------- 现值：用户要对照的是「现在库里的东西长什么样」 ----------
+ * （2026-11-03 Lead 裁定：不许把"现值"定义成"最近一条已采用修订的正文"——那对用户没用，
+ *   也让"采用前 vs 采用后"的对照失去意义。）
+ * presence 二值：'read' 有值 / 'missing' 定位不到（**必须带 why**，绝不静默给空串 —— L-530）。 */
+function locateCardDir(cardId) {
+  const hits = [];
+  const push = p => { const k = path.resolve(p).toLowerCase(); if (!hits.some(h => h.key === k)) hits.push({ key: k, abs: p }); };
+  let lv1 = [];
+  try { lv1 = fs.readdirSync(ROOT, { withFileTypes: true }).filter(e => e.isDirectory() && !/^[_.]/.test(e.name)).map(e => e.name); } catch { return { hits: [] }; }
+  const idxItems = dir => {
+    const idx = path.join(dir, '_索引.json');
+    if (!fs.existsSync(idx)) return [];
+    try { return (readJsonStrict(idx).items || []); } catch { return []; }
+  };
+  for (const g of lv1) {
+    const gAbs = path.join(ROOT, g);
+    let lv2 = [];
+    try { lv2 = fs.readdirSync(gAbs, { withFileTypes: true }).filter(e => e.isDirectory() && !/^[_.]/.test(e.name)).map(e => e.name); } catch { }
+    for (const dirAbs of [gAbs, ...lv2.map(s => path.join(gAbs, s))]) {
+      /* ① 索引是**精确**判据：items[].id + items[].dir */
+      for (const it of idxItems(dirAbs)) if (it && it.id === cardId && it.dir) push(path.join(dirAbs, String(it.dir)));
+      /* ② 目录名兜底（索引缺项 / 手建的卡目录）：<卡号>-<slug> 或 <卡号> */
+      let ents = [];
+      try { ents = fs.readdirSync(dirAbs, { withFileTypes: true }); } catch { }
+      for (const e of ents) if (e.isDirectory() && (e.name === cardId || e.name.startsWith(cardId + '-'))) push(path.join(dirAbs, e.name));
+    }
+  }
+  return { hits };
+}
+function currentOf(kind, target) {
+  if (kind === '卡') {
+    const { hits } = locateCardDir(target);
+    if (!hits.length) {
+      return { presence: 'missing', value: null, why: `定位不到卡目录：库根下没有 id=${target} 的卡（查过各年级/学科的 _索引.json 与 <卡号>-* 目录名）`, from: '' };
+    }
+    if (hits.length > 1) {
+      return { presence: 'missing', value: null, why: `卡号 ${target} 在库里命中 ${hits.length} 个目录（${hits.map(h => path.relative(ROOT, h.abs).replace(/\\/g, '/')).join(' ｜ ')}），不敢替你挑一个`, from: '' };
+    }
+    const relDir = path.relative(ROOT, hits[0].abs).replace(/\\/g, '/');
+    const f = path.join(hits[0].abs, '错题记录.md');
+    if (!fs.existsSync(f)) return { presence: 'missing', value: null, why: `卡目录 ${relDir} 里没有 错题记录.md —— 没有可对照的现值`, from: relDir };
+    return { presence: 'read', value: fs.readFileSync(f, 'utf8').replace(/^\uFEFF/, ''), why: '', from: relDir + '/错题记录.md' };
+  }
+  if (kind === '配方') {
+    /* 与 `_配方.mjs::recipesRoot()` 同一个根（都取 `_库根.mjs` 的 APP_ROOT）；这里**只读**，
+       读不到就报原因，不像那边抛错（现值缺失不该让整条命令崩）。 */
+    const root = path.join(APP_ROOT, 'recipes');
+    if (!fs.existsSync(root)) return { presence: 'missing', value: null, why: `程序目录里没有 recipes 目录（${root}）——配方随程序包发布，查不到就问不了现值`, from: '' };
+    const dir = path.join(root, String(target));
+    if (!fs.existsSync(dir)) return { presence: 'missing', value: null, why: `配方 ${target} 不在程序包里（${path.relative(APP_ROOT, dir).replace(/\\/g, '/')}）`, from: '' };
+    const f = path.join(dir, 'prompt.md');
+    if (!fs.existsSync(f)) return { presence: 'missing', value: null, why: `配方 ${target} 里没有 prompt.md`, from: `recipes/${target}` };
+    return { presence: 'read', value: fs.readFileSync(f, 'utf8').replace(/^\uFEFF/, ''), why: '', from: `recipes/${target}/prompt.md` };
+  }
+  return { presence: 'missing', value: null, why: '流程类目标没有机器可读的现值（人工按修订记录执行）', from: '' };
+}
+/* ---------- 修订包（可选的结构化正文）与三类错误 ----------
+ * 正文是 JSON 对象时，`采用` 先校验**坐标**与**页引用**（越界坐标 / 缺页各自给具体数值）；
+ * 正文是纯文本（补丁 / 整段替换）时没有机器可读的坐标与页，跳过校验并**明说**（不许静默通过）。
+ * 形状真源见 docs\录题任务契约.md「候选与修订链」。 */
+function tryPack(payload) {
+  const t = lfText(payload).trim();
+  if (!t.startsWith('{')) return { isJson: false };
+  try {
+    const o = JSON.parse(t);
+    if (!o || typeof o !== 'object' || Array.isArray(o)) return { isJson: false };
+    return { isJson: true, obj: o };
+  } catch { return { isJson: false, broken: true }; }
+}
+function packProblems(o) {
+  const bad = [];
+  const normBoxOk = (b, label) => {
+    const [x, y, w, h] = b;
+    if (w <= 0 || h <= 0) { bad.push(`越界坐标：${label} 的宽或高 ≤ 0（${b.join(',')}）——0~1 归一化框的宽高必须 > 0`); return; }
+    if (x < 0 || y < 0 || x + w > 1 + 1e-9 || y + h > 1 + 1e-9) {
+      bad.push(`越界坐标：${label} 超出 0~1（x=${x} y=${y} x+w=${Number((x + w).toFixed(6))} y+h=${Number((y + h).toFixed(6))}）`);
+    }
+  };
+  if (o.regions !== undefined) {
+    if (!Array.isArray(o.regions)) bad.push('越界坐标：regions 不是数组');
+    else o.regions.forEach((r, i) => {
+      if (!r || typeof r !== 'object' || Array.isArray(r)) { bad.push(`越界坐标：regions[${i}] 不是对象`); return; }
+      const b = [r.x, r.y, r.w, r.h];
+      if (!b.every(n => Number.isFinite(n))) { bad.push(`越界坐标：regions[${i}] 的 x/y/w/h 不是 4 个数字（${JSON.stringify(b)}）`); return; }
+      normBoxOk(b, `regions[${i}]${r.role ? '（' + r.role + '）' : ''}`);
+    });
+  }
+  if (o.origBox !== undefined) {
+    if (!Array.isArray(o.origBox) || o.origBox.length !== 4 || !o.origBox.every(n => Number.isFinite(n))) bad.push(`越界坐标：origBox 不是 4 个数字（${JSON.stringify(o.origBox)}）`);
+    else normBoxOk(o.origBox, 'origBox');
+  }
+  if (o.box !== undefined) {
+    if (!Array.isArray(o.box) || o.box.length !== 4 || !o.box.every(n => Number.isFinite(n))) bad.push(`越界坐标：box 不是 4 个数字（${JSON.stringify(o.box)}）`);
+    else {
+      const [x, y, w, h] = o.box, W = Number(o.imgW), H = Number(o.imgH);
+      if (!(W > 0) || !(H > 0)) bad.push(`越界坐标：像素 box 必须同时给 imgW/imgH（收到 imgW=${JSON.stringify(o.imgW)} imgH=${JSON.stringify(o.imgH)}）——没有图尺寸就判不了越界，本工具不猜`);
+      else if (w <= 0 || h <= 0) bad.push(`越界坐标：box 的宽或高 ≤ 0（${o.box.join(',')}）`);
+      else if (x < 0 || y < 0 || x + w > W || y + h > H) bad.push(`越界坐标：像素框 ${o.box.join(',')} 超出图 ${W}x${H}（右边界 ${x + w}、下边界 ${y + h}）`);
+    }
+  }
+  if (o.page !== undefined) {
+    const n = Number(o.page);
+    if (!Number.isInteger(n) || n < 1) bad.push(`缺页：page 不是正整数（收到 ${JSON.stringify(o.page)}）`);
+  }
+  if (o.origPage !== undefined) {
+    const rel = normEv(o.origPage);
+    if (!rel || /^[A-Za-z]:/.test(rel) || rel.split('/').includes('..')) {
+      bad.push(`缺页：origPage 必须是库内相对路径（收到 ${JSON.stringify(o.origPage)}）`);
+    } else if (!fs.existsSync(path.join(ROOT, '_页码映射.json'))) {
+      bad.push('缺页：库根没有 _页码映射.json（扫描件→印刷页码的单一真源），无法核对 origPage 是哪一页');
+    } else if (!fs.existsSync(path.join(ROOT, ...rel.split('/')))) {
+      bad.push(`缺页：origPage 指向的文件不在库里 → ${rel}`);
+    } else {
+      const printed = printedPageOfScan(rel);
+      if (printed === null) bad.push(`缺页：${rel} 在 _页码映射.json 里没有登记（无法证明它是第几页）`);
+      else if (o.page !== undefined && Number(o.page) !== printed) bad.push(`缺页：origPage 是第 ${printed} 页，但正文里写的 page=${o.page} —— 页号对不上`);
+    }
+  }
+  if (o.pageSha !== undefined) {
+    const s = String(o.pageSha).toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(s)) bad.push(`缺页：pageSha 不是 64 位小写 hex（收到 ${JSON.stringify(o.pageSha)}）`);
+    else {
+      const d = path.join(ROOT, '_原图', s.slice(0, 2));
+      let hit = false;
+      try { hit = fs.existsSync(d) && fs.readdirSync(d).some(n => n.toLowerCase().startsWith(s + '.')); } catch { hit = false; }
+      if (!hit) bad.push(`缺页：原图对象 ${s.slice(0, 12)}… 不在 _原图\\${s.slice(0, 2)}\\ 下`);
+    }
+  }
+  return [...new Set(bad)];
+}
+/* 修订对象正文：**只是候选的纯函数**（不含采纳时刻）——这样"落点已存在且内容一致"才能
+   当成幂等跳过（半截失败后重跑不会因为时间戳不同而被判成"人工改过"）。
+   采纳时刻住在 `_待确认.json` 的 revisions[] 里。 */
+function revisionFileBody(it, cand) {
+  const head = [
+    `# 人工修订 ${cand.candId}`,
+    '',
+    `- 待办：${it.id}`,
+    `- 类型：${cand.kind}`,
+    `- 目标：${cand.target}`,
+    `- 提出日：${cand.at || ''}`,
+    `- 正文摘要（sha256，按 LF 归一）：${cand.payloadDigest}`,
+    `- 写入方式：\`node _待确认.mjs 采用 --id ${it.id} --candidate ${cand.candId}\``,
+    '- 本文本由工具写入，**只增不改**；采纳时点与写入清单见 `_待确认.json` 的 `revisions[]`。',
+    '',
+    '---',
+    '',
+  ].join('\n');
+  return head + lfText(cand.payload).replace(/\n+$/, '') + '\n';
+}
+const revisionRelOf = (kind, target, candId) => [REV_DIR, slugOf(kind), slugOf(target), candId + '.md'].join('/');
+
 /* ---------------- 渲染清单 ---------------- */
 function render() {
   const j = load();
@@ -846,6 +1093,264 @@ if (action === '清单') {
   console.log(`${it.id} 已记一条纠正原因（corrections ${list.length} 条）[${scope}${target ? '/' + target : ''}]：` +
     (why.length > 60 ? why.slice(0, 60) + '…' : why));
   render();
+} else if (action === '候选') {
+  /* ★ 2026-11-03（批次 4 §1 · 候选修订）：见本文件「候选修订 + 修订链」段的四条设计理由。
+     本命令**只**追加条目上的 `candidates[]`，绝不碰 question/detail/status/answer/revisions。 */
+  const j = load();
+  if (!opt.id) { console.error('缺参数：--id 必填（这条修订草案挂在哪条待办上，如 T003）'); process.exit(2); }
+  const it = findById(j, opt.id);
+  if (!it) { console.error(`找不到 ${opt.id}（草案要挂在已存在的待办上：先「加」一条，再「候选」）`); process.exit(2); }
+  guardCandShapes(it);
+  if (!opt.kind) { console.error('缺参数：--kind 必填（' + CAND_KINDS.join(' | ') + '）'); process.exit(2); }
+  if (!CAND_KINDS.includes(String(opt.kind))) { console.error('kind 必须是：' + CAND_KINDS.join(' / ') + '（收到「' + opt.kind + '」）'); process.exit(2); }
+  const kind = String(opt.kind);
+  if (opt.target === undefined || opt.target === true || !String(opt.target).trim()) {
+    console.error('缺参数：--target 必填（卡号 / 配方 id / 流程名）——本工具不猜目标');
+    process.exit(2);
+  }
+  const target = String(opt.target).trim();
+  if (/[\\/]/.test(target) || target.includes('..') || target.length > 120) {
+    console.error(`✖ --target「${target}」不像一个目标标识：不许含路径分隔符 / \`..\`，长度 ≤ 120（落点目录由 kind+target 生成，路径形态的 target 会把文件写到别处）`);
+    process.exit(2);
+  }
+  const payload = payloadOf(opt);
+  const payloadDigest = sha256hex(lfText(payload));
+  const candId = candIdOf(kind, target, payloadDigest);
+  const list = Array.isArray(it.candidates) ? it.candidates : (it.candidates = []);
+  const dup = list.find(c => c && c.kind === kind && c.target === target && c.payloadDigest === payloadDigest);
+  if (dup) {
+    /* 幂等：同 kind+target+正文 ⇒ 复用同一条 candId，**不新增、不写盘**（连备份都不产生）。 */
+    const voided = String(dup.status || '') === '已作废';
+    console.log(`${it.id} 候选 ${dup.candId} 已存在，复用（${kind}/${target}，正文摘要相同；candidates 仍 ${list.length} 条，未写盘）`);
+    console.log(`   在册状态：${dup.status || '（无）'}${dup.at ? '　提出日 ' + dup.at : ''}`);
+    if (voided) {
+      console.log('   ⚠ 这条候选已是「已作废」：候选号由**内容**决定，重复提交造不出第二条 —— 本次**没有**改任何状态；');
+      console.log('     确要重新采纳，需人工把该候选的 status 改回「待采用」（本工具不替人撤销作废决定）。');
+    }
+    if (opt.json) console.log(JSON.stringify({ ok: true, id: it.id, candId: dup.candId, reused: true, kind, target, status: dup.status || '', at: dup.at || '', payloadDigest, candidates: list.length }));
+    process.exit(0);
+  }
+  const rec = { candId, at: opt.date || today(), kind, target, payload, payloadDigest, status: '待采用', adoptedAt: null };
+  list.push(rec);
+  /* 这里**不**调 render()：`_待确认清单.md` 是「悬空问题」的渲染页，不显示候选与修订链，
+     刷新它只会多写一个库内文件（契约 §1 也没要求）。要看候选请走 `修订`。 */
+  save(j);
+  console.log(`${it.id} 候选 ${candId} 已登记（${kind}/${target}，正文 ${lfText(payload).length} 字，状态 待采用；candidates ${list.length} 条）`);
+  console.log(`   摘要：${candSummaryOf(payload)}`);
+  console.log(`   正式写入（会写库）：node _待确认.mjs 采用 --id ${it.id} --candidate ${candId}${opt.json ? '' : ' ｜ 先看不写：加 --dry'}`);
+  if (opt.json) console.log(JSON.stringify({ ok: true, id: it.id, candId, reused: false, kind, target, status: '待采用', at: rec.at, payloadDigest, candidates: list.length }));
+} else if (action === '修订') {
+  /* ★ 2026-11-03（批次 4 §1 · 修订链）：**只读**。界面（`reviewList`）与命令行共用这一份形状。
+     现值（current）按 kind 给真源：卡→卡目录的 错题记录.md；配方→<AppRoot>\recipes\<id>\prompt.md；
+     流程→没有机器可读现值（如实报 missing + 原因）。presence 二值，**不许**静默给空串（L-530）。 */
+  const j = load();
+  if (!opt.id) { console.error('缺参数：--id 必填（看哪条待办的候选与修订链，如 T003）'); process.exit(2); }
+  const it = findById(j, opt.id);
+  if (!it) { console.error(`找不到 ${opt.id}`); process.exit(2); }
+  guardCandShapes(it);
+  const cands = candsOf(it), revs = revsOf(it);
+  const curCache = new Map();
+  const curFor = (kind, target) => {
+    const k = kind + '|' + target;
+    if (!curCache.has(k)) curCache.set(k, currentOf(kind, target));
+    return curCache.get(k);
+  };
+  const rows = cands.map(c => {
+    const kind = String((c && c.kind) || ''), target = String((c && c.target) || '');
+    const cur = curFor(kind, target);
+    const adoptedRev = revs.filter(r => r && r.candId === (c && c.candId)).pop() || null;
+    const status = String((c && c.status) || '');
+    const reason = status === '已采用'
+      ? (`已采用${c.adoptedAt ? '（' + c.adoptedAt + '）' : ''}：` + (adoptedRev && adoptedRev.written ? '写入 ' + adoptedRev.written.join('、') : '见 revisions[]'))
+      : status === '已作废' ? '已作废：人明确否决了这条草案（不再可采纳）' : '';
+    return {
+      candId: String((c && c.candId) || ''), at: String((c && c.at) || ''), kind, target, status,
+      adoptedAt: (c && c.adoptedAt != null) ? c.adoptedAt : null,
+      payloadDigest: String((c && c.payloadDigest) || ''),
+      payloadLen: lfText(c && c.payload).length,
+      payload: typeof (c && c.payload) === 'string' ? c.payload : '',
+      summary: candSummaryOf(c && c.payload),
+      current: cur.value, currentPresence: cur.presence, currentWhy: cur.why, currentFrom: cur.from,
+      reason,
+    };
+  });
+  const counts = {
+    candidates: rows.length,
+    pending: rows.filter(r => r.status === '待采用').length,
+    adopted: rows.filter(r => r.status === '已采用').length,
+    void: rows.filter(r => r.status === '已作废').length,
+    revisions: revs.length,
+  };
+  /* 目标维度：同一 kind+target 的现值只算一次（界面左侧栏直接用这张表） */
+  const targets = [];
+  for (const r of rows) {
+    if (targets.some(t => t.kind === r.kind && t.target === r.target)) continue;
+    const adoptedRev = revs.filter(x => x && x.kind === r.kind && x.target === r.target).pop() || null;
+    targets.push({
+      kind: r.kind, target: r.target,
+      currentPresence: r.currentPresence, currentWhy: r.currentWhy, currentFrom: r.currentFrom, current: r.current,
+      adoptedCandId: adoptedRev ? String(adoptedRev.candId || '') : null,
+      adoptedAt: adoptedRev ? String(adoptedRev.at || '') : null,
+    });
+  }
+  if (opt.json) {
+    console.log(JSON.stringify({ ok: true, id: it.id, candidates: rows, revisions: revs, counts, targets }));
+  } else {
+    console.log(`${it.id} 候选 ${counts.candidates} 条（待采用 ${counts.pending} ｜ 已采用 ${counts.adopted} ｜ 已作废 ${counts.void}）｜ 修订链 ${counts.revisions} 条`);
+    if (!rows.length) console.log('   （还没有候选修订。提一条：node _待确认.mjs 候选 --id ' + it.id + ' --kind 卡 --target <卡号> --payload "<正文>"）');
+    for (const r of rows) {
+      console.log(`   ${r.status === '已采用' ? '✔' : r.status === '已作废' ? '✖' : '○'} ${r.candId}  [${r.kind}/${r.target}]  ${r.status}  ${r.at}  正文 ${r.payloadLen} 字`);
+      console.log(`        ${r.summary}`);
+      console.log(`        现值：${r.currentPresence === 'read' ? r.currentFrom + '（' + String(r.current || '').length + ' 字）' : '定位不到 —— ' + r.currentWhy}`);
+      if (r.reason) console.log(`        ${r.reason}`);
+    }
+    if (revs.length) {
+      console.log('── 修订链（append-only，谁在什么时候把哪段正文写进了哪些路径）');
+      revs.forEach((r, i) => console.log(`   ${i + 1}) ${r.at}  ${r.by || '人'}  ${r.candId}  [${r.kind}/${r.target}]  写入：${(r.written || []).join('、')}${r.note ? '　note：' + r.note : ''}`));
+    }
+  }
+  process.exit(0);
+} else if (action === '采用') {
+  /* ★ 2026-11-03（批次 4 §1 · 正式写入入口）：唯一的"草案 → 库"通道。
+     硬要求（契约 §1.2）：
+       · 走 `_安全写.mjs` 的**锁 + 事务**：落点文件与 `_待确认.json` 一次提交，失败**整体回滚**；
+       · `--dry` 只报告将写什么，**一个字节都不写**；
+       · 越界坐标 / 缺页 / 重复导入 各自给具体原因（见 packProblems 与落点检查）；
+       · 成功后**追加** revisions[]、候选标「已采用」；同一 candId 重复采用幂等；
+       · 绝不直接写 `answerSlots`/`answerMode`（本命令根本不碰 `_索引.json`；真涉及作答契约的修订
+         只能走 `_作答门禁.mjs`，本批的"采用"落点是 `_修订\` 下的新对象，不越界）。 */
+  const j = load();
+  if (!opt.id) { console.error('缺参数：--id 必填（采纳哪条待办上的候选）'); process.exit(2); }
+  const it = findById(j, opt.id);
+  if (!it) { console.error(`找不到 ${opt.id}`); process.exit(2); }
+  guardCandShapes(it);
+  if (!opt.candidate) { console.error('缺参数：--candidate <candId> 必填（候选号，形如 c-0123456789ab）'); process.exit(2); }
+  const candId = String(opt.candidate);
+  if (!CAND_ID_RE.test(candId)) { console.error(`✖ 候选号形状不对：「${candId}」——应为 c- + 12 位小写 hex`); process.exit(2); }
+  const cand = candsOf(it).find(c => c && c.candId === candId);
+  if (!cand) {
+    console.error(`候选不存在：${it.id} 上没有 ${candId}`);
+    console.error(`   提一条：node _待确认.mjs 候选 --id ${it.id} --kind 卡 --target <卡号> --payload "<正文>"`);
+    console.error(`   看在册的号码：node _待确认.mjs 修订 --id ${it.id}`);
+    process.exit(3);
+  }
+  const candStatus = String(cand.status || '');
+  /* 幂等：同一 candId 重复采用 ⇒ 不重复写入、不重复追加 revision，退出码 0 且明说。 */
+  if (candStatus === '已采用') {
+    const rev = revsOf(it).filter(r => r && r.candId === candId).pop() || null;
+    const written = (rev && Array.isArray(rev.written)) ? rev.written : [];
+    console.log(`${it.id} 采用 ${candId}：已采用（幂等）——未重复写入、未重复追加 revision`);
+    console.log(`   首次采纳：${cand.adoptedAt || (rev && rev.at) || '（台账里没有采纳时刻）'}　写入：${written.join('、') || '（台账里没有写入清单）'}`);
+    if (opt.json) console.log(JSON.stringify({ ok: true, id: it.id, candId, idempotent: true, dry: false, status: '已采用', written, revision: rev, revisions: revsOf(it).length }));
+    process.exit(0);
+  }
+  if (candStatus !== '待采用') {
+    console.error(`✖ 候选 ${candId} 状态是「${candStatus || '（空）'}」——只有「待采用」的候选能进库（已作废 = 人明确否决过；`+
+      `要重新启用需人工把它改回「待采用」，本工具不替人撤销决定）`);
+    process.exit(3);
+  }
+  const kind = String(cand.kind || ''), target = String(cand.target || '');
+  if (!CAND_KINDS.includes(kind)) { console.error(`✖ 候选 ${candId} 记录里的 kind 不合法：「${kind}」——台账被手工改过？拒绝采信（不猜目标类型）`); process.exit(1); }
+  if (!target.trim()) { console.error(`✖ 候选 ${candId} 记录里没有 target —— 拒绝采信（没有目标就没有落点）`); process.exit(1); }
+  if (typeof cand.payload !== 'string') { console.error(`✖ 候选 ${candId} 记录里的 payload 不是字符串（实际 ${cand.payload === null ? 'null' : typeof cand.payload}）——拒绝采信`); process.exit(1); }
+  const payload = cand.payload;
+  const payloadDigest = sha256hex(lfText(payload));
+  if (cand.payloadDigest !== payloadDigest) {
+    console.error(`✖ 候选 ${candId} 的正文与记录里的摘要不符（记录 ${String(cand.payloadDigest || '（无）').slice(0, 16)}… 实算 ${payloadDigest.slice(0, 16)}…）——正文被手工改过，拒绝采信`);
+    process.exit(1);
+  }
+  const relPath = revisionRelOf(kind, target, candId);
+  const absPath = path.join(ROOT, ...relPath.split('/'));
+  const body = revisionFileBody(it, cand);
+  /* 「缺页」的库内一侧：卡/配方的目标在当前库里定位不到 ⇒ **必须喊出来**（给具体原因），
+     但**不阻断** —— 草案本来就可以指向一张还没建的卡（那是"先记想法"）。流程类没有机器可读目标，
+     缺省就是 missing，不算异常，故不在此列。 */
+  const curWarn = currentOf(kind, target);
+  if (curWarn.presence === 'missing' && kind !== '流程') {
+    console.log(`   ⚠ 现值定位不到（仍按草案写入）：${curWarn.why}`);
+  }
+  /* 落点已存在 ⇒ 两种情形，**绝不覆盖**（本仓最忌"顺手覆盖"） */
+  let skipWrite = false;
+  if (fs.existsSync(absPath)) {
+    const cur = fs.readFileSync(absPath, 'utf8');
+    if (cur === body) {
+      skipWrite = true;      // 半截失败后的重跑：正文已一致，只补台账
+      console.log(`   ℹ 落点已存在且内容一致：${relPath} —— 跳过写入（幂等），只补台账留痕`);
+    } else {
+      console.error(`✖ 重复导入：落点已存在且内容不同 → ${relPath}`);
+      console.error('   两种可能，本工具都不替你决定：');
+      console.error('     ① 这条修订被人手工改过 —— 修订对象是人工留痕，只增不改，不许拿草案覆盖它；');
+      console.error('     ② 候选号串号（同一个 candId 指向了不同正文）—— 人工核对台账后再处理。');
+      process.exit(1);
+    }
+  }
+  /* 正文是修订包（JSON）时校验坐标与页引用；纯文本则**明说**没有可校验的机器字段（不许静默通过） */
+  const at = nowIsoLocal();
+  if (opt.dry) console.log(`${it.id} 采用 ${candId}（--dry 预演：**一个字节都不写**）`);
+  const pack = tryPack(payload);
+  if (pack.isJson) {
+    const bad = packProblems(pack.obj);
+    if (bad.length) {
+      console.error(`✖ 候选 ${candId} 的正文是修订包，但没通过校验（${bad.length} 处）：`);
+      for (const b of bad) console.error('   · ' + b);
+      console.error('   形状与判据见 docs\\录题任务契约.md「候选与修订链」。台账与库**一字未动**。');
+      process.exit(1);
+    }
+    console.log(`   ✔ 正文是修订包：坐标与页引用校验通过（${['regions', 'origBox', 'box', 'page', 'origPage', 'pageSha'].filter(k => pack.obj[k] !== undefined).join('/') || '（没给坐标或页字段）'}）`);
+  } else {
+    console.log(`   ℹ 正文是纯文本修订（${pack.broken ? '以 { 开头但不是合法 JSON' : '不是 JSON'}）——没有坐标/页引用可校验，按整段文本写入`);
+  }
+  const note = pack.isJson && typeof pack.obj.note === 'string' ? pack.obj.note : '';
+  const written = [relPath, '_待确认.json'];
+  if (opt.dry) {
+    console.log(`   将新建修订对象：${relPath}（${Buffer.byteLength(body, 'utf8')} 字节，内容 = 候选正文的纯函数）`);
+    console.log(`   将追加 revisions[]：{ at: ${at}, by: 人, candId: ${candId}, kind: ${kind}, target: ${target}, written: [${written.join(', ')}]${note ? ', note: ' + JSON.stringify(note) : ''} }`);
+    console.log(`   将把候选状态：待采用 → 已采用`);
+    if (opt.json) console.log(JSON.stringify({ ok: true, id: it.id, candId, dry: true, idempotent: false, written, status: '待采用', wouldSetStatus: '已采用', relPath, bytes: Buffer.byteLength(body, 'utf8') }));
+    process.exit(0);
+  }
+  const rev = { at, by: '人', candId, kind, target, written, note };
+  try {
+    /* 顺序有意为之：**先写台账留痕、后落正文**。这样"正文落盘失败"落在事务的第二个写上 ⇒
+       回滚必须把台账恢复成原样（tests\neg-revision-chain.cjs 的"库逐字节不变"就是这个构造）。
+       若反过来，失败发生在台账之前，回滚无从验证 —— 那样的用例等于没测事务。 */
+    withLibWrite(ROOT, '_待确认 采用 ' + candId, tx => {
+      cand.status = '已采用';
+      cand.adoptedAt = at;
+      it.revisions = revsOf(it);
+      it.revisions.push(rev);
+      tx.writeJson(DB, j, { backup: true });
+      if (!skipWrite) tx.writeText(absPath, body);
+    });
+  } catch (e) {
+    console.error(`✖ 采用失败，事务已整体回滚（` + '_待确认.json 与 ' + relPath + ` 都回到调用前）：${e && e.message}`);
+    process.exit(2);
+  }
+  console.log(`${it.id} 采用 ${candId}（${kind}/${target}）：已写入 ${relPath}`);
+  console.log(`   revisions 追加 1 条（共 ${revsOf(it).length} 条），候选状态 → 已采用（${at}）`);
+  console.log(`   写入清单：${written.join('、')}${skipWrite ? '（正文文件是复用已有的那份）' : ''}`);
+  if (opt.json) console.log(JSON.stringify({ ok: true, id: it.id, candId, idempotent: false, dry: false, status: '已采用', written, revision: rev, revisions: revsOf(it).length, reusedFile: skipWrite, bytes: Buffer.byteLength(body, 'utf8') }));
+} else if (action === '作废候选') {
+  /* 把一条还没进库的候选标「已作废」：只改 status，不改其它字段、不删行（留痕备查）。 */
+  const j = load();
+  if (!opt.id) { console.error('缺参数：--id 必填（作废哪条待办上的候选）'); process.exit(2); }
+  const it = findById(j, opt.id);
+  if (!it) { console.error(`找不到 ${opt.id}`); process.exit(2); }
+  guardCandShapes(it);
+  if (!opt.candidate) { console.error('缺参数：--candidate <candId> 必填'); process.exit(2); }
+  const candId = String(opt.candidate);
+  if (!CAND_ID_RE.test(candId)) { console.error(`✖ 候选号形状不对：「${candId}」——应为 c- + 12 位小写 hex`); process.exit(2); }
+  const cand = candsOf(it).find(c => c && c.candId === candId);
+  if (!cand) { console.error(`候选不存在：${it.id} 上没有 ${candId}`); process.exit(3); }
+  if (String(cand.status || '') !== '待采用') {
+    console.error(`✖ 候选 ${candId} 状态是「${cand.status || '（空）'}」——只有「待采用」的候选能作废` +
+      (String(cand.status || '') === '已采用' ? '（已采用的修订已经进库，撤销它得走 `git revert` + 回退流程，不是这里改状态）' : ''));
+    process.exit(3);
+  }
+  cand.status = '已作废';
+  save(j);
+  console.log(`${it.id} 候选 ${candId} → 已作废（${cand.kind}/${cand.target}；只改状态，其它字段一字未动）`);
+  if (opt.json) console.log(JSON.stringify({ ok: true, id: it.id, candId, status: '已作废', kind: cand.kind, target: cand.target, candidates: candsOf(it).length }));
 } else if (action === '答' || action === '作废') {
   const j = load();
   const it = findById(j, opt.id);
@@ -1255,8 +1760,12 @@ if (action === '清单') {
   render();
 } else {
   console.error('未知动作：' + action);
-  console.error('可用：清单 / 加 / 定位 / 答 / 作废 / 撤回 / 删 / 改问题 / 改详情 / 纠因 / 状态 / 门禁 / 证据 / 措辞 / 去黑话 / 同步 / 判定 / 处置');
+  console.error('可用：清单 / 加 / 定位 / 答 / 作废 / 撤回 / 删 / 改问题 / 改详情 / 纠因 / 候选 / 修订 / 采用 / 作废候选 / 状态 / 门禁 / 证据 / 措辞 / 去黑话 / 同步 / 判定 / 处置');
   console.error('  纠因 --id Txxx --why "为什么纠正（原话）" [--scope 卡|配方|流程] [--target <包/卡标识>]  ← 追加式留痕，同 why 幂等');
+  console.error('  候选 --id Txxx --kind 卡|配方|流程 --target <卡号/配方id/流程名> --payload "<正文>" | --payload-file <文件>  ← 修订草案，同内容复用同一 candId');
+  console.error('  修订 --id Txxx [--json]  ← 只读：候选 + 修订链 + 现值（卡→错题记录.md / 配方→recipes/<id>/prompt.md）');
+  console.error('  采用 --id Txxx --candidate <candId> [--dry]  ← **正式写入入口**：持锁 + 事务落 _修订\\<kind>\\<目标>\\<candId>.md，并追加 revisions[]');
+  console.error('  作废候选 --id Txxx --candidate <candId>  ← 把还没进库的候选标「已作废」（已采用/已作废 ⇒ 退出码 3）');
   console.error('  判定 --id Txxx --verdict "错|对|部分对|无法判定|不适用" --note "依据"  ← 将结论换算成对错，必填');
   console.error('  处置 --id Txxx --as "无需处置|已补建卡|已撤卡|已核销|待人工" [--note "..."]  ← 结论之后的后续动作，必填');
   console.error('  措辞 [--json] / 去黑话 --dry|--apply  ← 给人看的文本禁用内部黑话（答案键→标准答案 等）');

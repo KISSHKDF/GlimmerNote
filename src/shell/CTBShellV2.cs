@@ -911,6 +911,108 @@ namespace CTBShell2
             }
         }
 
+        /* ★ 2026-11-03（批次 4「审核与正式入库」）：人工修订通道（候选 / 修订链 / 正式写入）。
+           与 TaskCheck/TaskConfirm 同一条纪律：固定键名 → 固定 argv 的逐项映射，无通用透传、无反射。
+           三把 op：
+             · reviewList      只读：`_待确认.mjs 修订 --id <T> --json`（候选 + 修订链）
+             · reviewCandidate 写库：`_待确认.mjs 候选 --id <T> --kind <k> --target <t> --payload-file <tmp>`
+                               （正文走**临时文件**：修订内容可能上千字，塞 argv 会撞 Windows 32K 上限）
+             · reviewAdopt     写库（**正式写入入口**）：`_待确认.mjs 采用 --id <T> --candidate <candId> [--dry]`
+           写读分界：只有 reviewList 是只读；另两把写用户库 ⇒ 与 pendingResolve/pendingAdd 同口径**进写闸**。
+           ⚠ `_待确认.mjs` **不认 `--data`**（它只读 CTB_DATA）⇒ 这三把 op 必须把 DataRoot 显式注入子进程环境，
+             否则"壳以为库在 A、工具以为库在 B"（本仓 2026-10-31 吃过这个亏）。 */
+        static readonly System.Text.RegularExpressions.Regex PENDING_ID_SHAPE =
+            new System.Text.RegularExpressions.Regex("^T[0-9]{3,6}$");
+        static readonly System.Text.RegularExpressions.Regex CAND_ID_SHAPE =
+            new System.Text.RegularExpressions.Regex("^c-[0-9a-f]{12}$");
+        private bool PendingIdOk(string id) { return !string.IsNullOrEmpty(id) && PENDING_ID_SHAPE.IsMatch(id); }
+        private bool CandIdOk(string id) { return !string.IsNullOrEmpty(id) && CAND_ID_SHAPE.IsMatch(id); }
+        private static readonly System.Collections.Generic.HashSet<string> REVIEW_KINDS =
+            new System.Collections.Generic.HashSet<string> { "卡", "配方", "流程" };
+
+        // ---- op: reviewList（`_待确认.mjs 修订`，只读）----
+        public string ReviewList(string payload)
+        {
+            string id = ExtractString(payload, "pendingId");
+            if (!PendingIdOk(id))
+                return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"待办编号形状不对（应为 T + 3~6 位数字）：" + Esc(id ?? "") + "\"}";
+            try
+            {
+                var args = new List<string> { ToolPath("_待确认.mjs"), "修订", "--id", id, "--json" };
+                int exit; string se;
+                string so = RunNodeRaw(args.ToArray(), 60000, out exit, out se, DataRoot);
+                Log("reviewList " + id + " exit=" + exit + " out=" + SliceForLog((so ?? "").Replace("\r\n", " | ")));
+                return "{\"ok\":true,\"code\":" + exit + ",\"out\":\"" + Esc(so ?? "") + "\",\"err\":\"" + Esc(se ?? "") + "\"}";
+            }
+            catch (Exception ex)
+            {
+                Log("reviewList " + id + " FAILED: " + ex.Message);
+                return "{\"ok\":false,\"code\":-1,\"out\":\"\",\"err\":\"" + Esc(ex.Message) + "\"}";
+            }
+        }
+
+        // ---- op: reviewCandidate（`_待确认.mjs 候选`，写库 ⇒ 进写闸）----
+        public string ReviewCandidate(string payload)
+        {
+            string id = ExtractString(payload, "pendingId");
+            if (!PendingIdOk(id))
+                return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"待办编号形状不对（应为 T + 3~6 位数字）：" + Esc(id ?? "") + "\"}";
+            string kind = ExtractString(payload, "kind");
+            if (string.IsNullOrEmpty(kind) || !REVIEW_KINDS.Contains(kind))
+                return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"kind 必须是 卡 / 配方 / 流程，收到：" + Esc(kind ?? "") + "\"}";
+            string target = ExtractString(payload, "target");
+            if (string.IsNullOrEmpty(target))
+                return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"缺少 target（卡号 / 配方 id / 流程名）\"}";
+            string text = ExtractString(payload, "text");
+            if (string.IsNullOrEmpty(text))
+                return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"缺少 text（候选修订正文）\"}";
+            if (!WriteGate.Wait(1200000)) return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"等待写入闸超时（另有落库/重建在跑）\"}";
+            string tmp = null;
+            try
+            {
+                var args = new List<string> { ToolPath("_待确认.mjs"), "候选", "--id", id, "--kind", kind, "--target", target };
+                tmp = Path.Combine(Path.GetTempPath(), "gn-review-cand-" + DateTime.Now.Ticks + ".txt");
+                File.WriteAllText(tmp, text, new UTF8Encoding(false));
+                args.Add("--payload-file"); args.Add(tmp);
+                int exit; string se;
+                string so = RunNodeRaw(args.ToArray(), 60000, out exit, out se, DataRoot);
+                Log("reviewCandidate " + id + " " + kind + " exit=" + exit + " out=" + SliceForLog((so ?? "").Replace("\r\n", " | ")));
+                return "{\"ok\":true,\"code\":" + exit + ",\"out\":\"" + Esc(so ?? "") + "\",\"err\":\"" + Esc(se ?? "") + "\"}";
+            }
+            catch (Exception ex)
+            {
+                Log("reviewCandidate " + id + " FAILED: " + ex.Message);
+                return "{\"ok\":false,\"code\":-1,\"out\":\"\",\"err\":\"" + Esc(ex.Message) + "\"}";
+            }
+            finally { if (tmp != null) { try { File.Delete(tmp); } catch { } } }
+        }
+
+        // ---- op: reviewAdopt（`_待确认.mjs 采用` = 正式写入入口，写库 ⇒ 进写闸）----
+        public string ReviewAdopt(string payload)
+        {
+            string id = ExtractString(payload, "pendingId");
+            if (!PendingIdOk(id))
+                return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"待办编号形状不对（应为 T + 3~6 位数字）：" + Esc(id ?? "") + "\"}";
+            string candId = ExtractString(payload, "candId");
+            if (!CandIdOk(candId))
+                return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"候选号形状不对（应为 c- + 12 位小写 hex）：" + Esc(candId ?? "") + "\"}";
+            if (!WriteGate.Wait(1200000)) return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"等待写入闸超时（另有落库/重建在跑）\"}";
+            try
+            {
+                var args = new List<string> { ToolPath("_待确认.mjs"), "采用", "--id", id, "--candidate", candId };
+                if (ExtractString(payload, "dry") == "1") args.Add("--dry");
+                int exit; string se;
+                string so = RunNodeRaw(args.ToArray(), 180000, out exit, out se, DataRoot);
+                Log("reviewAdopt " + id + " " + candId + " exit=" + exit + " out=" + SliceForLog((so ?? "").Replace("\r\n", " | ")));
+                return "{\"ok\":true,\"code\":" + exit + ",\"out\":\"" + Esc(so ?? "") + "\",\"err\":\"" + Esc(se ?? "") + "\"}";
+            }
+            catch (Exception ex)
+            {
+                Log("reviewAdopt " + id + " FAILED: " + ex.Message);
+                return "{\"ok\":false,\"code\":-1,\"out\":\"\",\"err\":\"" + Esc(ex.Message) + "\"}";
+            }
+        }
+
         // ---- op: readFile（限题库根内，≤4MB）----
         public string ReadFile(string payload)
         {
@@ -985,7 +1087,7 @@ namespace CTBShell2
            通过=0 / 拒收=1 / 参数错=2）。丢掉它 ⇒ Recipe() 只能硬编码 code:0 ⇒
            页面把"拒收"渲染成绿色「✔ 校验通过」（失败被讲成成功，L1 阻断项）。
            outCode = 进程真实退出码；超时被杀记 124（与 Mark 同码）且**不抛**，由包装决定怎么报。 */
-        string RunNodeRaw(string[] args, int timeoutMs, out int outCode, out string outErr)
+        string RunNodeRaw(string[] args, int timeoutMs, out int outCode, out string outErr, string forceDataRoot = null)
         {
             var psi = new ProcessStartInfo
             {
@@ -998,6 +1100,10 @@ namespace CTBShell2
                 RedirectStandardOutput = true,
                 RedirectStandardError = true
             };
+            /* ★ 2026-11-03（批次 4）：个别工具**不认 `--data`**（`_待确认.mjs` 只读 CTB_DATA）⇒ 由壳把库根
+               显式注入子进程环境，避免"壳以为库在 A、工具以为库在 B"。只在调用方显式给了库根时设置，
+               其余调用照旧继承环境（行为不变）。 */
+            if (!string.IsNullOrEmpty(forceDataRoot)) psi.EnvironmentVariables["CTB_DATA"] = forceDataRoot;
             using (var p = Process.Start(psi))
             {
                 string so = p.StandardOutput.ReadToEnd();
@@ -1517,6 +1623,10 @@ namespace CTBShell2
                 else if (op == "regen") resp = bridge.Rebuild();
                 else if (op == "pendingResolve") resp = bridge.PendingResolve(payload);
                 else if (op == "pendingAdd") resp = bridge.PendingAdd(payload);
+                /* ★ 2026-11-03（批次 4）：人工修订通道 —— 候选（写）/ 修订链（只读）/ 正式写入（写）。 */
+                else if (op == "reviewList") resp = bridge.ReviewList(payload);
+                else if (op == "reviewCandidate") resp = bridge.ReviewCandidate(payload);
+                else if (op == "reviewAdopt") resp = bridge.ReviewAdopt(payload);
                 /* ★ 2026-10-23 新增：新建学生（空库第一步）。
                    起因（用户实测 BUG#1）：空库里没有任何地方能建"孩子"，新用户进门就堵死。 */
                 else if (op == "createStudent") resp = bridge.CreateStudent(payload);

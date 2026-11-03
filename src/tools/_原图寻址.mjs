@@ -50,9 +50,16 @@ import path from 'path';
 import crypto from 'crypto';
 import { libraryRoot } from './_库根.mjs';
 
-const ROOT = libraryRoot();
-const STORE = path.join(ROOT, '_原图');
-const LEDGER = path.join(ROOT, '_原图台账.json');
+/* ★ 2026-11-03（批次 4）：库根**懒解析**（原先这里是三个顶层常量，出过一次真事故）。
+   事故形态：本文件在**导入期**调 `libraryRoot()` ⇒ `_库根.mjs` 的缓存被"首访即定"，
+   之后再设 `process.env.CTB_DATA`（各工具的 `--data` 正是这么做的）**不再生效** ——
+   实测 `生成状态.mjs --data <临时库>` 会静默去读**另一个**库（本轮撞见：它读了真库/源码树），
+   而"静默读错/写错地方"正是本仓最忌讳的形态。
+   与批次 2 给 `_路径护栏.mjs` 做的处理同款：把顶层常量改成函数调用。
+   ⚠ 谁也不要把它改回顶层常量 —— 回归锁见 `tests\neg-v2-review-sidebyside.cjs`（`--data` 必须真的生效）。 */
+const root = () => libraryRoot();
+const storeDir = () => path.join(root(), '_原图');
+const ledgerPath = () => path.join(root(), '_原图台账.json');
 
 /* 归一：台账里的路径可能是反斜杠、可能有 `./` 前缀、大小写可能不同。
    统一成"库根相对 + 正斜杠 + 小写"再比。 */
@@ -89,14 +96,18 @@ function sha256File(file) {
    （本文件头号忌讳）。现在 rev 只收**唯一**映射；歧义路径一律不进 rev。
    revAll 是全量（含歧义），供 pathShas()/explain() 如实报出"到底有几个、分别是哪些"。 */
 let _revCache = null;
+let _revCacheRoot = null;   // 这份缓存是"给哪个库"建的（库根懒解析后必须记住，免得缓存跨库串用）
 function reverseIndex() {
-  if (_revCache) return _revCache;
+  /* ★ 2026-11-03（批次 4）：缓存连同**库根**一起判 —— 原先只看 `_revCache` 真假，
+     一旦有谁在缓存建好之后再改库根（`--data`/`CTB_DATA` 迟到），就会拿**上一个库**的反查表去解析路径。
+     "缓存属于哪个库"必须显式记下来，这是懒解析的必要配套，不是可选项。 */
+  if (_revCache && _revCacheRoot === root()) return _revCache;
   const rev = new Map();          // normRel(来源路径) → sha（**仅唯一**；歧义路径不在其中）
   const revAll = new Map();       // normRel(来源路径) → Set(sha)（全量，含歧义）
   const objAt = new Map();        // sha → 保全库内对象的相对路径
-  if (fs.existsSync(LEDGER)) {
+  if (fs.existsSync(ledgerPath())) {
     let doc = null;
-    try { doc = JSON.parse(fs.readFileSync(LEDGER, 'utf8').replace(/^\uFEFF/, '')); } catch { doc = null; }
+    try { doc = JSON.parse(fs.readFileSync(ledgerPath(), 'utf8').replace(/^\uFEFF/, '')); } catch { doc = null; }
     const objects = (doc && doc.objects && typeof doc.objects === 'object') ? doc.objects : {};
     for (const sha of Object.keys(objects)) {
       const o = objects[sha] || {};
@@ -117,11 +128,12 @@ function reverseIndex() {
       const p = path.join(d, e.name);
       if (e.isDirectory()) { if (e.name !== '_快照') walk(p); continue; }
       const m = /^([0-9a-f]{64})\.([a-z0-9]{1,8})$/i.exec(e.name);
-      if (m) objAt.set(m[1].toUpperCase(), path.relative(ROOT, p).split(path.sep).join('/'));
+      if (m) objAt.set(m[1].toUpperCase(), path.relative(root(), p).split(path.sep).join('/'));
     }
   };
-  if (fs.existsSync(STORE)) walk(STORE);
+  if (fs.existsSync(storeDir())) walk(storeDir());
   _revCache = { rev, revAll, objAt };
+  _revCacheRoot = root();   // ★ 记下"这份缓存属于哪个库"（懒解析的必要配套，见 reverseIndex 开头）
   return _revCache;
 }
 
@@ -150,7 +162,7 @@ function lookupStore(sha, expectBytes, verifyContent) {
   const { objAt } = reverseIndex();
   const rel = objAt.get(String(sha).toUpperCase());
   if (!rel) return null;
-  const abs = path.join(ROOT, rel);
+  const abs = path.join(root(), rel);
   try {
     const st = fs.statSync(abs);
     if (!st.isFile()) return null;
@@ -179,7 +191,7 @@ function explain(rel, opts = {}) {
   const verifyContent = opts.verifyContent !== false;   // 单条版默认核对内容；批量版按性能口径传 false
   if (!rel) return { status: 'empty', code: 'empty', reason: '没有给路径' };
   const relPosix = String(rel).replace(/\\/g, '/');
-  const abs = path.join(ROOT, relPosix);
+  const abs = path.join(root(), relPosix);
   let statOk = false, sizeOnDisk = null;
   try { const st = fs.statSync(abs); if (st.isFile()) { statOk = true; sizeOnDisk = st.size; } } catch { }
   /* ① 原路径在盘。★ `expectBytes == null` ⇒ **零 IO 常态**：一次 stat 直接放行，

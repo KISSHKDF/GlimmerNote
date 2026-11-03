@@ -710,6 +710,24 @@
 
   S.closeLightbox = function () { lb = null; U.$id('lightbox').hidden = true; U.$id('lightbox').innerHTML = ''; };
   S.lbIndex = () => (lb ? lb.idx : 0);
+  /* ★ 2026-11-03（批次 4「原图并排 + 区域高亮」）：把"区域 → 像素框"的换算**外供一份**。
+     唯一实现**仍在本文件**（`normToPx` / `boxNormPx`）—— `pending.js` 的并排视图调它，
+     绝不在那边另写一套（两份换算必然漂移，本仓 L-286 家族记过账）。
+     入参：区域对象 `{x,y,w,h}`（0~1 归一化，基准是**该区域自己那张页**）＋**已加载完的 <img>**
+     （要 naturalWidth/naturalHeight，所以必须在 load 之后调）。读不出尺寸/字段非法 ⇒ null（调用方给具体原因）。
+     ⚠ 位置刻意放在 `loadLb()` **之后**：`tests\neg-pack-ui-wiring.cjs` 按锚点切
+     `'const normToPx =' … 'function loadLb()'` 这段去 eval，往外供区里塞东西会让那段切片多出对 `S` 的引用
+     （实测：`S is not defined`，整轮 quick 红）。外供 API 与别的 `S.*` 放一起，既合语法也保住老用例的窗口。 */
+  S.regionPx = function (region, img) {
+    if (!region || !img || !img.naturalWidth || !img.naturalHeight) return null;
+    const b = [region.x, region.y, region.w, region.h];
+    if (!b.every((v) => typeof v === 'number' && isFinite(v))) return null;
+    return normToPx(b, img);
+  };
+  /* 角色 → CSS 类（错误位置/公共条件/配图；未知角色不许当"错误位置"渲染，给 r-other） */
+  S.roleClass = function (role) {
+    return role === '错误位置' ? 'r-err' : role === '公共条件' ? 'r-cond' : role === '配图' ? 'r-fig' : 'r-other';
+  };
 
   /* ================= 命令面板 ================= */
   S.palette = function (q0) {

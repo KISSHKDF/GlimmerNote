@@ -411,6 +411,8 @@ const TMP_PREFIXES = [
   'gn-shell-card-',   // tests\neg-shell-card-passthrough.mjs 的反射脚本 + 替身工具目录
   'gn-ingest-e2e-packs-', // tests\neg-v2-ingest-task-e2e.cjs 的临时**经验包根**（批次 2）
   'gn-draft-',        // tests\neg-experience-draft.cjs 的临时库 + 临时经验包根（批次 3）
+  'gn-w3-review-',    // tests\neg-v2-review-sidebyside.cjs 的临时库（批次 4）
+  'gn-revconc-',      // tests\neg-revision-concurrency.cjs 的并发钻孔夹具（批次 4）
 ];
 const TMP_STALE_MS = 24 * 60 * 60 * 1000;
 const _ownedTmp = new Set();
