@@ -181,6 +181,17 @@ A('壳不做通用透传/反射（无 args.Add(payload)、无反射取值）',
   !/args\.Add\(\s*payload/.test(CS) && !/System\.Reflection|GetProperty\(|GetFields\(/.test(CS));
 A('库根仍显式用 --data 注入（不靠环境变量继承）', /args\.Add\("--data"\);\s*args\.Add\(DataRoot\)/.test(CS));
 
+console.log('\n═══ 布尔透传（2026-11-03 批次 1 收尾）：task→--task 与 json→--json 同一条固定键的路 ══');
+/* 布尔开关不走 AddFlag（那是"键→值"映射；布尔 flag 没有值）——单独钉住，防将来有人
+   把它"统一"成通用透传。页面纪律（只在勾了照片时发 task=1）在 neg-task-page-wiring.cjs 钉。 */
+A('组装支持 --task 布尔透传（生成任务单时留任务记录）',
+  /ExtractString\(payload, "task"\) == "1"\)\s*args\.Add\("--task"\)/.test(recipeMethod));
+A('json→--json 布尔透传仍在（回归锁）',
+  /ExtractString\(payload, "json"\) == "1"\)\s*args\.Add\("--json"\)/.test(recipeMethod));
+A('Recipe() 里布尔开关只有这两个固定键（没有第三把）',
+  (recipeMethod.match(/ExtractString\(payload, "(\w+)"\) == "1"/g) || []).length === 2,
+  (recipeMethod.match(/ExtractString\(payload, "(\w+)"\) == "1"/g) || []).join(','));
+
 console.log('\n═══ 阴性/阳性对照：真跑引擎的「找图」（非法参数必须被拒）═══');
 /* 判据不是"壳里写了正则"，是"工具真的会拒"。用例的 argv 按**壳声明的映射**（上面解析出的 RECIPE_MAP
    ＋ --data ＋ json）拼 —— 只映射白名单里的键，payload 里多出来的键（下例 bogus）**必须**被丢掉，

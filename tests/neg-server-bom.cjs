@@ -14,8 +14,11 @@
  *      **成功退出且 stdout 是完整状态包**（改前这里必抛 → 服务端 500）。跑完按字节还原。
  *      另加源码级断言：这 4 个文件里不得再出现裸 `JSON.parse(fs.readFileSync(`。
  *
- * 只碰 `_状态.json`（生成物、可再生 + 逐字节还原）与 `_probe\` 下的临时文件；
- * **不碰任何真源**（`_待确认.json`/`_索引.json`/各台账）。
+ * 只碰 `_状态.json`（生成物、可再生 + 逐字节还原）与 **%TEMP% 里的探针文件**；
+ * **不碰任何真源，也不在库根里建任何东西**（`_待确认.json`/`_索引.json`/各台账/库根目录）。
+ * ★ 2026-11-03 修正：探针目录原为 `E.lib('_probe')`（= 库根内）⇒ 每轮 quick 都在**用户真库**里
+ *   建/动 `_probe\`（且只 unlink 文件、不删目录 ⇒ 留下空目录），违反红线 2。
+ *   定案与复现：`tests\_probe-writer-forensics-20261103.md` §1/§2。
  * 退出码 0=全绿。
  */
 'use strict';
@@ -28,13 +31,34 @@ const { ROOT, counter, stripComments, fileUrl } = require('./neg-server-lib.cjs'
 const E = require('./_测试环境.cjs');
 const { A, end } = counter();
 const STATE = E.lib('_状态.json');
-/* ★ 2026-10-23：中转目录放**库内**（工具按库根读写），别放仓库根 —— 那儿已经没有数据了。 */
-const PROBE = E.lib('_probe');
 const TOOL = E.tool('_状态刷新.mjs');
 const BOM = '\uFEFF';
 
-fs.mkdirSync(PROBE, { recursive: true });
+/* ★ 2026-11-03 修正（红线 2）：探针目录**绝不落库根**。
+   改前是 `E.lib('_probe')`（= <库根>\_probe）＋模块顶层 `fs.mkdirSync`，而开发机上 quick 的库根由
+   `GLIMMERNOTE_PROD` 解析成**用户真库** ⇒ 每轮 quick 都在用户库里建/动 `_probe\`；结尾又只
+   `unlinkSync` 文件、不删目录 ⇒ 留下一串空目录。定案与最小复现见
+   `tests\_probe-writer-forensics-20261103.md` §1/§2。
+   现在落 %TEMP%：前缀 `gn-testlib-` 是 `_测试环境.cjs` TMP_PREFIXES 认识的（崩残留清扫能认领），
+   且 allocTempDir 会登记到退出钩子 ⇒ 被 SIGKILL 也不留残渣。 */
+const PROBE = E.allocTempDir('gn-testlib-bom-');
 const tmpBom = path.join(PROBE, 'neg-server-bom-probe.json');
+
+/* 准入闸：本仓写盘准入的**唯一判据**是 `_测试环境.cjs` 的 `writeGuard()`，它判的是**写盘目标**
+   （不是 LIB）。改前这条判据在本用例里**从来没被调用过** —— 正是本缺陷能潜伏多轮的原因。
+   这里显式过闸并断言三件事，第 ③ 条是"判据有牙齿"的自证。 */
+console.log('══ ⓿ 探针落点准入：不落库根（2026-11-03 修正） ══');
+{
+  const g = E.writeGuard(PROBE);
+  A('探针落点通过写盘准入（writeGuard.ok）', g.ok, g.reason || PROBE);
+  A('探针落点不在库根内（红线 2：`数据\\` 是用户的，任何脚本都不得写它）',
+    !path.resolve(PROBE).toLowerCase().startsWith(path.resolve(E.LIB).toLowerCase() + path.sep), PROBE);
+  if (E.isFrozen(E.LIB)) {
+    /* 自证：旧落点（库内 `_probe`）在真库上必须被判"不可写"；判据没牙齿时这条会红 */
+    const old = E.writeGuard(E.lib('_probe'));
+    A('自证 · 旧落点 E.lib(\'_probe\') 在真库上会被准入闸拒绝（判据有牙齿）', old.ok === false, old.reason);
+  }
+}
 
 /* ---------- ① 阴性自证：旧写法必须失败（否则本断言没有牙齿） ---------- */
 console.log('══ ① 阴性自证：裸 JSON.parse 不容忍 BOM ══');
@@ -129,5 +153,10 @@ console.log('\n══ ④ 源码级：裸 JSON.parse(fs.readFileSync( 必须清�
   const close = fs.readFileSync(E.tool('_闭环稽核.mjs'), 'utf8');
   A('_闭环稽核.mjs 走 readJsonStrict（共享底座）', /readJsonStrict/.test(close));
 }
+
+/* 探针目录整棵删掉（allocTempDir 的退出钩子会兜底；这里显式删并自证，不让 %TEMP% 积残留）。
+   ⚠ 只删**自己建的** %TEMP% 目录：绝不能对 `E.lib('_probe')` 做 rmSync —— 那会删用户库里的东西。 */
+try { fs.rmSync(PROBE, { recursive: true, force: true }); } catch (e) { }
+A('探针目录已清理（%TEMP% 内，不落库、不落仓库）', !fs.existsSync(PROBE), PROBE);
 
 process.exit(end('BUG-15 BOM 一致性'));

@@ -163,8 +163,19 @@
       const sb = U.$id('sidebar');
       if (sb) sb.innerHTML = '<div class="side-foot">界面外壳渲染出错：<b>' + U.esc(e.message) + '</b></div>';
       const tb0 = U.$id('topbar');
-      if (tb0) tb0.innerHTML = '<div class="tb-title">⚠ 界面出错</div><span class="tb-sp"></span>' +
-        '<button class="btn sm" onclick="location.reload()">⟳ 重载界面</button>';
+      if (tb0) {
+        tb0.innerHTML = '<div class="tb-title">⚠ 界面出错</div><span class="tb-sp"></span>';
+        /* ★ 2026-11-03（B-1 修复）：原先是内联 `onclick="location.reload()"` 属性 —— 新程序页 CSP
+           （script-src 'self' file:，无 'unsafe-inline'）会**整条拦掉**内联事件处理器。真浏览器实测：
+           属性式 onclick 0 次触发、同一元素 addEventListener 1 次触发，控制台逐字报
+           "Executing inline event handler violates the following Content Security Policy directive
+            'script-src 'self' file:'" ⇒ F-40 的「复活」按钮点了没有任何反应（兜底路径恰好在最需要它时失效）。
+           现在用 U.h 建元素 + 对象式绑定（元素对象就在手边，不再多查一次 DOM），CSP 不用放宽。
+           tests\neg-v2-ingest-task-e2e.cjs 的「渲染后 DOM 不得有内联事件属性」+「零 CSP 违规」两条钉住这一类回归。 */
+        const btn = U.h('button', { class: 'btn sm', text: '⟳ 重载界面' });
+        btn.onclick = () => location.reload();
+        tb0.appendChild(btn);
+      }
     }
     const el = U.$id('view');
     const v = CTB.views[route] || CTB.views.dash;

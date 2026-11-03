@@ -33,6 +33,10 @@
   st.task = ''; st.verdict = null; st.inbox = null; st.picked = {}; st.batch = '';
   /* 本次生成任务单对应的那一张（rel + 内容指纹）。只活在内存里，切页即失效。 */
   st.shot = null;
+  /* ★ 2026-11-03（批次 1 收尾「页面接线」）：本次生成对应的任务号（<库根>\_录题\<taskId>.json）。
+     与 st.shot 同一生命周期：只活在内存里；重新生成任务单就换新任务（同图同配方也是**两个**任务，
+     这正是"错配必须被发现"的前提）。任务记录本体随库走，这里是"当前正在校验哪一次"的句柄。 */
+  st.taskId = null;
 
   const SUBJECTS = ['数学', '语文', '英语', '物理', '化学', '生物', '历史', '地理', '政治'];
 
@@ -119,8 +123,9 @@
       '<div class="card ig-step">' +
       '<div class="ig-h"><span class="ig-n">3</span>把 AI 的答案粘回来校验</div>' +
       '<div class="small muted">把 AI 输出的那一整段 JSON 原样粘进来（多带了说明文字也没关系，只要里面有 JSON）。' +
-      '<b>校验只检查格式与字段，不会写进题库</b>。</div>' +
-      '<textarea id="igIn" class="ig-ta" placeholder="粘贴 cards.json 内容，例如 {&quot;cards&quot;:[…]}"></textarea>' +
+      '<b>生成任务单后走三层校验（格式 → 与任务及原图匹配 → 人工确认），不写进题库</b>；' +
+      '没生成任务单时只校验格式，会明确标"未与任务关联"。</div>' +
+      '<textarea id="igIn" class="ig-ta" placeholder="粘贴 cards.json 内容，例如 {&quot;envelope&quot;:{…},&quot;result&quot;:{&quot;cards&quot;:[…]}}"></textarea>' +
       '<div class="row" style="margin-top:8px"><button class="btn sm primary" id="igCheck">校验</button>' +
       '<span class="small muted">校验通过后再走原有的建卡流程入库（本页不落库）</span></div>' +
       '<div id="igResult"></div>' +
@@ -336,7 +341,11 @@
     st.shot = (picked.length && shotInfo) ? { rel: shotInfo.rel, sha256: shotInfo.sha256, name: shotInfo.name } : null;
     try {
       const flags = { recipe: st.recipe, subject: st.subject };
-      if (picked.length) flags.image = picked[0];
+      if (picked.length) { flags.image = picked[0]; }
+      /* ★ 2026-11-03（批次 1 收尾）：勾了照片 ⇒ 带 --task 留任务记录（壳侧布尔透传 task=1）。
+         没选照片时**不留**——没有原图的任务记录无法对图，只会产一条永远对不上的空壳。 */
+      if (picked.length) { flags.task = '1'; }
+      st.taskId = null;   /* 每次生成都是一次新任务；旧句柄随生成动作作废 */
       const r = await H.recipe('组装', flags);
       /* ⚠ 2026-10-27 修（用户实测：「生成不了任务单」，而界面显示"已生成（0 字符 / 1 行）"）：
          原代码只看 out、不看 ok/code —— 工具失败时 stdout 是空的，于是"空字符串"被当成
@@ -354,8 +363,13 @@
         return;
       }
       const lines = st.task.split('\n').length;
+      /* 任务号在工具 stderr 的「任务记录：t-…（<库根>\_录题\…）」行里（stdout 是任务单正文）。
+         旧壳没有 task 透传时会解析不到 ⇒ st.taskId 为 null，校验自然落回"仅格式校验"。 */
+      const tidM = String((r && r.err) || '').match(/任务记录：(t-[0-9]{8}-[0-9]{6}-[0-9a-f]{6})/);
+      st.taskId = tidM ? tidM[1] : null;
       box.innerHTML =
         '<div class="ig-ok">✔ 任务单已生成（' + st.task.length + ' 字符 / ' + lines + ' 行）' +
+        (st.taskId ? '　任务号 <b>' + U.esc(st.taskId) + '</b>（已留任务记录，回传校验按三层判）' : '') +
         (picked.length ? '' : '　<b>⚠ 未选照片：AI 拿不到 sourceImageSha256，回传会被拒收</b>') + '</div>' +
         '<div class="row" style="margin:8px 0"><button class="btn sm primary" id="igCopy">📋 复制任务单</button>' +
         (st.shot ? '<button class="btn sm primary" id="igReveal">📂 定位这张图</button>' : '') +
@@ -380,6 +394,66 @@
     }
   }
 
+  /* ★ 2026-11-03（批次 1 收尾）：有任务句柄 ⇒ 走三层校验（`_录题任务.mjs 绑定校验`，
+     唯一实现，界面与 CLI 共用同一份）。退出码：0 通过 / 1 格式不通过 / 2 任务不存在或用法 /
+     3 与任务不匹配（契约见 docs\录题任务契约.md）。显示三层原文——工具已经逐层说清了，页面不转译。 */
+  async function onBoundCheck(box, text, btn, hadBraces) {
+    const r = await H.taskCheck(st.taskId, text);
+    st.verdict = r;
+    const code = r && r.code;
+    const out = String((r && r.out) || '');
+    const err = String((r && r.err) || '');
+    if (code === 0) {
+      const confirmed = /③ 内容已人工确认：已确认/.test(out);
+      /* ★ 2026-11-03（D-4 连带，独立复核点名）：**抬头必须与工具原文同源**。
+         改前写死成"✔ 绑定校验通过（① 格式 + ② 与任务及原图匹配）"，可 exit 0 并不只有那一种情形：
+         返回 JSON **没带信封**时（旧格式），工具第二层只核了原图 sha、并明写"未与任务关联"，
+         却照样 exit 0 ⇒ 页面把"没核对任务号"说成"② 与任务及原图匹配"，界面跟着说谎。
+         判据直接读工具自己的两行原文（`仅格式校验（信封已识别）` + `② …：通过`），不另立第二套口径。 */
+      const linked = /仅格式校验（信封已识别）/.test(out) && /② 与任务及原图匹配：通过/.test(out);
+      box.innerHTML = '<div class="ig-ok">' + (linked
+        ? '✔ 绑定校验通过（① 格式 + ② 与任务及原图匹配）'
+        : '✔ 校验通过 —— 但<b>未与任务关联</b>（这份 JSON 没带信封，程序无法核对它属于哪次任务；只核了格式与原图 sha）') + '</div>' +
+        '<div class="small muted" style="margin:4px 0">任务号 <b>' + U.esc(st.taskId) + '</b>' +
+        (confirmed ? '　✔ 已人工确认' : '　<b>第三层未完成</b>——人看过下面的结果之后，点「✍ 确认本任务」') + '</div>' +
+        '<pre class="ig-pre">' + U.esc(out) + '</pre>' +
+        (confirmed ? '' :
+          '<div class="row" style="margin-top:8px"><button class="btn sm primary" id="igConfirm">✍ 确认本任务</button>' +
+          '<span class="small muted">确认写进任务记录（confirmedAt）。这是**人显式做的动作**，程序不替你确认。</span></div>') +
+        '<div class="small muted">下一步：按 `docs\\作答契约.md` 建卡入库（本页不写库）。</div>';
+      S.toast(linked ? '绑定校验通过' : '校验通过（未与任务关联）', linked ? 'ok' : 'warn');
+      const cf = U.$id('igConfirm');
+      if (cf) cf.onclick = () => onConfirm(cf);
+    } else if (code === 3) {
+      box.innerHTML = '<div class="ig-warn">✖ 与任务不匹配 —— <b>不要入库</b>（跨任务贴错 / 图不一致）</div>' +
+        '<pre class="ig-pre ig-bad">' + U.esc(out || err) + '</pre>';
+      S.toast('与任务不匹配，看下面点名的原因', 'bad', 8000);
+    } else {
+      box.innerHTML = '<div class="ig-warn">✖ ' + (code === 1 ? '格式不通过' : '校验请求失败（工具退出码 ' + code + '）') +
+        (code === 1 && !hadBraces ? '<br>提示：粘进来的内容里没找到 JSON 花括号' : '') + '</div>' +
+        '<pre class="ig-pre ig-bad">' + U.esc(err || out) + '</pre>' +
+        '<div class="small muted">逐条看上面的原因行，改完再粘一次。常见原因：错因写成中文、缺 confidence、' +
+        '缺 sourceImageSha256、多写了契约外字段。</div>';
+      S.toast(code === 1 ? '格式不通过，看逐条原因' : '校验失败，看原因', 'bad', 8000);
+    }
+  }
+
+  /* 第三层确认：只能由人点。确认后重跑一次绑定校验，让三层显示如实刷新。 */
+  async function onConfirm(cf) {
+    cf.disabled = true; cf.textContent = '⏳ 确认中…';
+    try {
+      const r = await H.taskConfirm(st.taskId, '');
+      if (r && r.code === 0) { S.toast('任务已确认', 'ok'); onCheck(); }
+      else {
+        S.toast('确认失败：' + String((r && (r.err || r.out)) || '未知原因'), 'bad', 8000);
+        cf.disabled = false; cf.textContent = '✍ 确认本任务';
+      }
+    } catch (e) {
+      S.toast('确认失败：' + String(e && e.message || e), 'bad', 8000);
+      cf.disabled = false; cf.textContent = '✍ 确认本任务';
+    }
+  }
+
   async function onCheck() {
     const box = U.$id('igResult'); const ta = U.$id('igIn');
     const raw = String(ta.value || '').trim();
@@ -389,13 +463,17 @@
     const text = (a >= 0 && b > a) ? raw.slice(a, b + 1) : raw;
     const btn = U.$id('igCheck'); btn.disabled = true; btn.textContent = '⏳ 校验中…';
     try {
+      if (st.taskId) { await onBoundCheck(box, text, btn, a >= 0); return; }
       const r = await H.recipe('校验', { recipe: st.recipe, text });
       st.verdict = r;
       const code = r && r.code;
       const out = String((r && r.out) || '');
       const err = String((r && r.err) || '');
       if (code === 0) {
-        box.innerHTML = '<div class="ig-ok">✔ 校验通过</div><pre class="ig-pre">' + U.esc(out) + '</pre>' +
+        box.innerHTML = '<div class="ig-ok">✔ 校验通过</div>' +
+          '<div class="small muted" style="margin:4px 0"><b>仅格式校验（未与任务关联）</b>——本次没有任务上下文' +
+          '（先在「2」里勾照片生成任务单），程序无法核对这份结果属于哪张图、哪次任务。</div>' +
+          '<pre class="ig-pre">' + U.esc(out) + '</pre>' +
           '<div class="small muted">下一步：按 `docs\\作答契约.md` 建卡入库（本页不写库）。</div>';
         S.toast('校验通过', 'ok');
       } else {

@@ -120,11 +120,15 @@ powershell -File scripts\selftest-pipeline.ps1
 # 看有哪些配方、各自版本与指纹
 node src\tools\_配方.mjs 清单
 
-# 给一份原图出一张「录题任务单」（含提示词全文与原图 sha256）
-node src\tools\_配方.mjs 组装 --recipe ingest-page --subject 数学 --image <原图路径> --out 任务.md
+# 给一份原图出一张「录题任务单」（含提示词全文与原图 sha256；--task 同时留一条本地任务记录）
+node src\tools\_配方.mjs 组装 --recipe ingest-page --subject 数学 --image <原图路径> --task --out 任务.md
 
 # 校验 AI 回传的 cards.json（schema 真校验，不合格逐条指出）
 node src\tools\_配方.mjs 校验 --in cards.json
+
+# 三层校验（格式 → 与任务及原图匹配 → 人工确认）：把 A 的结果贴进 B 会被点名拦下
+node src\tools\_录题任务.mjs 绑定校验 <taskId> --in cards.json
+node src\tools\_录题任务.mjs 确认 <taskId> --note "人工看过"
 
 # 看收件箱还剩哪些没处理（已处理的不再列；--all 连已归档的一起列）
 node src\tools\_配方.mjs 收件箱

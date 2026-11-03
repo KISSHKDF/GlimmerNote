@@ -123,13 +123,16 @@
     /* F-38：图坏了要喊出来，但**不许连「🗂 打开原图」一起删掉**（用户还要靠它去核对/补图）；
        红块里保留按钮 + 一个「重试加载」。 */
     return '<div class="pd-img">' +
-      '<img loading="lazy" class="pd-ev" data-zoom="' + U.esc(p.evidence) + '" data-rel="' + U.esc(p.evidence) + '" data-box="' + U.esc((p.box || []).join(',')) + '" src="' + U.esc(H.asset(p.evidence)) + '" alt="证据图" onerror="CTB.pendingEvErr(this)">' +
+      '<img loading="lazy" class="pd-ev" data-zoom="' + U.esc(p.evidence) + '" data-rel="' + U.esc(p.evidence) + '" data-box="' + U.esc((p.box || []).join(',')) + '" src="' + U.esc(H.asset(p.evidence)) + '" alt="证据图">' +
       /* 2026-10-16 口径（用户定案：裁图=截图，原图=整页）：这张开的是**证据截图**，
          不是原图；原图在灯箱里（点图 → ⇄ 原图）。此前写「打开原图」就是把截图冒充原图。 */
       '<button class="btn xs ghost" data-open="' + U.esc(p.evidence) + '">🗂 打开截图</button></div>';
   }
-  /* 给内联 onerror 用的全局钩子（图片可能在 bind() 之前就已失败）。
-     F-38：只把 <img> 换成红块，**保留外层的 .pd-img 与「🗂 打开原图」**，并给一个重试入口。 */
+  /* F-38 的失败兜底钩子。★ 2026-11-03（B-1 修复）：**不再由内联 onerror 调用** —— 新程序页 CSP
+     （script-src 无 'unsafe-inline'）会把内联事件处理器整条拦掉（真浏览器实测：属性式处理器
+     0 次触发 + 控制台逐字报 "Executing inline event handler violates …"），于是这道防线静默失效、
+     退回用户当初报障的"静默破图"。现在由 bind() 在渲染后**对象式绑定**挂上（见 bind() 里的时序说明）。
+     语义没变：只把 <img> 换成红块，**保留外层的 .pd-img 与「🗂 打开截图」**，并给一个重试入口。 */
   CTB.pendingEvErr = function (img) {
     if (!img || !img.parentNode) return;
     const rel = img.getAttribute('data-rel') || '';
@@ -146,6 +149,13 @@
   };
 
   function bind(box) {
+    /* ★ 2026-11-03（B-1 修复）：`.pd-ev` 的加载失败兜底原先写成内联 `onerror="CTB.pendingEvErr(this)"`，
+       被新程序页 CSP 整条拦掉 ⇒ F-38「证据图坏了要喊出来」的第二道防线静默失效（退回静默破图）。
+       改成渲染后对象式绑定。时序为什么安全：`box.innerHTML = …` 只是**发起**图片请求，error/load
+       事件由事件循环派发，所以紧随其后的同步 bind() 一定先挂上钩子（"图片可能在 bind() 之前就已失败"
+       这句话只描述得了内联属性时代的不可能态 —— 属性随元素一起被解析，永远比任何外部绑定早）。
+       这一类回归由 tests\neg-v2-ingest-task-e2e.cjs 的「零 CSP 违规」+「DOM 无内联事件属性」两条兜住。 */
+    box.querySelectorAll('img.pd-ev').forEach(img => { img.onerror = () => CTB.pendingEvErr(img); });
     box.querySelectorAll('[data-zoom]').forEach(img => img.onclick = () => {
       const host = img.closest('.pd-item');
       openLbAt(host ? host.id.replace(/^pd-/, '') : null);

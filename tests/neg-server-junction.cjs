@@ -47,8 +47,10 @@ const INSIDE = 'INSIDE-LIB-CONTENT\n';
 
 fs.mkdirSync(LIB, { recursive: true });
 fs.mkdirSync(path.join(LIB, 'sub'), { recursive: true });
-fs.writeFileSync(path.join(LIB, 'inside.txt'), INSIDE);
-fs.writeFileSync(path.join(LIB, 'sub', 'in.txt'), 'SUB-INSIDE\n');
+/* ★ 2026-11-03：夹具从 .txt 换成 .jpg —— staticAllowed 叠了类型准入（R8 整改③）后
+   .txt 不再下发；本用例主旨是**重解析点包含性**，扩展名无关紧要，换 .jpg 保住"正常文件 200"的判据。 */
+fs.writeFileSync(path.join(LIB, 'inside.jpg'), INSIDE);
+fs.writeFileSync(path.join(LIB, 'sub', 'in.jpg'), 'SUB-INSIDE\n');
 fs.writeFileSync(path.join(OUTSIDE, 'secret.txt'), SECRET);
 
 function mkJunction(link, target) {
@@ -131,11 +133,11 @@ const JUNCTIONS = [path.join(LIB, 'link-out'), path.join(LIB, 'link-in'), path.j
     }
     A('独立实例启动（临时库 ' + LIB + '，不与真库接触）', true);
     {
-      const inside = await req(PORT, '/inside.txt');
-      A('GET /inside.txt → 200 且内容正确（库内正常文件不受影响）',
+      const inside = await req(PORT, '/inside.jpg');
+      A('GET /inside.jpg → 200 且内容正确（库内正常文件不受影响）',
         inside.status === 200 && inside.text === INSIDE, 'status=' + inside.status + ' body=' + JSON.stringify(inside.text));
-      const sub = await req(PORT, '/sub/in.txt');
-      A('GET /sub/in.txt → 200（库内子目录不受影响）', sub.status === 200 && sub.text === 'SUB-INSIDE\n', 'status=' + sub.status);
+      const sub = await req(PORT, '/sub/in.jpg');
+      A('GET /sub/in.jpg → 200（库内子目录不受影响）', sub.status === 200 && sub.text === 'SUB-INSIDE\n', 'status=' + sub.status);
     }
     if (jOut.ok) {
       const r = await req(PORT, '/link-out/secret.txt');
@@ -148,8 +150,8 @@ const JUNCTIONS = [path.join(LIB, 'link-out'), path.join(LIB, 'link-in'), path.j
       A('GET /link-out/../link-out/secret.txt → 403（归一化后仍指向库外链接）', deep.status === 403, 'status=' + deep.status);
     } else S('② junction→库外（403）', 'mklink 不可用：' + jOut.err);
     if (jIn.ok) {
-      const r = await req(PORT, '/link-in/in.txt');
-      A('GET /link-in/in.txt → 200（junction 指向**库内**时不得误伤 —— 不是"一律拒软链"）',
+      const r = await req(PORT, '/link-in/in.jpg');
+      A('GET /link-in/in.jpg → 200（junction 指向**库内**时不得误伤 —— 不是"一律拒软链"）',
         r.status === 200 && r.text === 'SUB-INSIDE\n', 'status=' + r.status + ' body=' + JSON.stringify(r.text));
     } else S('② junction→库内（200）', 'mklink 不可用：' + jIn.err);
     if (jWin.ok && fs.existsSync(path.join(SYSTEM_ROOT, 'win.ini'))) {
@@ -196,18 +198,18 @@ const JUNCTIONS = [path.join(LIB, 'link-out'), path.join(LIB, 'link-in'), path.j
     console.log('\n══ ④ 回归：库根本身是 junction（迁移期常见布局） ══');
     if (!jLib.ok) S('④ 库根=junction', 'mklink 不可用：' + jLib.err);
     else {
-      const realLibFile = fs.realpathSync(path.join(LIB_JUNCTION, 'inside.txt'));
+      const realLibFile = fs.realpathSync(path.join(LIB_JUNCTION, 'inside.jpg'));
       A('前置：realpath(库根内文件) 落在**库根本身路径之外**（正是会误判的那种形态）',
         oldJudge(LIB_JUNCTION, realLibFile) === false, 'realpath=' + realLibFile + '  libJ=' + LIB_JUNCTION);
       srvLibJ = startAt(PORT_LIBJ, LIB_JUNCTION, SERVER);
       const up = await waitHealth(PORT_LIBJ);
       A('实例以 junction 形态的库根启动', up, 'stderr=' + String(srvLibJ.err).slice(0, 200));
       if (up) {
-        const r = await req(PORT_LIBJ, '/inside.txt');
-        A('GET /inside.txt → 200（库根是 junction 时**不得**把所有正常请求判成越界）',
+        const r = await req(PORT_LIBJ, '/inside.jpg');
+        A('GET /inside.jpg → 200（库根是 junction 时**不得**把所有正常请求判成越界）',
           r.status === 200 && r.text === INSIDE, 'status=' + r.status + ' body=' + JSON.stringify(r.text.slice(0, 40)));
-        const s2 = await req(PORT_LIBJ, '/sub/in.txt');
-        A('GET /sub/in.txt → 200（同上，子目录也正常）', s2.status === 200, 'status=' + s2.status);
+        const s2 = await req(PORT_LIBJ, '/sub/in.jpg');
+        A('GET /sub/in.jpg → 200（同上，子目录也正常）', s2.status === 200, 'status=' + s2.status);
       }
       await srvLibJ.stop();
     }

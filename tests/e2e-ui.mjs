@@ -207,6 +207,15 @@ const S = (name, why) => { skipped++; P('[SKIP]' + name + '  → ' + why); };
   const md1 = await cdp.evalJs(`CTB.host.readFile(CTB.model.relPathTmp(CTB.model.cards.find(function(c){return c.card.md}).card.md)).then(r=>r.ok&&r.text.length>50).catch(e=>({err:String(e)}))`);
   A('readFile 正常读取错题记录.md', md1 === true, md1);
 
+  /* ★ 2026-11-03（批次 1 收尾）：录题任务两个新 op 的桥级冒烟。
+     两个调用都**只读不落库**（不存在的任务在 loadTask 就 return 2，写不到盘），
+     所以可以安全地架在冻结真库上跑。端到端全流程（含写路径）在 neg-v2-ingest-task-e2e.cjs
+     的临时库里做，这里只证"壳通道活着、错误如实带回"。 */
+  const tc1 = await cdp.evalJs(`CTB.host.taskCheck('t-19990101-000000-dead00','{}').then(r=>r).catch(e=>({err:String(e&&e.message||e)}))`);
+  A('taskCheck 桥级可达：不存在的任务如实回 code 2', !!(tc1 && tc1.code === 2), JSON.stringify(tc1).slice(0, 140));
+  const tc2 = await cdp.evalJs(`CTB.host.taskConfirm('t-19990101-000000-dead00','').then(r=>r).catch(e=>({err:String(e&&e.message||e)}))`);
+  A('taskConfirm 桥级可达：不存在的任务如实回 code 2（未写任何东西）', !!(tc2 && tc2.code === 2), JSON.stringify(tc2).slice(0, 140));
+
   /* 证据图加载：**全量**（每一条未办结待办都要真能加载）。
      ⚠ 2026-10-10：原先上面还有一条"只抽查第一条带 evidence 的条目"的旧断言，
      台账清零后必然 no-item 报 FAIL——它已被下面这条全量断言完全覆盖（更严），故删除旧条，

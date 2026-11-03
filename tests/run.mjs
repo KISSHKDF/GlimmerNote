@@ -134,7 +134,35 @@ function libSnapshot(dir) {
   })(dir, '');
   return out;
 }
-let LIB0 = null, libChecked = false;
+/* ── 目录级判据（2026-11-03 新增）──
+ * 为什么必须有：上面的 `libSnapshot` **只记文件**，于是"空目录被建/被删"对「真库零写入」断言
+ *   **完全透明**。实测后果：`tests\neg-server-bom.cjs` 每轮 quick 都在真库根建一次 `_probe\`
+ *   （`mkdirSync` + 只 `unlinkSync` 文件、不删目录），门禁连续多轮全绿 —— 定案与复现见
+ *   `tests\_probe-writer-forensics-20261103.md` §1/§2/§3。
+ * 口径：目录**只比存在性**（新增/消失判红），**不比 mtime** —— 任何子项增删都会改父目录 mtime，
+ *   拿 mtime 判红会把 `_备份-真源\` 的正常轮转整片判成违规（那是已知的派生件，见 isDerivedPath）。
+ *   重解析点同文件侧：`Dirent.isDirectory()` 对符号链接/junction 为 false ⇒ 天然不跟随。 */
+function libDirSnapshot(dir) {
+  const out = new Set();
+  (function walk(d, rel) {
+    let ents; try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      if (!e.isDirectory()) continue;
+      const r = rel ? rel + '/' + e.name : e.name;
+      out.add(r);
+      walk(path.join(d, e.name), r);
+    }
+  })(dir, '');
+  return out;
+}
+/** 目录集合比对（与文件同口径处置）：不在白名单上的新增/消失目录 ⇒ 判红项；在白名单上 ⇒ 派生（可见不判红） */
+function diffDirSnapshot(before, after) {
+  const added = [], gone = [], derived = [];
+  for (const r of after) { if (before.has(r)) continue; (isDerivedPath(r) ? derived : added).push(r); }
+  for (const r of before) { if (after.has(r)) continue; (isDerivedPath(r) ? derived : gone).push(r); }
+  return { added, gone, derived };
+}
+let LIB0 = null, libChecked = false, LIB0_DIRS = null;
 /* 跑前的**内容副本**目录：语义等价判据需要拿跑前的原文跟跑后逐字段比。
  * 只复制门禁会重点盯的那两类文件（台账 + 各学生索引），不复制整库 —— 快且省心。
  * 放临时目录，退出时清掉（它是测试产物，不许留在用户库或仓库里）。 */
@@ -228,7 +256,15 @@ function checkLibZeroWrite() {
     }
   }
   for (const rel of after.keys()) if (!LIB0.has(rel)) (isDerivedPath(rel) ? derived : added).push(rel + '（新增）');
-  console.log('\n────────── 真库零写入断言（记录 ' + LIB0.size + ' 个文件）──────────');
+  /* ★ 2026-11-03：**目录级**判据（唯一实现在 diffDirSnapshot，见上方注释）。只比存在性，不比 mtime。 */
+  const dirAdded = [], dirGone = [];
+  if (LIB0_DIRS) {
+    const dd = diffDirSnapshot(LIB0_DIRS, libDirSnapshot(E.LIB));
+    for (const r of dd.added) dirAdded.push(r + '（目录新增）');
+    for (const r of dd.gone) dirGone.push(r + '（目录消失）');
+    for (const r of dd.derived) derived.push(r + '（派生目录）');
+  }
+  console.log('\n────────── 真库零写入断言（记录 ' + LIB0.size + ' 个文件 + ' + (LIB0_DIRS ? LIB0_DIRS.size : 0) + ' 个目录）──────────');
   if (derived.length) {
     console.log('⚠ 派生件被重写/轮转（**允许**，但必须可见，故不判红）' +
       (LIB_FROZEN ? '［⚠ 当前 LIB 是冻结区，本条本不该出现］' : '') + '：' + derived.join('、'));
@@ -247,21 +283,25 @@ function checkLibZeroWrite() {
     console.log('        撤批也不回退 ⇒ 跑一次写路径测试必然 +1；② `results` 是对象属性，键序随写入顺序变；');
     console.log('        ③ 索引的 reviews[] 重建同理。**判据不是"放过"，是逐字段比对过业务内容确实没变。**');
   }
-  if (changed.length || gone.length || added.length) {
+  if (changed.length || gone.length || added.length || dirAdded.length || dirGone.length) {
     console.log('✖ 真库出现**非派生**变化（红线 2：任何脚本都不得写 数据\\）：');
     for (const x of changed) console.log('   · 内容/时间戳变了：' + x);
     for (const x of gone) console.log('   · 文件消失了：' + x);
     for (const x of added) console.log('   · 多出了文件：' + x);
+    for (const x of dirAdded) console.log('   · 多出了目录（**空目录也算**，2026-11-03 起）：' + x);
+    for (const x of dirGone) console.log('   · 目录消失了（2026-11-03 起）：' + x);
     console.log('   合法情形：该测试必须先把库复制到临时目录（见 tests\\_测试环境.cjs 的 assertWritableLib/makeTempLib）。');
-    return changed.length + gone.length + added.length;
+    return changed.length + gone.length + added.length + dirAdded.length + dirGone.length;
   }
-  console.log('✔ 真库零写入：除上面列出的派生缓存外，' + LIB0.size + ' 个文件全部零变化');
+  console.log('✔ 真库零写入：除上面列出的派生缓存外，' + LIB0.size + ' 个文件 + ' + (LIB0_DIRS ? LIB0_DIRS.size : 0) + ' 个目录全部零变化');
   return 0;
 }
 if (mode !== 'fixture') {
   LIB0 = libSnapshot(E.LIB);
+  LIB0_DIRS = libDirSnapshot(E.LIB);
   snapshotSemanticFilesWithMap(E.LIB);
-  console.log('\n真库零写入断言：已记录 ' + LIB0.size + ' 个文件的 size+mtime（文本类另算 sha256）—— ' + E.LIB);
+  console.log('\n真库零写入断言：已记录 ' + LIB0.size + ' 个文件的 size+mtime（文本类另算 sha256）＋ ' +
+    LIB0_DIRS.size + ' 个目录（只比存在性，不比 mtime）—— ' + E.LIB);
   process.on('exit', () => { checkLibZeroWrite(); });
 }
 
@@ -354,6 +394,54 @@ async function waitPort(ms) {
 }
 
 let worst = 0;
+/* ════════ 目录级判据的**阴性自证**（2026-11-03 新增）════════
+ * 为什么要（本仓老坑：判据自身零用例守 ⇒ 它宽到什么程度都没人知道）：
+ *   补目录级判据的起因是 `tests\neg-server-bom.cjs` 每轮 quick 都在真库根建一次 `_probe\`，
+ *   而旧断言只记文件 ⇒ 空目录对门禁**完全透明**（tests\_probe-writer-forensics-20261103.md §3）。
+ * 做法：在 %TEMP% 上真造四种情形，要求判据分别"抓到 / 不误报"，另加两条源码级断言证明
+ *   「分类函数不是死代码、判红真的会进退出码」。抓不到就判红 —— **不许只在心里认定它会红**。
+ * ⚠ 全程只碰 %TEMP%，不碰库。 */
+if (mode !== 'fixture') {
+  const dp = E.allocTempDir('gn-testlib-dirprobe-');
+  const B = (name, ok, detail) => {
+    console.log((ok ? '  ✔ ' : '  ✖ ') + name + (detail ? '  [' + detail + ']' : ''));
+    return ok ? 0 : 1;
+  };
+  console.log('\n═══ 真库零写入 · 目录级判据阴性自证 ═══');
+  fs.mkdirSync(path.join(dp, '已有', '子'), { recursive: true });
+  fs.writeFileSync(path.join(dp, '已有', 'f.txt'), 'x');
+  const snap0 = libDirSnapshot(dp);
+  let dBad = 0;
+  /* ① 凭空多一个**空**目录 ⇒ 必须抓到并指名（这正是旧判据漏掉的那一类） */
+  fs.mkdirSync(path.join(dp, '_凭空多出的空目录'), { recursive: true });
+  let dd = diffDirSnapshot(snap0, libDirSnapshot(dp));
+  dBad += B('① 凭空多一个空目录 ⇒ 抓到并指名', dd.added.includes('_凭空多出的空目录'), JSON.stringify(dd.added));
+  /* ② 已存在目录只改 mtime（子项增删）⇒ 不许误报（目录只比存在性，不比 mtime） */
+  const snap1 = libDirSnapshot(dp);
+  const mBefore = fs.statSync(path.join(dp, '已有')).mtimeMs;
+  fs.writeFileSync(path.join(dp, '已有', '临时.txt'), 'x');
+  fs.rmSync(path.join(dp, '已有', '临时.txt'));
+  const mAfter = fs.statSync(path.join(dp, '已有')).mtimeMs;
+  console.log('  ' + (mAfter !== mBefore ? '✔' : 'ℹ') + ' ②前置：已存在目录的 mtime ' +
+    (mAfter !== mBefore ? '确实被改了' : '未变（NTFS 可能批处理，本臂退化为"存在性误报"检查）'));
+  dd = diffDirSnapshot(snap1, libDirSnapshot(dp));
+  dBad += B('② 已存在目录只改 mtime ⇒ 不误报', dd.added.length === 0 && dd.gone.length === 0,
+    JSON.stringify([dd.added, dd.gone]));
+  /* ③ 目录被删 ⇒ 必须抓到并指名 */
+  fs.rmSync(path.join(dp, '已有', '子'), { recursive: true, force: true });
+  dd = diffDirSnapshot(snap1, libDirSnapshot(dp));
+  dBad += B('③ 目录被删 ⇒ 抓到并指名', dd.gone.includes('已有/子'), JSON.stringify(dd.gone));
+  try { fs.rmSync(dp, { recursive: true, force: true }); } catch { }
+  dBad += B('④ 自证夹具已清理（不落库、不落仓库）', !fs.existsSync(dp), dp);
+  /* ⑤⑥ 源码级：证明分类函数**不是死代码**、判红真的会进退出码（否则补了也等于没补） */
+  const self = fs.readFileSync(fileURLToPath(import.meta.url), 'utf8');
+  dBad += B('⑤ 判红条件包含目录级两项（分类不是死代码）',
+    /if \(changed\.length \|\| gone\.length \|\| added\.length \|\| dirAdded\.length \|\| dirGone\.length\)/.test(self));
+  dBad += B('⑥ 目录级判红会进退出码（return 里计入）',
+    /return changed\.length \+ gone\.length \+ added\.length \+ dirAdded\.length \+ dirGone\.length;/.test(self));
+  if (dBad) console.log('✖ 目录级判据的阴性自证未过 —— 判据没有牙齿，等于没补');
+  worst = Math.max(worst, dBad);
+}
 /* 数据门禁先跑：原卷台账必须每张卡都回得到「整页原卷」（2026-10-09 起）。
    判据来源显式写全，不借脚本自带默认基准（教训 L-286）。
    ★ 2026-10-23：工具从 src\tools\ 找（不再从仓库根），并显式传 CTB_DATA=LIB，
@@ -494,6 +582,20 @@ const unitTests = [
   ['neg-stem-backfill.cjs'],            // ★ 补题干后 13 张卡盲解仍有效（原游离且已红，基线改关系式）
   ['smoke-shell.mjs'],                  // ★ 壳冒烟：能起、页面能载、关得掉（5.8s）
   ['neg-v2-pagesmoke.cjs'],             // ★ v2 页面冒烟：内联题图加载 + 真实卡 C0003 补图（14.3s）
+  /* ★ 2026-11-03（批次 1 收尾 + R8 整改①实机证据）：真 exe + 真 CDP 驱动录题页全流程 ——
+     勾图 → 生成任务单（--task 透传，任务号上屏，记录落临时库）→ 桥级三层校验（0/2/3）→
+     UI 粘回三层显示 → 人工确认写 confirmedAt → 跨任务贴错红显"不要入库"。
+     同时实证 meta CSP 下 AddScriptToExecuteOnDocumentCreated 注入的桥还活着（壳模式 file://）。
+     ★ 2026-11-03 补齐（B-1 回归后，34 断言）：本用例**兼守「页面在新 CSP 下还能用」** ——
+     CDP `Log.enable` 收 `Log.entryAdded`，断言 security 违规 = 0（规范类提示白名单化，
+     白名单就写在断言旁边），并实测「⟳ 重载界面」按钮真能 reload、证据图坏图红块真会出现。
+     为什么必须由它守：CSP 违规走 `Log`（security）而**不是** `Runtime.exceptionThrown`，
+     只收未捕获异常的用例对这类回归是全盲的 —— 实测漏掉过 `shell.js`/`pending.js` 两处
+     内联 `onclick`/`onerror` 被自家新 CSP 打死（B-1）。
+     前置：`src\app\拾光小册.exe` 已编译；缺 exe ⇒ 显式打印 `RESULT=SKIP(<原因>)`
+     （SKIP ≠ FAIL，但**不许静默 exit 0**；干净克隆因此只是"跳过"，真覆盖在有 exe 的发布前那一轮）。
+     只杀自己启动的那个 pid（不再按镜像名 taskkill /IM —— 那会打掉用户正开着的壳与并发用例）。 */
+  ['neg-v2-ingest-task-e2e.cjs'],
   /* ★ 2026-10-28（用户截图报障「拾光小册正式版，这是什么错误？」）：某学生库 97 张卡被准入当
      「数据欠账」拦下，而它们**盲解全部已过** —— 缺的只是没人把「独立判卷」写进 answerSource。
      根因是结构性的：全仓没有任何工具写这个字段。修法：盲解工具落结论时顺带补。
@@ -601,10 +703,15 @@ const unitTests = [
      后 0 条。本用例用 headless Edge + 计数器做**真浏览器**判据，并要求"本地图片必须真的加载出来"
      作正对照 —— 只断言"脚本没跑"会漏掉"取"这一半。 */
   ['neg-server-lib-csp.cjs'],
+  /* ★ 2026-11-03（R8 整改①）：程序页 CSP 后备 —— 响应头（服务端）与 index.html meta（含壳的
+     file:// 模式）两份同内容，最小可用集（default-src 'none' + 逐类开口）。本用例做机读对拍
+     （头与 meta 逐字相等）+ 行为断言 + 阴性自证（掏回旧值必须红）。 */
+  ['neg-server-csp.cjs'],
   /* A5 静态路由白名单：库根通配放行让 `数据\.git\` 整树（含 index/logs/objects）与全部根台账
      无 token 可读（真库实测 /_待确认.json 200/324907B、/.git/index 200/198619B）。现在四道判据：
      dot 段 / `_` 段目录(除 _原图、_收件箱) / `_` 开头文件名(除 _组卷台账.json) / .bak，外加 no-store。
-     正对照守住"业务资源不许被误杀"（题图、题干.html、错题记录.md、_原图/<sha>.jpg、_收件箱/、_组卷台账.json）。 */
+     ★ 2026-11-03（R8 整改③）四道之上再叠类型准入：图片按扩展名准 + 文本只留两个有消费者的
+     （错题记录.md / _组卷台账.json）；`题干.html`（零消费方，R8 实测 506 个）从正对照移入负对照。 */
   ['neg-server-static-whitelist.cjs'],
   /* 架1 refreshPendingSection 曾用 execFileSync：慢桩 6s 时 /health 被拖 5815ms（125s 桩实测 119727ms）。
      改异步 + in-flight 复用后，慢桩进行中 /health 必须 < 500ms，且并发请求只 spawn 一个子进程。 */
@@ -643,6 +750,12 @@ const unitTests = [
      三层：① 格式交给 `_配方.mjs 校验`（唯一实现，界面与 CLI 共用）② 信封 taskId / 原图 sha /
      卡内 sourceImageSha256 三重匹配 ③ 人工确认只能由 `确认` 子命令写。含 11 条反例。 */
   ['neg-task-binding.cjs'],
+  /* ★ 2026-11-03（批次 1 收尾「页面接线」）：页面 → 壳 → 工具整条链的源码级+CLI 级钉。
+     壳两个新 op（taskCheck/taskConfirm）、taskId 形状门禁、写读分界（确认进写闸）；
+     前端四条纪律（勾图才发 --task / stderr 解析任务号 / 三层 vs 仅格式 / 确认由人点）；
+     --data 真跑（壳传库根的通路）+ A/B 错配 CLI 侧证据。
+     端到端（真 exe + CDP 驱动页面）在 neg-v2-ingest-task-e2e.cjs —— 两层各管一段。 */
+  ['neg-task-page-wiring.cjs'],
   /* ★ 2026-11-02（批次 0 尾项「过程件卫生」）：① `_作答门禁` 的作答工单默认落 `procPath()`（不再写库根）
      ② 测试夹具临时目录集中登记 + 进程退出统一删 + 启动清扫 ③ `neg-v2-pagesmoke` 的 profile 清理挪进 finally。
      为什么值得单挂一档：实测曾一次压出 10.2 GB 残留（%TEMP% 8.3 GB / 仓库 `_probe` 1.29 GB）。 */

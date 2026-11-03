@@ -9,6 +9,8 @@
  *   ① 格式：**不在这里实现**，直接调 `_配方.mjs 校验`（唯一实现，界面与 CLI 共用同一份）；
  *   ② 匹配：信封 taskId 必须等于本地记录；卡的 sourceImageSha256 / 信封 imageSha256
  *      必须等于记录里的原图 sha（跨任务、图不一致、任务不存在都给**具体原因**）；
+ *      ★ 记录**没有**原图 sha（image.sha256=null）时第二层**未覆盖**：如实打印并按不匹配
+ *        给 exit 3 —— 契约对该层是无条件表述，缺 sha 就永远满足不了它（D-4：旧实现跳过却打印"通过"）。
  *   ③ 人工确认：记录里的 `confirmedAt` 只由人显式 `确认` 才写。程序不替人确认。
  *
  * 数据落点：`<库根>\_录题\<taskId>.json`（**用户数据**，随库走，走 `_安全写.mjs` 原子写）。
@@ -31,6 +33,13 @@ const cmd = argv[0] || '';
 const val = (k, d = '') => { const i = argv.indexOf(k); return i >= 0 ? (argv[i + 1] ?? '') : d; };
 const has = (k) => argv.includes(k);
 const JSON_OUT = has('--json');
+
+/* ★ 2026-11-03（批次 1 收尾「页面接线」）：`--data` 与 `_配方.mjs` 同口径 —— 壳显式传库根，
+   不依赖环境变量继承（桌面壳起 node 子进程时 CTB_DATA 不一定在）。必须落在任何 libraryRoot()
+   调用之前；ROOT() 是惰性的（见下），这里改 env 就够。
+   被当库引入时（`_配方.mjs` import 本模块）没有 --data，env 由 `_配方.mjs` 自己落。 */
+const explicitData = val('--data', '');
+if (explicitData) process.env.CTB_DATA = path.resolve(explicitData);
 
 /* ★ 库根**惰性**解析：本模块会被 `_配方.mjs` import，而 `_配方.mjs` 的 `--data` 是在
    模块体里（import 执行完之后）才写进 CTB_DATA 的 ⇒ 顶层就调 libraryRoot() 会解析成错的根。 */
@@ -66,13 +75,23 @@ export function createTask(rec) {
   fs.mkdirSync(TASK_DIR(), { recursive: true });
   const taskId = rec.taskId || newTaskId();
   const text = String(rec.taskText || '');
+  /* ★ 2026-11-03（批次 1 收尾 · D-4）：`image.rel` 与 `image.sha256` 必须**同生同灭**。
+     有 rel 没有 sha 的记录（"勾了图却没拿到 sha"）第二层永远无从核对 —— 契约 §四 对该层是
+     **无条件**表述，那种记录只会产一条"永远对不上"的空壳。写入口 fail-closed。
+     （`_配方.mjs 组装` 的 rel 非空必然带着算好的 sha：原图读不到时它在更早处 return 2；
+       故本抛错对它是不可达路径，只挡"手工调库/新子命令"这类旁路。`新` 另有一处用法级检查，
+       给的是 exit 2 + 一句话，而不是这里的一行栈。） */
+  const image = rec.image || { sha256: null, rel: null };
+  if (image.rel && !image.sha256) {
+    throw new Error('createTask 拒绝落盘：image.rel=' + image.rel + ' 但没有 image.sha256 —— 无法对图的任务记录不许生成（D-4）');
+  }
   const doc = {
     schema: SCHEMA,
     taskId,
     createdAt: nowLocal(),
     recipe: rec.recipe || null,
     cards: rec.cards || [],
-    image: rec.image || { sha256: null, rel: null },
+    image,
     subject: rec.subject || null,
     contractDigest: rec.contractDigest || null,
     taskDigest: sha256(text),
@@ -88,10 +107,22 @@ function cmdNew() {
   if (!inFile || !fs.existsSync(path.resolve(inFile))) { console.error('用法：新 --recipe <id> --in <任务单.md> …（--in 必填且须存在）'); return 2; }
   const text = fs.readFileSync(path.resolve(inFile), 'utf8');
   const cardsRaw = val('--cards', '');
+  /* ★ 2026-11-03（D-4 同族）：勾了图却没拿到 sha 的组合在**生成时**就拒掉。
+     为什么要在这里再拦一次（`createTask` 已有同一条不变量）：它是**用法错**——应当给人
+     一句话 + exit 2，而不是让库函数抛出的栈打在用户脸上。 */
+  const imgRel = val('--image', ''), imgSha = val('--image-sha', '');
+  if (imgRel && !imgSha) {
+    console.error('✖ 拒绝：给了 --image（' + imgRel + '）却没给 --image-sha —— 这种任务记录的第二层永远无从核对（契约 §四 第二层是无条件的）。要么两个都给，要么两个都不给。');
+    return 2;
+  }
+  if (imgSha && !/^[0-9a-f]{64}$/i.test(imgSha)) {
+    console.error('✖ 拒绝：--image-sha 必须是原图完整 sha256（64 位十六进制），收到：' + imgSha);
+    return 2;
+  }
   const doc = createTask({
     recipe: { id: val('--recipe'), version: val('--recipe-ver'), fingerprint: val('--fingerprint') },
     subject: val('--subject') || null,
-    image: { sha256: val('--image-sha') || null, rel: val('--image') || null },
+    image: { sha256: imgSha.toLowerCase() || null, rel: imgRel || null },
     cards: cardsRaw ? cardsRaw.split(',').map(s => s.trim()).filter(Boolean).map(s => {
       const [id, ver] = s.split('@'); const [packId, cardId] = id.split('/');
       return { packId: packId || null, cardId: cardId || id, version: ver || null };
@@ -196,45 +227,70 @@ function cmdBind() {
     fmtOut = String(e.stdout || '') + String(e.stderr || '');
   } finally { try { fs.rmSync(tmp, { force: true }); } catch { /* 临时件删不掉不该掩盖校验结论 */ } }
 
-  /* 第二层：与任务及原图匹配 */
+  /* 第二层：与任务及原图匹配 —— 契约 §四 对它是**无条件**表述：
+     信封 taskId == 记录 taskId；信封 imageSha256 == 记录图 sha；每张卡 sourceImageSha256 == 记录图 sha。 */
+  const wantSha = rec.image && rec.image.sha256 ? String(rec.image.sha256).toLowerCase() : null;
+  /* ★ 2026-11-03（批次 1 收尾 · D-4 修）：记录**没有原图 sha** 时第二层无从核对。
+     旧判据是 `if (wantSha && …)` ⇒ 整段静默跳过，下面却仍打印「② 通过」；diff-reviewer 实测：
+     记录 image.sha256=null + 信封 64×0 + 卡 64×f ⇒ **exit 0 且"② 通过"**。那是"更宽松 + 更响亮地
+     说通过"，比没有防线更坏：页面侧 `ingest.js` 把 exit 0 直接渲染成
+     "✔ 绑定校验通过（① 格式 + ② 与任务及原图匹配）"，于是界面也一起说谎。
+     现按契约处置：记录缺 sha ⇒ 第二层**未覆盖**，如实打印（**绝不**打印"通过"）并按**不匹配**
+     给 exit 3（唯一被页面映射成"不要入库"的码 ⇒ fail-closed）。 */
+  const layer2Uncovered = !wantSha;
   if (env) {
     if (String(env.taskId || '') !== rec.taskId) reasons.push('信封 taskId=' + (env.taskId || '(空)') + ' ≠ 本任务 ' + rec.taskId + '（这是**另一个任务**的结果）');
-    if (env.imageSha256 && rec.image && rec.image.sha256 && String(env.imageSha256).toLowerCase() !== String(rec.image.sha256).toLowerCase()) {
-      reasons.push('信封 imageSha256=' + String(env.imageSha256).slice(0, 12) + '… ≠ 本任务原图 ' + rec.image.sha256.slice(0, 12) + '…');
-    }
-  } else {
-    reasons.push('（提示）返回 JSON 没带信封 ⇒ 无法核对任务号，本次只核对原图 sha；旧格式仍按"仅格式校验"对待');
   }
-  const wantSha = rec.image && rec.image.sha256 ? String(rec.image.sha256).toLowerCase() : null;
-  if (wantSha && Array.isArray(result.cards)) {
-    result.cards.forEach((c, i) => {
-      const got = c && c.sourceImageSha256 ? String(c.sourceImageSha256).toLowerCase() : null;
-      if (got && got !== wantSha) reasons.push('cards[' + i + '].sourceImageSha256=' + got.slice(0, 12) + '… ≠ 本任务原图 ' + wantSha.slice(0, 12) + '…');
-    });
+  if (layer2Uncovered) {
+    reasons.push('本任务记录没有原图 sha256（image.sha256=null' + ((rec.image && rec.image.rel) ? '，rel=' + rec.image.rel : '') +
+      '）⇒ 第二层**无从核对**' + ((env && env.imageSha256) ? '（信封声明 imageSha256=' + String(env.imageSha256).slice(0, 12) + '… 也无从比对）' : '') +
+      '；这份结果**不能当作已验证**（重新生成任务单时带上照片）');
+  } else {
+    if (env && env.imageSha256 && String(env.imageSha256).toLowerCase() !== wantSha) {
+      reasons.push('信封 imageSha256=' + String(env.imageSha256).slice(0, 12) + '… ≠ 本任务原图 ' + wantSha.slice(0, 12) + '…');
+    }
+    if (Array.isArray(result.cards)) {
+      result.cards.forEach((c, i) => {
+        const got = c && c.sourceImageSha256 ? String(c.sourceImageSha256).toLowerCase() : null;
+        if (got && got !== wantSha) reasons.push('cards[' + i + '].sourceImageSha256=' + got.slice(0, 12) + '… ≠ 本任务原图 ' + wantSha.slice(0, 12) + '…');
+      });
+    }
+  }
+  if (!env) {
+    reasons.push('（提示）返回 JSON 没带信封 ⇒ 无法核对任务号，本次只核对原图 sha；旧格式仍按"仅格式校验"对待');
   }
 
   /* 第三层：人工确认（只读展示；确认由 `确认` 子命令写） */
   const confirmed = !!rec.confirmedAt;
   const hard = reasons.filter(r => !r.startsWith('（提示）'));
+  /* layer2：pass（核对过且相符）· fail（核对过但不符）· not-covered（记录没有原图 sha，无从核对）。
+     注意 not-covered 也进 hard ⇒ exit 3：**不许**把"没核对"当成"通过"。 */
+  const layer2 = layer2Uncovered ? 'not-covered' : (hard.length ? 'fail' : 'pass');
   const code = fmtCode !== 0 ? 1 : (hard.length ? 3 : 0);
 
   if (JSON_OUT) {
     process.stdout.write(JSON.stringify({
       taskId: rec.taskId, format: fmtCode === 0 ? 'pass' : 'fail', formatCode: fmtCode,
-      matched: hard.length === 0, confirmed, reasons, layer3: confirmed ? 'confirmed' : 'pending-human',
+      matched: hard.length === 0, layer2, confirmed, reasons, layer3: confirmed ? 'confirmed' : 'pending-human',
     }) + '\n');
     return code;
   }
+  const L2_TXT = {
+    'pass': '通过',
+    'fail': '**不匹配**',
+    'not-covered': '**未覆盖**（本任务记录没有原图 sha256 ⇒ 第二层无从核对，**不算通过**）',
+  };
   console.log('绑定校验 · 任务 ' + rec.taskId);
   console.log('  ① 格式：' + (fmtCode === 0 ? '通过' : '**不通过**（exit ' + fmtCode + '）'));
   if (fmtCode !== 0) for (const line of String(fmtOut).trim().split('\n').slice(0, 20)) console.log('     ' + line);
   else console.log('     仅格式校验' + (env ? '（信封已识别）' : '（未与任务关联：返回 JSON 无信封）'));
-  console.log('  ② 与任务及原图匹配：' + (hard.length ? '**不匹配**' : '通过'));
+  console.log('  ② 与任务及原图匹配：' + L2_TXT[layer2]);
   for (const r of hard) console.log('     ✖ ' + r);
   for (const r of reasons.filter(x => x.startsWith('（提示）'))) console.log('     ' + r);
   console.log('  ③ 内容已人工确认：' + (confirmed ? '已确认（' + rec.confirmedAt + '）' : '**未确认**（人看过之后再跑 `确认 ' + rec.taskId + '`）'));
   if (code === 0) console.log('  ⇒ 结论：格式与任务匹配都通过' + (confirmed ? '，且已人工确认' : '；**第三层未完成**'));
   else if (code === 1) console.log('  ⇒ 结论：格式不通过，先改 JSON');
+  else if (layer2 === 'not-covered') console.log('  ⇒ 结论：第二层**未覆盖** —— 本任务记录没有原图可比，无法证明这份结果属于本次录题，**不要入库**（记录缺 image.sha256；重新生成任务单时带上照片）');
   else console.log('  ⇒ 结论：与任务不匹配（跨任务/图不一致），**不要入库**');
   return code;
 }
@@ -261,6 +317,7 @@ function main() {
         '  node src\\tools\\_录题任务.mjs 确认 <taskId> [--note <一句话>]        # 第三层：由人写',
         '  node src\\tools\\_录题任务.mjs 绑定校验 <taskId> --in <cards.json> [--json]',
         '',
+        '通用参数：--data <库根>（与 _配方.mjs 同口径；不传则读 CTB_DATA 环境变量）',
         '退出码：0 通过/成功 · 1 格式不通过 · 2 任务不存在或用法错 · 3 与任务不匹配',
         '记录落点：<库根>\\_录题\\<taskId>.json（用户数据，随库走）',
       ].join('\n'));

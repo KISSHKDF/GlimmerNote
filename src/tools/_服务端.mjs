@@ -472,8 +472,30 @@ function logReject(what, req, extra) {
      · `style-src 'unsafe-inline'`：库内题干/证据页用行内 style（还有 SVG 内联样式），禁掉会印坏版式。
      · `script-src` 刻意**不列**来源 ⇒ 继承 `default-src 'none'`：内联脚本不执行，
        外链 `<script src>` 连**请求**都不发（sandbox 只禁执行、不禁取，这一条才堵住取）。
-   程序根 `index.html` 的 CSP 不变（`APP_CSP`）：那是程序入口，host.js 必须能执行。 */
-const APP_CSP = "frame-ancestors 'none'";
+   程序根 `index.html` 的 CSP 见下方 APP_CSP（2026-11-03 R8 整改①换成最小可用集）。 */
+/* ★ 2026-11-03（R8 整改①「程序页纵深只有一层」）：APP_CSP 从裸 `frame-ancestors 'none'` 换成
+   最小可用集。改前程序页唯一防线是 `M.stemHtmlSafe` 净化器（历史已两次被绕过：S01 出口直通、
+   S04 CSS 转义），一旦再被绕过，页面里的 `window.ctbHost`（壳桥）就是任意动作调用。
+   现在给程序页补第二道纵深，逐条说明为什么是这个形状：
+     · `default-src 'none'` + 逐类开口：漏掉哪一类哪一类就被封 —— 这是 fail-closed 的写法。
+     · `script-src 'self' file:`：程序页**没有内联脚本**（index.html 全部外链）；桌面壳注入的
+       `window.ctbHost` 走 WebView2 的 AddScriptToExecuteOnDocumentCreated，实测不受页面 CSP 约束
+       （neg-v2-ingest-task-e2e.cjs 用真壳断言桥通，meta CSP 在场时页面照常 boot）。
+       `file:` 供桌面壳 file:// 模式装载本地 js。
+     · `style-src 'unsafe-inline'`：承重墙 —— 界面大量行内 style（ingest/paper/stats 全在用）。
+     · `img-src 'self' file: data:`：服务端模式全部同源；壳模式资产是 `file://<库根>\…`；
+       `data:` 兜底内联小图（当前 APP 页无 data 图，留着防误杀）。
+     · `connect-src 'self' file:`：服务端模式 fetch 全部同源；壳模式不 fetch（走 postMessage 桥）。
+     · `object-src 'none'` + `base-uri 'none'` + `form-action 'none'`：无 object/embed、
+       无 <base>、无表单提交（全仓 grep 0 命中），一律封死。
+     · `frame-ancestors 'none'`：保留原判据。meta 形态下按规范被忽略（meta 只管本页自己），
+       所以服务端响应头与页面 meta **两份同内容**都要 —— 壳模式（file://）没有响应头，靠 meta；
+       服务端模式两份同时生效（取交集），谁被绕过都还有另一份。
+   这串与 src\app\index.html 的 <meta http-equiv="Content-Security-Policy"> 逐字相同：
+   改一处必须同步另一处（tests\neg-server-csp.cjs 机读对拍钉住）。 */
+const APP_CSP = "default-src 'none'; script-src 'self' file:; style-src 'self' file: 'unsafe-inline'; " +
+  "img-src 'self' file: data:; connect-src 'self' file:; object-src 'none'; base-uri 'none'; " +
+  "form-action 'none'; frame-ancestors 'none'";
 const LIB_CSP = "sandbox; default-src 'none'; img-src http://127.0.0.1:" + PORT + " http://localhost:" + PORT +
   " data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
@@ -509,7 +531,7 @@ function sendJson(res, code, obj, origin) { send(res, code, JSON.stringify(obj),
    现在超限明确回 413（不再"能读就整份读"），可下发的一律走流式。 */
 const MAX_STATIC_BYTES = 64 * 1024 * 1024;
 
-/* ★ 2026-11-02 R2：**库内静态路由白名单**（唯一实现）。四道判据，任一命中即 403：
+/* ★ 2026-11-02 R2：**库内静态路由白名单**（唯一实现）。四道前缀判据，任一命中即 403：
      ① 任一路径段以 `.` 开头 —— 杀 `数据\.git\` 整树（改前 `/.git/index` → 200 / 198619 B，
         `.git\config`、对象库、reflog 统统可读）与一切 dotfile；
      ② **目录段**以 `_` 开头且不在 `{_原图, _收件箱}` —— 杀 `_备份-真源/_影像备份/_撤卡留档/
@@ -517,9 +539,13 @@ const MAX_STATIC_BYTES = 64 * 1024 * 1024;
      ③ **文件名**以 `_` 开头且不在 `{_组卷台账.json}` —— 杀全部根台账（真库 `_待确认.json`
         324907 B 改前 200）；
      ④ 文件名含 `.bak` —— 备份残留不下发。
+   ★ 2026-11-03（R8 整改③）：四道判据本身正确，但**只有它们不够** —— 凡不是 `_`/`.` 开头的
+     文件一律下发，真库实测 48.2% 可取走（含 506 个零消费方的 题干.html）。现在四道之后
+     再叠一道**类型准入**（见下方 STATIC_IMG_EXT / STATIC_TEXT_ALLOW）。
    为什么 `_原图` / `_收件箱` **必须**放行：它们是前端静态取图的**唯一两个**库内目录 ——
      卡片 `img`/`stem`/`fig`/`evidence` 一律经 `H.asset()` 变成 `<img src>`，指向
      `_原图\<sha256>.<ext>`（内容寻址保全库）与 `_收件箱\<批次>\<批次>-*.jpg`；拦掉 = 全库破图。
+     （类型准入后，这两个目录里的**非图片**也不再下发 —— R8 实测 `_原图` 里有 4 csv + 1 md。）
    为什么只有 `_组卷台账.json` 例外：依据是**真库 6183 文件普查 + 前端 `H.readFile` 调用点穷举**
      （2026-11-02）——UI 唯一静态读取的根台账就是它（`src\app\js\views\paper.js:127` 与 `:720`），
      其余根台账（`_状态.json`/`_待确认.json`/`_原卷台账.json`/`_待确认清单.md` …）零静态消费者。
@@ -527,6 +553,21 @@ const MAX_STATIC_BYTES = 64 * 1024 * 1024;
      包含性判据管；这一层管"业务上该不该下发"。两层**都要**过。 */
 const LIB_DIR_ALLOW = new Set(['_原图', '_收件箱']);
 const LIB_FILE_ALLOW = new Set(['_组卷台账.json']);
+/* ★ 2026-11-03（R8 整改③「静态暴露 = 中」）：四道前缀规则之上再叠**类型准入** ——
+   判据从"按前缀拒"改成"图片按扩展名准 + 文本按文件名准"。
+   R8 真库实测量化（recon\R8-安全三面复核.md §三）：改前 6289 文件中 3034（48.2%）可被
+   无 token 的裸 GET 取走，其中 506 个 `题干.html` 是**零消费方**（题干已随 `_状态.json`
+   内联下发、界面从不 fetch 文件本体）、125 个 json / 4 个 csv / 1 个 txt 同样无消费者，
+   `_原图` 里还有 1 个含学生名的 .md。收紧后：
+     · 图片按扩展名放行（`_原图`/`_收件箱`/卡片题图的全部消费都是 `<img src>`，img 上下文惰性）；
+     · 文本只留两个**有静态消费者**的：`错题记录.md`（bank.js readFile，任意深度同名文件）
+       与 `_组卷台账.json`（paper.js readFile，UI 唯一静态读的根台账）；
+     · `.html`（题干/说明）、`.txt`、`.csv`、`.json`（除组卷台账）、无扩展名等一律 403。
+   为什么 svg 不进图片集：svg 作为**文档**打开可带脚本（虽然已有 LIB_CSP sandbox 兜着），
+   且真库当前 0 个 svg 配图 —— 真出现时连同这张表一起改，不预放。
+   改判据必须同步 `tests\neg-server-static-whitelist.cjs`（`题干.html` 已从正对照移入负对照）。 */
+const STATIC_IMG_EXT = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'tif', 'tiff']);
+const STATIC_TEXT_ALLOW = new Set(['错题记录.md', '_组卷台账.json']);
 function staticAllowed(relPath) {
   const segs = String(relPath == null ? '' : relPath).split(/[\\/]+/).filter(s => s.length);
   if (!segs.length) return false;
@@ -538,7 +579,12 @@ function staticAllowed(relPath) {
   if (file.startsWith('.')) return false;
   if (file.startsWith('_') && !LIB_FILE_ALLOW.has(file)) return false;
   if (file.includes('.bak')) return false;
-  return true;
+  /* 类型准入（R8 整改③）：过了前缀四道还不够 —— 内容类型也必须在准入表里。 */
+  const m = /\.([A-Za-z0-9]+)$/.exec(file);
+  const ext = m ? m[1].toLowerCase() : '';
+  if (STATIC_IMG_EXT.has(ext)) return true;
+  if (STATIC_TEXT_ALLOW.has(file)) return true;
+  return false;
 }
 
 /* ★ 2026-11-02 R7：`Range` 解析（唯一实现）。只支持**单段**（另收两个合法缩写）：
@@ -635,15 +681,21 @@ function serveStatic(req, res, urlPath, origin) {
   const type = MIME[path.extname(real).toLowerCase()] || 'application/octet-stream';
   /* ★ 2026-10-30 S02：**只**给程序根那份 index.html 注入本轮 token（见 isRootIndex 的说明）。
      注入点选 `</head>` 之前：index.html 里所有 `<script src>` 都在 body 尾部，
-     注入语句早于 host.js 执行 ⇒ host.js 读 `window.__ctbToken` 时一定已经就位。
+     注入语句早于 host.js 执行 ⇒ host.js 读 token 时一定已经就位。
      没有 `</head>`（改造过的极简页面）时退化为插到文档最前面，仍然早于任何脚本。
-     这是唯一需要"整份读改写"的响应（R7 的流式路径不适用于它）。 */
+     这是唯一需要"整份读改写"的响应（R7 的流式路径不适用于它）。
+     ★ 2026-11-03（R8 整改①的连带）：注入形态从内联 `<script>window.__ctbToken=…</script>`
+     改成 `<meta name="__ctbToken" content="…">`。原因：程序页 CSP 补了 `script-src 'self' file:`
+     （无 'unsafe-inline'），内联注入的 token 脚本会被页面自己的 meta CSP 拦掉 ⇒ 服务端模式下
+     token 拿不到、所有 /api/* 403（实测 neg-v2-ui-dash-toast-grid 首轮红："未连接数据通道"）。
+     token 挪进 meta 标签后 host.js 用 DOM 读，不再需要内联脚本；安全性**不减**——
+     XSS 同样读得到 meta（本来也读得到 window.__ctbToken），而 script-src 保持严格。 */
   if (isRootIndex(real)) {
     let buf;
     try { buf = fs.readFileSync(real); }
     catch (e) { return sendJson(res, 404, { ok: false, error: 'not found: ' + rel }, origin); }
     const html = buf.toString('utf8');
-    const snippet = '<script>window.__ctbToken=' + JSON.stringify(TOKEN) + ';</script>';
+    const snippet = '<meta name="__ctbToken" content="' + String(TOKEN).replace(/&/g, '&amp;').replace(/"/g, '&quot;') + '">';
     const i = html.search(/<\/head\s*>/i);
     const out = i < 0 ? snippet + html : html.slice(0, i) + snippet + html.slice(i);
     addCommonHeaders(res, origin);

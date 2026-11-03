@@ -76,8 +76,9 @@
     return '';
   })();
   H.serverOrigin = H.port ? ('http://127.0.0.1:' + H.port) : '';
-  /* ★ 2026-10-30 S02：服务端本轮启动的**随机 token**，由服务端在注入的 index.html 里给出
-     （`<script>window.__ctbToken="…"</script>`，注入点在 </head> 之前 ⇒ 早于本文件执行）。
+  /* ★ 2026-10-30 S02：服务端本轮启动的**随机 token**，由服务端注入的 index.html 给出
+     （2026-11-03 起是 `<meta name="__ctbToken" content="…">`，注入点在 </head> 之前 ⇒ 早于本文件执行；
+      原来是内联 <script>，被程序页 CSP 的 script-src 'self' 拦掉后才改的——见 _服务端.mjs 同日注释）。
      为什么要有它：服务端已取消对 `Origin: null` 的信任（不透明源与 file:// 在 HTTP 层不可区分），
      光靠 Origin 只剩"浏览器替我们填的自述"，本机网页仍能伪造请求头。token 是"只有本服务页面
      才拿到"的那一半证据，所有 /api/* 请求必须带上（见下面 apiFetch）。
@@ -85,7 +86,8 @@
      此时**不进 server 模式**（见 probeServer），免得落进"health 通、每个 /api 都 403"的半死状态。 */
   H.token = (function () {
     try {
-      const t = window.__ctbToken;
+      const m = document.querySelector('meta[name="__ctbToken"]');
+      const t = m && m.content;
       /* 只认服务端生成的那种十六进制串（长度给足余量）：注入失败/被别的页面写成花串时按"没有"处理 */
       return (t && /^[0-9a-f]{16,128}$/i.test(String(t))) ? String(t) : '';
     } catch (e) { return ''; }
@@ -289,6 +291,18 @@
     const payload = Object.assign({ action }, flags || {});
     if (H.mode === 'shell') return bridge('recipe', payload, 120000);
     throw new Error('「录题」需要桌面壳通道（拾光小册.exe）。程序不联网，配方任务单请在本机程序里生成。');
+  };
+  /* 录题任务通道（2026-11-03 批次 1 收尾「页面接线」）：三层校验与人工确认。
+     与 H.recipe 同口径：壳透明转发，校验语义全在 _录题任务.mjs（退出码 0 通过 / 1 格式 /
+     2 任务不存在或用法 / 3 与任务不匹配 —— 见 docs\录题任务契约.md）。 */
+  H.taskCheck = async function (taskId, text) {
+    if (H.mode === 'shell') return bridge('taskCheck', { taskId: taskId, text: text }, 120000);
+    throw new Error('「绑定校验」需要桌面壳通道（拾光小册.exe）。');
+  };
+  /* 第三层"人工确认"只能由人写（确认会落 confirmedAt）——这是显式按钮，不是校验的副产品。 */
+  H.taskConfirm = async function (taskId, note) {
+    if (H.mode === 'shell') return bridge('taskConfirm', { taskId: taskId, note: note || '' }, 120000);
+    throw new Error('「任务确认」需要桌面壳通道（拾光小册.exe）。');
   };
   /* 全量重建（生成器重跑），返回新 state；生成器实测 ~5 分钟，超时给 10.5 分钟 */
   H.regen = async function () {

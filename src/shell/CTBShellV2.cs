@@ -763,6 +763,13 @@ namespace CTBShell2
                    壳按真实退出码回 code=2，前端据此显示拒绝原因而不是"找不到图"。
                    找图是只读动作（不改名/不移动/不删除/不写任何文件），因此不进写闸。 */
                 AddFlag(args, payload, "sha", "--sha");
+                /* ★ 2026-11-03（批次 1 收尾「页面接线」）：`--task` 布尔透传 —— 录题页「生成任务单」
+                   勾了照片时带 task=1，引擎 `组装 --task` 会落一条任务记录（<库根>\_录题\<taskId>.json，
+                   用户数据，走 _安全写）并把任务号写进任务单、要求 AI 用外层信封回传。
+                   与 json→--json 同一条路：**固定键名的布尔开关**（匹配才加 flag，值本身不进 argv），
+                   不是通用透传；"只在勾了照片时才发 task=1"由页面侧控制（没选图时记录里的
+                   image.sha256 会是 null，绑定校验无从对图）。 */
+                if (ExtractString(payload, "task") == "1") args.Add("--task");
                 /* 校验/自检的输入：页面传的是**文本**（用户从自己的 AI 粘回来的 JSON），
                    先落临时文件再让工具读 —— 避免把上万字符塞进命令行（Windows 命令行上限 32767）。 */
                 string text = ExtractString(payload, "text");
@@ -793,6 +800,76 @@ namespace CTBShell2
                 return "{\"ok\":false,\"code\":-1,\"out\":\"\",\"err\":\"" + Esc(ex.Message) + "\"}";
             }
             finally { if (tmp != null) { try { File.Delete(tmp); } catch { } } }
+        }
+
+        /* ★ 2026-11-03（批次 1 收尾「页面接线」）：录题任务的两个新 op。
+           起因：批次 1 交付了 `_录题任务.mjs 绑定校验`（三层校验：格式 / 与任务及原图匹配 / 人工确认），
+           但页面把参数送不进来 —— 与"找图"同族的问题（动作在引擎里有、壳没有通道）。
+           设计与 Recipe() 同一条纪律：
+             · 固定键名 → 固定 argv 的**逐项映射**，无通用透传、无反射、不拼命令行字符串；
+             · taskId 先过**形状门禁**（`t-YYYYMMDD-HHmmss-6位hex`，即 `_录题任务.mjs newTaskId` 的形状）
+               再进 argv —— 值作为独立 argv 元素交给 QuoteArgs 本就注入不进 flag 位，这里再按形状拒一次，
+               让"页面传来垃圾"在壳层就回 code=2，而不是落到工具侧变成"任务不存在"（同码不同因）；
+             · 两把 op 都显式 `--data` 注入库根（`_录题任务.mjs` 的 --data 与 _配方.mjs 同口径）；
+             · 回**真实退出码**（0/1/2/3，3=与任务不匹配），页面据此渲染三层结论。
+           写读分界：绑定校验**只读**（临时文件除外）⇒ 不进写闸；确认会写用户库
+           （`_录题\<taskId>.json` 的 confirmedAt）⇒ 与 pendingResolve/pendingAdd 同口径进写闸。 */
+        static readonly System.Text.RegularExpressions.Regex TASK_ID_SHAPE =
+            new System.Text.RegularExpressions.Regex("^t-[0-9]{8}-[0-9]{6}-[0-9a-f]{6}$");
+        private bool TaskIdOk(string id) { return !string.IsNullOrEmpty(id) && TASK_ID_SHAPE.IsMatch(id); }
+
+        // ---- op: taskCheck（`_录题任务.mjs 绑定校验`，只读）----
+        public string TaskCheck(string payload)
+        {
+            string taskId = ExtractString(payload, "taskId");
+            if (!TaskIdOk(taskId))
+                return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"taskId 形状不对（应为 t-日期-时间-6位hex）：" + Esc(taskId ?? "") + "\"}";
+            string tmp = null;
+            try
+            {
+                string text = ExtractString(payload, "text");
+                if (string.IsNullOrEmpty(text))
+                    return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"缺少 text（AI 回传的 JSON 全文）\"}";
+                var args = new List<string> { ToolPath("_录题任务.mjs"), "绑定校验", taskId };
+                tmp = Path.Combine(Path.GetTempPath(), "gn-task-check-" + DateTime.Now.Ticks + ".json");
+                File.WriteAllText(tmp, text, new UTF8Encoding(false));
+                args.Add("--in"); args.Add(tmp);
+                args.Add("--data"); args.Add(DataRoot);
+                int exit; string se;
+                string so = RunNodeRaw(args.ToArray(), 60000, out exit, out se);
+                Log("taskCheck " + taskId + " exit=" + exit + " out=" + SliceForLog((so ?? "").Replace("\r\n", " | ")));
+                return "{\"ok\":true,\"code\":" + exit + ",\"out\":\"" + Esc(so ?? "") + "\",\"err\":\"" + Esc(se ?? "") + "\"}";
+            }
+            catch (Exception ex)
+            {
+                Log("taskCheck " + taskId + " FAILED: " + ex.Message);
+                return "{\"ok\":false,\"code\":-1,\"out\":\"\",\"err\":\"" + Esc(ex.Message) + "\"}";
+            }
+            finally { if (tmp != null) { try { File.Delete(tmp); } catch { } } }
+        }
+
+        // ---- op: taskConfirm（`_录题任务.mjs 确认`，写用户库 ⇒ 进写闸）----
+        public string TaskConfirm(string payload)
+        {
+            string taskId = ExtractString(payload, "taskId");
+            if (!TaskIdOk(taskId))
+                return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"taskId 形状不对（应为 t-日期-时间-6位hex）：" + Esc(taskId ?? "") + "\"}";
+            if (!WriteGate.Wait(1200000)) return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"等待写入闸超时（另有落库/重建在跑）\"}";
+            try
+            {
+                var args = new List<string> { ToolPath("_录题任务.mjs"), "确认", taskId };
+                AddFlag(args, payload, "note", "--note");
+                args.Add("--data"); args.Add(DataRoot);
+                int exit; string se;
+                string so = RunNodeRaw(args.ToArray(), 60000, out exit, out se);
+                Log("taskConfirm " + taskId + " exit=" + exit + " out=" + SliceForLog((so ?? "").Replace("\r\n", " | ")));
+                return "{\"ok\":true,\"code\":" + exit + ",\"out\":\"" + Esc(so ?? "") + "\",\"err\":\"" + Esc(se ?? "") + "\"}";
+            }
+            catch (Exception ex)
+            {
+                Log("taskConfirm " + taskId + " FAILED: " + ex.Message);
+                return "{\"ok\":false,\"code\":-1,\"out\":\"\",\"err\":\"" + Esc(ex.Message) + "\"}";
+            }
         }
 
         // ---- op: readFile（限题库根内，≤4MB）----
@@ -1408,6 +1485,10 @@ namespace CTBShell2
                 /* ★ 2026-10-27 新增：配方层通道（界面「录题」页）。
                    壳只做透明转发，配方逻辑全在 _配方.mjs —— 加一条反例不需要重编壳。 */
                 else if (op == "recipe") resp = bridge.Recipe(payload);
+                /* ★ 2026-11-03（批次 1 收尾「页面接线」）：录题任务通道（三层校验 / 人工确认）。
+                   白名单纪律同 recipe：op 名固定、参数逐项映射，见 HostBridge.TaskCheck/TaskConfirm。 */
+                else if (op == "taskCheck") resp = bridge.TaskCheck(payload);
+                else if (op == "taskConfirm") resp = bridge.TaskConfirm(payload);
                 else if (op == "readFile") resp = bridge.ReadFile(payload);
                 else if (op == "openFile")
                 {
