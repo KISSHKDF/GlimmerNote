@@ -38,16 +38,24 @@ const USAGE = `用法：
   node _快照.mjs --list              打印纳管清单
   node _快照.mjs --status            历史快照数 + 当前未快照改动（未快照则 exit 1）
   node _快照.mjs --restore-list <文件>          列出该真源的全部历史版本
-  node _快照.mjs --restore <文件> [版本]        恢复该真源（默认最近一版），恢复前自动备份`;
+  node _快照.mjs --restore <文件> [版本] [--force-restore]   恢复该真源（默认最近一版），恢复前自动备份
+  （--force-restore：跳过"掏空/缩水"内容校验。用途：**有意**恢复一个旧的小版本，
+    或有意恢复一个清零后的空态 —— "最富历史基线"会把这两种合法意图误判成内容丢失。
+    恢复前内容仍会留档进 _备份-真源\\，恢复后仍要过形状守卫与同构校验。）`;
 
-const FLAGS = ['--dry', '--list', '--status', '--restore', '--restore-list'];
-/* ★ 2026-11-04（H3）：**关键计数字段清单**（按真源文件名 → 该文件里"内容条数"住在哪个数组字段）。
+const FLAGS = ['--dry', '--list', '--status', '--restore', '--restore-list', '--force-restore'];
+/* ★ 2026-11-04（外部复核实测 F04/N4）：**关键计数字段清单**（按真源文件名 → 该文件里"内容条数"住在哪个数组字段）。
    用途：快照恢复时，除了比对顶层形状，还要比对**内容条数** ——
    原先只比"顶层键名 + 类型"，于是 items/batches 被**掏空**（仍是 array，类型没变）照样通过，
    校验报"通过"并把一个空库当成正常版本写回真源。
-   刻意**按文件名**索引而不是猜：猜错就会误判正常恢复。 */
+   刻意**按文件名**索引而不是猜：猜错就会误判正常恢复。
+   本轮补两处覆盖缺口（MUSE 实测）：
+     · `_笔形台账.json` 在 DATA_PATHS 里纳管，却不在本表 ⇒ items 被掏空照样恢复通过；
+     · `_索引.json` 有**两种合法形态**（学科级 items[] / 学生级 subjects{}）——
+       subjects 被掏空成 `{}` 时顶层键名与类型没变、内容循环因字段缺失而 continue ⇒ 漏网。
+       故此处用**多字段**表达：items 或 subjects 任一被掏空都判红。 */
 const CRITICAL_FIELDS_BY_NAME = {
-  '_索引.json': ['items'],
+  '_索引.json': ['items', 'subjects'],
   '_组卷台账.json': ['batches'],
   '_待确认.json': ['items'],
   '_原卷台账.json': ['cards'],
@@ -56,6 +64,7 @@ const CRITICAL_FIELDS_BY_NAME = {
   '_配图台账.json': ['figures'],
   '_页码映射.json': ['mappings'],
   '_原图台账.json': ['objects'],
+  '_笔形台账.json': ['items'],
 };
 const unknown = args.filter(a => a.startsWith('--') && !FLAGS.includes(a));
 if (unknown.length) {
@@ -143,6 +152,14 @@ if (args.includes('--restore')) {
   const i = args.indexOf('--restore');
   // 版本参数必须跳过其它 flag（--dry 可能紧跟其后，否则会被误当成版本号）
   const positional = args.slice(i + 1).filter(a => !a.startsWith('--'));
+  /* ★ 2026-11-04（F04/N4）：**有意恢复旧小版本/清零空态**的显式口径。
+     "内容最富的历史版"当分母抓得住"被掏空的恢复"，但也会把两种**合法意图**持续拦截：
+       · 库从 10 条长到 200 条，用户想恢复 10 条的旧版（10 < 200×0.5 判红回滚）；
+       · 用户有意把库清零并快照过该空态，之后想恢复回这个空态。
+     修前全文件无任何 force/绕过开关 —— 合法旧版本恢复被最富基线**永远**挡住。
+     现在 --force-restore 跳过掏空/缩水两档内容校验（形状守卫与同构校验**仍然要过**，
+     恢复前留档也不省 —— 安全网只放宽"内容量"这一档，且必须显式打出警告留痕）。 */
+  const forceRestore = args.includes('--force-restore');
   const rel = normalizeTarget(positional[0]);
   const ver = positional[1] || null;         // 可选：git short/full hash
   if (!rel) { console.error(USAGE); process.exit(2); }
@@ -228,10 +245,22 @@ if (args.includes('--restore')) {
        （用户正要恢复的就是它）⇒ 拿它当分母 ⇒ "空 vs 空" ⇒ 永远抓不住。
        只在"当前内容已损坏、需要一个形状基准"时才用最近一版（保持原语义）。 */
     const critGuess = CRITICAL_FIELDS_BY_NAME[path.basename(abs)] || [];
+    /* ★ 2026-11-04（F04/N4）：richness 同样要认多形态（数组 length / subjects 各科 items 之和），
+       否则学生级 _索引.json 的"最富历史版"恒 0 分 ⇒ 内容基准退化为空 ⇒ 掏空抓不住。 */
+    const fieldCount = (o, f) => {
+      const v = o ? o[f] : undefined;
+      if (Array.isArray(v)) return v.length;
+      if (v && typeof v === 'object') {
+        let n = 0;
+        for (const s of Object.values(v)) if (s && Array.isArray(s.items)) n += s.items.length;
+        return n;
+      }
+      return 0;
+    };
     const richness = o => {
       if (!o || typeof o !== 'object') return -1;
       let s = 0;
-      for (const f of critGuess) if (Array.isArray(o[f])) s += o[f].length;
+      for (const f of critGuess) s += fieldCount(o, f);
       /* 认不出关键字段的文件：退回"顶层键数"，至少能区分"空对象 vs 有内容" */
       if (!critGuess.length) s = Object.keys(o).length;
       return s;
@@ -289,6 +318,21 @@ if (args.includes('--restore')) {
            —— 不认识就**不拦**，但已知的真源必须拦住。 */
         const relBase = path.basename(abs);
         const critFields = CRITICAL_FIELDS_BY_NAME[relBase] || [];
+        /* ★ 2026-11-04（F04/N4）：字段条数取**多形态**。_索引.json 有两种合法形态：
+           学科级 `items[]`（数组）与学生级 `subjects{学科:{items[]}}`（对象包数组）。
+           修前 richness/比对只认 `Array.isArray(o[f])` —— subjects 是对象 ⇒ 永远 0 条，
+           subjects 被掏空成 `{}` 时顶层键名与类型都没变、内容循环 continue ⇒ 漏网。
+           countOf 统一算：数组直接 length；对象（subjects）= 各学科 items 长度之和。 */
+        const countOf = (o, f) => {
+          const v = o ? o[f] : undefined;
+          if (Array.isArray(v)) return v.length;
+          if (v && typeof v === 'object') {
+            let n = 0;
+            for (const s of Object.values(v)) if (s && Array.isArray(s.items)) n += s.items.length;
+            return n;
+          }
+          return 0;
+        };
         /* 内容比对的分母：baseObj（形状基准）与 histObj（git 历史里最近一版）里**更富**的那个。
            为什么要两个：当前文件可能**已经**被掏空（items=[]），此时 baseObj 也是空的，
            拿它当分母 ⇒ "空 vs 空" ⇒ 永远抓不住。histObj 才是"正常内容"的真参照。 */
@@ -296,37 +340,44 @@ if (args.includes('--restore')) {
           if (!histObj) return baseObj;
           if (!baseObj) return histObj;
           let bSum = 0, hSum = 0;
-          for (const f of critFields) {
-            if (Array.isArray(baseObj[f])) bSum += baseObj[f].length;
-            if (Array.isArray(histObj[f])) hSum += histObj[f].length;
-          }
+          for (const f of critFields) { bSum += countOf(baseObj, f); hSum += countOf(histObj, f); }
           return hSum > bSum ? histObj : baseObj;
         })();
-        /* ① 关键数组字段：基准非空 ⇒ 现不能为空 */
+        if (forceRestore) {
+          console.log('  ⚠ --force-restore：跳过掏空/缩水两档内容校验（有意恢复旧小版本或空态）。');
+          console.log('    形状守卫与同构校验仍然生效；恢复前内容已留档进 _备份-真源\\。');
+        }
+        /* ① 关键数组字段：基准非空 ⇒ 现不能为空（subjects 形态按 items 之和算） */
         const emptyCrit = [];
         for (const f of critFields) {
-          const bArr = Array.isArray(contentBase[f]) ? contentBase[f] : null;
-          const nArr = Array.isArray(now[f]) ? now[f] : null;
-          if (!bArr || !nArr) continue;
-          if (bArr.length > 0 && nArr.length === 0) {
-            emptyCrit.push(f + '（基准 ' + bArr.length + ' 条 → 现 0 条）');
+          const bN = countOf(contentBase, f);
+          const nN = countOf(now, f);
+          if (contentBase[f] === undefined || now[f] === undefined) continue;
+          if (bN > 0 && nN === 0) {
+            emptyCrit.push(f + '（基准 ' + bN + ' 条 → 现 0 条）');
           }
         }
-        if (emptyCrit.length) {
+        if (emptyCrit.length && !forceRestore) {
           throw new Error('内容被掏空：关键字段 ' + emptyCrit.join('、') + ' —— ' +
-            '顶层结构没变（仍是数组），但内容全没了；这种版本不能当"正常版本"恢复。');
+            '顶层结构没变（仍是数组），但内容全没了；这种版本不能当"正常版本"恢复。' +
+            '若这是**有意**恢复的旧小版本/空态，加 --force-restore（内容已留档，可退回）。');
         }
         /* ② 关键计数漂移：现 < 基准 × (1-阈值) ⇒ 判红 */
         const DRIFT_RATIO = 0.5;   // 少于基准的一半 ⇒ 判"缩水过多"
+        const driftCrit = [];
         for (const f of critFields) {
-          const bArr = Array.isArray(contentBase[f]) ? contentBase[f] : null;
-          const nArr = Array.isArray(now[f]) ? now[f] : null;
-          if (!bArr || !nArr) continue;
-          if (bArr.length === 0) continue;
-          if (nArr.length < bArr.length * DRIFT_RATIO) {
-            throw new Error('内容大幅缩水：关键字段 ' + f + ' 基准 ' + bArr.length +
-              ' 条 → 现 ' + nArr.length + ' 条（低于基准的一半）—— 恢复的版本明显不完整。');
+          const bN = countOf(contentBase, f);
+          const nN = countOf(now, f);
+          if (contentBase[f] === undefined || now[f] === undefined) continue;
+          if (bN === 0) continue;
+          if (nN < bN * DRIFT_RATIO) {
+            driftCrit.push(f + '（基准 ' + bN + ' 条 → 现 ' + nN + ' 条）');
           }
+        }
+        if (driftCrit.length && !forceRestore) {
+          throw new Error('内容大幅缩水：关键字段 ' + driftCrit.join('、') +
+            '（低于基准的一半）—— 恢复的版本明显不完整。' +
+            '若这是**有意**恢复的旧小版本（库后来长了很多），加 --force-restore（内容已留档，可退回）。');
         }
         console.log('  ✔ 同构性校验通过（顶层结构与正常版本一致；关键字段未掏空、未大幅缩水）');
       }

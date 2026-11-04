@@ -1115,10 +1115,22 @@ namespace CTBShell2
         }
 
         // ---------------- 小工具 ----------------
+        /* ★ 2026-11-04（外部复核实测 F06）：AddFlag 拒绝以 `--` 开头的值。
+           修前：前端把 `note="--force"` 送进来时，这里原样拼出 `--note --force` ——
+           QuoteArgs 只防 shell 分词，不防 Node argv 解析；已迁移到 _参数.mjs 的工具靠
+           "已知带值 flag 无条件消费下一个参数"兜住了，没迁移的旗舰工具（_标记复习）
+           则直接中招（--force 被凭空打开，四道门禁全绕过）。
+           双保险：C# 侧在此拒绝形状非法的值（fail-loud，回 ok:false 给前端），
+           Node 侧 _参数.mjs 仍然兜底 —— 两道防线互相独立。 */
         static void AddFlag(List<string> args, string payload, string key, string flag)
         {
             string v = ExtractString(payload, key);
-            if (!string.IsNullOrEmpty(v)) { args.Add(flag); args.Add(v); }
+            if (!string.IsNullOrEmpty(v))
+            {
+                if (v.StartsWith("--"))
+                    throw new ArgumentException("字段 " + key + " 的值不允许以 -- 开头（会被解析成另一个开关）：\"" + v + "\"");
+                args.Add(flag); args.Add(v);
+            }
         }
         static string TrimTail(string s)
         {

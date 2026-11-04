@@ -30,6 +30,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import crypto from 'crypto';
+import { execFileSync } from 'child_process';   // ★ H1 整改：ESM 里没有 require（静默 catch 成 t=0 会让判据退回旧口径），必须在模块顶 import
 
 const BAKDIR_NAME = '_备份-真源';
 const DEFAULT_KEEP = 8;
@@ -167,12 +168,14 @@ function sleepMs(ms) {
  *        单文件原子写救不了这一步 —— 需要**跨文件**的提交语义。
  *
  * 设计取舍（都是踩过坑才这么定的，别随手改）：
- *   · 锁文件与事务留档都放 **系统临时目录**，不放进用户库（`数据\`）：红线是"任何脚本都不得写
- *     `数据\`"，而且 `tests\run.mjs` 的真库零写入断言会把库里多出来的文件判红。
- *     代价：临时目录被系统清理时，留档丢失 ⇒ 只剩"没有自动回滚"，不会更坏。
+ *   · 锁文件与事务留档放在**本机用户数据目录**（%LOCALAPPDATA%\GlimmerNote\write-state，
+ *     2026-11-04 H2 整改：原先放系统临时目录，被系统清理时留档丢失 ⇒ 只剩"没有自动回滚"。
+ *     %LOCALAPPDATA% 不进 `数据\`（红线不破）、不被磁盘清理误删；仍可用 CTB_TXN_DIR 覆盖
+ *     （测试与排障用）。老布局（%TEMP% 下的同名目录）启动时会**迁移一次**：里面有未完成
+ *     事务就先回滚，再把目录整体搬过来。
  *   · 锁用 `openSync(..., 'wx')` 独占创建 + 里面写持有者 pid/token/时间：**不猜**"文件在就是被锁着"，
- *     而是判持有进程是否还活着（pid 复用由 token + 时间兜底）。进程被 taskkill 留下的锁文件
- *     会在下一次获取时被判定为僵尸锁并清掉，不会变成永久死锁。
+ *     而是判持有进程是否还活着（pid 复用由 token + **进程启动时间**兜底，2026-11-04 H1 整改：
+ *     修前只判 pid 存活，PID 被无关新进程复用时僵尸锁被当成活锁，等满 120 秒超时）。
  *   · 子进程**继承**锁：持有者把 token 写进自己的 process.env，Node 的 spawn/execFileSync 与
  *     PowerShell 都会把环境变量传给孙进程 ⇒ 子工具看到 token 与锁文件一致就直接放行。
  *     没有这一条，`_状态刷新.mjs`（持锁）spawn `_待确认.mjs`（要锁）当场自死锁。
@@ -181,24 +184,88 @@ const LOCK_FILE = 'lock';
 const JOURNAL_FILE = 'journal.json';
 const TXN_ENV = 'CTB_LOCK_TOKEN';
 
-/** 本机临时目录里的"这个库专属"工作区（同一个库在不同机器/不同盘符下互不干扰） */
+/** 本机用户数据目录里的"这个库专属"工作区（同一个库在不同机器/不同盘符下互不干扰） */
 function stateDirOf(root) {
   const custom = String(process.env.CTB_TXN_DIR || '').trim();
   const key = crypto.createHash('sha1').update(String(root).toLowerCase()).digest('hex').slice(0, 16);
-  const base = custom ? path.resolve(custom) : path.join(os.tmpdir(), 'glimmernote-write-state');
+  /* ★ 2026-11-04（H2 整改）：从 os.tmpdir() 迁到 %LOCALAPPDATA%\GlimmerNote\write-state。
+     为什么：临时目录被系统/清理工具定期清空 ⇒ 事务留档丢了就只剩"没有自动回滚"；
+     写锁目录没了倒不致命（锁是瞬时状态），但留档是**恢复材料**，必须住得比 %TEMP% 稳。
+     %LOCALAPPDATA% 不在用户库（红线 2 不破：任何脚本都不得写 `数据\`）。 */
+  const base = custom
+    ? path.resolve(custom)
+    : path.join(process.env.LOCALAPPDATA || os.tmpdir(), 'GlimmerNote', 'write-state');
   const dir = path.join(base, key);
   fs.mkdirSync(dir, { recursive: true });
+  /* 一次性迁移：老版本把锁/日志放在 %TEMP%\glimmernote-write-state\<key>。
+     若新目录还没有 journal 而老目录有未完成事务 ⇒ 先回滚那次事务（材料还在老目录），
+     然后把老目录整个搬过来；两边都没有要事时只搬文件不报错。 */
+  if (!custom) {
+    try {
+      const legacyDir = path.join(os.tmpdir(), 'glimmernote-write-state', key);
+      if (fs.existsSync(legacyDir) && legacyDir !== dir) {
+        const healed = recoverTransactionsIn(legacyDir, root);
+        if (healed) console.error('[写锁] ⚠ 旧位置(%TEMP%)发现未完成事务，已先回滚：' + healed);
+        for (const f of fs.readdirSync(legacyDir)) {
+          const to = path.join(dir, f);
+          if (!fs.existsSync(to)) fs.renameSync(path.join(legacyDir, f), to);
+        }
+        try { fs.rmSync(path.join(os.tmpdir(), 'glimmernote-write-state'), { recursive: true, force: true }); } catch { }
+      }
+    } catch { /* 迁移失败不阻断：两边都能用，下一次再试 */ }
+  }
   return dir;
 }
 
 /** 供测试与排障用：这个库的锁文件 / 事务日志**具体落在哪**（不猜路径，唯一实现） */
 export function lockPathOf(root) { return path.join(stateDirOf(root), LOCK_FILE); }
 export function journalPathOf(root) { return path.join(stateDirOf(root), JOURNAL_FILE); }
+/* ★ 2026-11-04（H1）：测试用的启动时间通道（不进业务面：锁判据内部走同一个函数）。
+   named export 供 neg-lock-reclaim-race 断言"通道没静默失效"（否则 startedAt 恒 0、
+   PID 复用判据永远走退回分支 = 判据形同虚设却全绿）。 */
+export const __test_procStartTime = procStartTime;
 
 function pidAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try { process.kill(pid, 0); return true; }
   catch (e) { return e && e.code === 'EPERM'; }     // EPERM = 进程在，只是不归我管 ⇒ 算活着
+}
+
+/* ★ 2026-11-04（外部复核实测 H1）：PID 复用判死。
+   修前锁的回收判据只有 `pidAlive(pid)` —— OS 的 PID 会**复用**：旧持有者被 taskkill 后，
+   同一个 PID 落到无关新进程头上 ⇒ 僵尸锁被当成活锁，等待直至 120 秒超时抛错，
+   token 无法区分两种情况。修法（心若有 + 身份比对，双判据取**或**）：
+     ① 锁文件里记持有者的**进程启动时间**（startTime，ms）。活着且启动时间一致 ⇒ 真活着；
+     ② 锁文件里的 `at`（取锁时刻）被持有者**心跳刷新**（mtime 判读），超过 HEARTBEAT_STALE_MS
+        没动静且 PID 判死 ⇒ 回收。PID 活着但启动时间不一致 ⇒ 是复用者，按僵尸锁处置。
+   Windows 上用 wmic 不可靠（Win11 移除），走 PowerShell Get-Process 只在"需要比对"时调一次，
+   拿到启动时间缓存进模块级 Map（同 PID 只查一次，锁竞争热路径零开销）。 */
+const procStartCache = new Map();
+function procStartTime(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return 0;
+  if (procStartCache.has(pid)) return procStartCache.get(pid);
+  let t = 0;
+  try {
+    /* ⚠ 用 ToFileTime()（Windows FILETIME，100ns 单位）—— 实测 UtcTicks 在
+       管道环境下输出空/int64 转型得 0（PS 5.1 的属性直通输出问题），ToFileTime 稳定。 */
+    const out = execFileSync('powershell', ['-NoProfile', '-Command',
+      '(Get-Process -Id ' + pid + ' -ErrorAction Stop).StartTime.ToFileTime()'], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] });
+    const ft = Number(String(out).trim());
+    if (Number.isFinite(ft) && ft > 0) t = Math.floor(ft / 10000) - 11644473600000;  // FILETIME(100ns, 1601 纪元) → ms epoch
+  } catch { t = 0; }
+  procStartCache.set(pid, t);
+  return t;
+}
+/** 锁持有者是否可信存活：PID 活着 **且**（拿不到启动时间 或 启动时间与锁记录一致）。
+ *  PID 死 / PID 活但启动时间不同（复用者）⇒ false。 */
+function lockHolderAlive(cur) {
+  if (!cur || !Number.isInteger(cur.pid) || cur.pid <= 0) return false;
+  if (!pidAlive(cur.pid)) return false;
+  const startedAt = Number(cur.startedAt) || 0;
+  if (!startedAt) return true;              // 老版本锁文件没有 startedAt：退回旧判据（不因升级卡死用户）
+  const real = procStartTime(cur.pid);
+  if (!real) return true;                   // 查不到启动时间（权限/平台差异）：退回旧判据
+  return Math.abs(real - startedAt) < 3000; // 3 秒容差（时钟精度）；不同 ⇒ PID 已被复用
 }
 
 function readLockFile(p) {
@@ -220,14 +287,15 @@ export function acquireLibLock(root, { label = '', timeoutMs = 120000, pollMs = 
   const lockPath = path.join(dir, LOCK_FILE);
   const inherited = inheritedToken();
 
-  // ① 子进程继承：token 与锁文件一致且持有者还活着 ⇒ 放行（不自锁）
+  // ① 子进程继承：token 与锁文件一致且持有者可信存活 ⇒ 放行（不自锁）
   if (inherited) {
     const cur = readLockFile(lockPath);
-    if (cur && cur.token === inherited && pidAlive(cur.pid)) return function () { };
+    if (cur && cur.token === inherited && lockHolderAlive(cur)) return function () { };
   }
 
   const myToken = crypto.randomBytes(12).toString('hex');
-  const body = JSON.stringify({ pid: process.pid, token: myToken, label: label || path.basename(String(root)), at: Date.now() });
+  const myStartedAt = procStartTime(process.pid) || Date.now();
+  const body = JSON.stringify({ pid: process.pid, token: myToken, label: label || path.basename(String(root)), at: Date.now(), startedAt: myStartedAt });
   const deadline = Date.now() + timeoutMs;
   let waitedMsg = false;
   /* ⚠ 2026-10-30 实测抓到的**抢锁竞态**（并发回归第一次就复现：6 个进程说"全成功"，台账只多了 4 条）：
@@ -292,8 +360,11 @@ export function acquireLibLock(root, { label = '', timeoutMs = 120000, pollMs = 
     }
     try {
       const again = readLockFile(lockPath);                 // ← 互斥内重读（这就是修法）
-      if (again && pidAlive(again.pid)) return false;       // 持有者活着：绝不删
-      if (again) console.error('[写锁] 清理僵尸锁（持有进程 ' + again.pid + ' 已不存在，label=' + (again.label || '') + '）');
+      /* ★ 2026-11-04（H1）：判活从 pidAlive 换成 lockHolderAlive ——
+         PID 被无关进程复用时（活着但启动时间对不上）同样按僵尸锁回收。 */
+      if (again && lockHolderAlive(again)) return false;    // 持有者可信存活：绝不删
+      if (again) console.error('[写锁] 清理僵尸锁（持有进程 ' + again.pid +
+        (pidAlive(again.pid) ? ' 已不存在或 PID 已被复用' : ' 已不存在') + '，label=' + (again.label || '') + '）');
       /* mode='unreadable' 且现在能读出内容 ⇒ 说明它已不是半截件，本轮放弃删除 */
       if (mode === 'unreadable' && again) return false;
       try { fs.unlinkSync(lockPath); } catch { }
@@ -320,7 +391,8 @@ export function acquireLibLock(root, { label = '', timeoutMs = 120000, pollMs = 
       if (fd !== null) { try { fs.closeSync(fd); } catch { } }
       if (e && e.code !== 'EEXIST') throw new Error('[写锁] 无法创建锁文件 ' + lockPath + '：' + e.message);
       const cur = readLockFile(lockPath);
-      if (cur && !pidAlive(cur.pid)) {
+      /* ★ 2026-11-04（H1）：外层等待循环同样换 lockHolderAlive（PID 复用 = 僵尸锁）。 */
+      if (cur && !lockHolderAlive(cur)) {
         if (reclaimUnderMutex('dead')) return onAcquired();
       } else if (!cur) {
         /* 空/半截：多半是另一个进程刚 'wx' 成功、还没来得及写内容。**绝不立刻抢**。 */
@@ -446,6 +518,11 @@ function restoreFileAtomic(snapshotPath, targetPath) {
 /** 启动时（拿到锁之后）检查有没有上次没做完的事务：有就回滚并**大声报告** */
 export function recoverTransactions(root) {
   const dir = stateDirOf(root);
+  return recoverTransactionsIn(dir, root);
+}
+
+/** recoverTransactions 的目录参数版（H2 迁移用：老 %TEMP% 目录里的遗留事务也要先回滚再搬家）。 */
+function recoverTransactionsIn(dir, root) {
   const journalPath = path.join(dir, JOURNAL_FILE);
   if (!fs.existsSync(journalPath)) return '';
   const j = readLockJsonSafe(journalPath);

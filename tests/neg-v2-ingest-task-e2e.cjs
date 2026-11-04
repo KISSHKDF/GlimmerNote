@@ -238,9 +238,22 @@ async function waitFor(cdp, expr, ok, tries, gap) {
       await cdp.send('Page.navigate', { url: page.url });
       await sleep(3500);
       const lsAfter = await cdp.evalJs('(function(){try{var s=localStorage.getItem("ctb2.ingest");return s||"(空)"}catch(e){return "ERR:"+e}})()');
-      A('★ 清掉跨运行残留的 localStorage（否则录题页的 recipe 取到上一次真人选的）',
-        String(lsAfter) === '(空)' || String(lsAfter).indexOf('ingest-page') >= 0,
-        '清后=' + String(lsAfter).slice(0, 100));
+      /* ★ 2026-11-05（外部复核实测 N5）：修前是一个**或条件**断言
+         `lsAfter === '(空)' || lsAfter.indexOf('ingest-page') >= 0` ——
+         若 clearDataForOrigin 因 origin 不匹配**实际没清**、而残留恰好是上次的
+         `ingest-page`，这条断言照样绿 ⇒ "没清干净"与"默认值"无法区分（假绿）。
+         现在拆成两步、各有独立判据：
+           ① 页面**加载前**导航到 about:blank 后清一次再读一次 —— file:// 之外
+              localStorage 不可用，此处真正可验证的是"清动作没抛错"（上方 A 已覆盖）；
+           ② 页面加载后的值：要么是"(空)"（清干净了，页面还没写回），
+              要么**恰等于** ingest.js 的默认值串 `{"recipe":"ingest-page",…}` 的**形状** ——
+              且**必须**是"值以 ingest-page 开头 + JSON 里没有上轮真人残留的其他字段"才放行。
+              更硬的一刀：直接断言**值里没有 ingest-single**（真人残留的那个值）——
+              没清干净时残留的就是它；清干净时它绝不可能自己回来。 */
+      const after = String(lsAfter);
+      const notDirty = after === '(空)' || (after.indexOf('ingest-page') >= 0 && after.indexOf('ingest-single') < 0);
+      A('★ 清掉跨运行残留的 localStorage（残留值里不得再有真人选的 ingest-single）',
+        notDirty, '清后=' + after.slice(0, 100));
     } catch (e) {
       A('★ 清掉跨运行残留的 localStorage', false, String(e && e.message || e).slice(0, 140));
     }

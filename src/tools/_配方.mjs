@@ -1288,12 +1288,18 @@ async function cmdCompose() {
        （`_收件箱/xxx.jpg`），壳 spawn node 时 cwd 是程序目录 ⇒ 解析成 `app\_收件箱\xxx.jpg`
        ⇒ 文件不存在 ⇒ 本函数返回 2 ⇒ 界面拿到空 stdout，还当成生成成功。
        正确语义：相对路径一律按**库根**解析（库根就是由 --data / CTB_DATA 定下来的那个）。
-       绝对路径仍然按原样（允许诊断时直接指定盘上任何位置）。 */
-    const root0 = libraryRoot();
-    imgAbs = path.isAbsolute(img) ? path.normalize(img) : path.resolve(root0, img.replace(/[\\/]+/g, path.sep));
+       绝对路径仍然按原样（允许诊断时直接指定盘上任何位置）。
+       ⚠ 2026-11-04（H4 整改·独立跑实测）：原先 libraryRoot() **无条件**调 —— 绝对路径也调。
+         它在开发区四级回退找不到库时**硬失败**（_库根.mjs 的"拒绝把源码树当库根"），
+         于是"传一张盘上绝对路径的图"这个完全合法的用法，只在没设 CTB_DATA 的进程里就 exit 2
+         （测试独立跑就是这么红的）。修法：库根只在**真的要解析相对路径**时才解析。 */
+    const root0 = path.isAbsolute(img) ? '' : libraryRoot();
+    imgAbs = path.isAbsolute(img)
+      ? path.normalize(img)
+      : path.resolve(root0, img.replace(/[\\/]+/g, path.sep));
     if (!isFile(imgAbs)) {
       console.error('原图不存在：' + imgAbs);
-      console.error('  说明：相对路径按库根解析（库根=' + root0 + '）；若文件确实在别处，请传绝对路径。');
+      console.error('  说明：相对路径按库根解析（库根=' + (root0 || '（绝对路径，不涉库根）') + '）；若文件确实在别处，请传绝对路径。');
       return 2;
     }
     imgSha = crypto.createHash('sha256').update(fs.readFileSync(imgAbs)).digest('hex');

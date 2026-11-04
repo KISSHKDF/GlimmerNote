@@ -44,8 +44,13 @@ const argv = process.argv.slice(2);
 const { action: _cmd, opt, positional } = parseArgs(argv, {
   valueFlags: [
     ...COMMON_VALUE_FLAGS,
-    // 本工具专属的带值 flag（**布尔开关不要列进来**：json/task 是开关）
+    /* ★ 2026-11-05（外部复核实测 N2）：`--fingerprint` 漏声明 —— `val('fingerprint')`
+       靠"未知 flag 回退"才吃到值，未被"已知带值无条件消费"保护（值以 -- 开头会被吃成开关）。
+       同时修注释错误：`task` **不是**开关 —— `看 --task <taskId>`（cmdShow :195）与
+       `确认 --task` 都按值消费 taskId（val('task')），列入带值表是对的；
+       本工具真正的布尔开关只有 `json`。此前注释写"json/task 是开关"把两者混了。 */
     'task', 'recipe-ver', 'image-sha', 'contract-digest', 'cards', 'in', 'limit',
+    'fingerprint',
   ],
 });
 /* 缺省命令 = 空（与改前 `argv[0] || ''` 同口径）。 */

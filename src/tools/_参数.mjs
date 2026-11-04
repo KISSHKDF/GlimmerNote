@@ -61,7 +61,19 @@ export function parseArgs(argv, { valueFlags = [], start = 1 } = {}) {
     for (; i < argv.length; i++) {
       const t = argv[i];
       if (t === '--') { i++; break; }        // 终止符：其后全是位置参数
-      if (t.startsWith('--')) continue;      // flag 在动作名之前 ⇒ 忽略（罕见）
+      if (t.startsWith('--')) {
+        /* ★ 2026-11-05（外部复核实测 N2）：动作名**之前**的 flag 被跳过时，它的"值"
+           会变成动作名 —— 实测 `--student 学生甲 状态` ⇒ action='学生甲'、opt 为空。
+           修法：已知带值 flag 在动作名槽里也**无条件消费下一个参数**（与主循环同判据）；
+           未知 flag 仍按老口径（下一个不像 flag 就当它的值）。 */
+        const k = t.slice(2);
+        if (valueSet.has(k)) {
+          if (i + 1 < argv.length) { i++; }   // 它的值在动作名前 —— 跳过 flag 连同值
+          continue;
+        }
+        if (i + 1 < argv.length && !argv[i + 1].startsWith('--') && argv[i + 1] !== '--') { i++; }
+        continue;
+      }
       action = t; i++; break;
     }
   }

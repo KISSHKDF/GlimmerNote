@@ -23,8 +23,13 @@ param(
   #   ★ 当前钉的是 **发行包实际内置的那一版**（v26.10.0，与 `release\*.zip` 里的
   #     `内置Node说明.txt` 逐字一致）—— 钉值必须与**真实产物**对齐，
   #     否则第一次打包就会被自己的闸门拦下（而那正是闸门在起作用，不是闸门错了）。
+  # ★ 2026-11-05（外部复核实测 N3）：`-AllowAnyNodeVersion` 修前是**死代码** ——
+  #   它的警告分支写在下面 `throw` 之后，版本不符时根本执行不到。
+  #   现在移到钉住检查**之前**：显式传了这个开关 ⇒ 跳过钉住校验（真·可绕过），
+  #   并打印显眼警告（发版记录里必须写明实际版本）；不传 ⇒ 钉住校验照常执行。
+  #   同时修掉 274 行那句假注释（"-NodeExe 只要求 ≥18" —— 钉住检查从不区分 Node 来源）。
   [string]$PinnedNodeVersion = 'v26.10.0',
-  [switch]$AllowAnyNodeVersion   # 显式放弃版本钉住（发版记录里必须写明实际版本）
+  [switch]$AllowAnyNodeVersion   # ★ 2026-11-05（N3 整改）：真·可绕过 —— 见下面钉住检查处的注释
 )
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.IO.Compression.FileSystem | Out-Null
@@ -263,17 +268,20 @@ if ($WithoutNode) {
   #   现在：默认**要求**精确版本（$PinnedNodeVersion），不匹配就响亮拒绝并说清怎么绕。
   #   为什么默认严格而不是"警告后继续"：发行包的体积标注与"用户免装 Node"的承诺
   #   都建立在"打进去的是哪一个 node"之上；静默换一个 = 承诺悄悄失效。
-  #   要打别的版本：显式传 -NodeExe（那只要求 ≥18），或在发版记录里写清版本。
-  if ($PinnedNodeVersion -and $nodeVer.Trim() -ne $PinnedNodeVersion) {
+  #   ★ 2026-11-05（外部复核实测 N3）：绕过开关**先判**——显式 -AllowAnyNodeVersion
+  #     时跳过钉住校验并打警告（修前警告分支写在 throw 之后 = 死代码，开关骗人）。
+  #     钉住检查**从不区分 Node 来源**（-NodeExe 指定的与 PATH 上的同样要过）——
+  #     上一版注释里"-NodeExe 只要求 ≥18"是假的，已删。
+  if ($AllowAnyNodeVersion) {
+    Write-Host "  ⚠ -AllowAnyNodeVersion：本次跳过内置 Node 的钉住版本校验（实际打包 $($nodeVer.Trim())）—— 发版记录里必须写明这个版本" -ForegroundColor Yellow
+  }
+  elseif ($PinnedNodeVersion -and $nodeVer.Trim() -ne $PinnedNodeVersion) {
     throw ("内置 Node 版本与钉住值不符：打包机上是 $($nodeVer.Trim())，钉住值是 $PinnedNodeVersion。`r`n" +
            "  · 为什么要钉：README 标的体积（38 MiB / 102 MiB / node.exe 99.9 MiB）与`r`n" +
            "    「用户免装 Node」的承诺都建立在「打进去的是哪一个 node」之上；`r`n" +
            "    换一个版本 = 同一份文档对不同的包 ⇒ 承诺悄悄失效。`r`n" +
            "  · 想打这个版本：装好该版本 Node 后重跑，或用 -NodeExe 明确指定路径。`r`n" +
            "  · 确认要换版本：给本脚本加 -AllowAnyNodeVersion（并在发版记录里写明实际版本）。")
-  }
-  if ($AllowAnyNodeVersion) {
-    Write-Host "  ⚠ -AllowAnyNodeVersion：本次不校验内置 Node 的精确版本（实际打包 $nodeVer）—— 发版记录里必须写明这个版本" -ForegroundColor Yellow
   }
   $nodeDst = Join-Path $stageApp 'node.exe'
   Copy-Item -LiteralPath $nodeSrc -Destination $nodeDst -Force

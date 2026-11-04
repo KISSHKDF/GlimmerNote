@@ -356,9 +356,12 @@
       const d = document.createElement('pre'); d.className = 'rv-out'; card.appendChild(d); return d;
     })() : null;
     if (!dry) {
+      /* ★ 2026-11-04（外部复核实测 N1 附带）：candId 取自 DOM data-rvadopt（未做形状校验），
+         修前原样拼进 body ⇒ 任何被塞进 data 属性的 HTML 都会进 innerHTML。
+         走 bodyText（纯文本，汇点转义）——adopt 只用它展示人话确认，不需要富文本。 */
       const ok = await S.confirm({
         title: '采用这条候选修订？', danger: false, ok: '采用（写进库）', cancel: '取消',
-        body: '候选 ' + candId + '\n\n这会把修订正文写进库：`_修订\\<类型>\\<目标>\\' + candId + '.md`，' +
+        bodyText: '候选 ' + candId + '\n\n这会把修订正文写进库：`_修订\\<类型>\\<目标>\\' + candId + '.md`，' +
           '并在这条待办上追加一条修订链记录。**不会**改写卡正文/配方/流程文件。',
       });
       if (!ok) return;
