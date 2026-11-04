@@ -50,7 +50,15 @@
           "hasFigure": { "type": "boolean" },
           "confidence": { "type": "string", "enum": ["high", "medium", "low"] },
           "sourceImageSha256": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" },
-          "notes": { "type": "string", "maxLength": 500 }
+          "notes": { "type": "string", "maxLength": 500 },
+          "bbox": {
+            "type": "array", "minItems": 4, "maxItems": 4,
+            "items": { "type": "number", "minimum": 0, "maximum": 1 },
+            "description": "这道题在整页原图上的位置：归一化 0~1 的 [x, y, w, h]（左上角 x,y 与宽高）。"
+          },
+          "studentAnswerHtml": { "type": "string", "maxLength": 4000 },
+          "answerMode": { "type": "string", "enum": ["blank", "figure", "zone", "none"] },
+          "answerSlots": { "type": "array", "items": { "type": "string" } }
         }
       }
     },

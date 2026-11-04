@@ -9,13 +9,18 @@
  *   ② **生成任务单**：选配方式和学科 → 拼出完整提示词 → 复制给你自己的 AI
  *   ③ **校验回传**：AI 的 JSON 粘回来 → 逐条按 schema 校验 → 告诉你哪条不合格
  *
+ * ★ 2026-11-04：第 ③ 步之后接上**第四步「建卡入库」**。
+ *   改前本页走完校验+确认就**结束**（写着「本页不落库」），因为仓内**没有任何东西能把 JSON 变成卡**：
+ *   实测 2026-11-04 19:36 那次录题，任务记录 `cards` 是**空数组**、库里**零张新卡**。
+ *   现在 `_录题入库.mjs`（仓内新增）+ 壳 op `ingestLand` 把这条链接上了。
+ *
  * 三条界面纪律：
- *   · 本页**不写用户库**（引擎只读配方、只读收件箱；校验不入库）；
+ *   · 校验环节**只读**；**入库**是第四步的显式按钮，且必须走桌面壳通道（写用户库）；
  *   · 不显示本机绝对路径（隐私红线：截图和报障都会带出去）；
  *   · 校验不通过时**逐条说清哪里错**，不弹一句"失败了"。
  */
 (function () {
-  const U = CTB.util, H = CTB.host, S = CTB.shell;
+  const U = CTB.util, M = CTB.model, H = CTB.host, S = CTB.shell;
   const V = CTB.views.ingest = {};
 
   const LS_KEY = 'ctb2.ingest';
@@ -146,11 +151,12 @@
       '<div class="ig-h"><span class="ig-n">3</span>把 AI 的答案粘回来校验</div>' +
       '<div class="small muted">把 AI 输出的那一整段<b>原样</b>粘进来（外面裹了解释文字也没关系，程序会自己剥掉；' +
       '一份 JSON 里用了 <code>envelope</code> 就必须同时有 <code>result</code>，缺哪样会直接点名）。' +
-      '<b>生成任务单后走三层校验（格式 → 与任务及原图匹配 → 人工确认），不写进题库</b>；' +
+      '<b>生成任务单后走三层校验（格式 → 与任务及原图匹配 → 人工确认）</b>；' +
       '没生成任务单时只校验格式，会明确标"未与任务关联"。</div>' +
       '<textarea id="igIn" class="ig-ta" placeholder="粘贴 cards.json 内容，例如 {&quot;envelope&quot;:{…},&quot;result&quot;:{&quot;cards&quot;:[…]}}"></textarea>' +
       '<div class="row" style="margin-top:8px"><button class="btn sm primary" id="igCheck">校验</button>' +
-      '<span class="small muted">校验通过后再走原有的建卡流程入库（本页不落库）</span></div>' +
+      '<span class="small muted">★ 2026-11-04：校验通过并<b>人工确认</b>后，下面会出现「📥 建卡入库」按钮 —— ' +
+      '点它，卡当场进库（门禁当场跑，盲解清稿当场备好）。</span></div>' +
       '<div id="igResult"></div>' +
       '</div>';
 
@@ -636,6 +642,13 @@
          却照样 exit 0 ⇒ 页面把"没核对任务号"说成"② 与任务及原图匹配"，界面跟着说谎。
          判据直接读工具自己的两行原文（`仅格式校验（信封已识别）` + `② …：通过`），不另立第二套口径。 */
       const linked = /仅格式校验（信封已识别）/.test(out) && /② 与任务及原图匹配：通过/.test(out);
+      /* ★ 2026-11-04：校验通过后**接上入库按钮**（第四步）。
+         改前这里写死「下一步：按 docs\作答契约.md 建卡入库（本页不落库）」——
+         那句话是**实话**，因为当时仓内**没有任何东西能把 JSON 变成卡**：
+         实测 2026-11-04 19:36 那次录题，点完「确认本任务」什么也没发生（库里零张新卡）。
+         现在 `_录题入库.mjs` 补上了这一段，这里给的是**真按钮**。
+         ⚠ 只有"已确认 + 带信封"才给按钮：没确认过就入库 = 跳过人审那道门。 */
+      const canLand = linked && confirmed;
       box.innerHTML = '<div class="ig-ok">' + (linked
         ? '✔ 绑定校验通过（① 格式 + ② 与任务及原图匹配）'
         : '✔ 校验通过 —— 但<b>未与任务关联</b>（这份 JSON 没带信封，程序无法核对它属于哪次任务；只核了格式与原图 sha）') + '</div>' +
@@ -645,10 +658,16 @@
         (confirmed ? '' :
           '<div class="row" style="margin-top:8px"><button class="btn sm primary" id="igConfirm">✍ 确认本任务</button>' +
           '<span class="small muted">确认写进任务记录（confirmedAt）。这是**人显式做的动作**，程序不替你确认。</span></div>') +
-        '<div class="small muted">下一步：按 `docs\\作答契约.md` 建卡入库（本页不写库）。</div>';
+        (canLand
+          ? landBoxHtml()
+          : '<div class="small muted" style="margin-top:6px">' + (confirmed
+            ? '⚠ 这份 JSON 没带信封，程序无法核对它属于哪次任务 —— <b>不能入库</b>（要入库请让 AI 按任务单第五节的要求带上信封）。'
+            : '下一步：先点「✍ 确认本任务」，然后才能入库。') + '</div>');
       S.toast(linked ? '绑定校验通过' : '校验通过（未与任务关联）', linked ? 'ok' : 'warn');
       const cf = U.$id('igConfirm');
       if (cf) cf.onclick = () => onConfirm(cf);
+      const lb = U.$id('igLand');
+      if (lb) lb.onclick = () => onLand();
     } else if (code === 3) {
       box.innerHTML = '<div class="ig-warn">✖ 与任务不匹配 —— <b>不要入库</b>（跨任务贴错 / 图不一致）</div>' +
         '<pre class="ig-pre ig-bad">' + U.esc(out || err) + '</pre>';
@@ -682,6 +701,68 @@
     }
   }
 
+  /* ★ 2026-11-04：第四步「建卡入库」——把校验通过的 JSON 落成真错题卡。
+     为什么加这一步（实测）：录题页以前走完「校验 + 人工确认」就**结束**了，
+     页面写着「本页不落库」——因为仓内**没有任何东西能把 JSON 变成卡**。
+     实测 2026-11-04 19:36 那次录题：任务记录 `cards` 是**空数组**（校验用的 JSON 只在页面
+     过了一遍，从没存进记录）、库里**零张新卡**。用户点完「确认本任务」什么也没发生。
+     现在这一步把链条接上：确认过 + 校验过 ⇒ 点一下 ⇒ 卡进库、门禁当场跑、盲解清稿当场备好。
+
+     顺序纪律（不可颠倒）：
+       校验（①格式 ②与任务及原图匹配）→ 人工确认（③）→ **入库**
+     入库工具自己会再核一遍这三层（不信前端的结论），任一层不过就**不写盘**。 */
+  function landBoxHtml() {
+    const kids = M.students();
+    const sel = kids.length
+      ? '<label class="ig-f"><span>挂到</span><select id="igStudent" class="bk-sort">' +
+        kids.map(k => '<option' + (k === M.student() ? ' selected' : '') + '>' + U.esc(k) + '</option>').join('') +
+        '</select></label>'
+      : '<span class="small muted">库里还没有学生 —— 先到「🏠 首页」建一个，或用「＋ 新建学生」。</span>';
+    return '<div class="row" style="margin-top:8px">' + sel +
+      '<button class="btn sm primary" id="igLand">📥 建卡入库</button>' +
+      '<span class="small muted">卡会挂到上面选的学生名下；入库时当场跑作答契约/配图/原卷溯源三道门禁，并备好盲解清稿</span></div>';
+  }
+
+  async function onLand() {
+    const box = U.$id('igResult');
+    const ta = U.$id('igIn');
+    const btn = U.$id('igLand');
+    const text = String(ta && ta.value || '').trim();
+    if (!st.taskId) { S.toast('还没有任务句柄 —— 先在上面「2」里勾照片生成任务单', 'warn', 7000); return; }
+    if (!text) { S.toast('先把 AI 的 JSON 粘进上面的框', 'warn'); return; }
+    const student = (U.$id('igStudent') && U.$id('igStudent').value) || '';
+    if (!student) { S.toast('库里没有学生 —— 先建一个', 'warn', 7000); return; }
+    btn.disabled = true; btn.textContent = '⏳ 入库中…';
+    try {
+      const r = await H.ingestLand(st.taskId, text, student, st.subject);
+      const code = r && r.code;
+      const out = String((r && r.out) || '');
+      const err = String((r && r.err) || '');
+      if (code === 0) {
+        box.innerHTML = '<div class="ig-ok">✔ 已入库 —— 卡进库了，门禁当场跑过</div>' +
+          '<pre class="ig-pre">' + U.esc(out) + '</pre>' +
+          '<div class="small muted">新卡已在「题库」里。下一步：让无上下文解题者盲解一遍（清稿已备好），' +
+          '否则这些卡进不了组卷池（盲解门禁是硬拦）。</div>';
+        S.toast('已入库', 'ok', 8000);
+        if (S.refreshSub) S.refreshSub();
+      } else if (code === 3) {
+        box.innerHTML = '<div class="ig-warn">✖ 与任务不匹配 —— <b>没有写盘</b></div>' +
+          '<pre class="ig-pre ig-bad">' + U.esc(out || err) + '</pre>';
+        S.toast('与任务不匹配，看下面点名的原因', 'bad', 9000);
+      } else {
+        box.innerHTML = '<div class="ig-warn">✖ 入库没成功（退出码 ' + code + '）—— <b>没有写盘</b></div>' +
+          '<pre class="ig-pre ig-bad">' + U.esc(err || out) + '</pre>' +
+          '<div class="small muted">逐条看上面的原因行，改完再点一次。常见原因：任务还没确认、' +
+          '信封里的任务号或原图哈希对不上、学生名写错、契约字段缺项。</div>';
+        S.toast('入库没成功，看逐条原因', 'bad', 9000);
+      }
+    } catch (e) {
+      S.toast('入库失败：' + String(e && e.message || e), 'bad', 9000);
+    } finally {
+      btn.disabled = false; btn.textContent = '📥 建卡入库';
+    }
+  }
+
   async function onCheck() {
     const box = U.$id('igResult'); const ta = U.$id('igIn');
     const raw = String(ta.value || '').trim();
@@ -708,7 +789,8 @@
           '<div class="small muted" style="margin:4px 0"><b>仅格式校验（未与任务关联）</b>——本次没有任务上下文' +
           '（先在「2」里勾照片生成任务单），程序无法核对这份结果属于哪张图、哪次任务。</div>' +
           '<pre class="ig-pre">' + U.esc(out) + '</pre>' +
-          '<div class="small muted">下一步：按 `docs\\作答契约.md` 建卡入库（本页不写库）。</div>';
+          '<div class="small muted">下一步：回上面「2」勾照片生成任务单（带任务号）→ 校验 → 确认 → 才能入库。' +
+          '<b>没有任务号的一律不入库</b>（否则程序无从核对这份结果属于哪张图）。</div>';
         S.toast('校验通过', 'ok');
       } else {
         /* 同上：判词读工具原文（`_配方.mjs 校验` 会打印「✖ 不是合法 JSON：…」/「连花括号都没有」），

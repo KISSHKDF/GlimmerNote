@@ -35,10 +35,11 @@
 
 | 项 | 要求 | 说明 |
 |---|---|---|
-| 操作系统 | **Windows 10 1809+ 或 Windows 11**（64 位） | 桌面壳依赖 WebView2 |
-| **WebView2 运行时** | **必须安装**：Evergreen Runtime | 多数 Win11 已内置；Win10 若提示缺组件，装 [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) 即可 |
+| 操作系统 | **Windows 10 或 Windows 11**（64 位） | 桌面壳依赖 WebView2。Win7/8.1 **不支持**（微软已于 2023-01 终止支持，WebView2 Runtime 停在 109） |
+| **WebView2 运行时** | **必须安装**：Evergreen Runtime | **缺它整个程序打不开**（报 `WebView2RuntimeNotFoundException`）。多数 Win11 已内置；Win10 若提示缺组件，装 [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/consumer/) 即可（**x64 离线安装包，装完不用重启**） |
 | 磁盘空间 | **≥ 2 GB** 可用 | 发行包约 **38 MiB**；解压后 `app\` 约 **102 MiB**，其中内置的 `node.exe` 占 **99.9 MiB**，程序本体（除 `node.exe` 外）约 **2 MiB**。题库含扫描图，按每张 200 KB～1 MB 估算 |
-| Node.js | **发行包内已内置** | 最终用户**不需要**安装 Node.js——包里的 `app\node.exe` 就是它。从源码构建或跑门禁才需要装 **≥ 18** || 浏览器 | 不需要 | 程序自带桌面壳，不依赖系统浏览器 |
+| Node.js | **发行包内已内置** | 最终用户**不需要**安装 Node.js——包里的 `app\node.exe` 就是它。从源码构建或跑门禁才需要装 **≥ 18** |
+| 浏览器 | 不需要 | 程序自带桌面壳，不依赖系统浏览器。**唯一例外**：用「网页版启动器.cmd」兜底时需要任意浏览器 |
 
 > 程序与数据**物理分离**：`app\` 可以整个删掉重装，`数据\` 不受影响。
 
@@ -138,6 +139,9 @@ node src\tools\_配方.mjs 校验 --in cards.json
 node src\tools\_录题任务.mjs 绑定校验 <taskId> --in cards.json
 node src\tools\_录题任务.mjs 确认 <taskId> --note "人工看过"
 
+# 第四步：建卡入库（把校验+确认过的 JSON 落成真错题卡；幂等，重跑不造重复卡）
+node src\tools\_录题入库.mjs 入库 <taskId> --file cards.json --student <学生化名> [--subject 数学]
+
 # 看收件箱还剩哪些没处理（已处理的不再列；--all 连已归档的一起列）
 node src\tools\_配方.mjs 收件箱
 node src\tools\_配方.mjs 收件箱 --all
@@ -145,6 +149,30 @@ node src\tools\_配方.mjs 收件箱 --all
 # 给「换了自己的 AI」打分：拿黄金样本比一比
 node src\tools\_配方.mjs 自检 --recipe ingest-single --in cards.json
 ```
+
+### 录题四步（界面上怎么走）
+
+| 步 | 做什么 | 谁做 |
+|---|---|---|
+| 1 | 把错题照片放进 `数据\_收件箱\` | 你 |
+| 2 | 勾照片 → 「生成任务单」→ 把任务单交给**你自己的 AI** | 程序出单 / 你的 AI 干活 |
+| 3 | 把 AI 回传的 JSON 粘回来 → 「校验」→ 「✍ 确认本任务」 | 程序校验 / **你确认** |
+| 4 | 「📥 建卡入库」→ 卡进库，门禁当场跑，盲解清稿当场备好 | 程序 |
+
+> **第 4 步是 2026-11-04 才有的**。在那之前，录题页走完第 3 步就**结束**了——
+> 页面写着「本页不落库」，因为**仓内没有任何东西能把 JSON 变成卡**：
+> 实测 2026-11-04 19:36 那次录题，任务记录里 `cards` 是**空数组**、全库**零张新卡**，
+> 点完「确认本任务」什么也没发生。现在第 4 步把这条链接上了。
+>
+> 想要**全自动**，让 AI 在 `cards.json` 里多给三个字段（配方 `ingest-page` 的输出格式里已写明）：
+> `bbox`（这道题在整页照片上的位置，归一化 0~1）、`answerMode`（答案登在横线/答题区/图上/括号）、
+> `answerSlots`（**逐空**的答案，顺序＝卷面顺序）。给了它们，程序就能自己裁图、自己撑横线，
+> 卡**当场**就能进库能印。少了 `bbox` 就人工裁图，少了 `answerSlots` 答案册会缺答案。
+>
+> **入库不是"随便写点东西进库"**：它会当场核四件事——任务已确认、信封与原图对得上、
+> 契约字段齐、学生·学科落点存在；任一条不过就**零写盘**。过了之后当场跑三道门禁
+> （作答契约 / 配图 / 原卷溯源）并备好盲解清稿。
+> 详见 [`docs\录题任务契约.md`](docs/录题任务契约.md) §五·一。
 
 > 收件箱里「已处理」的判据是可查证的：**那份材料已经被用过**。认的时候认**四条**：
 >
@@ -333,12 +361,35 @@ A：`powershell -File scripts\rollback.ps1`。回滚用的是 `release\` 里的*
 A：程序用的是**自签证书**（不是花钱买的正规代码签名证书），所以 Windows 仍会提示"未知发布者"。
 这属预期行为；请核对 SHA256 与发布页公布的一致后再放行（**发布前该页面尚不存在**，见「获取」节的状态说明）。
 
-**Q：双击后弹「初始化失败 / 请求的资源在使用中（0x800700AA）」，或者日志一个字都没有？**
-A：先跑一次急救脚本，它会告诉你现在是什么状态、并顺手修好：
+**Q：双击后**完全打不开**（报 WebView2RuntimeNotFoundException / 窗口一片空白 / 双击没反应）？**
+A：这是**缺 WebView2 运行时**——桌面壳用它画界面，缺了整个程序起不来。
+装一次就好（**不用重启电脑**，装完把拾光小册完全退出再重新打开）：
+
+1. 打开 <https://developer.microsoft.com/microsoft-edge/webview2/consumer/>
+2. 选 **Evergreen Standalone Installer** 的 **x64**（完整离线安装包，断网也能装）
+3. 双击安装；问"是否允许更改设备"时点**允许**（不选就是只装给当前账号）
+
+装完想确认？命令提示符里跑：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\fix-integrity.ps1
+reg query "HKLM\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" /v pv
 ```
+
+有版本号 = 装好了；提示"找不到指定的注册表项" = 没装上。
+
+> **临时兜底**：发行包根目录有 **`网页版启动器.cmd`**，双击它会用包内自带的 Node 起一个
+> 本机服务端并打开浏览器——**不需要 WebView2**。但网页版**只能浏览**（题库、待办办结、
+> 全量重建、打开图片/PDF）；**新建学生 / 加待办 / 组卷 / 批改 / 录题 / 打印**都要桌面壳。
+> **装运行时才是正解**，网页版只是"先能看见"。
+
+**Q：双击后弹「初始化失败 / 请求的资源在使用中（0x800700AA）」，或者日志一个字都没有？**
+A：这是**低完整性标签**问题（与上面那条不是一回事），急救脚本随发行包一起发：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File 修复完整性标签.ps1
+```
+
+（在**解压出来的目录**里执行；`scripts\fix-integrity.ps1` 是仓库开发机那份，处理运行区与开发区。）
 
 这条命令处理的是 Windows 的**强制性完整性标签**：程序所在目录若被写上低完整性（Low）标签，
 新写入的文件会继承它，而带低标签的可执行文件只能跑在低完整性上下文里——那种上下文写不了用户目录，

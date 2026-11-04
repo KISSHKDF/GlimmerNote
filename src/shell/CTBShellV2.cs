@@ -922,6 +922,63 @@ namespace CTBShell2
             finally { WriteGate.Release(); }
         }
 
+        /* ★ 2026-11-04：录题**入库**通道（把校验通过的 cards.json 落成真错题卡）。
+           为什么必须有它（实测）：录题页走完「生成任务单 → 校验 → 人工确认」就**结束**了，
+           页面自己写着「本页不落库」——因为当时仓内**没有任何东西能把 JSON 变成卡**。
+           实测后果：2026-11-04 19:36 那次录题，任务记录 `t-20261104-193617-a063bc.json`
+           的 `cards` 是**空数组**（校验用的 JSON 只在页面过了一遍，从没存进记录），
+           库里**零张新卡**。用户点完「确认本任务」什么也没发生。
+           本 op 补上这条链的最后一段。
+
+           与 TaskCheck/TaskConfirm 同一条纪律：
+             · 固定键名 → 固定 argv 的**逐项映射**，无通用透传、无反射、不拼命令行字符串；
+             · taskId 先过**形状门禁**（与 TaskConfirm 同一个正则），再进 argv；
+             · 显式 `--data` 注入库根（`_录题入库.mjs` 认 `--data`）；
+             · 回**真实退出码**（0 成功 / 1 前置不通过或门禁未过 / 2 用法错 / 3 与任务不匹配）。
+
+           写读分界：**写用户库**（卡目录 + 学科 `_索引.json` + 任务记录）⇒ **进写闸**，
+           且放闸**必须挂在 finally 上**（2026-11-04 P0·Critical 同族坑，见上 TaskConfirm 的注释）。
+
+           正文走**临时文件**：cards.json 可能几十 KB，塞 argv 会撞 Windows 32K 上限。 */
+        public string IngestLand(string payload)
+        {
+            string taskId = ExtractString(payload, "taskId");
+            if (!TaskIdOk(taskId))
+                return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"taskId 形状不对（应为 t-日期-时间-6位hex）：" + Esc(taskId ?? "") + "\"}";
+            string student = ExtractString(payload, "student");
+            if (string.IsNullOrEmpty(student))
+                return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"缺少 student（卡要挂在谁名下——程序不猜）\"}";
+            string subject = ExtractString(payload, "subject");
+            string tmp = null;
+            bool gated = false;
+            try
+            {
+                string text = ExtractString(payload, "text");
+                if (string.IsNullOrEmpty(text))
+                    return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"缺少 text（AI 回传的 JSON 全文）\"}";
+                var args = new List<string> { ToolPath("_录题入库.mjs"), "入库", taskId };
+                tmp = Path.Combine(Path.GetTempPath(), "gn-ingest-land-" + DateTime.Now.Ticks + ".json");
+                File.WriteAllText(tmp, text, new UTF8Encoding(false));
+                args.Add("--file"); args.Add(tmp);
+                args.Add("--student"); args.Add(student);
+                if (!string.IsNullOrEmpty(subject)) { args.Add("--subject"); args.Add(subject); }
+                args.Add("--data"); args.Add(DataRoot);
+                if (!WriteGate.Wait(1200000)) return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"等待写入闸超时（另有落库/重建在跑）\"}";
+                gated = true;
+                int exit; string se;
+                string so = RunNodeRaw(args.ToArray(), 300000, out exit, out se);
+                Log("ingestLand " + taskId + " student=" + student + " exit=" + exit + " out=" + SliceForDiag((so ?? "").Replace("\r\n", " | ")) +
+                    (string.IsNullOrEmpty(se) ? "" : " err=" + SliceForDiag((se ?? "").Replace("\r\n", " | "))));
+                return "{\"ok\":true,\"code\":" + exit + ",\"out\":\"" + Esc(so ?? "") + "\",\"err\":\"" + Esc(se ?? "") + "\"}";
+            }
+            catch (Exception ex)
+            {
+                Log("ingestLand " + taskId + " FAILED: " + ex.Message);
+                return "{\"ok\":false,\"code\":-1,\"out\":\"\",\"err\":\"" + Esc(ex.Message) + "\"}";
+            }
+            finally { if (gated) { WriteGate.Release(); } if (tmp != null) { try { File.Delete(tmp); } catch { } } }
+        }
+
         /* ★ 2026-11-03（批次 4「审核与正式入库」）：人工修订通道（候选 / 修订链 / 正式写入）。
            与 TaskCheck/TaskConfirm 同一条纪律：固定键名 → 固定 argv 的逐项映射，无通用透传、无反射。
            三把 op：
@@ -1672,6 +1729,9 @@ namespace CTBShell2
                    白名单纪律同 recipe：op 名固定、参数逐项映射，见 HostBridge.TaskCheck/TaskConfirm。 */
                 else if (op == "taskCheck") resp = bridge.TaskCheck(payload);
                 else if (op == "taskConfirm") resp = bridge.TaskConfirm(payload);
+                /* ★ 2026-11-04：录题**入库**通道（校验通过 + 已确认 ⇒ 落成真错题卡）。
+                   白名单纪律同上，见 HostBridge.IngestLand。写用户库 ⇒ 进写闸。 */
+                else if (op == "ingestLand") resp = bridge.IngestLand(payload);
                 else if (op == "readFile") resp = bridge.ReadFile(payload);
                 else if (op == "openFile")
                 {

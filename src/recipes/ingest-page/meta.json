@@ -1,6 +1,6 @@
 {
   "id": "ingest-page",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "title": "录入整页多道错题（一张整页照片 → 多条记录）",
   "kind": "ingest",
   "summary": "拍整页，让 AI 把整页上每一道被红笔标出的错题拆成多条记录。适合一次作业错好几道的情况。",
@@ -23,8 +23,12 @@
     "subject": true,
     "images": 1
   },
-  "updatedAt": "2026-10-27",
+  "updatedAt": "2026-11-04",
   "changelog": [
+    {
+      "version": "2.1.0",
+      "note": "加三个「能自动入库」的字段：bbox（归一化位置，程序据此裁原卷截图）、answerMode（答案登在哪儿）、answerSlots（逐空答案）；反例库补 B-09~B-11 三条坑。配方正文按纪律只做**加法**（新增一节 + 扩展输出格式），未改动原有任何一句判据"
+    },
     {
       "version": "2.0.0",
       "note": "并入本仓：错因改 K/L/S 16 类、新增必填 confidence 与 sourceImageSha256、pageSummary/skipped 改为 schema 必填（原来只在 prompt 里要求、schema 不查）"
