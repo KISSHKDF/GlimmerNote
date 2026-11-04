@@ -33,18 +33,32 @@ import { writeJsonAtomic, readJsonStrict } from './_安全写.mjs';
    ⚠ 前提是 `_配方.mjs` 有"被当脚本才执行入口"的闸（它以前没有：import 它就等于跑 main()
    并 exit —— 那样本模块的每个子命令都会当场失效）。两侧都别把 import 期副作用加回来。 */
 import { extractJsonText } from './_配方.mjs';
+/* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。 */
+import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
 
 const argv = process.argv.slice(2);
-const cmd = argv[0] || '';
-const val = (k, d = '') => { const i = argv.indexOf(k); return i >= 0 ? (argv[i + 1] ?? '') : d; };
-const has = (k) => argv.includes(k);
-const JSON_OUT = has('--json');
+/* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。
+   原先这里是"下一个参数像不像 flag 决定它是不是值"的自抄解析器 ⇒
+   值以 `--` 开头时会被**解析成另一个 flag**（凭空打开一个开关）。
+   现在：已知带值 flag **无条件消费下一个参数**（哪怕它长得像 flag）。 */
+const { action: _cmd, opt, positional } = parseArgs(argv, {
+  valueFlags: [
+    ...COMMON_VALUE_FLAGS,
+    // 本工具专属的带值 flag（**布尔开关不要列进来**：json/task 是开关）
+    'task', 'recipe-ver', 'image-sha', 'contract-digest', 'cards', 'in', 'limit',
+  ],
+});
+/* 缺省命令 = 空（与改前 `argv[0] || ''` 同口径）。 */
+const cmd = _cmd || '';
+/* 取值语义与改前 `val` 一致：给了 flag 但没给值 ⇒ 回落默认值（不是 `true`）。 */
+const val = (k, d = '') => { const v = opt[k]; return (v === undefined || v === true) ? d : v; };
+const JSON_OUT = !!opt.json;
 
 /* ★ 2026-11-03（批次 1 收尾「页面接线」）：`--data` 与 `_配方.mjs` 同口径 —— 壳显式传库根，
    不依赖环境变量继承（桌面壳起 node 子进程时 CTB_DATA 不一定在）。必须落在任何 libraryRoot()
    调用之前；ROOT() 是惰性的（见下），这里改 env 就够。
    被当库引入时（`_配方.mjs` import 本模块）没有 --data，env 由 `_配方.mjs` 自己落。 */
-const explicitData = val('--data', '');
+const explicitData = val('data', '');
 if (explicitData) process.env.CTB_DATA = path.resolve(explicitData);
 
 /* ★ 库根**惰性**解析：本模块会被 `_配方.mjs` import，而 `_配方.mjs` 的 `--data` 是在
@@ -109,14 +123,14 @@ export function createTask(rec) {
 
 /* ---------- 新 ---------- */
 function cmdNew() {
-  const inFile = val('--in', '');
+  const inFile = val('in', '');
   if (!inFile || !fs.existsSync(path.resolve(inFile))) { console.error('用法：新 --recipe <id> --in <任务单.md> …（--in 必填且须存在）'); return 2; }
   const text = fs.readFileSync(path.resolve(inFile), 'utf8');
-  const cardsRaw = val('--cards', '');
+  const cardsRaw = val('cards', '');
   /* ★ 2026-11-03（D-4 同族）：勾了图却没拿到 sha 的组合在**生成时**就拒掉。
      为什么要在这里再拦一次（`createTask` 已有同一条不变量）：它是**用法错**——应当给人
      一句话 + exit 2，而不是让库函数抛出的栈打在用户脸上。 */
-  const imgRel = val('--image', ''), imgSha = val('--image-sha', '');
+  const imgRel = val('image', ''), imgSha = val('image-sha', '');
   if (imgRel && !imgSha) {
     console.error('✖ 拒绝：给了 --image（' + imgRel + '）却没给 --image-sha —— 这种任务记录的第二层永远无从核对（契约 §四 第二层是无条件的）。要么两个都给，要么两个都不给。');
     return 2;
@@ -126,14 +140,14 @@ function cmdNew() {
     return 2;
   }
   const doc = createTask({
-    recipe: { id: val('--recipe'), version: val('--recipe-ver'), fingerprint: val('--fingerprint') },
-    subject: val('--subject') || null,
+    recipe: { id: val('recipe'), version: val('recipe-ver'), fingerprint: val('fingerprint') },
+    subject: val('subject') || null,
     image: { sha256: imgSha.toLowerCase() || null, rel: imgRel || null },
     cards: cardsRaw ? cardsRaw.split(',').map(s => s.trim()).filter(Boolean).map(s => {
       const [id, ver] = s.split('@'); const [packId, cardId] = id.split('/');
       return { packId: packId || null, cardId: cardId || id, version: ver || null };
     }) : [],
-    contractDigest: val('--contract-digest') || null,
+    contractDigest: val('contract-digest') || null,
     taskText: text,
   });
   if (JSON_OUT) { process.stdout.write(JSON.stringify({ taskId: doc.taskId, taskDigest: doc.taskDigest }) + '\n'); return 0; }
@@ -156,7 +170,7 @@ function allTasks() {
 }
 
 function cmdList() {
-  const limit = Number(val('--limit', '20')) || 20;
+  const limit = Number(val('limit', '20')) || 20;
   const all = allTasks();
   const rows = all.slice(0, limit).map(j => ({
     taskId: j.taskId, createdAt: j.createdAt, recipe: (j.recipe && j.recipe.id) || null,
@@ -172,7 +186,7 @@ function cmdList() {
 }
 
 function cmdShow() {
-  const id = argv[1] && !argv[1].startsWith('--') ? argv[1] : val('--task', '');
+  const id = positional[0] || val('task', '');
   const j = loadTask(id);
   if (!j) { console.error('任务不存在：' + (id || '(未给 taskId)')); return 2; }
   if (JSON_OUT) { process.stdout.write(JSON.stringify(j) + '\n'); return 0; }
@@ -191,11 +205,11 @@ function cmdShow() {
 
 /* ---------- 确认（第三层由人写） ---------- */
 function cmdConfirm() {
-  const id = argv[1] && !argv[1].startsWith('--') ? argv[1] : val('--task', '');
+  const id = positional[0] || val('task', '');
   const j = loadTask(id);
   if (!j) { console.error('任务不存在：' + (id || '(未给 taskId)')); return 2; }
   j.confirmedAt = nowLocal();
-  j.confirmNote = val('--note', '') || null;
+  j.confirmNote = val('note', '') || null;
   writeJsonAtomic(taskFile(j.taskId), j, { indent: 1 });
   console.log('已确认任务 ' + j.taskId + '：' + j.confirmedAt + (j.confirmNote ? '（' + j.confirmNote + '）' : ''));
   return 0;
@@ -203,8 +217,8 @@ function cmdConfirm() {
 
 /* ---------- 绑定校验（三层） ---------- */
 function cmdBind() {
-  const id = argv[1] && !argv[1].startsWith('--') ? argv[1] : val('--task', '');
-  const inFile = val('--in', '');
+  const id = positional[0] || val('task', '');
+  const inFile = val('in', '');
   if (!id) { console.error('用法：绑定校验 <taskId> --in <cards.json>'); return 2; }
   if (!inFile || !fs.existsSync(path.resolve(inFile))) { console.error('输入文件不存在：' + (inFile || '(未给 --in)')); return 2; }
   const rec = loadTask(id);

@@ -40,6 +40,8 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { libraryRoot } from './_库根.mjs';
+/* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。 */
+import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));   // 工具目录（包内 = <AppRoot>\tools）
 /* ★ 2026-10-23 程序与数据分家：原先 ROOT = HERE\..（假设本文件住在 <库根>\_工具\）。
@@ -289,8 +291,21 @@ function selftest() {
 /* ─────────────────────────── CLI ─────────────────────────── */
 function main() {
   const argv = process.argv.slice(2);
-  if (argv.includes('--selftest')) process.exit(selftest());
-  if (argv.includes('--help') || argv.includes('-h') || !argv.length) {
+  /* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。
+     本工具**没有动作名**（argv[0] 可能是 flag，也可能是目标目录），
+     故 `start: 0`（不预留动作槽）：目标目录进 positional，flag 走 opt。
+     ⚠ `--selftest` / `--help` / `-h` 都是**布尔开关**，绝不能进 valueFlags。 */
+  const { opt, positional } = parseArgs(argv, {
+    valueFlags: [
+      ...COMMON_VALUE_FLAGS,
+      // 本工具专属的带值 flag（**布尔开关不要列进来**：selftest/help/h 是开关）
+    ],
+    start: 0,
+  });
+  if (opt.selftest) process.exit(selftest());
+  /* ⚠ `-h` 是**单横线**（不是 `--h`）：parseArgs 只认 `--` 开头的 flag，
+     单横线的 `-h` 会落进位置参数 ⇒ 必须自己判（与改前 `argv.includes('-h')` 同口径）。 */
+  if (opt.help || opt.h || argv.includes('-h') || !argv.length) {
     console.log([
       '错题本卡目录路径护栏',
       '  root() = ' + root(),
@@ -306,7 +321,7 @@ function main() {
     ].join('\n'));
     process.exit(argv.length ? 0 : 1);
   }
-  const target = argv.find(a => !a.startsWith('--'));
+  const target = positional.find(a => !a.startsWith('--'));
   try {
     const abs = assertCardDir(target);
     console.log('[路径护栏] OK  ' + abs);

@@ -56,6 +56,8 @@ import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { libraryRoot, toolPath } from './_库根.mjs';
 import { readJsonStrict, writeJsonAtomic, acquireLibLock } from './_安全写.mjs';
+/* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。 */
+import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
 
 /* ★ 2026-10-23 程序与数据分家：ROOT 现在是**用户库根**，不再是"本脚本所在目录"。
    兄弟工具一律用 toolPath(...)，见 _库根.mjs。 */
@@ -141,15 +143,18 @@ function fillAnswerSource(it, rec, { dry = false } = {}) {
 }
 
 const argv = process.argv.slice(2);
-const action = argv[0];
-const opt = {};
-for (let i = 1; i < argv.length; i++) {
-  const t = argv[i];
-  if (!t.startsWith('--')) continue;
-  const k = t.slice(2);
-  if (i + 1 < argv.length && !argv[i + 1].startsWith('--')) { opt[k] = argv[++i]; }
-  else { opt[k] = true; }
-}
+/* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。
+   原先这里是"下一个参数像不像 flag 决定它是不是值"的自抄解析器 ⇒
+   值以 `--` 开头时会被**解析成另一个 flag**（凭空打开一个开关）。
+   现在：已知带值 flag **无条件消费下一个参数**（哪怕它长得像 flag）。 */
+const { action, opt } = parseArgs(argv, {
+  valueFlags: [
+    ...COMMON_VALUE_FLAGS,
+    // 本工具专属的带值 flag（**布尔开关不要列进来**）：
+    //   all/consistent/dry/force/refresh/upgrade/overruled/allow-empty/allowEmpty 是开关 ——
+    //   列进来会把后面的 flag 吃掉。
+  ],
+});
 const dstr = x => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
 const today = () => dstr(new Date());
 

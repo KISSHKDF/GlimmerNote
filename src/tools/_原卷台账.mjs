@@ -38,6 +38,8 @@ import { procPath } from './_过程目录.mjs';
 import { displaySize, jpegOrientation } from './_图尺寸.mjs';
 import { libraryRoot, toolPath } from './_库根.mjs';
 import { resolver as origResolver } from './_原图寻址.mjs';
+/* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。 */
+import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
 /* ⚠ 2026-10-15 修（F-P0 治本）：库根包含性判据。**刻意复用** _路径护栏.mjs 的纯判据，
    而不是在本文件手写 `rel.startsWith('..')` —— 护栏是"不查 exists、只做归一化前缀比较"的写法，
    天然不做 IO，因此不会像旧判据那样被"相对路径拼回原绝对路径"的把戏绕过去（详见 ruleTaskJson 注释）。 */
@@ -743,8 +745,8 @@ function locateSheet({ per }) {
 }
 
 /* ---------- 回填 ---------- */
-function backfill(argv) {
-  const get = (k) => { const i = argv.indexOf('--' + k); return i >= 0 ? argv[i + 1] : null; };
+function backfill(o) {
+  const get = (k) => (o[k] === undefined || o[k] === true ? null : o[k]);
   const key = get('key');
   if (!key) { console.error('回填需要 --key "学生|卡号"'); process.exit(2); }
   const doc = fs.existsSync(LEDGER) ? readJson(LEDGER) : { version: 1, cards: {} };
@@ -1034,10 +1036,9 @@ function gate(allowPxWrite = false) {
 }
 
 /* ---------- 试算：对任意目录跑一遍规则链（诊断/自测用，绝不写盘） ---------- */
-function trial(argv) {
-  const i = argv.indexOf('--dir');
-  if (i < 0 || !argv[i + 1]) { console.error('试算需要 --dir <卡目录>'); process.exit(2); }
-  const cardDir = norm(argv[i + 1]);
+function trial(o) {
+  if (o.dir === undefined || o.dir === true || !o.dir) { console.error('试算需要 --dir <卡目录>'); process.exit(2); }
+  const cardDir = norm(String(o.dir));
   const shaCache = fs.existsSync(SHA_CACHE) ? readJson(SHA_CACHE) : {};
   const c = { key: '试算|' + path.posix.basename(cardDir), student: '试算', subject: '', id: path.posix.basename(cardDir), cardDir, source: '', dirName: '' };
   const chain = [
@@ -1059,15 +1060,28 @@ function trial(argv) {
 
 /* ---------- 入口 ---------- */
 const argv = process.argv.slice(2);
-const cmd = argv[0] || '覆盖';
+/* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。
+   原先这里是"下一个参数像不像 flag 决定它是不是值"的自抄解析器 ⇒
+   值以 `--` 开头时会被**解析成另一个 flag**（凭空打开一个开关）。
+   现在：已知带值 flag **无条件消费下一个参数**（哪怕它长得像 flag）。
+   ⚠ 本工具的子命令各自读自己的 flag（回填/试算/定位单），故把解析结果传给它们。 */
+const { action: _cmd, opt } = parseArgs(argv, {
+  valueFlags: [
+    ...COMMON_VALUE_FLAGS,
+    // 本工具专属的带值 flag（**布尔开关不要列进来**：dry/force/verbose/px-cache 是开关）
+    'key', 'page', 'dir', 'per',
+  ],
+});
+/* 缺省命令 = 覆盖（与改前 `argv[0] || '覆盖'` 同口径）。 */
+const cmd = _cmd || '覆盖';
 try {
-  if (cmd === '生成') build({ dry: argv.includes('--dry'), force: argv.includes('--force') });
-  else if (cmd === '采集') build({ dry: argv.includes('--dry'), force: true });
+  if (cmd === '生成') build({ dry: !!opt.dry, force: !!opt.force });
+  else if (cmd === '采集') build({ dry: !!opt.dry, force: true });
   else if (cmd === '覆盖') { if (!fs.existsSync(LEDGER)) { console.log('还没有台账，先跑 生成'); process.exit(1); } report(readJson(LEDGER).cards); }
-  else if (cmd === '定位单') { const i = argv.indexOf('--per'); locateSheet({ per: i >= 0 ? +argv[i + 1] : 10 }); }
-  else if (cmd === '回填') backfill(argv);
-  else if (cmd === '试算') trial(argv);
+  else if (cmd === '定位单') { locateSheet({ per: opt.per === undefined ? 10 : +opt.per }); }
+  else if (cmd === '回填') backfill(opt);
+  else if (cmd === '试算') trial(opt);
   else if (cmd === '合并') mergeLocated();
-  else if (cmd === '门禁') gate(argv.includes('--px-cache'));
+  else if (cmd === '门禁') gate(!!opt['px-cache']);
   else { console.log('未知命令：' + cmd + '（可用 生成|采集|覆盖|定位单|回填|门禁）'); process.exit(2); }
 } catch (e) { console.error('失败：' + e.message); process.exit(1); }

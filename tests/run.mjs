@@ -359,6 +359,13 @@ if (mode === 'fixture') {
        陈旧件只报告"各条与"未配镜像判红"随之删除（40 → 27 断言）。 */
     ['neg-image-backup-coverage.cjs', '影像备份分母/覆盖率判红/全覆盖不乱红/原图库非影像对象（27 断言）'],
     ['neg-orig-fallback.cjs', '原图兜底寻址：路径失效后按内容从保全库找回（不判红）/内容对不上不许顶替（25 断言）'],
+    /* ★ 2026-11-04（外部复核整改）：两个新用例**零库依赖**（只读本仓源码 / 自建 %TEMP% 夹具），
+       已按规矩在**干净克隆**（`git clone --no-hardlinks` 到 %TEMP%，无真库、无 exe）上实测通过，
+       所以可以进 HERMETIC 白名单 —— 它们守的恰好是"没有库也能判红"的那些缺陷：
+       ① 壳的写闸取放配对：一次 taskConfirm 就把写闸焊死 ⇒ 界面回归一跑、写路径全堵死；
+       ② 抽屉/确认框的 HTML 汇点收口：未转义的动态文本进 innerHTML。 */
+    ['neg-shell-writegate.cjs', '桌面壳写闸取放必须一一配对 + 释放必须在 finally 上（18 断言，带三组阴性自证）'],
+    ['neg-confirm-html-sanitize.cjs', '抽屉/确认框 HTML 汇点收口（12 载荷 + 富文本回归 + 阴性自证，26 断言）'],
   ];
   const SKIPPED = [
     ['portability.cjs', '需要已构建的 src\\app\\拾光小册.exe（gitignored）'],
@@ -647,6 +654,22 @@ const unitTests = [
      OnWebMessage 处理 readFile/mark/openFile 前不核 e.Source；TryResolveInsideRoot 只做字符串包含性
      ⇒ 库内一条 `mklink /J link C:\Windows` 就能读库外（HTTP 侧早已补 realpath，C# 桥一直漏着）。 */
   ['neg-shell-source-and-reparse.cjs'],
+  /* ★ 2026-11-04（外部复核实测 P0·Critical）：桌面壳**写闸取放配对**。
+     壳的 `WriteGate`（SemaphoreSlim(1,1)）是所有写操作的互斥闸；改前 8 个取闸的写操作里
+     **3 个取闸不放**（TaskConfirm / ReviewCandidate / ReviewAdopt）⇒ 一次调用就把写闸焊死，
+     此后组卷/批改/归档/办结全部排队等 20 分钟后超时（用户看到"点了没反应"）。
+     它同时解释了 `run.mjs full` 恒 exit 3：e2e-ui 每次都调 taskConfirm ⇒ 把写闸焊死
+     ⇒ 紧随其后的 e2e-writepath 拿不到桥响应。用例自带"摘掉放闸必红 / 挪到正常路径必红"的阴性自证。 */
+  ['neg-shell-writegate.cjs'],
+  /* ★ 2026-11-04（外部复核实测 M2）：抽屉/确认框 body 的 **HTML 汇点收口**。
+     实测漏洞：`views\paper.js:276` 的 `body: M.healthText() + …` **没有** `U.esc`
+     （同一段文案在 `views\review.js:422` 转了）⇒ 而 `M.healthText()` 的值来自
+     `dataHealth.papers`，那里拼着 **Node 的 JSON.parse 报错**（它会把输入前 30 字符原样回显）
+     ⇒ 数据里天然带 HTML ⇒ 未转义时进 drawer.innerHTML ⇒ 注入链闭合。
+     修法：**在汇点收口**（body 走标签白名单净化 `S.safeConfirmHtml`），
+     不是逐个调用点补 —— 本仓同族已栽两次，都是"复制粘贴文案时漏一处"。
+     用例含 12 种载荷 + 合法富文本回归 + 摘掉净化必红的阴性自证。 */
+  ['neg-confirm-html-sanitize.cjs'],
   /* S01+S04：题干净化。改前标签白名单循环结束后 `out += s.slice(last)` 把**未匹配原文**直通，
      末尾不闭合的 `<img src=x onerror=…` 整段原样输出，再被模板补的 `</div>` 补上闭合 ⇒ 事件脚本执行
      （审计在真 Edge 里复现过）；CSS 转义 `u\72l(...)` 与 SVG fill/stroke 的 url() 也一路放行。 */

@@ -210,6 +210,41 @@ async function waitFor(cdp, expr, ok, tries, gap) {
     await cdp.send('Log.enable');
     await cdp.send('Page.enable');
 
+    /* ★ 2026-11-04（外部复核时发现，本用例长期红的**真因**）：**先把 localStorage 清干净再测**。
+       为什么必须清：录题页的 `st.recipe` 来自 **localStorage**（`ctb2.ingest`，
+       见 `views/ingest.js:22-33`），而 WebView2 的用户数据目录（`%LOCALAPPDATA%\拾光小册\wv2-profile`）
+       是**跨运行持久**的 ⇒ 上一次真人用这个程序时选过"单题录入"，
+       就会把 `recipe: "ingest-single"` 留在 localStorage 里。
+       于是本用例的载荷（**整页多题**形状：pageSummary + 多张 cards + skipped）
+       去走 `ingest-single` 的 schema ⇒ **格式层必然判红** ——
+       而这与产品对不对**毫无关系**，纯粹是"用户上次选过什么"泄漏进了门禁。
+       实测现场：leveldb 里读出 `ctb2.ingest = {"recipe":"ingest-single","subject":"生物","conflict":"first"}`
+       ⇒ 本用例恒 FAIL(6)；每跑一次残留值还会变（真人用过）⇒ 症状飘。
+       修法：**在页面加载之前**就把 localStorage 清掉 —— 必须在导航前做，
+       因为页面脚本一跑就会把当前值写回去（`save()` 在 recipe/subject 变化时写）。
+       所以做法是：①先 goto 一个空白页（about:blank 与 file:// 不同源，localStorage 不可用），
+       ②改用 **CDP 的 `Storage.clearDataForOrigin`** 清掉本 origin 的 localStorage，
+       ③再导航回入口页。
+       ⚠ 为什么不用 `localStorage.clear()`：它**读得到但写不进** ——
+       file:// 源的 localStorage 在 CDP 注入的上下文里是只读/受限的（实测抛 SecurityError），
+       而 `Storage.clearDataForOrigin` 走的是浏览器存储层，能真正清掉。 */
+    try {
+      await cdp.send('Storage.clearDataForOrigin', {
+        origin: 'file://',
+        storageTypes: 'local_storage,session_storage',
+      });
+      await cdp.send('Page.navigate', { url: 'about:blank' });
+      await sleep(800);
+      await cdp.send('Page.navigate', { url: page.url });
+      await sleep(3500);
+      const lsAfter = await cdp.evalJs('(function(){try{var s=localStorage.getItem("ctb2.ingest");return s||"(空)"}catch(e){return "ERR:"+e}})()');
+      A('★ 清掉跨运行残留的 localStorage（否则录题页的 recipe 取到上一次真人选的）',
+        String(lsAfter) === '(空)' || String(lsAfter).indexOf('ingest-page') >= 0,
+        '清后=' + String(lsAfter).slice(0, 100));
+    } catch (e) {
+      A('★ 清掉跨运行残留的 localStorage', false, String(e && e.message || e).slice(0, 140));
+    }
+
     console.log('═══ ② boot：meta CSP 在场时桥必须活着（R8 整改①的实机证据）═══');
     const mode = await waitFor(cdp, 'CTB.host.mode', v => v === 'shell', 30, 500);
     A('通道=shell 且状态拿到（AddScriptToExecuteOnDocumentCreated 未被 meta CSP 杀掉）', mode === 'shell', mode);

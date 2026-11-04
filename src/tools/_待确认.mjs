@@ -84,6 +84,8 @@ import { readJsonStrict, writeJsonAtomic, writeTextAtomic, acquireLibLock, withL
    磁盘上的像素 `box` 一个字不改，只在输出里附加 `boxNorm/imgW/imgH`。
    ⚠ 该模块必须保持**零导入期副作用**（不求值库根、不抢锁）——见它自己的头注。 */
 import { normEvidenceBox, evidenceAbs } from './_区域坐标.mjs';
+/* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。 */
+import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
 
 /* ★ 2026-10-23 程序与数据分家：ROOT 现在是**用户库根**，不再是"本脚本所在目录"。
    兄弟工具一律用 toolPath(...)，见 _库根.mjs。 */
@@ -196,15 +198,20 @@ const ASK_HINT = {
 };
 
 const argv = process.argv.slice(2);
-const action = argv[0] || '状态';
-const opt = {};
-for (let i = 1; i < argv.length; i++) {
-  const t = argv[i];
-  if (!t.startsWith('--')) continue;
-  const k = t.slice(2);
-  if (i + 1 < argv.length && !argv[i + 1].startsWith('--')) opt[k] = argv[++i];
-  else opt[k] = true;
-}
+/* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。
+   原先这里是"下一个参数像不像 flag 决定它是不是值"的自抄解析器 ⇒
+   `--payload --dry` 会把 `--dry` 解析成 **dry 开关** ⇒ 门禁开关被凭空打开/关掉。
+   现在：已知带值 flag **无条件消费下一个参数**（哪怕它长得像 flag）。 */
+const { action: _action, opt } = parseArgs(argv, {
+  valueFlags: [
+    ...COMMON_VALUE_FLAGS,
+    // 本工具专属的带值 flag（**布尔开关不要列进来**）：
+    //   auto/apply/dry/force/json/all-archived/allArchived 是开关 ——
+    //   列进来会把后面的 flag 吃掉（`定位 --auto --dry` ⇒ --dry 被吞 ⇒ 只预览变成真写盘）。
+  ],
+});
+/* 缺省动作 = 状态（与改前 `argv[0] || '状态'` 同口径）。 */
+const action = _action || '状态';
 const dstr = x => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
 const today = () => dstr(new Date());
 

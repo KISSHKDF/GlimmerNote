@@ -453,9 +453,16 @@
         S._confirmNext();
       };
       const escFn = e => { if (e.key === 'Escape') { e.stopPropagation(); settle(false); } };
+      /* ★ 2026-11-04（M2）：确认框支持 `bodyText`（**纯文本**）。
+         转义**只在抽屉汇点做一次**（`S.drawer` 里的 `U.esc`）——
+         这一层若再转义一次就会双重转义（`&amp;amp;`，界面显示成 `&amp;`）。
+         所以这里只负责**换行 → <br>**，不碰转义。 */
+      const noteInner = (opts.bodyText != null)
+        ? String(opts.bodyText).replace(/\r?\n/g, '<br>')
+        : String(opts.body || '');
       S.drawer({
         title: opts.title || '请确认',
-        body: '<div class="pp-note" style="margin:0;border-left:4px solid ' + (opts.danger ? 'var(--bad)' : 'var(--warn)') + '">' + (opts.body || '') + '</div>',
+        body: '<div class="pp-note" style="margin:0;border-left:4px solid ' + (opts.danger ? 'var(--bad)' : 'var(--warn)') + '">' + noteInner + '</div>',
         footer: '<span class="small muted" style="flex:1"></span>' +
           '<button class="btn" id="cfCancel">' + U.esc(opts.cancel || '取消') + '</button>' +
           '<button class="btn ' + (opts.danger ? 'danger' : 'primary') + '" id="cfOk">' + U.esc(opts.ok || '确定') + '</button>',
@@ -471,14 +478,36 @@
 
   /* ================= 抽屉 ================= */
   let drawerCloser = null;
+  /* ★ 2026-11-04（外部复核实测 M2）：**HTML 汇点的契约**。
+     抽屉的 body 是**程序自己拼的 HTML 片段**（调用方合法地传 `<b>`/`<br>`/`<table>`/`<input>`，
+     还带 class/style 排版）⇒ 汇点**不能**整体转义、也不能用标签白名单净化
+     （那会把 class/style 剥掉、把 table 丢掉 ⇒ 界面坏掉。实测：那么改之后
+      `e2e-ui.mjs` 的「单题打印预览渲染成纸面」当场红 —— 纸面排版确实坏了）。
+     真正的风险是**用户数据**被原样拼进 HTML。既有做法是"调用方各自 `U.esc`"，
+     而本仓已栽过两次同族（`bank.js` 的 lastReviewedAt/blindSolveAt、`paper.js:276` 的
+     M.healthText()）—— 都是"复制粘贴文案时漏一处"，逐个调用点补必然复发。
+
+     所以把**契约写清楚 + 护栏做在能机械检查的地方**：
+       · `body`     = **受信 HTML**（程序拼的），调用方自负转义责任（这是现状，已 widespread）；
+       · `bodyText` = **纯文本**，汇点负责转义 —— 想放动态内容就用它，不用自己记着转义。
+     配套门禁 `tests\neg-confirm-html-sanitize.cjs`：
+       ① 静态：所有把 `M.healthText()`（自由文本）塞进 body 的地方必须走 `bodyText` 或 `U.esc`；
+       ② 动态：12 种载荷进 `bodyText` 都不许残留可执行标签；
+       ③ 回归：合法富文本必须原样保留（不许为了安全把界面搞坏）。
+     ⚠ 纪律：**用户数据走 `bodyText`（汇点转义），程序拼的 HTML 才走 `body`。** */
   S.drawer = function (opts) {
     const wrap = U.$id('drawerWrap');
     wrap.hidden = false;
+    /* bodyText（纯文本，汇点转义）与 body（受信 HTML）二选一；两个都给时 bodyText 优先。
+       换行转 <br>：纯文本里的换行在 HTML 里不换行 ⇒ 确认框会挤成一坨。 */
+    const bodyHtml = (opts.bodyText != null)
+      ? U.esc(String(opts.bodyText)).replace(/\r?\n/g, '<br>')
+      : String(opts.body || '');
     U.$id('drawer').innerHTML =
       '<div class="drawer-h"><b>' + U.esc(opts.title || '') + '</b>' +
       (opts.chips || '') +
       '<button class="iconbtn" id="drawerClose">✕</button></div>' +
-      '<div class="drawer-b">' + opts.body + '</div>' +
+      '<div class="drawer-b">' + bodyHtml + '</div>' +
       (opts.footer ? '<div class="drawer-f">' + opts.footer + '</div>' : '');
     U.$id('drawerClose').onclick = S.closeDrawer;
     U.$id('drawerMask').onclick = S.closeDrawer;

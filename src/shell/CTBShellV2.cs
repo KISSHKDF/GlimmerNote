@@ -828,7 +828,8 @@ namespace CTBShell2
                    ingest.js:313 按 code===0 判 ⇒ 「✖ 校验未通过」被渲染成绿色「✔ 校验通过」。 */
                 int exit; string se;
                 string so = RunNodeRaw(args.ToArray(), 60000, out exit, out se);
-                Log("recipe " + action + " exit=" + exit + " out=" + SliceForLog((so ?? "").Replace("\r\n", " | ")));
+                Log("recipe " + action + " exit=" + exit + " out=" + SliceForLog((so ?? "").Replace("\r\n", " | ")) +
+                    (string.IsNullOrEmpty(se) ? "" : " err=" + SliceForLog((se ?? "").Replace("\r\n", " | "))));
                 return "{\"ok\":true,\"code\":" + exit + ",\"out\":\"" + Esc(so ?? "") + "\",\"err\":\"" + Esc(se ?? "") + "\"}";
             }
             catch (Exception ex)
@@ -876,7 +877,8 @@ namespace CTBShell2
                 args.Add("--data"); args.Add(DataRoot);
                 int exit; string se;
                 string so = RunNodeRaw(args.ToArray(), 60000, out exit, out se);
-                Log("taskCheck " + taskId + " exit=" + exit + " out=" + SliceForLog((so ?? "").Replace("\r\n", " | ")));
+                Log("taskCheck " + taskId + " exit=" + exit + " out=" + SliceForDiag((so ?? "").Replace("\r\n", " | ")) +
+                    (string.IsNullOrEmpty(se) ? "" : " err=" + SliceForDiag((se ?? "").Replace("\r\n", " | "))));
                 return "{\"ok\":true,\"code\":" + exit + ",\"out\":\"" + Esc(so ?? "") + "\",\"err\":\"" + Esc(se ?? "") + "\"}";
             }
             catch (Exception ex)
@@ -909,6 +911,15 @@ namespace CTBShell2
                 Log("taskConfirm " + taskId + " FAILED: " + ex.Message);
                 return "{\"ok\":false,\"code\":-1,\"out\":\"\",\"err\":\"" + Esc(ex.Message) + "\"}";
             }
+            /* ⚠ 2026-11-04（外部复核实测 P0·Critical）：**取闸必须放闸**。
+               此处原先**没有** WriteGate.Release() ⇒ 一次 taskConfirm 调用（哪怕它自己
+               以 exit 2 失败、什么也没写）就永久占住壳的写闸 ⇒ 此后组卷/批改/归档/
+               办结/新建学生全部排队等 20 分钟（WriteGate.Wait(1200000)）后超时，
+               用户看到的是"点了没反应"，直到重启程序。
+               实测：e2e-ui.mjs 每次都调 taskConfirm ⇒ 每次跑界面回归都把写闸焊死
+               ⇒ 紧随其后的 e2e-writepath 拿不到桥响应 ⇒ `tests\run.mjs full` 恒 exit 3。
+               判据见 tests\neg-shell-writegate.cjs（取闸/放闸必须一一配对 + 阴性自证）。 */
+            finally { WriteGate.Release(); }
         }
 
         /* ★ 2026-11-03（批次 4「审核与正式入库」）：人工修订通道（候选 / 修订链 / 正式写入）。
@@ -984,7 +995,15 @@ namespace CTBShell2
                 Log("reviewCandidate " + id + " FAILED: " + ex.Message);
                 return "{\"ok\":false,\"code\":-1,\"out\":\"\",\"err\":\"" + Esc(ex.Message) + "\"}";
             }
-            finally { if (tmp != null) { try { File.Delete(tmp); } catch { } } }
+            finally
+            {
+                /* ⚠ 2026-11-04（外部复核实测 P0·Critical）：取闸必须放闸。
+                   此处原先的 finally **只删临时文件、不放写闸** ⇒ 一次 reviewCandidate
+                   调用就永久占住壳的写闸（此后所有写操作排队 20 分钟）。
+                   判据见 tests\neg-shell-writegate.cjs。 */
+                if (tmp != null) { try { File.Delete(tmp); } catch { } }
+                WriteGate.Release();
+            }
         }
 
         // ---- op: reviewAdopt（`_待确认.mjs 采用` = 正式写入入口，写库 ⇒ 进写闸）----
@@ -1011,6 +1030,11 @@ namespace CTBShell2
                 Log("reviewAdopt " + id + " FAILED: " + ex.Message);
                 return "{\"ok\":false,\"code\":-1,\"out\":\"\",\"err\":\"" + Esc(ex.Message) + "\"}";
             }
+            /* ⚠ 2026-11-04（外部复核实测 P0·Critical）：取闸必须放闸。
+               此处原先**连 finally 都没有** ⇒ 一次 reviewAdopt 调用就永久占住壳的写闸。
+               reviewAdopt 是「审核与正式入库」的**正式写入入口**，用户点一下就把写闸焊死。
+               判据见 tests\neg-shell-writegate.cjs。 */
+            finally { WriteGate.Release(); }
         }
 
         // ---- op: readFile（限题库根内，≤4MB）----
@@ -1049,6 +1073,16 @@ namespace CTBShell2
         {
             if (string.IsNullOrEmpty(s)) return "";
             return s.Length > 300 ? s.Substring(0, 300) : s;
+        }
+        /* ★ 2026-11-04（外部复核整改配套）：诊断用的**完整**输出切片。
+           为什么要有它：SliceForLog 只留**前** 300 字，而工具的失败原因往往在**后面**
+           （"绑定校验 · 任务 …" 之后才是"① 格式：**不通过**"和真因）⇒
+           切片把真因切掉了，日志里只剩一句无害的开头，排查时完全看不出为什么失败。
+           这不是给门禁放宽，是给**排障**留证据（只在会失败的几个 op 上用）。 */
+        static string SliceForDiag(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            return s.Length > 2000 ? s.Substring(0, 2000) + "…(截断)" : s;
         }
 
         /* 分片（唯一实现；tests\chunk-roundtrip.cjs 与之同构并逐字符比对）：

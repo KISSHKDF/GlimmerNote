@@ -15,7 +15,16 @@
 [CmdletBinding()]
 param(
   [string]$NodeExe,        # 指定要打进包的 node.exe（不填则取 PATH 里的）
-  [switch]$WithoutNode     # 打"不带 Node"的精简包（体积 0.6 MB，但要求用户自备 Node ≥18）
+  [switch]$WithoutNode,    # 打"不带 Node"的精简包（体积很小，但要求用户自备 Node ≥18）
+  # ★ 2026-11-04（D2）：**钉住内置 Node 的精确版本**。
+  #   README 标的体积（38 MiB / 102 MiB / node.exe 99.9 MiB）与「用户免装 Node」的承诺
+  #   都建立在「打进去的是哪一个 node」之上 ⇒ 版本必须钉住，否则同一份文档对不同的包。
+  #   换版本时改这里的值 + 同步改 README 的体积标注（实测后改，别猜）。
+  #   ★ 当前钉的是 **发行包实际内置的那一版**（v26.10.0，与 `release\*.zip` 里的
+  #     `内置Node说明.txt` 逐字一致）—— 钉值必须与**真实产物**对齐，
+  #     否则第一次打包就会被自己的闸门拦下（而那正是闸门在起作用，不是闸门错了）。
+  [string]$PinnedNodeVersion = 'v26.10.0',
+  [switch]$AllowAnyNodeVersion   # 显式放弃版本钉住（发版记录里必须写明实际版本）
 )
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.IO.Compression.FileSystem | Out-Null
@@ -247,6 +256,25 @@ if ($WithoutNode) {
   $major = 0
   if ($nodeVer -match '^v(\d+)\.') { $major = [int]$Matches[1] }
   if ($major -lt 18) { throw "node.exe 版本过低：$nodeVer（要求 ≥ v18）" }
+  # ★ 2026-11-04（外部复核实测 D2）：**钉住内置 Node 的精确版本**。
+  #   改前：只校验 `>= 18`，实际打进包的是**构建机 PATH 上的任意 node**
+  #   （`Get-Command node` 的第一个命中）⇒ 同一个版本号、不同构建机出来的包内容不同，
+  #   README 标的「38 MiB / 102 MiB / node.exe 99.9 MiB」也随之漂移 ⇒ 文档承诺不可复现。
+  #   现在：默认**要求**精确版本（$PinnedNodeVersion），不匹配就响亮拒绝并说清怎么绕。
+  #   为什么默认严格而不是"警告后继续"：发行包的体积标注与"用户免装 Node"的承诺
+  #   都建立在"打进去的是哪一个 node"之上；静默换一个 = 承诺悄悄失效。
+  #   要打别的版本：显式传 -NodeExe（那只要求 ≥18），或在发版记录里写清版本。
+  if ($PinnedNodeVersion -and $nodeVer.Trim() -ne $PinnedNodeVersion) {
+    throw ("内置 Node 版本与钉住值不符：打包机上是 $($nodeVer.Trim())，钉住值是 $PinnedNodeVersion。`r`n" +
+           "  · 为什么要钉：README 标的体积（38 MiB / 102 MiB / node.exe 99.9 MiB）与`r`n" +
+           "    「用户免装 Node」的承诺都建立在「打进去的是哪一个 node」之上；`r`n" +
+           "    换一个版本 = 同一份文档对不同的包 ⇒ 承诺悄悄失效。`r`n" +
+           "  · 想打这个版本：装好该版本 Node 后重跑，或用 -NodeExe 明确指定路径。`r`n" +
+           "  · 确认要换版本：给本脚本加 -AllowAnyNodeVersion（并在发版记录里写明实际版本）。")
+  }
+  if ($AllowAnyNodeVersion) {
+    Write-Host "  ⚠ -AllowAnyNodeVersion：本次不校验内置 Node 的精确版本（实际打包 $nodeVer）—— 发版记录里必须写明这个版本" -ForegroundColor Yellow
+  }
   $nodeDst = Join-Path $stageApp 'node.exe'
   Copy-Item -LiteralPath $nodeSrc -Destination $nodeDst -Force
   $nodeBytes = (Get-Item $nodeDst).Length
@@ -392,8 +420,7 @@ $readme = @'
       代码签名证书），点「更多信息」→「仍要运行」即可。
    4. 进去点右上角「＋ 新建学生」，填个小名就行（不用选学科）
 
-   ★ 本程序已内置所需的 Node.js（app\node.exe）：**不用另外安装 Node，也不用联网。**
-     内置版本与 SHA256 见同目录「内置Node说明.txt」，其许可见「node-LICENSE.txt」。
+   ★ __NODENOTE__
 
    ⚠ 唯一需要系统自带的东西：**Microsoft Edge WebView2 运行时**。
      它是 Windows 11 和较新的 Windows 10 自带的组件，多数机器不用管；
@@ -415,6 +442,26 @@ $readme = @'
    MIT，见仓库 LICENSE。
 '@
 $readme = $readme.Replace('__VER__', $ver)
+# ★ 2026-11-04（D2）：**产物文案必须跟着构建分支走**。
+#   改前：这段"已内置 Node.js"的说明在 `if ($WithoutNode)/else` **之外无条件**构造
+#   ⇒ `-WithoutNode` 精简包装着一份**说谎的使用说明**：
+#   它说"app\node.exe 已内置、见内置Node说明.txt"，而那个包里**根本没有这两个文件**。
+#   凡是"同一份产物文案被多条互斥配置路径共享"的场景，文案必须跟着分支走 ——
+#   否则最小包会带着假承诺出厂（用户照着说明去找 node.exe，找不到）。
+$nodeNote = if ($WithoutNode) {
+@'
+本包是**精简包**：不含 Node.js 运行时，你**需要自己先装 Node.js ≥ 18**（https://nodejs.org/）。
+  本程序的所有"写盘"动作（新建学生 / 组卷 / 批改 / 待办办结）都由 Node 工具链完成，
+  没有 Node 就跑不起来。
+  装好后请确认命令行里 `node --version` 能正常输出。
+'@
+} else {
+@'
+本程序已内置所需的 Node.js（app\node.exe）：**不用另外安装 Node，也不用联网。**
+  内置版本与 SHA256 见同目录「内置Node说明.txt」，其许可见「node-LICENSE.txt」。
+'@
+}
+$readme = $readme.Replace('__NODENOTE__', $nodeNote.TrimEnd())
 [IO.File]::WriteAllText((Join-Path $stage '使用说明.txt'), $readme + "`r`n", (New-Object System.Text.UTF8Encoding($true)))
 Write-Host "  已放：数据\先看这里.txt、使用说明.txt"
 

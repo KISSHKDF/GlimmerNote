@@ -51,6 +51,8 @@ import { packsRoot, parseCardSel, loadCard } from './_经验包.mjs';
    但它读的是 `_待确认.json` 这种不可再生的人工留痕，读歪了比不读更坏。 */
 import { readJsonStrict } from './_安全写.mjs';
 import { libraryRoot, APP_ROOT } from './_库根.mjs';
+/* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。 */
+import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
 
 /* ══════════════════ 白名单 / 显式排除 / 扫描判据（唯一真源）══════════════════
  * `白名单` 子命令直接读这三张表 —— 表改了，自证输出跟着改，不存在"文档说要排除、代码没排除"。
@@ -703,21 +705,29 @@ export function evaluateDraft(draft, form, declaredHashes = [], keyHits = []) {
 
 /* ══════════════════ CLI ══════════════════ */
 const argv = process.argv.slice(2);
-const opt = {};
-const pos = [];
+/* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。
+   已知带值 flag **无条件消费下一个参数**（哪怕它长得像 flag）。
+   ⚠ 本工具**只认白名单里的参数**（未知参数 ⇒ exit 2），这条纪律不走 parseArgs：
+     parseArgs 对未知 flag 一律按布尔处理（不报错），所以"未知参数"必须在解析**前**自己判。 */
 const ALLOW = new Set(['json', 'card', 'case', 'from-pending', 'out', 'form', 'packs', 'data', 'at', 'help', 'h']);
+/* 未知参数检查（先于解析）：只认白名单里的 flag。 */
 let badArg = '';
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
-  if (!a.startsWith('--')) { pos.push(a); continue; }
+  if (!a.startsWith('--')) continue;
   const k = a.slice(2);
   if (!ALLOW.has(k)) { badArg = '未知参数：' + a + '　可用：--json --card <选卡串> --case <案例id> --from-pending <Txxx> --out <文件> --form local|cloud --packs <目录> --data <库根> --at <ISO8601>'; break; }
-  const v = argv[i + 1];
-  if (v === undefined || v.startsWith('--')) { opt[k] = true; }
-  else { opt[k] = v; i++; }
 }
+const { action: _cmd, opt, positional } = parseArgs(argv, {
+  valueFlags: [
+    ...COMMON_VALUE_FLAGS,
+    // 本工具专属的带值 flag（**布尔开关不要列进来**：json/help/h 是开关）
+    'card', 'case', 'from-pending', 'out', 'form', 'packs', 'data', 'at',
+  ],
+});
+const pos = positional;
 const currentAt = (typeof opt.at === 'string') ? opt.at.trim() : '';
-const cmd = pos[0] || '';
+const cmd = _cmd || pos[0] || '';
 const JSON_OUT = !!opt.json;
 /* ★ 2026-11-03（Lead 补）：`--at <ISO 8601>` —— 把「生成时间」钉死，让草稿**人为可复现**。
    为什么必须能钉：批 3 的门禁里有一条"`导出 --out` 的落盘内容 == `预览` 的 stdout 逐字"，
