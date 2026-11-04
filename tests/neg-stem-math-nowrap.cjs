@@ -241,11 +241,12 @@ function freePort() {
   });
 }
 
-/* 一次 CDP 会话量一批（CSS 变体 → 结果）；变体之间换页重新加载 */
+/* 一次 CDP 会话量一批（CSS 变体 → 结果）；变体之间换页重新加载。
+ * 夹具走 E.allocTempDir（统一登记 + 退出时切除 + 被杀后由清扫表认领）。 */
 async function measureAll(variants, bodyHtml) {
   const edge = findEdge();
   if (!edge) return { skipped: true };
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-mathnowrap-'));
+  const dir = E.allocTempDir('gn-mathnowrap-');
   try {
     const CDP_PORT = await freePort();
     const profile = path.join(dir, 'edge-profile');

@@ -417,6 +417,7 @@ const TMP_PREFIXES = [
   'gn-ext-packs-',    // 同上：装机路径抽查用的临时经验包根
   'gn-pairdom-',      // tests\neg-v2-review-pair-dom.cjs 的临时库（含 Edge profile，批次 4 真机体检）
   'gn-cold-',         // tests\neg-server-cold-library.cjs 的冷库夹具（批次 4 真机体检）
+  'gn-mathnowrap-',   // tests\neg-stem-math-nowrap.cjs 的临时页 + Edge profile（2026-11-04 打印折行护栏）
 ];
 const TMP_STALE_MS = 24 * 60 * 60 * 1000;
 const _ownedTmp = new Set();
