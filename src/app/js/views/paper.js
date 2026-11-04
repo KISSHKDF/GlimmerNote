@@ -273,7 +273,13 @@
        ⚠ 2026-10-25 换 S.confirm：壳里原生 confirm 不可见且冻结整页（见 shell.js S.confirm 注释） */
     if (!M.healthOk() && !await S.confirm({
       title: '⚠ 数据源降级，仍要入账吗？',
-      body: M.healthText() + '<br><br>这道门禁现在是「读不到」而不是「通过了」。继续入账可能被工具拒（工具侧判据仍在跑）。',
+      /* ★ 2026-11-04（M2）：`M.healthText()` 是**自由文本**（值来自 `dataHealth`，
+         而 `dataHealth.papers` 拼着 **Node 的 JSON.parse 报错** —— 它会把输入的前 30 字符原样回显）
+         ⇒ 绝不能原样进 innerHTML。
+         改法：走 `bodyText`（**纯文本**，汇点负责转义），排版分隔用换行而不是 `<br>`。
+         改前这里是 `body: M.healthText() + '<br><br>…'`（**没转义**），
+         而同一段文案在 `views\review.js:422` 转了 —— 这就是"复制粘贴文案漏一处"。 */
+      bodyText: M.healthText() + '\n\n这道门禁现在是「读不到」而不是「通过了」。继续落库可能被工具拒（工具侧判据仍在跑）。',
       ok: '仍要入账', danger: true,
     })) return;
     /* 防重复印卷（2026-10-24 用户报障）：入账前把"近 7 天已印过"的题摆到眼前。
@@ -616,6 +622,9 @@
     S.drawer({
       title: '🖨 打印版预览 · ' + x.card.id,
       chips: '<span class="tag sj" style="background:' + U.sjColor(x.subject) + '">' + U.esc(x.kid + '·' + x.subject) + '</span>',
+      /* ⚠ 2026-11-04：这段 body 是**程序自己拼的印刷版**（paperHtml 的产物），
+         带 class/style/table 等排版标签 ⇒ 走受信 HTML 通道（body）。
+         ⚠ 纪律：**用户数据走 bodyText**（汇点转义），程序拼的 HTML 才走 body。 */
       body: '<div class="small muted" style="margin-bottom:10px">这就是打印出来给孩子重做的样子（干净题干 + 自适应答题区，绝不含原卷笔迹）。纯预览：不建批次、不改状态。</div>' +
         '<div class="sheets" style="max-height:none">' + html + '</div>',
       footer: '<button class="btn" id="spClose">关闭</button><button class="btn primary" id="spPrint">🖨 打印这一题</button>',

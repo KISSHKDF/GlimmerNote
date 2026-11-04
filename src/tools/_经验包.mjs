@@ -43,6 +43,8 @@ import { fileURLToPath } from 'node:url';
 /* ★ 2026-11-03：包含性判据**只有一份**（`_路径护栏.mjs` 的 isInside）。
    本模块静态导入它是安全的 —— 那个模块的库根已改成惰性求值，导入不再需要库。 */
 import { isInside } from './_路径护栏.mjs';
+/* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。 */
+import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
 
 /* ══════════════════════ 常量（契约 §2.2：形状冻结，改值要同步文档）══════════════════════ */
 export const PACK_FORMAT_VERSION = 1;
@@ -743,19 +745,28 @@ export function loadCard(sel, explicitRoot) {
 
 /* ══════════════════════ CLI ══════════════════════ */
 const argv = process.argv.slice(2);
-const JSON_OUT = argv.includes('--json');
+/* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。
+   已知带值 flag **无条件消费下一个参数**（哪怕它长得像 flag）。
+   ⚠ `--packs` 显式给就要**给值**（少一个参数是用法错，不许静默回落到默认根）——
+     parseArgs 在"给了 flag 但没给值"时回落 `true`，故这里显式判它并报用法错。 */
+const { action: _cmd, opt, positional } = parseArgs(argv, {
+  valueFlags: [
+    ...COMMON_VALUE_FLAGS,
+    // 本工具专属的带值 flag（**布尔开关不要列进来**：json/help 是开关）
+    'packs',
+  ],
+});
+const JSON_OUT = !!opt.json;
 const has = (k) => argv.includes(k);
 /** `--packs` 的值：显式给就要**给值**（少一个参数是用法错，不许静默回落到默认根）。 */
 let PACKS_ARG = '';
 let PACKS_BAD = '';
-for (let i = 0; i < argv.length; i++) {
-  if (argv[i] !== '--packs') continue;
-  const v = argv[i + 1];
-  if (!v || v.startsWith('--')) { PACKS_BAD = '--packs 需要一个目录参数：--packs <dir>'; break; }
-  PACKS_ARG = v;
-  i++;
+if (opt.packs !== undefined) {
+  if (opt.packs === true || !String(opt.packs).trim()) PACKS_BAD = '--packs 需要一个目录参数：--packs <dir>';
+  else PACKS_ARG = String(opt.packs);
 }
-const posArgs = argv.filter((a, i) => !a.startsWith('--') && !(i > 0 && argv[i - 1] === '--packs'));
+/* 位置参数：动作名 + 目标目录（`校验 <dir>` / `摘要 <dir>`）。 */
+const posArgs = [_cmd, ...positional].filter(x => x !== undefined && x !== '');
 const cmd = posArgs[0] || '';
 
 function usage() {

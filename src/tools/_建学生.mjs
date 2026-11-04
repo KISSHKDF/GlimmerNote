@@ -29,6 +29,8 @@ import fs from 'fs';
 import path from 'path';
 import { libraryRoot } from './_库根.mjs';
 import { writeJsonAtomic, acquireLibLock } from './_安全写.mjs';
+/* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。 */
+import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
 
 const ROOT = libraryRoot();
 /* ★ 2026-10-30（外部审计 D02）：跨进程写锁（壳 / HTTP 服务端 / 命令行三条通道共用同一把，见 _安全写.mjs）。
@@ -38,12 +40,22 @@ const ROOT = libraryRoot();
 const __releaseLibLock = acquireLibLock(ROOT, { label: '_建学生' });
 process.on('exit', __releaseLibLock);
 const argv = process.argv.slice(2);
-const has = (k) => argv.includes(k);
-const valOf = (k, d) => { const i = argv.indexOf(k); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
-const JSON_OUT = has('--json');
+/* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。
+   本工具**没有动作名**（argv[0] 永远是 flag），故 `start: 0`（不预留动作槽）。
+   已知带值 flag **无条件消费下一个参数**（哪怕它长得像 flag）。 */
+const { opt } = parseArgs(argv, {
+  valueFlags: [
+    ...COMMON_VALUE_FLAGS,
+    // 本工具专属的带值 flag（**布尔开关不要列进来**：json 是开关）
+  ],
+  start: 0,
+});
+/* 取值语义与改前 `valOf` 一致：给了 flag 但没给值 ⇒ 回落默认值（不是 `true`）。 */
+const valOf = (k, d) => { const v = opt[k]; return (v === undefined || v === true) ? d : v; };
+const JSON_OUT = !!opt.json;
 
-const name = String(valOf('--name', '') || '').trim();
-const grade = String(valOf('--grade', '') || '').trim();
+const name = String(valOf('name', '') || '').trim();
+const grade = String(valOf('grade', '') || '').trim();
 
 function die(msg, code = 2) {
   if (JSON_OUT) process.stdout.write(JSON.stringify({ ok: false, error: msg }) + '\n');

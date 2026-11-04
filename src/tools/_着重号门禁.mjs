@@ -27,20 +27,25 @@
 import fs from 'fs';
 import path from 'path';
 import { libraryRoot } from './_库根.mjs';
+/* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。
+   本工具只有 `--json` 一个开关（布尔），没有带值 flag。 */
+import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
 
 const ROOT = libraryRoot();
 const STEM = '题干.html';
 const CSS_FILES = ['css/app.css'];          // 相对 WEB_APP：界面样式唯一真源
 
 const argv = process.argv.slice(2);
-const action = argv[0];
-const opt = {};
-for (let i = 1; i < argv.length; i++) {
-  const t = argv[i];
-  if (!t.startsWith('--')) continue;
-  const k = t.slice(2);
-  if (i + 1 < argv.length && !argv[i + 1].startsWith('--')) opt[k] = argv[++i]; else opt[k] = true;
-}
+/* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。
+   原先这里是"下一个参数像不像 flag 决定它是不是值"的自抄解析器 ⇒
+   值以 `--` 开头时会被**解析成另一个 flag**（凭空打开一个开关）。
+   现在：已知带值 flag **无条件消费下一个参数**（哪怕它长得像 flag）。 */
+const { action, opt } = parseArgs(argv, {
+  valueFlags: [
+    ...COMMON_VALUE_FLAGS,
+    // 本工具专属的带值 flag（**布尔开关不要列进来**：json 是开关）
+  ],
+});
 
 /* ---------- 题库发现（与其余门禁同规则） ---------- */
 function indexFiles(dir, acc = []) {

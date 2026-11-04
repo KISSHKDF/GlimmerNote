@@ -48,6 +48,8 @@ import { libraryRoot, toolPath } from './_库根.mjs';
 import { procPath } from './_过程目录.mjs';
 import { readJsonStrict, writeJsonAtomic, backupJson, writeTextAtomic, acquireLibLock } from './_安全写.mjs';
 import { slotsOf, slotCount, needEm, blankWidthEm, alignedAnswers, fitSlots, applySlotWidths, BLANK_MAX_EM, CHILD_FACTOR } from './_空位.mjs';
+/* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。 */
+import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
 
 const ROOT = libraryRoot();
 /* ★ 2026-10-30（外部审计 D02）：跨进程写锁（壳 / HTTP 服务端 / 命令行三条通道共用同一把，见 _安全写.mjs）。
@@ -63,15 +65,16 @@ const MODES = ['blank', 'figure', 'zone', 'none'];
 const FIG_ANSWER_WORDS = /填在|填入|填到|画在|画出|圈出|标出|在图上|在图中|补全图|作图|连[线起]|涂[色黑]/;
 
 const argv = process.argv.slice(2);
-const action = argv[0];
-const opt = {};
-for (let i = 1; i < argv.length; i++) {
-  const t = argv[i];
-  if (!t.startsWith('--')) continue;
-  const k = t.slice(2);
-  if (i + 1 < argv.length && !argv[i + 1].startsWith('--')) { opt[k] = argv[++i]; }
-  else { opt[k] = true; }
-}
+/* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。
+   原先这里是"下一个参数像不像 flag 决定它是不是值"的自抄解析器 ⇒
+   值以 `--` 开头时会被**解析成另一个 flag**（凭空打开一个开关）。
+   现在：已知带值 flag **无条件消费下一个参数**（哪怕它长得像 flag）。 */
+const { action, opt } = parseArgs(argv, {
+  valueFlags: [
+    ...COMMON_VALUE_FLAGS,
+    // 本工具专属的带值 flag（**布尔开关不要列进来**：json/dry 是开关）
+  ],
+});
 const dstr = x => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
 const today = () => dstr(new Date());
 const fail = m => { console.error('✖ ' + m); process.exit(2); };
@@ -241,6 +244,39 @@ function judge(x) {
   if (mode === 'figure' && !fig) problems.push({ code: 'figure-nofig', msg: 'answerMode=figure 但题干里没有图' });
   if (!mode && n === 0 && figSuspect) {
     problems.push({ code: 'figure-unregistered', msg: '题干要求在图里填写/画出，但没登记 answerMode（应为 figure：不留答题区；若确实要另写文字，登记 zone）' });
+  }
+  /* ★ 2026-11-04（外部复核实测 M3）：**没有 answerMode 一律放行**这个洞要补。
+     原先 `figure-unregistered` 只在 `figSuspect`（题干/答案命中"画在/填在/连[线起]"等动词）时才触发
+     ⇒ 一张"0 空 + 题干看不出要在图上作答"的卡，**完全没有 answerMode 也照样过门禁**。
+     而 answerMode 是"这张卡的答案登在哪儿"的**唯一声明**（见文件头契约）：
+       blank = 逐空写在横线上；zone = 另留答题区；figure = 写在图上；none = 不留答题区。
+     没有它 ⇒ 下游（答案册渲染/逐空对账）不知道该按哪种口径处理这张卡。
+     现在：**没有 answerMode**（连 none 都没写）一律报红 —— 但只在"这张卡确实有答案要登"时，
+     即 answerSlots 非空 或 answerScope 被显式指定；一张从头到尾没登记过任何答案字段的卡
+     （老卡、纯问答卡）不因此变红（否则整库会一夜全红）。
+     ⚠ 别把这条写成"所有卡都必须有 answerMode"—— 那会逼着给几百张老卡补字段，
+       那是数据欠账，不是判据漏洞。 */
+  const hasAnswerDecl = raw.length > 0 || it.answerScope != null || it.answerMode != null;
+  if (!mode && n === 0 && hasAnswerDecl && !figSuspect) {
+    problems.push({
+      code: 'mode-unregistered',
+      msg: '这张卡登记了答案字段（answerSlots/answerScope）却没有 answerMode —— ' +
+        'answerMode 是"答案登在哪儿"的唯一声明（blank/zone/figure/none），' +
+        '缺它下游不知道按哪种口径对账。请补登记。',
+    });
+  }
+  /* ★ 2026-11-04（外部复核实测 M4）：**题干 0 空时残留的 answerSlots 不被校验**。
+     原先 ② 整段挂在 `if (n > 0)` 上 ⇒ n===0 时 `answerSlots` 里有什么**一条都不查**：
+       · 残留的空串（`[""]`）没人报；
+       · 残留的多余条目（题干没空却登了 3 条）没人报。
+     这类"声明与题干对不上"的状态会一路带到答案册（印出多余的答案行，或印出空行）。
+     现在：**n===0 时若 answerSlots 非空 ⇒ 报红**（题干数不到空，却登记了逐空答案 = 对不上）。 */
+  if (n === 0 && raw.length > 0) {
+    problems.push({
+      code: 'slots-without-blank',
+      msg: `题干里数不到空位（0 个），却登记了 ${raw.length} 条逐空答案（answerSlots）—— 对不上。` +
+        '要么题干本来有空（转录漏了），要么这些答案不该登记。',
+    });
   }
   /* ⑤ 自相矛盾
      ★ 2026-10-25 实测修正：`none` **允许**有空位——选择题/判断题的答案本来就是写在

@@ -41,6 +41,22 @@ const USAGE = `用法：
   node _快照.mjs --restore <文件> [版本]        恢复该真源（默认最近一版），恢复前自动备份`;
 
 const FLAGS = ['--dry', '--list', '--status', '--restore', '--restore-list'];
+/* ★ 2026-11-04（H3）：**关键计数字段清单**（按真源文件名 → 该文件里"内容条数"住在哪个数组字段）。
+   用途：快照恢复时，除了比对顶层形状，还要比对**内容条数** ——
+   原先只比"顶层键名 + 类型"，于是 items/batches 被**掏空**（仍是 array，类型没变）照样通过，
+   校验报"通过"并把一个空库当成正常版本写回真源。
+   刻意**按文件名**索引而不是猜：猜错就会误判正常恢复。 */
+const CRITICAL_FIELDS_BY_NAME = {
+  '_索引.json': ['items'],
+  '_组卷台账.json': ['batches'],
+  '_待确认.json': ['items'],
+  '_原卷台账.json': ['cards'],
+  '_影像清单.json': ['files'],
+  '_盲解双路.json': ['cards'],
+  '_配图台账.json': ['figures'],
+  '_页码映射.json': ['mappings'],
+  '_原图台账.json': ['objects'],
+};
 const unknown = args.filter(a => a.startsWith('--') && !FLAGS.includes(a));
 if (unknown.length) {
   console.error('✖ 未知参数：' + unknown.join(' '));
@@ -192,19 +208,49 @@ if (args.includes('--restore')) {
     } catch (e) { console.error('  ⚠ 现内容留档失败：' + e.message); }
   }
   // 同构基准：在 git 历史里往回找第一个能解析的 JSON 版本（跳过被写坏的那些）
+  /* ★ 2026-11-04（H3）：**两个基准都要留着**。
+     原来的逻辑是"当前内容能解析就用当前内容当基准，否则才翻 git 历史" ——
+     这在"当前文件被写坏（解析失败）"时是对的，但漏了一种情况：
+     **当前文件能解析、内容却被掏空**（items=[] / batches=[]）。
+     此时基准 = 那个空内容 ⇒ 恢复一个同样空的版本 ⇒ 比对"空 vs 空" ⇒ 通过。
+     所以现在两件事分开：
+       · `baseObj`  = 形状比对的基准（保持原语义，不动，避免破坏既有行为）；
+       · `histObj`  = git 历史里最近一个可解析版本（内容比对的基准之一）。
+     内容校验用**两者里更"富"的那个**做分母 ⇒ 当前已空、历史不空时也能抓住。 */
+  let histObj = null;
   if (/\.json$/i.test(abs)) {
     try {
       const now = JSON.parse(preCopy ? preCopy.toString('utf8').replace(/^\uFEFF/, '') : 'null');
       if (now && typeof now === 'object') baseObj = now;   // 当前内容本身可解析且是对象 ⇒ 可作基准
     } catch { }
-    if (!baseObj) {
-      for (const h of historyOf(rel).slice(0, 20)) {
-        try {
-          const o = JSON.parse(gitBin('show', h.full + ':' + rel).toString('utf8').replace(/^\uFEFF/, ''));
-          if (o && typeof o === 'object') { baseObj = o; console.log('  （同构基准取自历史版本 ' + h.short + '：当前内容已损坏）'); break; }
-        } catch { }
-      }
+    /* ⚠ 2026-11-04（H3）：历史基准要扫**最近 20 版里内容最"富"的那一版**，
+       而不是"最近一版"。为什么：最近一版**恰恰可能就是被掏空的那一版**
+       （用户正要恢复的就是它）⇒ 拿它当分母 ⇒ "空 vs 空" ⇒ 永远抓不住。
+       只在"当前内容已损坏、需要一个形状基准"时才用最近一版（保持原语义）。 */
+    const critGuess = CRITICAL_FIELDS_BY_NAME[path.basename(abs)] || [];
+    const richness = o => {
+      if (!o || typeof o !== 'object') return -1;
+      let s = 0;
+      for (const f of critGuess) if (Array.isArray(o[f])) s += o[f].length;
+      /* 认不出关键字段的文件：退回"顶层键数"，至少能区分"空对象 vs 有内容" */
+      if (!critGuess.length) s = Object.keys(o).length;
+      return s;
+    };
+    let best = null, bestScore = -1;
+    for (const h of historyOf(rel).slice(0, 20)) {
+      try {
+        const o = JSON.parse(gitBin('show', h.full + ':' + rel).toString('utf8').replace(/^\uFEFF/, ''));
+        if (!o || typeof o !== 'object') continue;
+        if (!histObj) histObj = o;                       // 最近一版（形状基准用）
+        const sc = richness(o);
+        if (sc > bestScore) { bestScore = sc; best = o; }   // 内容最富的那一版
+      } catch { }
     }
+    if (!baseObj && histObj) {
+      baseObj = histObj;
+      console.log('  （同构基准取自历史版本：当前内容已损坏）');
+    }
+    if (best && bestScore > 0) histObj = best;           // 内容比对用"最富"的那版
   }
   /* 安全网 2：原子写（不半截） */
   writeTextAtomic(abs, content.toString('utf8'));
@@ -230,7 +276,59 @@ if (args.includes('--restore')) {
             : `结构漂移（基准 ${sig(baseObj)} → 现 ${sig(now)}）`;
           throw new Error('形状漂移：' + desc);
         }
-        console.log('  ✔ 同构性校验通过（顶层结构与正常版本一致）');
+        /* ★ 2026-11-04（外部复核实测 H3）：**内容掏空校验**（在同构之上再加一层）。
+           原先的同构只比"顶层键名 + 类型"，于是**内容被掏空照样通过**：
+             · `_索引.json` 的 items 从 200 条截断成 `[]` —— 仍是 array，类型没变 ⇒ 通过；
+             · `_组卷台账.json` 的 batches 被清空 —— 仍是 array ⇒ 通过；
+             ⇒ 校验报"通过"并**完成恢复**，把一个空库/空台账当成正常版本写回真源。
+           实测三种劣化（清空 / 截断到 1 条 / items 清空）全部报"校验通过"并完成恢复。
+           现在加两档：
+             ① **关键数组字段不得为空**（除非基准本身也是空）；
+             ② **关键计数漂移超阈值 ⇒ 判红并自动退回**（防"少了一半"这种不掏空但缩水的情况）。
+           关键字段清单按真源形状定；认不出的文件（不在清单里）只做 ① 的通用兜底
+           —— 不认识就**不拦**，但已知的真源必须拦住。 */
+        const relBase = path.basename(abs);
+        const critFields = CRITICAL_FIELDS_BY_NAME[relBase] || [];
+        /* 内容比对的分母：baseObj（形状基准）与 histObj（git 历史里最近一版）里**更富**的那个。
+           为什么要两个：当前文件可能**已经**被掏空（items=[]），此时 baseObj 也是空的，
+           拿它当分母 ⇒ "空 vs 空" ⇒ 永远抓不住。histObj 才是"正常内容"的真参照。 */
+        const contentBase = (() => {
+          if (!histObj) return baseObj;
+          if (!baseObj) return histObj;
+          let bSum = 0, hSum = 0;
+          for (const f of critFields) {
+            if (Array.isArray(baseObj[f])) bSum += baseObj[f].length;
+            if (Array.isArray(histObj[f])) hSum += histObj[f].length;
+          }
+          return hSum > bSum ? histObj : baseObj;
+        })();
+        /* ① 关键数组字段：基准非空 ⇒ 现不能为空 */
+        const emptyCrit = [];
+        for (const f of critFields) {
+          const bArr = Array.isArray(contentBase[f]) ? contentBase[f] : null;
+          const nArr = Array.isArray(now[f]) ? now[f] : null;
+          if (!bArr || !nArr) continue;
+          if (bArr.length > 0 && nArr.length === 0) {
+            emptyCrit.push(f + '（基准 ' + bArr.length + ' 条 → 现 0 条）');
+          }
+        }
+        if (emptyCrit.length) {
+          throw new Error('内容被掏空：关键字段 ' + emptyCrit.join('、') + ' —— ' +
+            '顶层结构没变（仍是数组），但内容全没了；这种版本不能当"正常版本"恢复。');
+        }
+        /* ② 关键计数漂移：现 < 基准 × (1-阈值) ⇒ 判红 */
+        const DRIFT_RATIO = 0.5;   // 少于基准的一半 ⇒ 判"缩水过多"
+        for (const f of critFields) {
+          const bArr = Array.isArray(contentBase[f]) ? contentBase[f] : null;
+          const nArr = Array.isArray(now[f]) ? now[f] : null;
+          if (!bArr || !nArr) continue;
+          if (bArr.length === 0) continue;
+          if (nArr.length < bArr.length * DRIFT_RATIO) {
+            throw new Error('内容大幅缩水：关键字段 ' + f + ' 基准 ' + bArr.length +
+              ' 条 → 现 ' + nArr.length + ' 条（低于基准的一半）—— 恢复的版本明显不完整。');
+          }
+        }
+        console.log('  ✔ 同构性校验通过（顶层结构与正常版本一致；关键字段未掏空、未大幅缩水）');
       }
     } catch (e) {
       console.error('  ✖ 恢复内容未通过校验：' + e.message);

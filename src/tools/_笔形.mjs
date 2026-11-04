@@ -32,6 +32,8 @@ import fs from 'fs';
 import path from 'path';
 import { readJsonStrict, writeJsonAtomic, acquireLibLock } from './_安全写.mjs';
 import { libraryRoot } from './_库根.mjs';
+/* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。 */
+import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
 
 /* ★ 2026-10-23 程序与数据分家：ROOT 是**库根**（数据），不是工具目录。
    原先是 `path.dirname(fileURLToPath(import.meta.url))`，工具搬进 <AppRoot>\tools\ 之后
@@ -49,15 +51,18 @@ const TYPES = ['字形', '标定'];
 const CONFS = ['高', '中', '低'];
 
 const argv = process.argv.slice(2);
-const action = argv[0] || '状态';
-const opt = {};
-for (let i = 1; i < argv.length; i++) {
-  const t = argv[i];
-  if (!t.startsWith('--')) continue;
-  const k = t.slice(2);
-  if (i + 1 < argv.length && !argv[i + 1].startsWith('--')) opt[k] = argv[++i];
-  else opt[k] = true;
-}
+/* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。
+   原先这里是"下一个参数像不像 flag 决定它是不是值"的自抄解析器 ⇒
+   值以 `--` 开头时会被**解析成另一个 flag**（凭空打开一个开关）。
+   现在：已知带值 flag **无条件消费下一个参数**（哪怕它长得像 flag）。 */
+const { action: _action, opt } = parseArgs(argv, {
+  valueFlags: [
+    ...COMMON_VALUE_FLAGS,
+    // 本工具专属的带值 flag（**布尔开关不要列进来**：json/metric 是开关或已在上表）
+  ],
+});
+/* 缺省动作 = 状态（与改前 `argv[0] || '状态'` 同口径）。 */
+const action = _action || '状态';
 const dstr = x => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
 const today = () => dstr(new Date());
 const readJson = p => readJsonStrict(p, { label: path.basename(p) });

@@ -43,6 +43,8 @@ import crypto from 'crypto';
 import { fileURLToPath } from 'node:url';
 import { APP_ROOT, libraryRoot, toolPath } from './_库根.mjs';
 import { createTask, newTaskId } from './_录题任务.mjs';
+/* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。 */
+import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
 
 /* ⚠ 2026-10-31：**不要**在模块顶层 import `_路径护栏.mjs`。
  *   那个模块在**导入时**就求值 `libraryRoot()` 并缓存，于是它会抢在下面
@@ -59,15 +61,31 @@ function insideLib(root, abs) {
 }
 
 const argv = process.argv.slice(2);
-const cmd = argv[0] || '';
-const has = (k) => argv.includes(k);
-const valOf = (k, d) => { const i = argv.indexOf(k); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
-const JSON_OUT = has('--json');
+/* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。
+   原先这里是"下一个参数像不像 flag 决定它是不是值"的自抄解析器 ⇒
+   值以 `--` 开头时会被**解析成另一个 flag**（凭空打开一个开关）。
+   现在：已知带值 flag **无条件消费下一个参数**（哪怕它长得像 flag）。
+   ⚠ `--card` **可重复**（多张选卡）⇒ parseArgs 只保留最后一个 ⇒ 重复项仍走 argv 扫描
+     （多值不是解析，见下面 allOf 的注释）。 */
+const { action: _cmd, opt } = parseArgs(argv, {
+  valueFlags: [
+    ...COMMON_VALUE_FLAGS,
+    // 本工具专属的带值 flag（**布尔开关不要列进来**：json/task/all 是开关）
+    'recipe', 'recipe-ver', 'fingerprint', 'subject', 'textbook', 'image', 'sha',
+    'in', 'out', 'cards', 'contract-digest', 'packs',
+  ],
+});
+/* 缺省命令 = 空（与改前 `argv[0] || ''` 同口径）。 */
+const cmd = _cmd || '';
+/* 取值语义与改前 `valOf` 一致：给了 flag 但没给值 ⇒ 回落默认值（不是 `true`）。 */
+const valOf = (k, d) => { const v = opt[k]; return (v === undefined || v === true) ? d : v; };
+const has = (k) => argv.includes(k);   /* 只用于"这个 flag 有没有出现"（不看值） */
+const JSON_OUT = !!opt.json;
 
 /* --data 走环境变量同一条路（与 `生成状态.mjs` 同一惯例）：
    桌面壳会显式把 DataRoot 传进来，避免"壳以为库在 A、工具以为库在 B"这类口径漂移
    （本仓踩过：工具搬走后 ROOT 算成了程序目录，对空库报绿）。*/
-const explicitData = valOf('--data', null);
+const explicitData = valOf('data', null);
 if (explicitData) process.env.CTB_DATA = path.resolve(explicitData);
 
 /* ══════════════ 经验包（批次 2「经验包试点」）：选卡进提示词 ══════════════
@@ -99,11 +117,13 @@ async function packsEngine() {
 
 /** `--packs <目录>` 显式经验包根（测试与命令行用；不传则由 `_经验包.mjs` 按 CTB_PACKS → 默认目录解析） */
 function packsExplicit() {
-  const v = valOf('--packs', '');
+  const v = valOf('packs', '');
   return v ? path.resolve(v) : undefined;
 }
 
-/** 取可重复参数（`--card` 可多次）的全部值：`--card` 后面没有值 ⇒ 参数错（不静默当成"没给"） */
+/** 取可重复参数（`--card` 可多次）的全部值：`--card` 后面没有值 ⇒ 参数错（不静默当成"没给"）
+ *  ⚠ 为什么重复项还走 argv 扫描：**多值不是解析**。parseArgs 的 opt 只能存一个值（最后一个），
+ *    而 `--card` 允许连给多次（选多张经验卡）⇒ 重复项必须自己收。其余单值 flag 一律走 parseArgs。 */
 function allOf(k) {
   const vals = [];
   for (let i = 0; i < argv.length; i++) {
@@ -1129,7 +1149,7 @@ function cmdInbox() {
  * 唯一不随改名失效的标识就是 sha256，而它本来就在任务单里（溯源锚）。这个动作把它变成"能定位"：
  *   只读，不改名、不移动、不删除、不写任何文件（与「收件箱」同一条铁律）。 */
 function cmdLocate() {
-  const raw = String(valOf('--sha', '')).trim().toLowerCase();
+  const raw = String(valOf('sha', '')).trim().toLowerCase();
   if (!/^[0-9a-f]{12,64}$/.test(raw)) {
     console.error('用法：找图 --sha <内容指纹（64 位，或前 12 位起）>');
     console.error('  值从任务单「sourceImageSha256」那行抄，或从录题页每张图后面的指纹前缀抄。');
@@ -1240,10 +1260,10 @@ async function cmdList() {
 }
 
 async function cmdCompose() {
-  const id = valOf('--recipe', '');
+  const id = valOf('recipe', '');
   if (!id) { console.error('用法：组装 --recipe <id> --subject <学科> [--image <路径>] [--out <文件>] [--card <包id>/<卡id>@<版本>]… [--card-conflict deny|first|all] [--packs <经验包根>]'); return 2; }
-  const img = valOf('--image', '');
-  const out = valOf('--out', '');
+  const img = valOf('image', '');
+  const out = valOf('out', '');
 
   /* ★ 批次 2：先把选卡与冲突处置完，再拼任务单 —— 选卡失败不该产出半份产物。 */
   const pick = await selectCards();
@@ -1279,7 +1299,7 @@ async function cmdCompose() {
     imgSha = crypto.createHash('sha256').update(fs.readFileSync(imgAbs)).digest('hex');
   }
 
-  const c = compose(id, { subject: valOf('--subject', ''), textbook: valOf('--textbook', '') });
+  const c = compose(id, { subject: valOf('subject', ''), textbook: valOf('textbook', '') });
   for (const w of c.warnings) console.error('⚠ ' + w);
 
   /* ══════════ 任务单结构（2026-10-27 重写）══════════
@@ -1300,7 +1320,7 @@ async function cmdCompose() {
    *   · **数据目录（库根/收件箱）的任何路径都不进任务单**（目录结构会带出孩子化名/年级/学科）；
    *     程序自身安装路径不含个人信息，允许出现在分支 A 的找图命令里；
    *   · 除分支 A 那条**只读找图命令**外，不许要求对端执行任何命令（校验/入库永远只在本机做）。 */
-  const subject = valOf('--subject', '');
+  const subject = valOf('subject', '');
   const fileName = imgSha ? path.basename(imgAbs) : '';
 
   /* ★ 2026-11-01 改（第三次"任务单交不出去"事故）：10:20 生成时未选照片 + 10:25 文字发出去了、
@@ -1511,7 +1531,7 @@ async function cmdCompose() {
       taskId,
       recipe: { id, version: c.meta.version, fingerprint: c.hash },
       subject,
-      image: { sha256: imgSha || null, rel: valOf('--image', '') || null },
+      image: { sha256: imgSha || null, rel: valOf('image', '') || null },
       cards: cards.map((card) => ({ packId: card.packId, cardId: card.cardId, version: card.version, sha256: card.sha256 })),
       contractDigest: dh.digest('hex'),
       taskText: text,
@@ -1522,7 +1542,7 @@ async function cmdCompose() {
 }
 
 function cmdValidate() {
-  const inFile = valOf('--in', '');
+  const inFile = valOf('in', '');
   if (!inFile) { console.error('用法：校验 --in <cards.json> [--recipe <id>]'); return 2; }
   const abs = path.resolve(inFile);
   if (!isFile(abs)) { console.error('输入文件不存在：' + abs); return 2; }
@@ -1557,7 +1577,7 @@ function cmdValidate() {
      ⚠ 推断必须**说出口**（不静默）：整页输出若漏了 pageSummary，会被误判成单题配方，
      而单题 schema 不要求 pageSummary ⇒ 一份残缺的整页结果可能"悄悄通过"。
      所以这里把推断依据打印出来，调用方一眼能看出"它拿哪套契约验的"。 */
-  let id = valOf('--recipe', '');
+  let id = valOf('recipe', '');
   let inferred = false;
   if (!id) {
     id = (obj && obj.pageSummary) ? 'ingest-page' : 'ingest-single';
@@ -1592,8 +1612,8 @@ function cmdValidate() {
 }
 
 function cmdSelfTest() {
-  const id = valOf('--recipe', '');
-  const inFile = valOf('--in', '');
+  const id = valOf('recipe', '');
+  const inFile = valOf('in', '');
   if (!id || !inFile) { console.error('用法：自检 --recipe <id> --in <cards.json>'); return 2; }
   const abs = path.resolve(inFile);
   if (!isFile(abs)) { console.error('输入文件不存在：' + abs); return 2; }
@@ -1616,11 +1636,11 @@ function cmdSelfTest() {
 }
 
 function cmdFingerprint() {
-  const id = valOf('--recipe', '');
+  const id = valOf('recipe', '');
   /* 不给 --subject 时用「通用」：`_subject/通用.md` 是真实存在的兜底文件，
      所以不会触发回落警告，指纹含义明确 =「核心层 + 通用学科 + 该配方自身」。
      给 --subject 则算的是该学科的完整提示词指纹（不同学科必然不同）。 */
-  const subj = valOf('--subject', '') || '通用';
+  const subj = valOf('subject', '') || '通用';
   if (id) {
     const c = compose(id, { subject: subj });
     if (JSON_OUT) { process.stdout.write(JSON.stringify({ recipe: id, version: c.meta.version, fingerprint: c.hash, subject: subj, layers: c.layerFiles }) + '\n'); return 0; }

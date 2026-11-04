@@ -26,16 +26,28 @@ import { execFileSync } from 'child_process';
 import { libraryRoot, toolPath } from './_库根.mjs';
 import { writeJsonAtomic, acquireLibLock } from './_安全写.mjs';
 import { resolver, encRel } from './_原图寻址.mjs';
+/* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。 */
+import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
 
 const argv = process.argv.slice(2);
-const has = (k) => argv.includes(k);
-const valOf = (k, d) => { const i = argv.indexOf(k); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
-const QUIET = has('--quiet');
-const OUT = valOf('--out', null);
+/* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。
+   本工具**没有动作名**（argv[0] 永远是 flag），故 `start: 0`（不预留动作槽）。
+   已知带值 flag **无条件消费下一个参数**（哪怕它长得像 flag）。 */
+const { opt } = parseArgs(argv, {
+  valueFlags: [
+    ...COMMON_VALUE_FLAGS,
+    // 本工具专属的带值 flag（**布尔开关不要列进来**：quiet 是开关）
+  ],
+  start: 0,
+});
+/* 取值语义与改前 `valOf` 一致：给了 flag 但没给值 ⇒ 回落默认值（不是 `true`）。 */
+const valOf = (k, d) => { const v = opt[k]; return (v === undefined || v === true) ? d : v; };
+const QUIET = !!opt.quiet;
+const OUT = valOf('out', null);
 const log = (...a) => { if (!QUIET) console.error(...a); };
 
 /* --data 走环境变量同一条路：_库根.mjs 已经实现了优先级，不另开一套 */
-const explicitData = valOf('--data', null);
+const explicitData = valOf('data', null);
 if (explicitData) process.env.CTB_DATA = path.resolve(explicitData);
 
 const ROOT = libraryRoot();
