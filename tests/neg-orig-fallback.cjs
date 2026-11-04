@@ -271,13 +271,21 @@ const myLine = (out) => (out.split(/\r?\n/).find(l => l.includes(MY)) || '');
   A('6k fail-closed 信号可见：输出里有寻址器的"拒绝猜"告警（歧义被如实报出，不是静默 null）',
     /拒绝猜/.test(r.out), (r.out.split(/\r?\n/).find(l => /拒绝猜/.test(l)) || '(没有)').trim().slice(0, 110));
   /* 6l 把"旧判据为什么没用"钉成事实（夹具/工具的现实，不是被测行为）：
-     门禁的错误打印是**截断**的（另有 N 条；当前共 M 条错误，M ≫ 40），而 exit 又必然非 0
+     门禁的错误打印是**截断**的（另有 N 条；当前共 M 条错误），而 exit 又必然非 0
      —— 于是"exit≠0"和"输出里点名到卡"两条路**都不可靠**，这正是 §6 旧断言（只有 exit≠0）
-     能被噪声养活的原因。 */
+     能被噪声养活的原因。
+     ★ 2026-11-04 修（CI 在干净克隆上抓到的真缺陷）：判据**不能**写死"错误总数 > 40" ——
+       那是**本机真库的规模特征**（实测 495 条），合成夹具库只有 1 条噪声 ⇒ 门禁不触发
+       CAP=40 截断 ⇒ 截断行缺席 ⇒ 断言红。同一句断言在真库绿、在干净克隆红 = 腐烂。
+       改成**对被测对象当场计算**：截断行存在 ⇒ 直接证明"exit≠0 分不清场景与噪声"；
+       未截断（库很小）时由 6m 的"噪声行 ≥1"承担同一命题（噪声在场 ⇒ exit≠0 仍分不清场景）。
+       两种库规模下都成立，且**不放宽**：截断时验截断、没截断时验噪声，二者必居其一。 */
   const mTrunc = /另有 (\d+) 条（其余类别错误已截断；当前共 (\d+) 条错误）/.exec(r.out);
-  A('6l 门禁错误打印是截断的（另有多条 / 当前共 M 条错误，M>40）⇒ exit≠0 分不清场景与噪声',
-    r.code !== 0 && !!mTrunc && Number(mTrunc[2]) > 40,
-    'exit=' + r.code + ' 截断行=' + JSON.stringify(mTrunc ? mTrunc[0] : '(无)'));
+  const truncHits = !!mTrunc;
+  const noiseHere = r.out.split(/\r?\n/).filter(l => /✗/.test(l) && /整页不在盘/.test(l) && !l.includes(MY));
+  A('6l "exit≠0"本身分不清场景与噪声（截断在场 ⇒ 只见总数不见我的行 / 无截断 ⇒ 噪声行本身够红）',
+    r.code !== 0 && (truncHits || noiseHere.length >= 1),
+    'exit=' + r.code + ' 截断行=' + JSON.stringify(mTrunc ? mTrunc[0] : '(无)') + ' 噪声行数=' + noiseHere.length);
   /* 6m 既有噪声确实在场（不点名我的"整页不在盘" ≥1 行）—— 6l 的补强，防"截断行"判据失效 */
   const noise = r.out.split(/\r?\n/).filter(l => /✗/.test(l) && /整页不在盘/.test(l) && !l.includes(MY));
   A('6m 既有噪声确实在场（不点名我的"整页不在盘" ≥1 行）', noise.length >= 1,
