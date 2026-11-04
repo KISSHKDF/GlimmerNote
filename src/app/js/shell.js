@@ -16,6 +16,10 @@
        放在题库之后、组卷之前 —— 用户的实际顺序是「录进来 → 挑题组卷」。
        badge 走内存里的收件箱数（进过本页才知道）；没进过就不显示角标，不额外起进程。 */
     { id: 'ingest', ic: '📥', name: '录题', badge: () => ingestPending() },
+    /* ★ 2026-11-03（批次 2 · 经验包）：只读入口 —— 看装了哪些「方法卡」包、怎么装、怎么停。
+       放「录题」之后：录题页要选卡，用户在这里先看清本机有什么包、哪个是坏的。
+       本页不装不停用不遍历目录（装=手工复制文件夹，停=包目录里放 `.停用` 文件），理由见 views/packs.js 头部。 */
+    { id: 'packs', ic: '📦', name: '经验包' },
     { id: 'stats', ic: '📊', name: '统计分析' },
   ];
   let route = 'dash', routeParam = null;
@@ -163,8 +167,19 @@
       const sb = U.$id('sidebar');
       if (sb) sb.innerHTML = '<div class="side-foot">界面外壳渲染出错：<b>' + U.esc(e.message) + '</b></div>';
       const tb0 = U.$id('topbar');
-      if (tb0) tb0.innerHTML = '<div class="tb-title">⚠ 界面出错</div><span class="tb-sp"></span>' +
-        '<button class="btn sm" onclick="location.reload()">⟳ 重载界面</button>';
+      if (tb0) {
+        tb0.innerHTML = '<div class="tb-title">⚠ 界面出错</div><span class="tb-sp"></span>';
+        /* ★ 2026-11-03（B-1 修复）：原先是内联 `onclick="location.reload()"` 属性 —— 新程序页 CSP
+           （script-src 'self' file:，无 'unsafe-inline'）会**整条拦掉**内联事件处理器。真浏览器实测：
+           属性式 onclick 0 次触发、同一元素 addEventListener 1 次触发，控制台逐字报
+           "Executing inline event handler violates the following Content Security Policy directive
+            'script-src 'self' file:'" ⇒ F-40 的「复活」按钮点了没有任何反应（兜底路径恰好在最需要它时失效）。
+           现在用 U.h 建元素 + 对象式绑定（元素对象就在手边，不再多查一次 DOM），CSP 不用放宽。
+           tests\neg-v2-ingest-task-e2e.cjs 的「渲染后 DOM 不得有内联事件属性」+「零 CSP 违规」两条钉住这一类回归。 */
+        const btn = U.h('button', { class: 'btn sm', text: '⟳ 重载界面' });
+        btn.onclick = () => location.reload();
+        tb0.appendChild(btn);
+      }
     }
     const el = U.$id('view');
     const v = CTB.views[route] || CTB.views.dash;
@@ -547,6 +562,8 @@
      **原图** = 这道题所在的那一整页。
      item 字段：src 当前显示图 URL ｜ rel 裁图相对路径 ｜ orig 原图（整页）相对路径 ｜ origBox 归一化红框[x,y,w,h]
                ｜ origBy 溯源规则 ｜ title ｜ box 裁图像素红框[x,y,w,h]
+               ｜ ★ 2026-11-03（批次 2 · 区域契约）：boxNorm 归一化红框[0~1] + imgW/imgH 登记时的显示宽高
+                 —— 与 `box` **等价**（boxNorm×imgW === box），缺任一项即回落 `box`（见 lbFocusPx）
                ｜ chips HTML 徽章 ｜ q 问题正文 ｜ detail 补充 ｜ hint 怎么办指引 ｜ foot HTML 操作区 ｜ onMount(el) 绑事件
      语义铁律（2026-10-09）：🗂 只打开**整页**，绝不打裁图冒充原图；
      未定位到整页时按钮显式禁用并说明原因，不静默降级——「按钮写着原图、打开是特写」就是这次的坑。
@@ -622,6 +639,21 @@
   function applyTf() { if (lb) U.$id('lbWrap').style.transform = 'translate(' + lb.ox + 'px,' + lb.oy + 'px) scale(' + lb.scale + ')'; }
   /* 归一化红框（台账口径 0~1）→ 当前图像素（灯箱口径源图像素），两套坐标只在 onload 时才凑齐 */
   const normToPx = (b, img) => (b && b.length === 4 ? [b[0] * img.naturalWidth, b[1] * img.naturalHeight, b[2] * img.naturalWidth, b[3] * img.naturalHeight] : null);
+  /* ★ 2026-11-03（批次 2 · 区域契约，docs\区域契约.md）：灯箱统一坐标系。
+     条目可带 `boxNorm`（0~1 归一化）+ `imgW/imgH`（登记该坐标时那张图的显示宽高）。
+     给了就按它换算像素；契约要求这条路与旧 `box` 像素路**逐值等价**（boxNorm×imgW === box），
+     所以两条路只在字段缺失时分叉 —— 缺 `boxNorm`/`imgW`/`imgH`（或给了 0、非数字）就走原 `box` 路，
+     **不报错、不猜**：旧记录（磁盘旧值不迁移）只有像素 box，照样能开灯箱。
+     整页（showOrig）走 `origBox`：它本来就是 0~1，基准是整页原图自身（naturalWidth），两条路都不动。 */
+  function boxNormPx(b, w, h) {
+    if (!(b && b.length === 4)) return null;
+    if (!(w > 0) || !(h > 0)) return null;
+    return [b[0] * w, b[1] * h, b[2] * w, b[3] * h];
+  }
+  function lbFocusPx(it, img, showOrig) {
+    if (showOrig) return normToPx(it.origBox, img);
+    return boxNormPx(it.boxNorm, it.imgW, it.imgH) || ((it.box && it.box.length === 4) ? it.box : null);
+  }
   function loadLb() {
     const it = lb.items[lb.idx];
     const showOrig = lb.mode === 'orig' && !!it.orig;
@@ -661,7 +693,7 @@
       const stage = U.$id('lbStage'), r = stage.getBoundingClientRect();
       const fit = Math.min((r.width - 40) / img.naturalWidth, (r.height - 40) / img.naturalHeight, 1.4);
       lb.scale = fit;
-      let focus = showOrig ? normToPx(it.origBox, img) : it.box;   // 整页用归一化框换算，裁图用源图像素框
+      let focus = lbFocusPx(it, img, showOrig);   // 两条坐标路统一在 lbFocusPx 里（契约 §6）
       if (focus) {
         const bw = Math.max(1, focus[2]), bh = Math.max(1, focus[3]);
         lb.scale = U.clamp(Math.min(r.width * 0.8 / bw, r.height * 0.8 / bh), 0.3, 10);
@@ -678,6 +710,24 @@
 
   S.closeLightbox = function () { lb = null; U.$id('lightbox').hidden = true; U.$id('lightbox').innerHTML = ''; };
   S.lbIndex = () => (lb ? lb.idx : 0);
+  /* ★ 2026-11-03（批次 4「原图并排 + 区域高亮」）：把"区域 → 像素框"的换算**外供一份**。
+     唯一实现**仍在本文件**（`normToPx` / `boxNormPx`）—— `pending.js` 的并排视图调它，
+     绝不在那边另写一套（两份换算必然漂移，本仓 L-286 家族记过账）。
+     入参：区域对象 `{x,y,w,h}`（0~1 归一化，基准是**该区域自己那张页**）＋**已加载完的 <img>**
+     （要 naturalWidth/naturalHeight，所以必须在 load 之后调）。读不出尺寸/字段非法 ⇒ null（调用方给具体原因）。
+     ⚠ 位置刻意放在 `loadLb()` **之后**：`tests\neg-pack-ui-wiring.cjs` 按锚点切
+     `'const normToPx =' … 'function loadLb()'` 这段去 eval，往外供区里塞东西会让那段切片多出对 `S` 的引用
+     （实测：`S is not defined`，整轮 quick 红）。外供 API 与别的 `S.*` 放一起，既合语法也保住老用例的窗口。 */
+  S.regionPx = function (region, img) {
+    if (!region || !img || !img.naturalWidth || !img.naturalHeight) return null;
+    const b = [region.x, region.y, region.w, region.h];
+    if (!b.every((v) => typeof v === 'number' && isFinite(v))) return null;
+    return normToPx(b, img);
+  };
+  /* 角色 → CSS 类（错误位置/公共条件/配图；未知角色不许当"错误位置"渲染，给 r-other） */
+  S.roleClass = function (role) {
+    return role === '错误位置' ? 'r-err' : role === '公共条件' ? 'r-cond' : role === '配图' ? 'r-fig' : 'r-other';
+  };
 
   /* ================= 命令面板 ================= */
   S.palette = function (q0) {
@@ -690,6 +740,7 @@
       { t: '→ 今日总览', run: () => S.route('dash') }, { t: '→ 复习流', run: () => S.route('review') },
       { t: '→ 题库浏览', run: () => S.route('bank') }, { t: '→ 组卷工作台', run: () => S.route('paper') },
       { t: '→ 待办工作台', run: () => S.route('pending') }, { t: '→ 统计分析', run: () => S.route('stats') },
+      { t: '→ 录题（配方任务单）', run: () => S.route('ingest') }, { t: '→ 经验包（方法卡）', run: () => S.route('packs') },
       { t: '🎨 切换深浅主题', run: () => S.toggleTheme() },
       { t: '⟳ 重刷数据（只读重进）', run: () => S.reload() },
       { t: '🔧 全量重建（重跑生成器，慢）', run: () => S.regen() },

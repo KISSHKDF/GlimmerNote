@@ -161,7 +161,18 @@ const myLine = (out) => (out.split(/\r?\n/).find(l => l.includes(MY)) || '');
   A('5c 没有谎称"已兜底"', !/已从保全库按内容兜底/.test(r.out));
 }
 
-/* ════════ 6. ★ 绝不按路径猜：同一路径换成**别的内容** ⇒ 不得被当成同一张 ════════ */
+/* ════════ 6. ★ 绝不按路径猜：同一路径换成**别的内容** ⇒ 不得被当成同一张 ════════
+ * ★ 2026-11-03（task-14 收口这条弱断言）：本段原来的核心判据只有 `r.code !== 0`，
+ *   而**合成库本来就有** "整页不在盘" 的既有噪声（见 §2 注释：复制过来的库里本来就有指向
+ *   未复制影像的条目）⇒ 那条"红"**分不清**是"§6 要验的场景被抓到了"还是"噪声还在"
+ *   （T-1 家族：弱判据占着"有防线"的位置）。实测（本轮在 %TEMP% 隔离副本里变异）：把 §6
+ *   要验的行为掏掉后，`exit !== 0` 照样成立 —— 旧断言仍绿，本段等于没守。
+ *   现在判据落在**两件可区分的事**上：
+ *     · 门禁的 ✗ 行必须**点名 `学生A|M0001`**（而不是"反正有红"）；
+ *     · **不许**出现"已从保全库按内容兜底"（出现即意味着拿同路径下另一份内容顶替了原 sha）。
+ *   为什么必须把路径也清掉才判：门禁只在 `!exists(page)` 时才去问寻址器 —— 路径还在时它
+ *   **根本不查**，"内容被换掉"这件事在门禁上完全不可见（本轮实测确认）。
+ *   状态构造：路径没了；台账两条 sha 都登记着这条路径；SHA 的对象已在 §5 删除；OTHER 的对象还在盘。 */
 {
   /* 重新入库**另一份内容**（同一个收件箱路径，但字节不同）：
      若实现是"按路径取对象"而不是"按内容核对"，就会张冠李戴。 */
@@ -175,14 +186,112 @@ const myLine = (out) => (out.split(/\r?\n/).find(l => l.includes(MY)) || '');
   A('6c 两个 sha 内容确实不同', !!led.objects[SHA] && !!led.objects[OTHER_SHA] && SHA !== OTHER_SHA);
   const objOther = path.join(LIB, '_原图', OTHER_SHA.slice(0, 2).toLowerCase(), OTHER_SHA.toLowerCase() + '.jpg');
   A('6d 另一份的对象在盘上', fs.existsSync(objOther));
-  /* 关键：台账 page 当初登记的内容（SHA）对应的对象**已经不存在**（第 5 段删了），
-     而同路径上现在躺着**内容不同**的另一份（OTHER_SHA）。
-     若实现不按内容核对，就会把 OTHER 那份顶替上来 ⇒ 门禁就不该绿。 */
+  /* 6e 夹具前提（夹具自检，不是被测行为）：两条 sha 的来源里**都**登记着同一条路径。
+     没有这条，"一路径两 sha"的夹具可能静默退化（实测过一次：辅助函数用覆盖语义把来源顶掉，
+     下游六条断言一起假红，看起来像产品坏了）。 */
+  const srcsOf = (sha) => (led.objects[sha].sources || []).map(s => String(s).replace(/\\/g, '/'));
+  A('6e 夹具前提：两条 sha 都登记着同一条来源路径',
+    srcsOf(SHA).includes(INBOX_REL) && srcsOf(OTHER_SHA).includes(INBOX_REL),
+    'A=' + JSON.stringify(srcsOf(SHA)) + ' B=' + JSON.stringify(srcsOf(OTHER_SHA)));
+
+  /* ★ 关键一步：把路径也清掉，门禁才会真的去问寻址器（见段首注释）。
+     正确行为 = **拒绝顶替**：不许"挑还在盘的那份"交差，必须如实报这张卡断了。
+     ⚠ 判据**不能**落在"门禁输出里点名我的卡"上：门禁的错误打印有 CAP=40 截断（实测本夹具
+     当前共 495 条错误、只打 40 行，我的 ✗ 行**打不出来**）。所以判据落在**无截断**的通道：
+       · 生产侧：状态包（`生成状态.mjs` 写盘模式的产物，逐卡可查）；
+       · 消费侧：切片 `model.js` 的 `M.origOf` 真跑（喂状态包里的**真实字段**，不起浏览器）；
+       · 口径：与 `_状态刷新.mjs` 逐字段对照；
+       · 措辞 + 寻址器自己的 fail-closed 告警。 */
+  fs.unlinkSync(INBOX_ABS);
   const r = run(['_原卷台账.mjs', '门禁'], LIB);
-  A('6e 内容对不上的那份不许顶替 ⇒ 门禁判红', r.code !== 0, 'exit=' + r.code);
-  A('6f 没有谎称"已兜底"', !/已从保全库按内容兜底/.test(r.out));
+  /* 生产侧：**写盘模式**跑生成器（写的是临时库的 `_状态.json`）——既拿状态包，
+     也给下面 `_状态刷新.mjs` 的一致性对照留一个真实起点。 */
+  const stateFile = path.join(LIB, '_状态.json');
+  const genRun = run(['生成状态.mjs', '--quiet'], LIB);
+  const readState = () => { try { return JSON.parse(fs.readFileSync(stateFile, 'utf8').replace(/^\uFEFF/, '')); } catch { return null; } };
+  const pickCard = (s) => {
+    for (const d of ((s && s.data) || [])) {
+      if (d.name !== '学生A') continue;
+      for (const sub of (d.subjects || [])) for (const it of (sub.items || [])) if (it.id === 'M0001') return it;
+    }
+    return null;
+  };
+  const gen = readState();
+  const card = gen ? pickCard(gen) : null;
+  const genPair = card ? { page: card.origPage, resolve: card.origResolve } : null;
+  const decPage = (() => { try { return decodeURIComponent(String(card && card.origPage)); } catch { return String(card && card.origPage); } })();
+
+  /* ── 6f 生产侧：fail-closed 现场必须落成 **JSON null**（不是字符串 "null"）+ 'lost' ──
+     缺陷复现（把生成器那四行改回 `rp ? …`）⇒ origPage = 字符串 "null"、origResolve = null ⇒ 红。 */
+  A('6f 生产侧：状态包 origPage 必须是 **JSON null**、origResolve 必须是 "lost"（写盘生成 exit=' + genRun.code + '）',
+    !!card && card.origPage === null && typeof card.origPage === 'object' && card.origResolve === 'lost',
+    'origPage=' + JSON.stringify(card && card.origPage) + '(' + typeof (card && card.origPage) + ') origResolve=' + JSON.stringify(card && card.origResolve));
+  A('6g 生产侧：不许把我这张卡指到 _原图/ 下"同路径的另一份内容"，也不许标 store（顶替即红）',
+    !!card && !/_原图\//.test(decPage) && card.origResolve !== 'store',
+    'origPage=' + JSON.stringify(card && card.origPage));
+
+  /* ── 6h 消费侧后果（切片 `model.js` 的 `M.origOf` 真跑）：喂**状态包里的真实字段** ──
+     `orig: c && c.origPage ? H.relPath(c.origPage) : null` 判的是真值，所以生产侧写什么决定界面
+     怎么理解。缺陷复现 ⇒ 字符串 "null" 判真 ⇒ `orig` 变成 `REL:null`（界面去取一张不存在的图）⇒ 红。 */
+  const MODEL_SRC = fs.readFileSync(path.join(E.REPO, 'src', 'app', 'js', 'model.js'), 'utf8');
+  let origOf = null;
+  try {
+    const ma = MODEL_SRC.indexOf('M.origOf = function (x) {');
+    const mb = MODEL_SRC.indexOf('\n})();', ma);
+    if (ma < 0 || mb < 0) throw new Error('找不到 M.origOf 的边界');
+    origOf = new Function('M', 'H', MODEL_SRC.slice(ma, mb) + '\nreturn M.origOf;')(
+      { cardOf: (x) => x.card },
+      { relPath: (p) => 'REL:' + decodeURIComponent(String(p)) });
+  } catch (e) { /* 下面断言会红 */ }
+  const consumerOrig = (origOf && card) ? origOf({ card }).orig : '<切片失败>';
+  A('6h 消费侧（切片 model.js 真跑）：我这张卡必须映射成 null（"未定位"），不许变成某个 …/null 路径',
+    consumerOrig === null, 'orig=' + JSON.stringify(consumerOrig));
+
+  /* ── 6i 两个写入方口径一致：造一个**旧包**现场（死路径 + 缺 origResolve）交给 `_状态刷新.mjs`
+     自愈，再与生成器的结论逐字段比。任一侧漂移（生成器写 "null" / 刷新器不清死路径）都会红。 ── */
+  const encRelLocal = (rel) => String(rel).split('/').map(encodeURIComponent).join('/');
+  let refreshCard = null, refreshNote = '';
+  if (gen && card) {
+    try {
+      card.origPage = encRelLocal(INBOX_REL);      // 旧包现场：死路径（文件已删）
+      delete card.origResolve;
+      fs.writeFileSync(stateFile, JSON.stringify(gen), 'utf8');
+      const rr = run(['_状态刷新.mjs', 'pending'], LIB);
+      refreshNote = 'refresh exit=' + rr.code;
+      refreshCard = pickCard(readState());
+    } catch (e) { refreshNote = 'refresh 抛错：' + String((e && e.message) || e); }
+  }
+  A('6i 两个写入方口径一致：旧包自愈后的 (origPage,origResolve) 必须等于生成器的结论，且都是 (null,"lost")',
+    !!genPair && genPair.page === null && genPair.resolve === 'lost' && !!refreshCard &&
+    refreshCard.origPage === null && refreshCard.origResolve === 'lost',
+    '生成器=' + JSON.stringify(genPair) + ' 自愈后=' + JSON.stringify(refreshCard && { page: refreshCard.origPage, resolve: refreshCard.origResolve }) + ' ' + refreshNote);
+
+  A('6j 措辞通道：门禁输出不出现"已从保全库按内容兜底"（出现即意味着顶替了原 sha）',
+    !/已从保全库按内容兜底/.test(r.out), '出现=' + /已从保全库按内容兜底/.test(r.out));
+  A('6k fail-closed 信号可见：输出里有寻址器的"拒绝猜"告警（歧义被如实报出，不是静默 null）',
+    /拒绝猜/.test(r.out), (r.out.split(/\r?\n/).find(l => /拒绝猜/.test(l)) || '(没有)').trim().slice(0, 110));
+  /* 6l 把"旧判据为什么没用"钉成事实（夹具/工具的现实，不是被测行为）：
+     门禁的错误打印是**截断**的（另有 N 条；当前共 M 条错误），而 exit 又必然非 0
+     —— 于是"exit≠0"和"输出里点名到卡"两条路**都不可靠**，这正是 §6 旧断言（只有 exit≠0）
+     能被噪声养活的原因。
+     ★ 2026-11-04 修（CI 在干净克隆上抓到的真缺陷）：判据**不能**写死"错误总数 > 40" ——
+       那是**本机真库的规模特征**（实测 495 条），合成夹具库只有 1 条噪声 ⇒ 门禁不触发
+       CAP=40 截断 ⇒ 截断行缺席 ⇒ 断言红。同一句断言在真库绿、在干净克隆红 = 腐烂。
+       改成**对被测对象当场计算**：截断行存在 ⇒ 直接证明"exit≠0 分不清场景与噪声"；
+       未截断（库很小）时由 6m 的"噪声行 ≥1"承担同一命题（噪声在场 ⇒ exit≠0 仍分不清场景）。
+       两种库规模下都成立，且**不放宽**：截断时验截断、没截断时验噪声，二者必居其一。 */
+  const mTrunc = /另有 (\d+) 条（其余类别错误已截断；当前共 (\d+) 条错误）/.exec(r.out);
+  const truncHits = !!mTrunc;
+  const noiseHere = r.out.split(/\r?\n/).filter(l => /✗/.test(l) && /整页不在盘/.test(l) && !l.includes(MY));
+  A('6l "exit≠0"本身分不清场景与噪声（截断在场 ⇒ 只见总数不见我的行 / 无截断 ⇒ 噪声行本身够红）',
+    r.code !== 0 && (truncHits || noiseHere.length >= 1),
+    'exit=' + r.code + ' 截断行=' + JSON.stringify(mTrunc ? mTrunc[0] : '(无)') + ' 噪声行数=' + noiseHere.length);
+  /* 6m 既有噪声确实在场（不点名我的"整页不在盘" ≥1 行）—— 6l 的补强，防"截断行"判据失效 */
+  const noise = r.out.split(/\r?\n/).filter(l => /✗/.test(l) && /整页不在盘/.test(l) && !l.includes(MY));
+  A('6m 既有噪声确实在场（不点名我的"整页不在盘" ≥1 行）', noise.length >= 1,
+    '噪声行数=' + noise.length + ' 例：' + String(noise[0] || '').trim().slice(0, 80));
 }
 
 console.log('');
-console.log(`RESULT=${fails ? 'FAIL(' + fails + ')' : 'PASS'} 断言=25 失败=${fails}`);
+console.log(`RESULT=${fails ? 'FAIL(' + fails + ')' : 'PASS'} 断言=32 失败=${fails}`);
 process.exit(fails ? 1 : 0);

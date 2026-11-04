@@ -76,8 +76,9 @@
     return '';
   })();
   H.serverOrigin = H.port ? ('http://127.0.0.1:' + H.port) : '';
-  /* ★ 2026-10-30 S02：服务端本轮启动的**随机 token**，由服务端在注入的 index.html 里给出
-     （`<script>window.__ctbToken="…"</script>`，注入点在 </head> 之前 ⇒ 早于本文件执行）。
+  /* ★ 2026-10-30 S02：服务端本轮启动的**随机 token**，由服务端注入的 index.html 给出
+     （2026-11-03 起是 `<meta name="__ctbToken" content="…">`，注入点在 </head> 之前 ⇒ 早于本文件执行；
+      原来是内联 <script>，被程序页 CSP 的 script-src 'self' 拦掉后才改的——见 _服务端.mjs 同日注释）。
      为什么要有它：服务端已取消对 `Origin: null` 的信任（不透明源与 file:// 在 HTTP 层不可区分），
      光靠 Origin 只剩"浏览器替我们填的自述"，本机网页仍能伪造请求头。token 是"只有本服务页面
      才拿到"的那一半证据，所有 /api/* 请求必须带上（见下面 apiFetch）。
@@ -85,7 +86,8 @@
      此时**不进 server 模式**（见 probeServer），免得落进"health 通、每个 /api 都 403"的半死状态。 */
   H.token = (function () {
     try {
-      const t = window.__ctbToken;
+      const m = document.querySelector('meta[name="__ctbToken"]');
+      const t = m && m.content;
       /* 只认服务端生成的那种十六进制串（长度给足余量）：注入失败/被别的页面写成花串时按"没有"处理 */
       return (t && /^[0-9a-f]{16,128}$/i.test(String(t))) ? String(t) : '';
     } catch (e) { return ''; }
@@ -284,11 +286,66 @@
   /* 配方层通道（2026-10-27）：action ∈ 清单|收件箱|组装|校验|自检|指纹（白名单在壳侧）。
      壳只做透明转发 —— 配方怎么拼、输出怎么校验，全在 src\recipes\ 与 _配方.mjs 里。
      返回 {ok,code,out,err}：out 是工具 stdout 原文（组装时就是整份任务单，校验时是逐条报告）。
-     为什么不做成"壳返回结构化 JSON"：那会逼壳去理解配方格式，加一条反例就得重编壳。 */
+     为什么不做成"壳返回结构化 JSON"：那会逼壳去理解配方格式，加一条反例就得重编壳。
+     ★ 2026-11-03（批次 2 · 经验包）：选卡也走这条通道，payload 里那两个键只是**原样透传**
+     （选卡串与冲突策略）；它们的形状门禁与语义分别在壳与 `_配方.mjs`，本层不加任何语义。 */
   H.recipe = async function (action, flags) {
     const payload = Object.assign({ action }, flags || {});
     if (H.mode === 'shell') return bridge('recipe', payload, 120000);
     throw new Error('「录题」需要桌面壳通道（拾光小册.exe）。程序不联网，配方任务单请在本机程序里生成。');
+  };
+  /* 录题任务通道（2026-11-03 批次 1 收尾「页面接线」）：三层校验与人工确认。
+     与 H.recipe 同口径：壳透明转发，校验语义全在 _录题任务.mjs（退出码 0 通过 / 1 格式 /
+     2 任务不存在或用法 / 3 与任务不匹配 —— 见 docs\录题任务契约.md）。 */
+  H.taskCheck = async function (taskId, text) {
+    if (H.mode === 'shell') return bridge('taskCheck', { taskId: taskId, text: text }, 120000);
+    throw new Error('「绑定校验」需要桌面壳通道（拾光小册.exe）。');
+  };
+  /* 第三层"人工确认"只能由人写（确认会落 confirmedAt）——这是显式按钮，不是校验的副产品。 */
+  H.taskConfirm = async function (taskId, note) {
+    if (H.mode === 'shell') return bridge('taskConfirm', { taskId: taskId, note: note || '' }, 120000);
+    throw new Error('「任务确认」需要桌面壳通道（拾光小册.exe）。');
+  };
+  /* ★ 2026-11-03（批次 4「审核与正式入库」）：人工修订通道（候选 / 修订链 / 正式写入）。
+     与壳侧三把 op 一一对应，分工同 `_待确认.mjs`：
+       · reviewList      只读（读候选与修订链）
+       · reviewCandidate 写用户库（登记候选）⇒ 壳侧进写闸
+       · reviewAdopt     **正式写入入口**（把候选采纳进 `_修订\`）⇒ 壳侧进写闸
+     ⚠ 服务端/离线模式一律**不写**：这两把是"改用户库"的动作，只有桌面壳能做（同 taskConfirm）。
+     ⚠ 回传形状：壳给 `{ok, code, out, err}`，其中 `out` 是工具 stdout（`--json` 时是 JSON 文本）。
+       这里统一解析：`code !== 0` 或解析失败 ⇒ 抛错并把**工具原文**带出去（界面照原样上屏，不许吞）。 */
+  function reviewJson(res, what) {
+    const so = (res && typeof res.out === 'string') ? res.out : '';
+    /* ⚠ 解析口径：`_待确认.mjs 候选/修订/采用 --json` 的**人读行仍打在 stdout 上**，JSON 是**最后一行**
+       （与 `_原图.mjs`/`_经验草稿.mjs` 那种"`--json` 时人读走 stderr"的写法不同 —— 已登记为待统一的偏差）。
+       所以这里**按最后一行解析**，并优先取最后一个以 `{` 开头的行；不许假设 stdout 是纯 JSON
+       （那会在真机上表现为"读了候选却报解析失败"，而 JSON 就明明白白在上面几行）。 */
+    let j = null;
+    const lines = so.split(/\r?\n/).filter((l) => l.trim());
+    for (let i = lines.length - 1; i >= 0 && !j; i--) {
+      const t = lines[i].trim();
+      if (t.startsWith('{')) { try { j = JSON.parse(t); } catch { /* 继续往前找 */ } }
+    }
+    if (!res || res.code !== 0 || !j) {
+      const raw = [so, (res && res.err) || ''].filter(Boolean).join('\n').trim();
+      const e = new Error('「' + what + '」失败（exit=' + ((res && res.code) != null ? res.code : '?') + '）：\n' + (raw || '（工具没有输出）'));
+      e.code = res ? res.code : -1;
+      e.raw = raw;
+      throw e;
+    }
+    return j;
+  }
+  H.reviewList = async function (pendingId) {
+    if (H.mode !== 'shell') throw new Error('「候选修订」需要桌面壳通道（拾光小册.exe）。');
+    return reviewJson(await bridge('reviewList', { pendingId: pendingId }, 120000), '读候选修订');
+  };
+  H.reviewCandidate = async function (pendingId, kind, target, text) {
+    if (H.mode !== 'shell') throw new Error('「登记候选修订」需要桌面壳通道（拾光小册.exe）。');
+    return reviewJson(await bridge('reviewCandidate', { pendingId: pendingId, kind: kind, target: target, text: text }, 180000), '登记候选修订');
+  };
+  H.reviewAdopt = async function (pendingId, candId, dry) {
+    if (H.mode !== 'shell') throw new Error('「正式写入」需要桌面壳通道（拾光小册.exe）。');
+    return reviewJson(await bridge('reviewAdopt', { pendingId: pendingId, candId: candId, dry: dry ? '1' : '' }, 300000), '正式写入');
   };
   /* 全量重建（生成器重跑），返回新 state；生成器实测 ~5 分钟，超时给 10.5 分钟 */
   H.regen = async function () {

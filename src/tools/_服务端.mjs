@@ -71,6 +71,12 @@ import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { libraryRoot, toolPath, TOOL_DIR, APP_ROOT, WEB_ROOT } from './_库根.mjs';
 import { readJsonStrict } from './_安全写.mjs';
+/* ★ 2026-11-03（批次 2 / P2-2「统一坐标系」）：pending 条目附加归一化坐标。
+   换算的唯一实现在 `src\tools\_区域坐标.mjs`（契约 `docs\区域契约.md`）——**本文件不得再写第二份除法**。
+   它是零副作用纯函数模块（不求值库根、不抢锁），所以服务端 import 它是安全的；
+   同一段逻辑**刻意不**放在 `_待确认.mjs` 里导出：那支脚本导入期就 `libraryRoot()` + `acquireLibLock()`，
+   服务端 import 它会当场抢占库锁（而服务端本来要靠 spawn 它的子命令干活）。 */
+import { normEvidenceBox, evidenceAbs } from './_区域坐标.mjs';
 
 /* ★ 2026-10-23 程序与数据分家：ROOT 现在是**用户库根**，不再是"本脚本所在目录"。
    兄弟工具一律用 toolPath(...)，见 _库根.mjs。 */
@@ -143,6 +149,45 @@ function parseJsonText(text, what) {
 
 let state = null;
 try { state = readStateFile(); } catch (e) { state = null; }
+
+/* ---------- P2-2（2026-11-03）：pending 条目附加归一化坐标（**只加不改**） ----------
+   为什么要在这里补一次：`_状态.json` 的 pending 分区可能是**旧版** `_待确认.mjs` 写下的
+   （那时还没有 `boxNorm/imgW/imgH`），而页面灯箱只认这三个字段。三条纪律：
+     ① 只**附加**：旧字段一个不改，缺字段/量不出图时保持今天的形状（前端不因此报错）；
+     ② 量不出尺寸写 `boxNormWhy`（**具体原因**，带图路径），**绝不写 0**（教训 L-530）；
+     ③ GET 是只读的（BUG-16）：绝不改内存里的 `state` 快照，逐条目新建对象。
+   缓存：按 `abs|mtimeMs|size` 记住换算结果——`GET /api/state` 是页面启动/刷新的高频路由，
+   每次重读所有证据图的文件头（每张最多 512 KB）是白烧 IO。图被换掉时 mtime/size 变 ⇒ 自动失效。 */
+const BOX_NORM_CACHE = new Map();
+const BOX_NORM_CACHE_MAX = 512;
+function boxNormOfItem(it) {
+  if (!it || !Array.isArray(it.box) || it.box.length !== 4) return null;
+  const abs = evidenceAbs(it.evidence, ROOT);
+  let key = null;
+  if (abs) { try { const st = fs.statSync(abs); key = abs + '|' + st.mtimeMs + '|' + st.size; } catch { key = null; } }
+  if (key && BOX_NORM_CACHE.has(key)) return BOX_NORM_CACHE.get(key);
+  const r = normEvidenceBox({ boxPx: it.box, imgAbs: abs });
+  const out = r.ok ? { boxNorm: r.boxNorm, imgW: r.imgW, imgH: r.imgH } : { boxNormWhy: r.why };
+  if (key) {
+    if (BOX_NORM_CACHE.size >= BOX_NORM_CACHE_MAX) BOX_NORM_CACHE.clear();
+    BOX_NORM_CACHE.set(key, out);
+  }
+  return out;
+}
+/** pending 分区 → 附加了归一化坐标的新分区；形状不对或无需附加时**原样返回同一个对象** */
+function withBoxNorm(pending) {
+  if (!pending || !Array.isArray(pending.items)) return pending;
+  return Object.assign({}, pending, {
+    items: pending.items.map(it => {
+      if (!it || typeof it !== 'object') return it;
+      /* 上游（新版 `_待确认.mjs`）已经附过就不覆盖：状态包是页面取数的真源，
+         两处各算一遍只会引入"同一个条目两个答案"的风险。 */
+      if (it.boxNorm !== undefined || it.boxNormWhy !== undefined) return it;
+      const ex = boxNormOfItem(it);
+      return ex ? Object.assign({}, it, ex) : it;   // 没 box ⇒ 同一个对象，一个字段都不加
+    }),
+  });
+}
 
 /* ---------- 静态文件包含性判据（BUG-18） ----------
    旧写法 `abs.startsWith(ROOT)` 的 ROOT 无结尾分隔符 ⇒ `D:\…\错题本-备份` 这类**同前缀兄弟目录**
@@ -472,8 +517,30 @@ function logReject(what, req, extra) {
      · `style-src 'unsafe-inline'`：库内题干/证据页用行内 style（还有 SVG 内联样式），禁掉会印坏版式。
      · `script-src` 刻意**不列**来源 ⇒ 继承 `default-src 'none'`：内联脚本不执行，
        外链 `<script src>` 连**请求**都不发（sandbox 只禁执行、不禁取，这一条才堵住取）。
-   程序根 `index.html` 的 CSP 不变（`APP_CSP`）：那是程序入口，host.js 必须能执行。 */
-const APP_CSP = "frame-ancestors 'none'";
+   程序根 `index.html` 的 CSP 见下方 APP_CSP（2026-11-03 R8 整改①换成最小可用集）。 */
+/* ★ 2026-11-03（R8 整改①「程序页纵深只有一层」）：APP_CSP 从裸 `frame-ancestors 'none'` 换成
+   最小可用集。改前程序页唯一防线是 `M.stemHtmlSafe` 净化器（历史已两次被绕过：S01 出口直通、
+   S04 CSS 转义），一旦再被绕过，页面里的 `window.ctbHost`（壳桥）就是任意动作调用。
+   现在给程序页补第二道纵深，逐条说明为什么是这个形状：
+     · `default-src 'none'` + 逐类开口：漏掉哪一类哪一类就被封 —— 这是 fail-closed 的写法。
+     · `script-src 'self' file:`：程序页**没有内联脚本**（index.html 全部外链）；桌面壳注入的
+       `window.ctbHost` 走 WebView2 的 AddScriptToExecuteOnDocumentCreated，实测不受页面 CSP 约束
+       （neg-v2-ingest-task-e2e.cjs 用真壳断言桥通，meta CSP 在场时页面照常 boot）。
+       `file:` 供桌面壳 file:// 模式装载本地 js。
+     · `style-src 'unsafe-inline'`：承重墙 —— 界面大量行内 style（ingest/paper/stats 全在用）。
+     · `img-src 'self' file: data:`：服务端模式全部同源；壳模式资产是 `file://<库根>\…`；
+       `data:` 兜底内联小图（当前 APP 页无 data 图，留着防误杀）。
+     · `connect-src 'self' file:`：服务端模式 fetch 全部同源；壳模式不 fetch（走 postMessage 桥）。
+     · `object-src 'none'` + `base-uri 'none'` + `form-action 'none'`：无 object/embed、
+       无 <base>、无表单提交（全仓 grep 0 命中），一律封死。
+     · `frame-ancestors 'none'`：保留原判据。meta 形态下按规范被忽略（meta 只管本页自己），
+       所以服务端响应头与页面 meta **两份同内容**都要 —— 壳模式（file://）没有响应头，靠 meta；
+       服务端模式两份同时生效（取交集），谁被绕过都还有另一份。
+   这串与 src\app\index.html 的 <meta http-equiv="Content-Security-Policy"> 逐字相同：
+   改一处必须同步另一处（tests\neg-server-csp.cjs 机读对拍钉住）。 */
+const APP_CSP = "default-src 'none'; script-src 'self' file:; style-src 'self' file: 'unsafe-inline'; " +
+  "img-src 'self' file: data:; connect-src 'self' file:; object-src 'none'; base-uri 'none'; " +
+  "form-action 'none'; frame-ancestors 'none'";
 const LIB_CSP = "sandbox; default-src 'none'; img-src http://127.0.0.1:" + PORT + " http://localhost:" + PORT +
   " data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
@@ -509,7 +576,7 @@ function sendJson(res, code, obj, origin) { send(res, code, JSON.stringify(obj),
    现在超限明确回 413（不再"能读就整份读"），可下发的一律走流式。 */
 const MAX_STATIC_BYTES = 64 * 1024 * 1024;
 
-/* ★ 2026-11-02 R2：**库内静态路由白名单**（唯一实现）。四道判据，任一命中即 403：
+/* ★ 2026-11-02 R2：**库内静态路由白名单**（唯一实现）。四道前缀判据，任一命中即 403：
      ① 任一路径段以 `.` 开头 —— 杀 `数据\.git\` 整树（改前 `/.git/index` → 200 / 198619 B，
         `.git\config`、对象库、reflog 统统可读）与一切 dotfile；
      ② **目录段**以 `_` 开头且不在 `{_原图, _收件箱}` —— 杀 `_备份-真源/_影像备份/_撤卡留档/
@@ -517,9 +584,13 @@ const MAX_STATIC_BYTES = 64 * 1024 * 1024;
      ③ **文件名**以 `_` 开头且不在 `{_组卷台账.json}` —— 杀全部根台账（真库 `_待确认.json`
         324907 B 改前 200）；
      ④ 文件名含 `.bak` —— 备份残留不下发。
+   ★ 2026-11-03（R8 整改③）：四道判据本身正确，但**只有它们不够** —— 凡不是 `_`/`.` 开头的
+     文件一律下发，真库实测 48.2% 可取走（含 506 个零消费方的 题干.html）。现在四道之后
+     再叠一道**类型准入**（见下方 STATIC_IMG_EXT / STATIC_TEXT_ALLOW）。
    为什么 `_原图` / `_收件箱` **必须**放行：它们是前端静态取图的**唯一两个**库内目录 ——
      卡片 `img`/`stem`/`fig`/`evidence` 一律经 `H.asset()` 变成 `<img src>`，指向
      `_原图\<sha256>.<ext>`（内容寻址保全库）与 `_收件箱\<批次>\<批次>-*.jpg`；拦掉 = 全库破图。
+     （类型准入后，这两个目录里的**非图片**也不再下发 —— R8 实测 `_原图` 里有 4 csv + 1 md。）
    为什么只有 `_组卷台账.json` 例外：依据是**真库 6183 文件普查 + 前端 `H.readFile` 调用点穷举**
      （2026-11-02）——UI 唯一静态读取的根台账就是它（`src\app\js\views\paper.js:127` 与 `:720`），
      其余根台账（`_状态.json`/`_待确认.json`/`_原卷台账.json`/`_待确认清单.md` …）零静态消费者。
@@ -527,6 +598,21 @@ const MAX_STATIC_BYTES = 64 * 1024 * 1024;
      包含性判据管；这一层管"业务上该不该下发"。两层**都要**过。 */
 const LIB_DIR_ALLOW = new Set(['_原图', '_收件箱']);
 const LIB_FILE_ALLOW = new Set(['_组卷台账.json']);
+/* ★ 2026-11-03（R8 整改③「静态暴露 = 中」）：四道前缀规则之上再叠**类型准入** ——
+   判据从"按前缀拒"改成"图片按扩展名准 + 文本按文件名准"。
+   R8 真库实测量化（recon\R8-安全三面复核.md §三）：改前 6289 文件中 3034（48.2%）可被
+   无 token 的裸 GET 取走，其中 506 个 `题干.html` 是**零消费方**（题干已随 `_状态.json`
+   内联下发、界面从不 fetch 文件本体）、125 个 json / 4 个 csv / 1 个 txt 同样无消费者，
+   `_原图` 里还有 1 个含学生名的 .md。收紧后：
+     · 图片按扩展名放行（`_原图`/`_收件箱`/卡片题图的全部消费都是 `<img src>`，img 上下文惰性）；
+     · 文本只留两个**有静态消费者**的：`错题记录.md`（bank.js readFile，任意深度同名文件）
+       与 `_组卷台账.json`（paper.js readFile，UI 唯一静态读的根台账）；
+     · `.html`（题干/说明）、`.txt`、`.csv`、`.json`（除组卷台账）、无扩展名等一律 403。
+   为什么 svg 不进图片集：svg 作为**文档**打开可带脚本（虽然已有 LIB_CSP sandbox 兜着），
+   且真库当前 0 个 svg 配图 —— 真出现时连同这张表一起改，不预放。
+   改判据必须同步 `tests\neg-server-static-whitelist.cjs`（`题干.html` 已从正对照移入负对照）。 */
+const STATIC_IMG_EXT = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'tif', 'tiff']);
+const STATIC_TEXT_ALLOW = new Set(['错题记录.md', '_组卷台账.json']);
 function staticAllowed(relPath) {
   const segs = String(relPath == null ? '' : relPath).split(/[\\/]+/).filter(s => s.length);
   if (!segs.length) return false;
@@ -538,7 +624,12 @@ function staticAllowed(relPath) {
   if (file.startsWith('.')) return false;
   if (file.startsWith('_') && !LIB_FILE_ALLOW.has(file)) return false;
   if (file.includes('.bak')) return false;
-  return true;
+  /* 类型准入（R8 整改③）：过了前缀四道还不够 —— 内容类型也必须在准入表里。 */
+  const m = /\.([A-Za-z0-9]+)$/.exec(file);
+  const ext = m ? m[1].toLowerCase() : '';
+  if (STATIC_IMG_EXT.has(ext)) return true;
+  if (STATIC_TEXT_ALLOW.has(file)) return true;
+  return false;
 }
 
 /* ★ 2026-11-02 R7：`Range` 解析（唯一实现）。只支持**单段**（另收两个合法缩写）：
@@ -635,15 +726,21 @@ function serveStatic(req, res, urlPath, origin) {
   const type = MIME[path.extname(real).toLowerCase()] || 'application/octet-stream';
   /* ★ 2026-10-30 S02：**只**给程序根那份 index.html 注入本轮 token（见 isRootIndex 的说明）。
      注入点选 `</head>` 之前：index.html 里所有 `<script src>` 都在 body 尾部，
-     注入语句早于 host.js 执行 ⇒ host.js 读 `window.__ctbToken` 时一定已经就位。
+     注入语句早于 host.js 执行 ⇒ host.js 读 token 时一定已经就位。
      没有 `</head>`（改造过的极简页面）时退化为插到文档最前面，仍然早于任何脚本。
-     这是唯一需要"整份读改写"的响应（R7 的流式路径不适用于它）。 */
+     这是唯一需要"整份读改写"的响应（R7 的流式路径不适用于它）。
+     ★ 2026-11-03（R8 整改①的连带）：注入形态从内联 `<script>window.__ctbToken=…</script>`
+     改成 `<meta name="__ctbToken" content="…">`。原因：程序页 CSP 补了 `script-src 'self' file:`
+     （无 'unsafe-inline'），内联注入的 token 脚本会被页面自己的 meta CSP 拦掉 ⇒ 服务端模式下
+     token 拿不到、所有 /api/* 403（实测 neg-v2-ui-dash-toast-grid 首轮红："未连接数据通道"）。
+     token 挪进 meta 标签后 host.js 用 DOM 读，不再需要内联脚本；安全性**不减**——
+     XSS 同样读得到 meta（本来也读得到 window.__ctbToken），而 script-src 保持严格。 */
   if (isRootIndex(real)) {
     let buf;
     try { buf = fs.readFileSync(real); }
     catch (e) { return sendJson(res, 404, { ok: false, error: 'not found: ' + rel }, origin); }
     const html = buf.toString('utf8');
-    const snippet = '<script>window.__ctbToken=' + JSON.stringify(TOKEN) + ';</script>';
+    const snippet = '<meta name="__ctbToken" content="' + String(TOKEN).replace(/&/g, '&amp;').replace(/"/g, '&quot;') + '">';
     const i = html.search(/<\/head\s*>/i);
     const out = i < 0 ? snippet + html : html.slice(0, i) + snippet + html.slice(i);
     addCommonHeaders(res, origin);
@@ -821,10 +918,51 @@ const server = http.createServer(async (req, res) => {
       const fr = pendingFreshness();
       if (fr.status === 'stale') {
         /* ★ 2026-11-02 R6：`await`（刷新已是异步、不阻塞事件循环）；队列内的第二次判据用
-           `pendingNeedsRefresh()` 复查 —— 前一个请求刚把状态刷新过就不必再起子进程。 */
-        await serialized(async () => { if (pendingNeedsRefresh()) await refreshPendingSection(); });
+           `pendingNeedsRefresh()` 复查 —— 前一个请求刚把状态刷新过就不必再起子进程。
+           ★ 2026-11-04（真机发现）：**状态包整个不存在**时（首次打开一个还没有 `_状态.json` 的库，
+           浏览器/服务端模式），`_状态刷新.mjs` 会"读不到 _状态.json"直接非 0 退出 ⇒ 这里 await 抛错
+           ⇒ 整个 GET 变 500、页面白屏。而启动横幅本来就写着 `MISSING(will rebuild on first /api/state)`
+           —— 承诺了要重建，就别把 500 甩给页面。所以：刷新失败且内存里没有状态 ⇒ 按承诺 `doRebuild()`
+           （跑生成器、分钟级但正确，与桌面壳首开同一行为）；重建也失败 ⇒ 落成**显式降级标记**，仍不 500
+           （页面能看到"为什么没有数据"，而不是白屏）。 */
+        try {
+          await serialized(async () => { if (pendingNeedsRefresh()) await refreshPendingSection(); });
+        } catch (e) {
+          if (!state) {
+            const rb = await doRebuild();
+            if (!rb || !rb.ok) {
+              stateFail = {
+                code: 'state-missing-rebuild-failed',
+                detail: '库里还没有 _状态.json，且首次重建失败：' +
+                  String((rb && (rb.error || rb.toolErr)) || (e && e.message) || e),
+              };
+            }
+          } else {
+            stateFail = {
+              code: 'pending-refresh-failed',
+              detail: 'pending 分区刷新失败（内存快照仍可用）：' + String((e && e.message) || e),
+            };
+          }
+        }
+      } else if (!state) {
+        /* 台账 stat 不到（例如 `_待确认.json` 也没有）时 el 上面的分支不会进 —— 但状态包同样缺失，
+           同样按启动横幅的承诺重建一次，别让页面拿到 `{error:'no state'}` 却不知道为什么。 */
+        const rb = await doRebuild();
+        if (!rb || !rb.ok) {
+          stateFail = {
+            code: 'state-missing-rebuild-failed',
+            detail: '库里还没有 _状态.json，且首次重建失败：' +
+              String((rb && (rb.error || rb.toolErr)) || '（生成器没有返回原因）'),
+          };
+        }
       }
       const body = Object.assign({}, state || { error: 'no state' });
+      /* ★ 2026-11-03（P2-2）：pending 条目**附加** boxNorm/imgW/imgH（唯一实现 `_区域坐标.mjs`）。
+         只加不改、量不出不给 0、内存快照不动（详见上面 withBoxNorm 的注释）。 */
+      {
+        const wp = withBoxNorm(body.pending);
+        if (wp !== body.pending) body.pending = wp;
+      }
       if (stateFail) {
         body.degraded = stateFail.code;
         body.stateStale = true;

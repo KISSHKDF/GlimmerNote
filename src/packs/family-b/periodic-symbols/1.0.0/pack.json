@@ -1,0 +1,44 @@
+{
+  "formatVersion": 1,
+  "id": "family-b/periodic-symbols",
+  "version": "1.0.0",
+  "title": "写化学式之前，先把题给的条件列成一张小表（跨学科复用同一条方法）",
+  "author": "拾光小册 · 经验包试点（合成案例）",
+  "license": "CC-BY-4.0",
+  "extensions": [
+    {
+      "学科": "化学",
+      "适用条件": "题面把条件分散给出（多行/多栏/夹在别的信息里）**且**这些条件对多个小题都必需时才用；条件只服务一个小题、或已集中在题首一眼可见时不要用（那是重复劳动）。",
+      "反例": [
+        {
+          "案例": "cases/periodic-symbols",
+          "对照": "public-condition-marked-as-error"
+        },
+        {
+          "案例": "cases/periodic-symbols",
+          "对照": "condition-on-next-page"
+        },
+        {
+          "案例": "cases/periodic-symbols",
+          "对照": "independent-subquestion"
+        }
+      ],
+      "维护者": "拾光小册维护者（问题请开 Issue，口径见 CONTRIBUTING.md §八「经验贡献与复核」）"
+    }
+  ],
+  "cards": [
+    {
+      "id": "periodic-symbols",
+      "title": "化学式书写：先列条件小表，再定下标；区域只圈卷面事实",
+      "body": "cards/periodic-symbols.md",
+      "steps": ["整页拆分"],
+      "cases": ["cases/periodic-symbols"]
+    }
+  ],
+  "changelog": [
+    {
+      "version": "1.0.0",
+      "note": "初版（批次 5 学科扩展示例）：把 family-a 那条「公共条件跨页/只圈错的小问」的方法复用到**化学**——条件分散且多小题共用时先列一张小表；区域仍只圈卷面事实、错因进 causeNote。附三条可跑反例（误把公共条件圈进错误位置 / 条件在未提供的下一页 / 小题自带条件仍追加公共条件），声明块 extensions[] 含学科、适用条件、反例、维护者四项。"
+    }
+  ]
+}

@@ -93,6 +93,8 @@
       (p.source ? '<div class="small muted" style="margin-top:6px">来源：' + U.esc(p.source) + (p.evidenceNote ? ' · ' + U.esc(p.evidenceNote) : '') + '</div>' : '') +
       (done ? '<div class="ans" style="margin-top:8px"><b>结论：</b>' + U.esc(p.answer || '') + (p.note ? '（' + U.esc(p.note) + '）' : '') + '</div>' : '') +
       evBlock(p) +
+      pairBlock(p) +
+      reviewBlock(p) +
       (done ? '' :
         '<div class="pd-note"><textarea data-ans="' + U.esc(p.id) + '" placeholder="结论/答案（办结必填，作废必写理由）：孩子口述了什么 / 放大原卷看到了什么 / 老师怎么答…" rows="2"></textarea></div>' +
         '<div class="pd-foot">' +
@@ -123,13 +125,16 @@
     /* F-38：图坏了要喊出来，但**不许连「🗂 打开原图」一起删掉**（用户还要靠它去核对/补图）；
        红块里保留按钮 + 一个「重试加载」。 */
     return '<div class="pd-img">' +
-      '<img loading="lazy" class="pd-ev" data-zoom="' + U.esc(p.evidence) + '" data-rel="' + U.esc(p.evidence) + '" data-box="' + U.esc((p.box || []).join(',')) + '" src="' + U.esc(H.asset(p.evidence)) + '" alt="证据图" onerror="CTB.pendingEvErr(this)">' +
+      '<img loading="lazy" class="pd-ev" data-zoom="' + U.esc(p.evidence) + '" data-rel="' + U.esc(p.evidence) + '" data-box="' + U.esc((p.box || []).join(',')) + '" src="' + U.esc(H.asset(p.evidence)) + '" alt="证据图">' +
       /* 2026-10-16 口径（用户定案：裁图=截图，原图=整页）：这张开的是**证据截图**，
          不是原图；原图在灯箱里（点图 → ⇄ 原图）。此前写「打开原图」就是把截图冒充原图。 */
       '<button class="btn xs ghost" data-open="' + U.esc(p.evidence) + '">🗂 打开截图</button></div>';
   }
-  /* 给内联 onerror 用的全局钩子（图片可能在 bind() 之前就已失败）。
-     F-38：只把 <img> 换成红块，**保留外层的 .pd-img 与「🗂 打开原图」**，并给一个重试入口。 */
+  /* F-38 的失败兜底钩子。★ 2026-11-03（B-1 修复）：**不再由内联 onerror 调用** —— 新程序页 CSP
+     （script-src 无 'unsafe-inline'）会把内联事件处理器整条拦掉（真浏览器实测：属性式处理器
+     0 次触发 + 控制台逐字报 "Executing inline event handler violates …"），于是这道防线静默失效、
+     退回用户当初报障的"静默破图"。现在由 bind() 在渲染后**对象式绑定**挂上（见 bind() 里的时序说明）。
+     语义没变：只把 <img> 换成红块，**保留外层的 .pd-img 与「🗂 打开截图」**，并给一个重试入口。 */
   CTB.pendingEvErr = function (img) {
     if (!img || !img.parentNode) return;
     const rel = img.getAttribute('data-rel') || '';
@@ -146,6 +151,13 @@
   };
 
   function bind(box) {
+    /* ★ 2026-11-03（B-1 修复）：`.pd-ev` 的加载失败兜底原先写成内联 `onerror="CTB.pendingEvErr(this)"`，
+       被新程序页 CSP 整条拦掉 ⇒ F-38「证据图坏了要喊出来」的第二道防线静默失效（退回静默破图）。
+       改成渲染后对象式绑定。时序为什么安全：`box.innerHTML = …` 只是**发起**图片请求，error/load
+       事件由事件循环派发，所以紧随其后的同步 bind() 一定先挂上钩子（"图片可能在 bind() 之前就已失败"
+       这句话只描述得了内联属性时代的不可能态 —— 属性随元素一起被解析，永远比任何外部绑定早）。
+       这一类回归由 tests\neg-v2-ingest-task-e2e.cjs 的「零 CSP 违规」+「DOM 无内联事件属性」两条兜住。 */
+    box.querySelectorAll('img.pd-ev').forEach(img => { img.onerror = () => CTB.pendingEvErr(img); });
     box.querySelectorAll('[data-zoom]').forEach(img => img.onclick = () => {
       const host = img.closest('.pd-item');
       openLbAt(host ? host.id.replace(/^pd-/, '') : null);
@@ -166,6 +178,203 @@
       if (!x) return S.toast('关联卡不在当前范围（或还没入册）', 'warn');
       S.route('bank', { openKey: x.key });
     });
+    /* ★ 2026-11-03（批次 4）：原图并排（整页 + 区域高亮）与候选修订的接线。
+       时序同 `.pd-ev`：`innerHTML` 只发起图片请求，load 事件由事件循环派发 ⇒ 紧随其后的同步绑定一定先挂上。 */
+    box.querySelectorAll('[data-pair]').forEach(w => bindPair(w));
+    box.querySelectorAll('[data-rvload]').forEach(b => b.onclick = () => loadReview(b.dataset.rvload, b));
+  }
+
+  /* ---------- 原图并排：左＝整页原卷（区域高亮）／右＝证据截图（批次 4） ----------
+     为什么要有它：批次 2 把"区域"（角色 + 归一化坐标 + 页归属）做进了契约，但界面上一直只有
+     证据截图那一张 —— 看不出"这一块在整页的哪儿、周边还有什么条件"。并排显示 = 让人一眼对上。
+     换算**不在这里做**：调 `S.regionPx`（唯一实现在 shell.js，与灯箱同源）。 */
+  const ROLE_NAME = { 错误位置: '错误位置', 公共条件: '公共条件', 配图: '配图' };
+  /* ★ 2026-11-04（真机看出问题后修）：**区域不在待办上，在卡上**。
+     起因（用无头浏览器把渲染后的 DOM 抓下来核对时发现）：待办条目只有 `origPage/origBox`（一个旧红框），
+     区域 `regions[]`（角色分层）是挂在**卡**上的（`_原卷台账.json` → 生成状态 的 `origRegions`）。
+     我第一版只读 `p.origRegions` ⇒ 永远取不到 ⇒ 界面静默退化成"红框对准（无角色记录）"，
+     看起来像"这台机器没有区域数据"，其实是**接线少了一条**。
+     现在两条路都走，并且**把来源显示出来**（不许静默）：
+       ① 待办自带区域（无卡待办可用 `定位` 登记自己的区域）；
+       ② 否则按 `学生|卡号` 去卡上取（与"去关联卡"按钮、灯箱同一条查找口径）。 */
+  function regionsOf(p) {
+    if (Array.isArray(p.origRegions) && p.origRegions.length) return { regions: p.origRegions, from: '待办登记' };
+    const x = (M.cards || []).find(c => String(c.kid) === String(p.student) && String(c.card && c.card.id) === String(p.cardId));
+    const r = x && x.card && x.card.origRegions;
+    if (Array.isArray(r) && r.length) return { regions: r, from: '关联卡 ' + U.esc(p.student) + '·' + U.esc(p.cardId) };
+    return { regions: [], from: null };
+  }
+  function pairBlock(p) {
+    const ro = regionsOf(p);
+    const regions = ro.regions;
+    const hasOrig = !!p.origPage;
+    const boxOnly = !regions.length && Array.isArray(p.origBox) && p.origBox.length === 4;
+    if (!hasOrig && !regions.length && !boxOnly) return '';
+    if (!hasOrig) {
+      /* 有区域/红框但**没有整页路径**：不许画一张空图（那是静默失败），直接说清缺什么。 */
+      return '<div class="pd-pair" data-pair="' + U.esc(p.id) + '">' +
+        '<div class="pair-hd">原图并排</div>' +
+        '<div class="pd-evmiss">⚠ 有区域记录（' + (regions.length || 1) + ' 块）但**拿不到整页原卷路径**（`origPage` 为空）——' +
+        '不能画一张空图充数。<br>补法：<code>node _待确认.mjs 定位 --id ' + U.esc(p.id) + ' --page "&lt;库内相对路径&gt;" --box "x,y,w,h"</code></div></div>';
+    }
+    const chips = regions.length
+      ? regions.map((r, i) => '<span class="rp-chip ' + S.roleClass(r.role) + '" data-rp="' + i + '">' +
+        U.esc(ROLE_NAME[r.role] || r.role || '（无角色）') + '</span>').join('')
+      : '<span class="rp-chip r-other" data-rp="0">红框对准（无角色记录）</span>';
+    return '<div class="pd-pair" data-pair="' + U.esc(p.id) + '" data-region-from="' + U.esc(ro.from || '（无）') + '">' +
+      '<div class="pair-hd">原图并排　<span class="small muted">左＝整页原卷，右＝证据截图；点左侧小标签可只看某一角色</span></div>' +
+      '<div class="pair-row">' +
+      '<div class="pair-col"><div class="pair-cap">整页原卷' + (regions.length ? '（' + regions.length + ' 块区域）' : '') +
+      (ro.from ? '　<span class="small muted">区域来源：' + ro.from + '</span>' : '') + '</div>' +
+      '<div class="pair-wrap"><img class="pair-orig" alt="整页原卷" src="' + U.esc(H.asset(p.origPage)) + '"' +
+      ' data-regions="' + U.esc(JSON.stringify(regions.length ? regions : (boxOnly ? [{ role: '', x: p.origBox[0], y: p.origBox[1], w: p.origBox[2], h: p.origBox[3] }] : []))) + '">' +
+      '<div class="pair-boxes"></div></div>' +
+      '<div class="pair-legend">' + chips + '</div></div>' +
+      '<div class="pair-col"><div class="pair-cap">证据截图</div>' +
+      (p.evidence && p.evidenceOk !== false
+        ? '<div class="pair-wrap"><img class="pair-ev" alt="证据截图" src="' + U.esc(H.asset(p.evidence)) + '"></div>'
+        : '<div class="pd-evmiss">⚠ 证据截图不可用（' + U.esc(p.evidenceOk === false ? '文件不在或路径非法' : '缺图（必有字段）') + '）</div>') +
+      '</div></div></div>';
+  }
+  /** 把归一化区域画成像素框。**必须等图 load**（没有 naturalWidth 算不出像素）；算不出/字段非法 ⇒ 明说，不静默。 */
+  function bindPair(w) {
+    const img = w.querySelector('img.pair-orig');
+    if (!img) return;
+    const holder = w.querySelector('.pair-boxes');
+    let regions = [];
+    try { regions = JSON.parse(img.dataset.regions || '[]'); } catch { regions = []; }
+    const draw = () => {
+      holder.innerHTML = '';
+      if (!img.naturalWidth) {
+        holder.innerHTML = '<div class="pair-warn">⚠ 整页原卷量不出尺寸（文件读不出宽高）——区域无法定位</div>';
+        return;
+      }
+      let bad = 0;
+      regions.forEach((r, i) => {
+        const px = S.regionPx(r, img);
+        if (!px) { bad++; return; }
+        const [x, y, ww, hh] = px;
+        const d = document.createElement('div');
+        d.className = 'pair-box ' + S.roleClass(r.role);
+        d.style.left = (x / img.naturalWidth * 100) + '%';
+        d.style.top = (y / img.naturalHeight * 100) + '%';
+        d.style.width = (ww / img.naturalWidth * 100) + '%';
+        d.style.height = (hh / img.naturalHeight * 100) + '%';
+        d.title = (ROLE_NAME[r.role] || r.role || '区域') + '　x=' + r.x + ' y=' + r.y + ' w=' + r.w + ' h=' + r.h;
+        d.dataset.rp = String(i);
+        holder.appendChild(d);
+      });
+      if (bad) {
+        const e = document.createElement('div');
+        e.className = 'pair-warn';
+        e.textContent = '⚠ 有 ' + bad + ' 块区域坐标不合法（算不出像素框）——已跳过，请核对记录';
+        holder.appendChild(e);
+      }
+      /* 只看某一角色：点标签切换（多选语义 = 高亮该角色，其余变淡；再点还原） */
+      w.querySelectorAll('.rp-chip').forEach((c) => {
+        c.onclick = () => {
+          const on = c.classList.toggle('on');
+          w.querySelectorAll('.rp-chip').forEach((o) => { if (o !== c) o.classList.remove('on'); });
+          holder.querySelectorAll('.pair-box').forEach((b) => b.classList.toggle('dim', on && b.dataset.rp !== c.dataset.rp));
+        };
+      });
+    };
+    img.onerror = () => {
+      holder.innerHTML = '<div class="pair-warn">⚠ 整页原卷打不开（路径：' + U.esc(img.getAttribute('src') || '') + '）——区域无法核对</div>';
+    };
+    if (img.complete && img.naturalWidth) draw(); else img.onload = draw;
+  }
+
+  /* ---------- 候选修订 + 正式写入入口（批次 4） ----------
+     两段式（与 `_待确认.mjs` 一致）：候选是**草案**，`采用` 才是写库。
+     为什么按需加载而不是渲染时全拉：每条待办一次壳往返，待办列表几十条 ⇒ 打开页面就几十次进程调用。
+     ⚠ 失败/空/现值缺失一律**上屏原文**，不许静默降级。 */
+  function reviewBlock(p) {
+    return '<div class="pd-review" data-review="' + U.esc(p.id) + '">' +
+      '<div class="pair-hd">候选修订　<span class="small muted">草案 → 人工看 → 点「采用」才写进库</span></div>' +
+      '<div class="rv-body small muted">未读。点下面按钮读这条待办的候选与修订链。</div>' +
+      '<div class="pd-foot"><button class="btn sm ghost" data-rvload="' + U.esc(p.id) + '">🔍 查候选修订</button></div>' +
+      '</div>';
+  }
+  function rvStatusTag(st) {
+    return st === '已采用' ? '<span class="tag ok">已采用</span>' : st === '已作废' ? '<span class="tag gray">已作废</span>' : '<span class="tag warn">待采用</span>';
+  }
+  function rvHtml(j) {
+    const cs = Array.isArray(j.candidates) ? j.candidates : [];
+    const rs = Array.isArray(j.revisions) ? j.revisions : [];
+    if (!cs.length && !rs.length) return '<div class="rv-body small muted">这条待办还没有候选修订，也没有修订链记录。</div>';
+    const cands = cs.map((c) => {
+      const grey = c.status !== '待采用';
+      return '<div class="rv-card' + (grey ? ' grey' : '') + '" data-cand="' + U.esc(c.candId) + '">' +
+        '<div class="rv-top">' + rvStatusTag(c.status) + '<span class="tag info">' + U.esc(c.kind) + '</span>' +
+        '<span class="small num">' + U.esc(c.target) + '</span><span class="small muted">' + U.esc(c.candId) + ' · ' + U.esc(c.at || '') + '</span></div>' +
+        '<div class="rv-sum">' + U.esc(c.summary || '') + '</div>' +
+        '<div class="rv-pair">' +
+        '<div class="rv-side"><div class="rv-cap">现值' + (c.currentPresence === 'read' ? '（' + U.esc(c.currentFrom || '') + '）' : '') + '</div>' +
+        '<pre class="rv-pre">' + U.esc(c.currentPresence === 'read' ? (c.current || '') : ('（读不到：' + (c.currentWhy || '未说明') + '）')) + '</pre></div>' +
+        '<div class="rv-side"><div class="rv-cap">候选</div><pre class="rv-pre">' + U.esc(c.payload || '') + '</pre></div>' +
+        '</div>' +
+        (grey ? '<div class="small muted">' + U.esc(c.reason || '（无说明）') + '</div>'
+          : '<div class="pd-foot"><button class="btn sm" data-rvadopt="' + U.esc(c.candId) + '">✅ 采用（写进库）</button>' +
+            '<button class="btn sm ghost" data-rvdry="' + U.esc(c.candId) + '">先看会写什么（不写盘）</button></div>') +
+        '</div>';
+    }).join('');
+    const revs = rs.length
+      ? '<div class="rv-revs"><div class="rv-cap">修订链（只增不改）</div>' + rs.map((r) =>
+        '<div class="small">' + U.esc(r.at || '') + ' · ' + U.esc(r.candId || '') + ' · ' + U.esc(r.kind || '') + ' ' + U.esc(r.target || '') +
+        '　写入：' + U.esc((r.written || []).join('、')) + '</div>').join('') + '</div>'
+      : '';
+    return '<div class="rv-count small muted">候选 ' + cs.length + '（待采用 ' + (j.counts && j.counts.pending || 0) +
+      ' / 已采用 ' + (j.counts && j.counts.adopted || 0) + ' / 已作废 ' + (j.counts && j.counts.void || 0) + '）· 修订链 ' + rs.length + ' 条</div>' +
+      cands + revs;
+  }
+  async function loadReview(id, btn) {
+    const w = btn.closest('.pd-review');
+    const body = w.querySelector('.rv-body');
+    const foot = w.querySelector('.pd-foot');
+    btn.disabled = true;
+    body.className = 'rv-body small muted';
+    body.textContent = '读取中…';
+    try {
+      const j = await H.reviewList(id);
+      body.className = 'rv-body';
+      body.innerHTML = rvHtml(j);
+      bindReview(w, id);
+    } catch (e) {
+      /* 失败**上屏工具原文**（含退出码），不吞、不美化 */
+      body.className = 'rv-body rv-err';
+      body.textContent = '✖ ' + (e && e.message ? e.message : String(e));
+    } finally { btn.disabled = false; if (foot) foot.style.display = ''; }
+  }
+  function bindReview(w, id) {
+    w.querySelectorAll('[data-rvdry]').forEach((b) => b.onclick = () => adopt(id, b.dataset.rvdry, true, w));
+    w.querySelectorAll('[data-rvadopt]').forEach((b) => b.onclick = () => adopt(id, b.dataset.rvadopt, false, w));
+  }
+  async function adopt(id, candId, dry, w) {
+    const card = w.querySelector('[data-cand="' + candId + '"]');
+    const out = card ? card.querySelector('.rv-out') || (() => {
+      const d = document.createElement('pre'); d.className = 'rv-out'; card.appendChild(d); return d;
+    })() : null;
+    if (!dry) {
+      const ok = await S.confirm({
+        title: '采用这条候选修订？', danger: false, ok: '采用（写进库）', cancel: '取消',
+        body: '候选 ' + candId + '\n\n这会把修订正文写进库：`_修订\\<类型>\\<目标>\\' + candId + '.md`，' +
+          '并在这条待办上追加一条修订链记录。**不会**改写卡正文/配方/流程文件。',
+      });
+      if (!ok) return;
+    }
+    if (out) out.textContent = '执行中…';
+    try {
+      const j = await H.reviewAdopt(id, candId, dry);
+      const txt = (dry ? '（不写盘）' : '✅ 已写入：') + (j.written || [j.relPath]).filter(Boolean).join('、') +
+        (j.idempotent ? '　（幂等：之前已采用过，未重复写）' : '') + '\n' + JSON.stringify(j, null, 1);
+      if (out) out.textContent = txt;
+      S.toast(dry ? '已列出将写入的内容（未写盘）' : '已采用，写进库并留痕', 'ok');
+      if (!dry) { const b = w.querySelector('[data-rvload]'); if (b) loadReview(id, b); }
+    } catch (e) {
+      if (out) out.textContent = '✖ ' + (e && e.message ? e.message : String(e));
+      S.toast(dry ? '预演失败' : '采用失败（详情见下方原文）', 'bad');
+    }
   }
 
   /* ---------- 灯箱办结流（rc.2：图上有红框，图下有这条的问题/判法/办结操作） ---------- */
@@ -209,6 +418,25 @@
       orig = three.orig; origBox = three.origBox; origBy = three.origBy || '原卷台账';
     }
     const hasOrig = !!orig;
+    /* ★ 2026-11-03（批次 2 · 区域契约 §6，docs\区域契约.md）：把后端读取侧附加的坐标字段送到灯箱。
+       形状来自 W4：`boxNorm`（0~1 归一化，与 `box` 是**同一块区域**）+ `imgW/imgH`（登记该坐标时那张图的显示宽高）。
+       `shell.js` 的 `lbFocusPx` 在这两个都可用时走归一化路，否则回落 `box`（缺字段不报错、不猜）。
+       ⚠ 本处**只加字段**：下面 `box:` 的语义一个字不改（用例钉住）。
+       数值统一 `Number()` 容错（后端将来给字符串 "800" 也认）；给不出可用数值时**不静默当 0** ——
+       在徽章上说明"按像素框显示"，用户至少知道坐标是退化的，而不是以为红框对准了。 */
+    const bwN = Number(p.imgW), bhN = Number(p.imgH);
+    const bNorm = (p.boxNorm && p.boxNorm.length === 4) ? p.boxNorm : null;
+    const bNormOk = !!bNorm && bwN > 0 && bhN > 0;
+    const bPix = (p.box && p.box.length === 4) ? p.box : null;
+    /* 后端量不出尺寸时给的是 `boxNormWhy`（具体原因，**不写 0**，见 _待确认.mjs / _服务端.mjs）。
+       有框却没归一化坐标 ⇒ 把原因摆到徽章上（用户能问"为什么这个红框算不出坐标"，
+       而"声明了没人读"正是本仓老毛病）；本来就没框的记录不提示，免得噪音。 */
+    const bWhy = String(p.boxNormWhy || '').trim();
+    const bNormNote = (bNorm && !bNormOk)
+      ? '<span class="tag warn" title="归一化框算不出像素：imgW/imgH 缺失或不可用">坐标字段不全：按像素框显示</span>'
+      : ((!bNorm && bWhy && bPix)
+        ? '<span class="tag warn" title="' + U.esc(bWhy) + '">红框按像素显示（算不出归一化坐标）</span>'
+        : '');
     return {
       src: H.asset(p.evidence), rel: p.evidence,
       orig: hasOrig ? orig : p.evidence,
@@ -217,9 +445,11 @@
       title: '待办 ' + p.id + ' · ' + (p.student || '') + (p.subject ? '·' + p.subject : '') + ' · ' + (p.source || ''),
       chips: '<span class="tag warn">' + U.esc(p.id) + '</span><span class="tag gray">' + U.esc(p.kind || '') + '</span>' +
         '<span class="tag info">' + (M.ASK_IC[p.askWho] || '') + ' 问' + U.esc(p.askWho || '') + '</span>' +
-        (p.qRef ? '<span class="tag ok">📍 ' + U.esc(p.qRef) + '</span>' : ''),
+        (p.qRef ? '<span class="tag ok">📍 ' + U.esc(p.qRef) + '</span>' : '') + bNormNote,
       q: p.question, detail: p.detail || '', hint: howto(p),
       box: (p.box && p.box.length === 4) ? p.box : null,
+      /* 只在这两个有值时才给数：没有 = 0 ⇒ shell 侧 `w > 0 && h > 0` 判据自然回落像素框。 */
+      boxNorm: bNorm, imgW: bNormOk ? bwN : 0, imgH: bNormOk ? bhN : 0,
       foot: '<textarea id="lbAns" rows="2" placeholder="结论/答案（办结必填，作废必写理由）：放大后看到了什么 / 孩子口述了什么 / 老师怎么答…"></textarea>' +
         '<button class="btn ok" data-lbsolve>✓ 确认办结</button><button class="btn danger" data-lbvoid>🗑 作废</button>' +
         '<span class="small">Esc 关闭 ｜ ←→ 换条 ｜ 办结后自动跳下一条</span>',
@@ -349,6 +579,11 @@
         '<div class="opt-item">关联卡号 <input type="text" id="paCard" style="width:120px" placeholder="P0012">　类型 <select id="paKind">' + M.KINDS.map(k => '<option>' + k + '</option>').join('') + '</select>' +
         '　问谁 <select id="paAsk">' + M.ASK_ORDER.map(k => '<option>' + k + '</option>').join('') + '</select></div>' +
         '<textarea id="paQ" maxlength="800" placeholder="问题一句话（必填）"></textarea>' +
+        /* ★ 2026-11-03（批次 3 §2.2）：把家长/用户的「为什么纠正」引到类型「经验线索」上 ——
+           这类条目以后能按白名单整理成**先看、再决定分享**的公开草稿
+           （工具侧：`纠因 --id Txxx --why "原话"`，或 `加 --kind 经验线索 --detail "原话"`）。
+           契约要求这一行放在 paD（说明）输入框**上方**：写在下面会被当成"备注"忽略掉。 */
+        '<div class="small muted">如果是你对某道题/某条方法的纠正，把<b>为什么</b>写在这里，类型选「经验线索」—— 这条以后可以整理成公开草稿。</div>' +
         '<textarea id="paD" maxlength="2000" placeholder="证据/影响（可选）" rows="2"></textarea>' +
         /* F-35：C# AddFlag 支持 --box、_待确认.mjs:322 也读 opt.box，此前表单没有它 ⇒
            新建条目永远没有高亮框（灯箱里看不到红框）。现在补上并透传。 */

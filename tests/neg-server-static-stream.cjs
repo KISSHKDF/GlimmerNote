@@ -16,7 +16,7 @@
  *   · 非法 spec / 合法多段（本轮只支持单段）⇒ **忽略该头回 200 全量**（RFC 7233 口径，2026-11-02 lead 裁决）；
  *   · 全程服务端进程 RSS 增幅 < 32 MiB（改前 256 MiB 文件一比一放大 ⇒ 这条会红）。
  *
- * 库是自建临时库（%TEMP%），两个文件：`big.bin` = 64 MiB + 1 字节、`mid.bin` = 100 KiB。
+ * 库是自建临时库（%TEMP%），两个文件：`big.jpg` = 64 MiB + 1 字节、`mid.jpg` = 100 KiB。
  * 退出码 0 = 全绿。
  */
 'use strict';
@@ -61,10 +61,10 @@ function memOf(pid) {
 }
 
 (async () => {
-  fs.writeFileSync(path.join(LIB, 'mid.bin'), Buffer.alloc(MID, 0x41));      // 'A'×100KiB（ASCII ⇒ 字节数=字符数）
-  fs.writeFileSync(path.join(LIB, 'big.bin'), Buffer.alloc(BIG, 0x42));      // 'B'×(64MiB+1)
-  A('夹具：big.bin = 64 MiB + 1 字节', fs.statSync(path.join(LIB, 'big.bin')).size === BIG, String(BIG));
-  A('夹具：mid.bin = 100 KiB', fs.statSync(path.join(LIB, 'mid.bin')).size === MID, String(MID));
+  fs.writeFileSync(path.join(LIB, 'mid.jpg'), Buffer.alloc(MID, 0x41));      // 'A'×100KiB（ASCII ⇒ 字节数=字符数）
+  fs.writeFileSync(path.join(LIB, 'big.jpg'), Buffer.alloc(BIG, 0x42));      // 'B'×(64MiB+1)
+  A('夹具：big.jpg = 64 MiB + 1 字节', fs.statSync(path.join(LIB, 'big.jpg')).size === BIG, String(BIG));
+  A('夹具：mid.jpg = 100 KiB', fs.statSync(path.join(LIB, 'mid.jpg')).size === MID, String(MID));
 
   const srv = startServerAt(path.join(ROOT, 'src', 'tools', '_服务端.mjs'), PORT, LIB);
   let code = 1;
@@ -79,8 +79,8 @@ function memOf(pid) {
 
     console.log('\n══ ① 上限：> 64 MiB 必须 413（明确文案），且不得把文件读进内存 ══');
     {
-      const r = await req(PORT, '/big.bin', { timeoutMs: 60000 });
-      A('GET /big.bin（64 MiB + 1 字节）→ 413', r.status === 413, 'status=' + r.status + ' body=' + r.text.slice(0, 120));
+      const r = await req(PORT, '/big.jpg', { timeoutMs: 60000 });
+      A('GET /big.jpg（64 MiB + 1 字节）→ 413', r.status === 413, 'status=' + r.status + ' body=' + r.text.slice(0, 120));
       A('  ↳ 文案含上限 67108864 字节（64 MiB）', r.text.includes(String(64 * 1024 * 1024)), r.text.slice(0, 160));
       A('  ↳ 文案含该文件实际大小 ' + BIG, r.text.includes(String(BIG)), r.text.slice(0, 160));
       A('  ↳ 响应体里没有文件内容（没有 ' + BIG + ' 字节的 B）', r.text.length < 1000 && !/^B+$/.test(r.text), 'len=' + r.text.length);
@@ -89,8 +89,8 @@ function memOf(pid) {
 
     console.log('\n══ ② 无 Range：200 + Content-Length（改前是 chunked、无 Content-Length）══');
     {
-      const r = await req(PORT, '/mid.bin', { timeoutMs: 60000 });
-      A('GET /mid.bin → 200', r.status === 200, 'status=' + r.status);
+      const r = await req(PORT, '/mid.jpg', { timeoutMs: 60000 });
+      A('GET /mid.jpg → 200', r.status === 200, 'status=' + r.status);
       A('  ↳ Content-Length = ' + MID, Number(r.headers['content-length']) === MID, 'CL=' + r.headers['content-length']);
       A('  ↳ Accept-Ranges: bytes（已声明支持分段）', r.headers['accept-ranges'] === 'bytes', 'AR=' + r.headers['accept-ranges']);
       A('  ↳ 正文长度 = ' + MID, r.text.length === MID, 'len=' + r.text.length);
@@ -107,15 +107,15 @@ function memOf(pid) {
         ['bytes=-100', MID - 100, MID - 1, '后缀式 bytes=-100'],
       ];
       for (const [h, s, e, why] of cases) {
-        const r = await req(PORT, '/mid.bin', { headers: { Range: h }, timeoutMs: 60000 });
+        const r = await req(PORT, '/mid.jpg', { headers: { Range: h }, timeoutMs: 60000 });
         const want = 'bytes ' + s + '-' + e + '/' + MID;
         A('Range: ' + h + ' → 206（' + why + '）', r.status === 206, 'status=' + r.status);
         A('  ↳ Content-Range = ' + want, r.headers['content-range'] === want, 'CR=' + r.headers['content-range']);
         A('  ↳ 切片字节数 = ' + (e - s + 1), r.text.length === (e - s + 1), 'len=' + r.text.length);
       }
       /* 逐字节核对首段真的是文件开头那 100 字节 */
-      const head = fs.readFileSync(path.join(LIB, 'mid.bin')).subarray(0, 100).toString('utf8');
-      const r0 = await req(PORT, '/mid.bin', { headers: { Range: 'bytes=0-99' }, timeoutMs: 60000 });
+      const head = fs.readFileSync(path.join(LIB, 'mid.jpg')).subarray(0, 100).toString('utf8');
+      const r0 = await req(PORT, '/mid.jpg', { headers: { Range: 'bytes=0-99' }, timeoutMs: 60000 });
       A('  ↳ bytes=0-99 的切片与磁盘前 100 字节逐字节相同', r0.text === head, '');
     }
 
@@ -124,7 +124,7 @@ function memOf(pid) {
       /* 416 只给"合法单段但一条都不可满足"（起点越界、后缀为 0、空文件）。 */
       const unsat = [['bytes=99999999-', '起点越过文件尾'], ['bytes=-0', '后缀长度 0'], ['bytes=102400-', '起点 = 文件尾']];
       for (const [h, why] of unsat) {
-        const r = await req(PORT, '/mid.bin', { headers: { Range: h }, timeoutMs: 60000 });
+        const r = await req(PORT, '/mid.jpg', { headers: { Range: h }, timeoutMs: 60000 });
         A('Range: ' + h + ' → 416（' + why + '）', r.status === 416, 'status=' + r.status + ' CR=' + r.headers['content-range']);
         A('  ↳ Content-Range = bytes * /' + MID, r.headers['content-range'] === 'bytes */' + MID, 'CR=' + r.headers['content-range']);
       }
@@ -138,7 +138,7 @@ function memOf(pid) {
         ['bytes=-', '空区间'],
       ];
       for (const [h, why] of ignored) {
-        const r = await req(PORT, '/mid.bin', { headers: { Range: h }, timeoutMs: 60000 });
+        const r = await req(PORT, '/mid.jpg', { headers: { Range: h }, timeoutMs: 60000 });
         A('Range: ' + h + ' → 200 全量（忽略该头：' + why + '）', r.status === 200, 'status=' + r.status + ' CR=' + r.headers['content-range']);
         A('  ↳ 不带 Content-Range（证明是"忽略"而不是"误当 206"）', r.headers['content-range'] === undefined, String(r.headers['content-range']));
         A('  ↳ 整份正文 ' + MID + ' 字节 + Content-Length 一致',
@@ -154,7 +154,7 @@ function memOf(pid) {
       console.log('  RSS AFTER   WorkingSet=' + (after.ws / MiB).toFixed(1) + ' MiB  Peak=' + (after.peak / MiB).toFixed(1) + ' MiB');
       A('WorkingSet64 增幅 < 32 MiB', dws < 32 * MiB, '+' + (dws / MiB).toFixed(1) + ' MiB');
       A('PeakWorkingSet64 增幅 < 32 MiB（峰值口径，抓"曾经整份读入"）', dpeak < 32 * MiB, '+' + (dpeak / MiB).toFixed(1) + ' MiB');
-      A('对照：本用例真的请求过 64 MiB 的文件（否则内存断言无意义）', fs.statSync(path.join(LIB, 'big.bin')).size === BIG, '');
+      A('对照：本用例真的请求过 64 MiB 的文件（否则内存断言无意义）', fs.statSync(path.join(LIB, 'big.jpg')).size === BIG, '');
     }
 
     console.log('\n══ ⑥ 阴性自证：把上限判据掏成"旧行为（无上限）"⇒ 同一请求不再 413 ══');
@@ -179,10 +179,10 @@ function memOf(pid) {
           A('替身实例启动（无上限）', false, 'health 超时；stderr=' + mut.err.slice(0, 200));
         } else {
           A('替身实例启动（仅掏掉上限判据）', true);
-          const r = await req(PORT + 1, '/big.bin', { headers: { Range: 'bytes=0-9' }, timeoutMs: 120000 });
+          const r = await req(PORT + 1, '/big.jpg', { headers: { Range: 'bytes=0-9' }, timeoutMs: 120000 });
           A('替身：同一文件回 206 而不是 413（证明 413 有牙齿）', r.status === 206, 'status=' + r.status + ' CR=' + r.headers['content-range']);
           A('替身：正文 10 字节', r.text.length === 10, 'len=' + r.text.length);
-          A('对照：真源码同一请求回 413', (await req(PORT, '/big.bin', { headers: { Range: 'bytes=0-9' }, timeoutMs: 60000 })).status === 413, '');
+          A('对照：真源码同一请求回 413', (await req(PORT, '/big.jpg', { headers: { Range: 'bytes=0-9' }, timeoutMs: 60000 })).status === 413, '');
         }
       } finally {
         await mut.stop();

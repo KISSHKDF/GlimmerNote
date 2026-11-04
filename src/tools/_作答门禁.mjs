@@ -26,7 +26,8 @@
  *   扫描                只读：全库逐卡列出「空位数 / 已登记 / 判定」，把候选缺陷标出来
  *   清单 [--json]       只读：逐卡状态（{key:{slots,answers,mode,state,ok}}）
  *   门禁 [--json]       判定：不合契约即退出码 1（人类模式与 --json 同码同判，绝不假绿）
- *   工单 --out <dir>    只读：按学科导出「待登记」工单（JSON+MD），供人/子代理逐卡填答案
+ *   工单 [--out <dir>]  只读：按学科导出「待登记」工单（JSON+MD），供人/子代理逐卡填答案
+ *                        （不给 --out 时落**过程目录**，见 `_过程目录.mjs`；工单是过程件，不进库根）
  *   补登 --card 学生|编号 --slots "…；…" [--mode blank|figure|zone|none] [--scope full|partial]
  *        [--at 1,3] [--note "..."]     单卡写回索引（走 _安全写：备份 + 原子写 + 形状守卫）
  *   批量 --file <decl.json>           批量写回：[{card, mode, slots:[…], scope, at, note}]
@@ -41,6 +42,10 @@ import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { libraryRoot, toolPath } from './_库根.mjs';
+/* ★ 2026-11-02 批次0尾项：工单是**过程件**（跑完就该没），默认落点不再进库根。
+   改前默认 `ROOT\_作答工单`（库根）—— ① 被 tests\run.mjs 的「真库零写入」判违规；
+   ② 把"什么算用户数据"搅浑。唯一落点见 `_过程目录.mjs`（`GLIMMERNOTE_PROC` 可覆盖）。 */
+import { procPath } from './_过程目录.mjs';
 import { readJsonStrict, writeJsonAtomic, backupJson, writeTextAtomic, acquireLibLock } from './_安全写.mjs';
 import { slotsOf, slotCount, needEm, blankWidthEm, alignedAnswers, fitSlots, applySlotWidths, BLANK_MAX_EM, CHILD_FACTOR } from './_空位.mjs';
 
@@ -404,7 +409,9 @@ switch (action) {
   }
 
   case '工单': {
-    const outDir = opt.out && opt.out !== true ? String(opt.out) : path.join(ROOT, '_作答工单');
+    /* 默认落**过程目录**（见 `_过程目录.mjs`）；只有显式 `--out <目录>` 才写到调用方指定处。
+       库根不再是落点：工单是过程件，库根只放用户真源与显式备份。 */
+    const outDir = opt.out && opt.out !== true ? String(opt.out) : procPath('作答工单');
     fs.mkdirSync(outDir, { recursive: true });
     const groups = new Map();
     for (const x of allCards()) {

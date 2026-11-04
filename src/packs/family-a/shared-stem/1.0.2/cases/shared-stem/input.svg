@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 1200" width="900" height="1200" role="img" aria-label="合成案例：一页物理实验题，(1) 已答对，(2) 错且依赖公共题干">
+  <rect width="900" height="1200" fill="#ffffff"/>
+
+  <!-- 页眉 -->
+  <text x="60" y="58" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="22" fill="#111111">第 3 页 · 实验探究（合成案例，非真实试卷）</text>
+  <line x1="60" y1="78" x2="840" y2="78" stroke="#999999" stroke-width="1"/>
+
+  <!-- 公共题干块：(1)(2) 共用，区域契约里的「公共条件」就指这一块 -->
+  <rect x="60" y="140" width="780" height="290" fill="#f6f8fa" stroke="#9bb7c9" stroke-width="1.5"/>
+  <text x="76" y="174" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="19" fill="#0b4f6c">公共题干（(1)、(2) 共用）</text>
+  <text x="76" y="208" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="18" fill="#111111">研究「电阻丝的长度与电阻的关系」：把同一根电阻丝按 20 cm / 40 cm / 60 cm</text>
+  <text x="76" y="236" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="18" fill="#111111">三段分别接入电路，用电流表测通过每一段的电流，电压表读数为 1.2 V 且始终不变。</text>
+
+  <!-- 数据表 -->
+  <rect x="96" y="262" width="708" height="108" fill="#ffffff" stroke="#555555" stroke-width="1"/>
+  <line x1="96" y1="298" x2="804" y2="298" stroke="#555555" stroke-width="1"/>
+  <line x1="96" y1="334" x2="804" y2="334" stroke="#555555" stroke-width="1"/>
+  <line x1="196" y1="262" x2="196" y2="370" stroke="#555555" stroke-width="1"/>
+  <line x1="398" y1="262" x2="398" y2="370" stroke="#555555" stroke-width="1"/>
+  <line x1="601" y1="262" x2="601" y2="370" stroke="#555555" stroke-width="1"/>
+  <text x="112" y="288" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="17" fill="#111111">长度 L / cm</text>
+  <text x="270" y="288" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="17" fill="#111111">20</text>
+  <text x="480" y="288" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="17" fill="#111111">40</text>
+  <text x="690" y="288" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="17" fill="#111111">60</text>
+  <text x="112" y="324" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="17" fill="#111111">电流 I / A</text>
+  <text x="275" y="324" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="17" fill="#111111">0.30</text>
+  <text x="480" y="324" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="17" fill="#111111">0.20</text>
+  <text x="690" y="324" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="17" fill="#111111">0.15</text>
+  <text x="112" y="360" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="17" fill="#111111">电压 U / V</text>
+  <text x="275" y="360" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="17" fill="#111111">1.2</text>
+  <text x="480" y="360" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="17" fill="#111111">1.2</text>
+  <text x="690" y="360" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="17" fill="#111111">1.2</text>
+  <text x="76" y="404" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="17" fill="#333333">（以上条件只在本页给出一次；(1)、(2) 都要用到它。）</text>
+
+  <!-- 小问 (1)：已答对 -->
+  <text x="60" y="514" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="18" fill="#111111">（1）由上表数据，求 60 cm 这段电阻丝的电阻 R。</text>
+  <text x="76" y="552" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="18" fill="#1a7f37">作答：R = U ÷ I = 1.2 V ÷ 0.15 A = 8 Ω</text>
+  <text x="560" y="552" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="24" fill="#1a7f37">✔</text>
+  <text x="596" y="552" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="17" fill="#1a7f37">批改：对</text>
+
+  <!-- 小问 (2)：错，且解题离不开上面的公共题干/数据表 -->
+  <rect x="60" y="600" width="780" height="180" fill="#ffffff" stroke="#d0d0d0" stroke-width="1" stroke-dasharray="6 4"/>
+  <text x="60" y="638" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="18" fill="#111111">（2）把两段 20 cm 的电阻丝串联后接在同一电源上，求电路中的电流。</text>
+  <text x="76" y="678" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="18" fill="#b42318">作答：串联后总电阻仍算 4 Ω，I = U ÷ R = 1.2 V ÷ 4 Ω = 0.30 A</text>
+  <text x="76" y="710" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="18" fill="#b42318">（错在把两段电阻当成一段：总电阻应是 4 Ω + 4 Ω = 8 Ω，I 应为 0.15 A）</text>
+  <!-- ⚠ 2026-11-03：红叉与「批改：错」原与上一行说明文字**同一基线**（y=716）且 x 重叠 ⇒
+       渲染出来读成「0.1✘A)批改: 错」。合成案例是给人判断「脱离原页能否读懂」的素材，
+       批改痕迹压住正文会直接把判断带偏。改：说明行上移 6px，批改痕迹另起一行（y=752），
+       仍在「错误位置」区域（y 0.5~0.65 ⇒ 600~780）之内，区域契约与 expected.json 不变。 -->
+  <text x="640" y="752" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="24" fill="#b42318">✘</text>
+  <text x="676" y="752" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="17" fill="#b42318">批改：错</text>
+
+  <!-- 页脚：合成与化名声明 -->
+  <line x1="60" y1="1108" x2="840" y2="1108" stroke="#999999" stroke-width="1"/>
+  <text x="60" y="1140" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="15" fill="#666666">合成案例：自造题面，不来自任何真实试卷；不含真实姓名、学校、班级。</text>
+  <text x="60" y="1168" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="15" fill="#666666">用途：演示「整页拆分」时区域怎么定（见 1.0.2/expected 的 cases/shared-stem/expected.json）。</text>
+</svg>

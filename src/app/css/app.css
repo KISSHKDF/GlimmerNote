@@ -670,3 +670,48 @@ textarea{width:100%;resize:vertical;min-height:64px;line-height:1.7}
   border-left:3px solid var(--ok);font-size:var(--fs-sm)}
 .ig-warn{margin-top:10px;padding:7px 10px;border-radius:var(--r-s);background:var(--surface2);
   border-left:3px solid var(--bad);font-size:var(--fs-sm)}
+
+/* ══ 原图并排 + 候选修订（批次 4「审核与正式入库」，2026-11-03）══
+   并排的用意：左边是"整页原卷 + 区域高亮"，右边是"证据截图" —— 一眼看出这一块在哪儿、周边还有什么条件。
+   角色三色与 `docs\区域契约.md` 的枚举一一对应（错误位置/公共条件/配图；未知角色走 r-other，不冒充红框）。 */
+.pd-pair{margin-top:10px;border:1px solid var(--line);border-radius:var(--r-m);padding:10px;background:var(--surface2)}
+.pair-hd{font-weight:600;margin-bottom:8px}
+.pair-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+@media (max-width:820px){.pair-row{grid-template-columns:1fr}}
+.pair-col{min-width:0}
+.pair-cap{font-size:var(--fs-xs);color:var(--muted);margin-bottom:4px}
+.pair-wrap{position:relative;border:1px solid var(--line);border-radius:var(--r-s);overflow:hidden;background:var(--surface)}
+.pair-wrap img{display:block;width:100%;height:auto}
+.pair-boxes{position:absolute;inset:0;pointer-events:none}
+.pair-box{position:absolute;border:2px solid var(--brand-2);border-radius:3px;box-sizing:border-box;
+  transition:opacity .15s}
+.pair-box.dim{opacity:.18}
+.pair-box.r-err{border-color:var(--bad);box-shadow:0 0 0 2px color-mix(in srgb,var(--bad) 25%,transparent)}
+.pair-box.r-cond{border-color:var(--warn,var(--brand-2))}
+.pair-box.r-fig{border-color:var(--ok)}
+.pair-box.r-other{border-color:var(--muted);border-style:dashed}
+.pair-legend{margin-top:6px;display:flex;gap:6px;flex-wrap:wrap}
+.rp-chip{font-size:var(--fs-xs);padding:2px 8px;border-radius:999px;border:1px solid var(--line);
+  cursor:pointer;background:var(--surface);user-select:none}
+.rp-chip.r-err{border-color:var(--bad);color:var(--bad)}
+.rp-chip.r-cond{border-color:var(--brand-2);color:var(--brand-2)}
+.rp-chip.r-fig{border-color:var(--ok);color:var(--ok)}
+.rp-chip.r-other{border-color:var(--muted);color:var(--muted)}
+.rp-chip.on{background:var(--brand-soft);font-weight:600}
+.pair-warn{margin-top:6px;padding:6px 9px;border-radius:var(--r-s);background:color-mix(in srgb,var(--bad) 8%,var(--surface));
+  border-left:3px solid var(--bad);font-size:var(--fs-xs)}
+.pd-review{margin-top:10px;border:1px solid var(--line);border-radius:var(--r-m);padding:10px;background:var(--surface2)}
+.rv-card{border:1px solid var(--line);border-radius:var(--r-s);padding:8px 10px;margin-top:8px;background:var(--surface)}
+.rv-card.grey{opacity:.72}
+.rv-top{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:4px}
+.rv-sum{font-size:var(--fs-sm);margin:4px 0 6px}
+.rv-pair{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+@media (max-width:820px){.rv-pair{grid-template-columns:1fr}}
+.rv-cap{font-size:var(--fs-xs);color:var(--muted);margin-bottom:3px}
+.rv-pre{margin:0;padding:7px 9px;border:1px solid var(--line);border-radius:var(--r-s);background:var(--surface2);
+  font-size:var(--fs-xs);line-height:1.5;white-space:pre-wrap;word-break:break-word;max-height:220px;overflow:auto}
+.rv-out{margin:8px 0 0;padding:7px 9px;border:1px solid var(--brand-2);border-radius:var(--r-s);
+  font-size:var(--fs-xs);white-space:pre-wrap;word-break:break-word}
+.rv-err{color:var(--bad);white-space:pre-wrap}
+.rv-revs{margin-top:10px}
+.rv-count{margin-bottom:4px}

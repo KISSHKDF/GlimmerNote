@@ -10,7 +10,7 @@
 //   pendingResolve → payload.resolves=[{id,action,answer}] → _待确认.mjs 同步 + 刷 pending → {ok,results,state}
 //   pendingAdd     → payload 扁平字符串 → _待确认.mjs 加 + 刷 pending → {ok,newId,state,toolOut}
 //   mark           → payload.action∈{组卷,批改,撤批,归档,撤归档,状态} + 扁平 flag → _标记复习.mjs → {ok,code,out,err}
-//   recipe         → payload.action∈{清单,收件箱,组装,校验,自检,指纹} + 扁平 flag → _配方.mjs → {ok,code,out,err}
+//   recipe         → payload.action∈{清单,收件箱,找图,组装,校验,自检,指纹} + 扁平 flag → _配方.mjs → {ok,code,out,err}
 //                    （code 是工具的**真实退出码**：校验通过=0 / 拒收=1 / 参数错=2；2026-10-29 R2 修）
 //   readFile       → payload.path（题库根内相对路径）→ {ok,text}
 //   openFile       → payload.path → 类型准入（图片/pdf 交系统程序；.md 走内置阅读器；其余只"定位文件"）
@@ -731,12 +731,27 @@ namespace CTBShell2
              · 壳不认识"配方/学科/错因"，它只负责把白名单动作 + 白名单参数转成命令行；
              · 配方在哪、怎么拼、怎么校验，全由 _配方.mjs 决定 —— 这样加一条反例不用重编壳。
            安全边界：
-             · 动作白名单（清单/收件箱/组装/校验/自检/指纹），别的一律拒；
+             · 动作白名单（清单/收件箱/找图/组装/校验/自检/指纹），别的一律拒；
              · 参数逐个 AddFlag（不接受任意拼接）；
              · 库根**显式**用 --data 传进去，不依赖环境变量继承；
              · **不进写闸**：本工具只读配方与收件箱、只写调用方指定的临时文件，不写用户库。
            超时 60s：组装是一次纯文本拼接，校验是一次 JSON 比对，都远低于这个量级。 */
-        static readonly HashSet<string> RECIPE_ACTIONS = new HashSet<string> { "清单", "收件箱", "组装", "校验", "自检", "指纹" };
+        /* ★ 2026-11-02：白名单由 6 个补到 7 个，加入「找图」（按内容指纹定位收件箱原图）。
+           起因：引擎 `_配方.mjs` 的 switch 早就有 7 个子命令，壳的 RECIPE_ACTIONS 只列了 6 个，
+           差集 {找图} 静默存在 —— 前端只能退回"内存里按 sha 查表"（`ingest.js:158`），
+           照片被导入改名后再想按指纹找回那一张就走不通。两个清单**必须**同集合，
+           `tests\neg-shell-args.mjs` 现在有一条机读的差集断言钉住它（不再靠人眼比对）。 */
+        static readonly HashSet<string> RECIPE_ACTIONS = new HashSet<string> { "清单", "收件箱", "找图", "组装", "校验", "自检", "指纹" };
+        /* ★ 2026-11-03（批次 2「经验包试点」）：选卡串 `<packId>/<cardId>@<version>` 的形状门禁。
+           与 TASK_ID_SHAPE 同一条纪律：页面传来的东西先过形状，形状不对在**壳层**就回 code=2，
+           而不是落到 `_经验包.mjs` 里变成"包不存在"（同码不同因，用户看不出是自己打错了）。
+           `packId` 可以多段（例 `family-a/shared-stem`），`cardId` 是**最后一段**，`version` 必须是 x.y.z。
+           ⚠ 每段的**首字符不许是 `.`**：首版写成 `[A-Za-z0-9._\-]+` 时 `../evil/card@1.0.0`
+             能整条通过形状门禁（`.` 属于字符类，`..` 自然合法）——`tests\neg-shell-card-passthrough.mjs`
+             在真 exe 上当场抓到。路径穿越的第一道拦在**形状**上，比只靠下游 realpath 判据更早、更好归因；
+             下游 `_经验包.mjs` 另有包含性判据（纵深，不互相替代）。 */
+        static readonly System.Text.RegularExpressions.Regex CARD_SEL_SHAPE =
+            new System.Text.RegularExpressions.Regex(@"^[A-Za-z0-9_\-][A-Za-z0-9._\-]*(/[A-Za-z0-9_\-][A-Za-z0-9._\-]*)+@[0-9]+\.[0-9]+\.[0-9]+$");
         public string Recipe(string payload)
         {
             string action = ExtractString(payload, "action");
@@ -750,6 +765,50 @@ namespace CTBShell2
                 AddFlag(args, payload, "subject", "--subject");
                 AddFlag(args, payload, "textbook", "--textbook");
                 AddFlag(args, payload, "image", "--image");
+                /* 找图（2026-11-02 加）用的唯一参数：payload.sha = 内容指纹（64 位 sha256，或它的前 12 位起）。
+                   与上面四处同一条路：**固定键名 → 固定 flag** 的逐项映射，壳不解析这个值的语义，
+                   也**不接受** payload 里出现的任意其他键 —— 没有通用透传、没有反射、不拼命令行字符串
+                   （值一律作为独立 argv 元素交给 QuoteArgs，注入不进 flag 位）。
+                   格式校验（^[0-9a-f]{12,64}$）在 `_配方.mjs` 的 cmdLocate 里做：非法值返回 2，
+                   壳按真实退出码回 code=2，前端据此显示拒绝原因而不是"找不到图"。
+                   找图是只读动作（不改名/不移动/不删除/不写任何文件），因此不进写闸。 */
+                AddFlag(args, payload, "sha", "--sha");
+                /* ★ 2026-11-03（批次 2「经验包试点」）：选卡透传。
+                   交付物要求"能装、能选、能停、能回退"，"选"这一半必须送到引擎才算数 ——
+                   与批次 1 的 `--task` 同族（动作在引擎里有、壳没有通道）。两条纪律不变：
+                     · 固定键名 → 固定 flag 的逐项映射，无通用透传、无反射、不拼命令行字符串；
+                     · 值一律作为**独立 argv 元素**，注入不进 flag 位。
+                   形状：`payload.cards` = 逗号分隔的 `<packId>/<cardId>@<version>`（可多项）。
+                   为什么用逗号而不是数组：桥上的 payload 是**扁平字符串表**（ExtractString 语义），
+                   数组要另造一套解析；选卡串本身不含逗号（CARD_SEL_SHAPE 已钉死字符集），
+                   逗号分隔无歧义，且每项仍先过形状正则 —— 不合法的项**当场**回 code=2。
+                   冲突策略 `payload.cardConflict`（deny/first/all）走常规 AddFlag；
+                   合法值由 `_配方.mjs` 判（本层不解释语义，只透传），语义判定归引擎那一份实现。
+                   两个键都**只在 `组装` 动作**下生效：指纹/收件箱/校验/自检收选卡参数没有意义，
+                   放行会让"传了但没用"变成静默忽略。 */
+                if (action == "组装")
+                {
+                    AddFlag(args, payload, "cardConflict", "--card-conflict");
+                    string cards = ExtractString(payload, "cards");
+                    if (!string.IsNullOrEmpty(cards))
+                    {
+                        foreach (string raw in cards.Split(','))
+                        {
+                            string sel = raw.Trim();
+                            if (sel.Length == 0) continue;
+                            if (!CARD_SEL_SHAPE.IsMatch(sel))
+                                return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"选卡串形状不对（应为 <包id>/<卡id>@<主>.<次>.<修订>，例 family-a/shared-stem/shared-stem@1.0.0）：" + Esc(sel) + "\"}";
+                            args.Add("--card"); args.Add(sel);
+                        }
+                    }
+                }
+                /* ★ 2026-11-03（批次 1 收尾「页面接线」）：`--task` 布尔透传 —— 录题页「生成任务单」
+                   勾了照片时带 task=1，引擎 `组装 --task` 会落一条任务记录（<库根>\_录题\<taskId>.json，
+                   用户数据，走 _安全写）并把任务号写进任务单、要求 AI 用外层信封回传。
+                   与 json→--json 同一条路：**固定键名的布尔开关**（匹配才加 flag，值本身不进 argv），
+                   不是通用透传；"只在勾了照片时才发 task=1"由页面侧控制（没选图时记录里的
+                   image.sha256 会是 null，绑定校验无从对图）。 */
+                if (ExtractString(payload, "task") == "1") args.Add("--task");
                 /* 校验/自检的输入：页面传的是**文本**（用户从自己的 AI 粘回来的 JSON），
                    先落临时文件再让工具读 —— 避免把上万字符塞进命令行（Windows 命令行上限 32767）。 */
                 string text = ExtractString(payload, "text");
@@ -780,6 +839,178 @@ namespace CTBShell2
                 return "{\"ok\":false,\"code\":-1,\"out\":\"\",\"err\":\"" + Esc(ex.Message) + "\"}";
             }
             finally { if (tmp != null) { try { File.Delete(tmp); } catch { } } }
+        }
+
+        /* ★ 2026-11-03（批次 1 收尾「页面接线」）：录题任务的两个新 op。
+           起因：批次 1 交付了 `_录题任务.mjs 绑定校验`（三层校验：格式 / 与任务及原图匹配 / 人工确认），
+           但页面把参数送不进来 —— 与"找图"同族的问题（动作在引擎里有、壳没有通道）。
+           设计与 Recipe() 同一条纪律：
+             · 固定键名 → 固定 argv 的**逐项映射**，无通用透传、无反射、不拼命令行字符串；
+             · taskId 先过**形状门禁**（`t-YYYYMMDD-HHmmss-6位hex`，即 `_录题任务.mjs newTaskId` 的形状）
+               再进 argv —— 值作为独立 argv 元素交给 QuoteArgs 本就注入不进 flag 位，这里再按形状拒一次，
+               让"页面传来垃圾"在壳层就回 code=2，而不是落到工具侧变成"任务不存在"（同码不同因）；
+             · 两把 op 都显式 `--data` 注入库根（`_录题任务.mjs` 的 --data 与 _配方.mjs 同口径）；
+             · 回**真实退出码**（0/1/2/3，3=与任务不匹配），页面据此渲染三层结论。
+           写读分界：绑定校验**只读**（临时文件除外）⇒ 不进写闸；确认会写用户库
+           （`_录题\<taskId>.json` 的 confirmedAt）⇒ 与 pendingResolve/pendingAdd 同口径进写闸。 */
+        static readonly System.Text.RegularExpressions.Regex TASK_ID_SHAPE =
+            new System.Text.RegularExpressions.Regex("^t-[0-9]{8}-[0-9]{6}-[0-9a-f]{6}$");
+        private bool TaskIdOk(string id) { return !string.IsNullOrEmpty(id) && TASK_ID_SHAPE.IsMatch(id); }
+
+        // ---- op: taskCheck（`_录题任务.mjs 绑定校验`，只读）----
+        public string TaskCheck(string payload)
+        {
+            string taskId = ExtractString(payload, "taskId");
+            if (!TaskIdOk(taskId))
+                return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"taskId 形状不对（应为 t-日期-时间-6位hex）：" + Esc(taskId ?? "") + "\"}";
+            string tmp = null;
+            try
+            {
+                string text = ExtractString(payload, "text");
+                if (string.IsNullOrEmpty(text))
+                    return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"缺少 text（AI 回传的 JSON 全文）\"}";
+                var args = new List<string> { ToolPath("_录题任务.mjs"), "绑定校验", taskId };
+                tmp = Path.Combine(Path.GetTempPath(), "gn-task-check-" + DateTime.Now.Ticks + ".json");
+                File.WriteAllText(tmp, text, new UTF8Encoding(false));
+                args.Add("--in"); args.Add(tmp);
+                args.Add("--data"); args.Add(DataRoot);
+                int exit; string se;
+                string so = RunNodeRaw(args.ToArray(), 60000, out exit, out se);
+                Log("taskCheck " + taskId + " exit=" + exit + " out=" + SliceForLog((so ?? "").Replace("\r\n", " | ")));
+                return "{\"ok\":true,\"code\":" + exit + ",\"out\":\"" + Esc(so ?? "") + "\",\"err\":\"" + Esc(se ?? "") + "\"}";
+            }
+            catch (Exception ex)
+            {
+                Log("taskCheck " + taskId + " FAILED: " + ex.Message);
+                return "{\"ok\":false,\"code\":-1,\"out\":\"\",\"err\":\"" + Esc(ex.Message) + "\"}";
+            }
+            finally { if (tmp != null) { try { File.Delete(tmp); } catch { } } }
+        }
+
+        // ---- op: taskConfirm（`_录题任务.mjs 确认`，写用户库 ⇒ 进写闸）----
+        public string TaskConfirm(string payload)
+        {
+            string taskId = ExtractString(payload, "taskId");
+            if (!TaskIdOk(taskId))
+                return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"taskId 形状不对（应为 t-日期-时间-6位hex）：" + Esc(taskId ?? "") + "\"}";
+            if (!WriteGate.Wait(1200000)) return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"等待写入闸超时（另有落库/重建在跑）\"}";
+            try
+            {
+                var args = new List<string> { ToolPath("_录题任务.mjs"), "确认", taskId };
+                AddFlag(args, payload, "note", "--note");
+                args.Add("--data"); args.Add(DataRoot);
+                int exit; string se;
+                string so = RunNodeRaw(args.ToArray(), 60000, out exit, out se);
+                Log("taskConfirm " + taskId + " exit=" + exit + " out=" + SliceForLog((so ?? "").Replace("\r\n", " | ")));
+                return "{\"ok\":true,\"code\":" + exit + ",\"out\":\"" + Esc(so ?? "") + "\",\"err\":\"" + Esc(se ?? "") + "\"}";
+            }
+            catch (Exception ex)
+            {
+                Log("taskConfirm " + taskId + " FAILED: " + ex.Message);
+                return "{\"ok\":false,\"code\":-1,\"out\":\"\",\"err\":\"" + Esc(ex.Message) + "\"}";
+            }
+        }
+
+        /* ★ 2026-11-03（批次 4「审核与正式入库」）：人工修订通道（候选 / 修订链 / 正式写入）。
+           与 TaskCheck/TaskConfirm 同一条纪律：固定键名 → 固定 argv 的逐项映射，无通用透传、无反射。
+           三把 op：
+             · reviewList      只读：`_待确认.mjs 修订 --id <T> --json`（候选 + 修订链）
+             · reviewCandidate 写库：`_待确认.mjs 候选 --id <T> --kind <k> --target <t> --payload-file <tmp>`
+                               （正文走**临时文件**：修订内容可能上千字，塞 argv 会撞 Windows 32K 上限）
+             · reviewAdopt     写库（**正式写入入口**）：`_待确认.mjs 采用 --id <T> --candidate <candId> [--dry]`
+           写读分界：只有 reviewList 是只读；另两把写用户库 ⇒ 与 pendingResolve/pendingAdd 同口径**进写闸**。
+           ⚠ `_待确认.mjs` **不认 `--data`**（它只读 CTB_DATA）⇒ 这三把 op 必须把 DataRoot 显式注入子进程环境，
+             否则"壳以为库在 A、工具以为库在 B"（本仓 2026-10-31 吃过这个亏）。 */
+        static readonly System.Text.RegularExpressions.Regex PENDING_ID_SHAPE =
+            new System.Text.RegularExpressions.Regex("^T[0-9]{3,6}$");
+        static readonly System.Text.RegularExpressions.Regex CAND_ID_SHAPE =
+            new System.Text.RegularExpressions.Regex("^c-[0-9a-f]{12}$");
+        private bool PendingIdOk(string id) { return !string.IsNullOrEmpty(id) && PENDING_ID_SHAPE.IsMatch(id); }
+        private bool CandIdOk(string id) { return !string.IsNullOrEmpty(id) && CAND_ID_SHAPE.IsMatch(id); }
+        private static readonly System.Collections.Generic.HashSet<string> REVIEW_KINDS =
+            new System.Collections.Generic.HashSet<string> { "卡", "配方", "流程" };
+
+        // ---- op: reviewList（`_待确认.mjs 修订`，只读）----
+        public string ReviewList(string payload)
+        {
+            string id = ExtractString(payload, "pendingId");
+            if (!PendingIdOk(id))
+                return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"待办编号形状不对（应为 T + 3~6 位数字）：" + Esc(id ?? "") + "\"}";
+            try
+            {
+                var args = new List<string> { ToolPath("_待确认.mjs"), "修订", "--id", id, "--json" };
+                int exit; string se;
+                string so = RunNodeRaw(args.ToArray(), 60000, out exit, out se, DataRoot);
+                Log("reviewList " + id + " exit=" + exit + " out=" + SliceForLog((so ?? "").Replace("\r\n", " | ")));
+                return "{\"ok\":true,\"code\":" + exit + ",\"out\":\"" + Esc(so ?? "") + "\",\"err\":\"" + Esc(se ?? "") + "\"}";
+            }
+            catch (Exception ex)
+            {
+                Log("reviewList " + id + " FAILED: " + ex.Message);
+                return "{\"ok\":false,\"code\":-1,\"out\":\"\",\"err\":\"" + Esc(ex.Message) + "\"}";
+            }
+        }
+
+        // ---- op: reviewCandidate（`_待确认.mjs 候选`，写库 ⇒ 进写闸）----
+        public string ReviewCandidate(string payload)
+        {
+            string id = ExtractString(payload, "pendingId");
+            if (!PendingIdOk(id))
+                return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"待办编号形状不对（应为 T + 3~6 位数字）：" + Esc(id ?? "") + "\"}";
+            string kind = ExtractString(payload, "kind");
+            if (string.IsNullOrEmpty(kind) || !REVIEW_KINDS.Contains(kind))
+                return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"kind 必须是 卡 / 配方 / 流程，收到：" + Esc(kind ?? "") + "\"}";
+            string target = ExtractString(payload, "target");
+            if (string.IsNullOrEmpty(target))
+                return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"缺少 target（卡号 / 配方 id / 流程名）\"}";
+            string text = ExtractString(payload, "text");
+            if (string.IsNullOrEmpty(text))
+                return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"缺少 text（候选修订正文）\"}";
+            if (!WriteGate.Wait(1200000)) return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"等待写入闸超时（另有落库/重建在跑）\"}";
+            string tmp = null;
+            try
+            {
+                var args = new List<string> { ToolPath("_待确认.mjs"), "候选", "--id", id, "--kind", kind, "--target", target };
+                tmp = Path.Combine(Path.GetTempPath(), "gn-review-cand-" + DateTime.Now.Ticks + ".txt");
+                File.WriteAllText(tmp, text, new UTF8Encoding(false));
+                args.Add("--payload-file"); args.Add(tmp);
+                int exit; string se;
+                string so = RunNodeRaw(args.ToArray(), 60000, out exit, out se, DataRoot);
+                Log("reviewCandidate " + id + " " + kind + " exit=" + exit + " out=" + SliceForLog((so ?? "").Replace("\r\n", " | ")));
+                return "{\"ok\":true,\"code\":" + exit + ",\"out\":\"" + Esc(so ?? "") + "\",\"err\":\"" + Esc(se ?? "") + "\"}";
+            }
+            catch (Exception ex)
+            {
+                Log("reviewCandidate " + id + " FAILED: " + ex.Message);
+                return "{\"ok\":false,\"code\":-1,\"out\":\"\",\"err\":\"" + Esc(ex.Message) + "\"}";
+            }
+            finally { if (tmp != null) { try { File.Delete(tmp); } catch { } } }
+        }
+
+        // ---- op: reviewAdopt（`_待确认.mjs 采用` = 正式写入入口，写库 ⇒ 进写闸）----
+        public string ReviewAdopt(string payload)
+        {
+            string id = ExtractString(payload, "pendingId");
+            if (!PendingIdOk(id))
+                return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"待办编号形状不对（应为 T + 3~6 位数字）：" + Esc(id ?? "") + "\"}";
+            string candId = ExtractString(payload, "candId");
+            if (!CandIdOk(candId))
+                return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"候选号形状不对（应为 c- + 12 位小写 hex）：" + Esc(candId ?? "") + "\"}";
+            if (!WriteGate.Wait(1200000)) return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"等待写入闸超时（另有落库/重建在跑）\"}";
+            try
+            {
+                var args = new List<string> { ToolPath("_待确认.mjs"), "采用", "--id", id, "--candidate", candId };
+                if (ExtractString(payload, "dry") == "1") args.Add("--dry");
+                int exit; string se;
+                string so = RunNodeRaw(args.ToArray(), 180000, out exit, out se, DataRoot);
+                Log("reviewAdopt " + id + " " + candId + " exit=" + exit + " out=" + SliceForLog((so ?? "").Replace("\r\n", " | ")));
+                return "{\"ok\":true,\"code\":" + exit + ",\"out\":\"" + Esc(so ?? "") + "\",\"err\":\"" + Esc(se ?? "") + "\"}";
+            }
+            catch (Exception ex)
+            {
+                Log("reviewAdopt " + id + " FAILED: " + ex.Message);
+                return "{\"ok\":false,\"code\":-1,\"out\":\"\",\"err\":\"" + Esc(ex.Message) + "\"}";
+            }
         }
 
         // ---- op: readFile（限题库根内，≤4MB）----
@@ -856,7 +1087,7 @@ namespace CTBShell2
            通过=0 / 拒收=1 / 参数错=2）。丢掉它 ⇒ Recipe() 只能硬编码 code:0 ⇒
            页面把"拒收"渲染成绿色「✔ 校验通过」（失败被讲成成功，L1 阻断项）。
            outCode = 进程真实退出码；超时被杀记 124（与 Mark 同码）且**不抛**，由包装决定怎么报。 */
-        string RunNodeRaw(string[] args, int timeoutMs, out int outCode, out string outErr)
+        string RunNodeRaw(string[] args, int timeoutMs, out int outCode, out string outErr, string forceDataRoot = null)
         {
             var psi = new ProcessStartInfo
             {
@@ -869,6 +1100,10 @@ namespace CTBShell2
                 RedirectStandardOutput = true,
                 RedirectStandardError = true
             };
+            /* ★ 2026-11-03（批次 4）：个别工具**不认 `--data`**（`_待确认.mjs` 只读 CTB_DATA）⇒ 由壳把库根
+               显式注入子进程环境，避免"壳以为库在 A、工具以为库在 B"。只在调用方显式给了库根时设置，
+               其余调用照旧继承环境（行为不变）。 */
+            if (!string.IsNullOrEmpty(forceDataRoot)) psi.EnvironmentVariables["CTB_DATA"] = forceDataRoot;
             using (var p = Process.Start(psi))
             {
                 string so = p.StandardOutput.ReadToEnd();
@@ -1388,6 +1623,10 @@ namespace CTBShell2
                 else if (op == "regen") resp = bridge.Rebuild();
                 else if (op == "pendingResolve") resp = bridge.PendingResolve(payload);
                 else if (op == "pendingAdd") resp = bridge.PendingAdd(payload);
+                /* ★ 2026-11-03（批次 4）：人工修订通道 —— 候选（写）/ 修订链（只读）/ 正式写入（写）。 */
+                else if (op == "reviewList") resp = bridge.ReviewList(payload);
+                else if (op == "reviewCandidate") resp = bridge.ReviewCandidate(payload);
+                else if (op == "reviewAdopt") resp = bridge.ReviewAdopt(payload);
                 /* ★ 2026-10-23 新增：新建学生（空库第一步）。
                    起因（用户实测 BUG#1）：空库里没有任何地方能建"孩子"，新用户进门就堵死。 */
                 else if (op == "createStudent") resp = bridge.CreateStudent(payload);
@@ -1395,6 +1634,10 @@ namespace CTBShell2
                 /* ★ 2026-10-27 新增：配方层通道（界面「录题」页）。
                    壳只做透明转发，配方逻辑全在 _配方.mjs —— 加一条反例不需要重编壳。 */
                 else if (op == "recipe") resp = bridge.Recipe(payload);
+                /* ★ 2026-11-03（批次 1 收尾「页面接线」）：录题任务通道（三层校验 / 人工确认）。
+                   白名单纪律同 recipe：op 名固定、参数逐项映射，见 HostBridge.TaskCheck/TaskConfirm。 */
+                else if (op == "taskCheck") resp = bridge.TaskCheck(payload);
+                else if (op == "taskConfirm") resp = bridge.TaskConfirm(payload);
                 else if (op == "readFile") resp = bridge.ReadFile(payload);
                 else if (op == "openFile")
                 {

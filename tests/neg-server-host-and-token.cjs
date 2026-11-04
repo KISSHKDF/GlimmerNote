@@ -56,7 +56,9 @@ fs.writeFileSync(path.join(APPDIR, 'index.html'),
 fs.mkdirSync(path.join(APPDIR, 'js'), { recursive: true });
 fs.writeFileSync(path.join(APPDIR, 'js', 'host.js'), '/* 探针：内容里绝不能出现 token */\n', 'utf8');
 
-for (const f of ['_服务端.mjs', '_库根.mjs', '_安全写.mjs']) fs.copyFileSync(E.tool(f), path.join(TOOLDIR, f));
+/* ★ 2026-11-03（批次 2）：依赖走 `E.copyToolDeps()` 的**传递闭包**，不再写死清单
+   （写死清单在 `_服务端.mjs` 新增 `_区域坐标.mjs` 时让隔离实例 ERR_MODULE_NOT_FOUND）。 */
+E.copyToolDeps(['_服务端.mjs', '_库根.mjs', '_安全写.mjs'], TOOLDIR);
 const SERVER = path.join(TOOLDIR, '_服务端.mjs');
 /* 假生成器：真生成器跑一次是分钟级、且会去读真题库。本用例要验的是"写路径的门禁与限流"，
    不是生成器本身，所以用一个"秒回、只写一份合法状态包"的替身（与 neg-server-bad-target.cjs ⑥ 同套路）。 */
@@ -89,7 +91,7 @@ function writeLib(genTag) {
     pending: { items: [], open: 0 }, dataHealth: {},
     _pendingSrc: { mtimeMs: st.mtimeMs, size: st.size, hash: 'probe' },
   }), 'utf8');
-  fs.writeFileSync(path.join(LIB, '机密.txt'), SECRET_TEXT, 'utf8');
+  fs.writeFileSync(path.join(LIB, '机密.jpg'), SECRET_TEXT, 'utf8');
 }
 writeLib('2026-01-01T00:00:00.000Z');
 
@@ -149,7 +151,9 @@ const oneLine = s => String(s || '').replace(/\s+/g, ' ').slice(0, 120);
 const oneLog = s => oneLine(s).split('\u2716').join('[x]');
 const JSONH = { 'Content-Type': 'application/json' };
 const BROWSER = { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Dest': 'empty' };
-const tokOf = html => { const m = /window\.__ctbToken\s*=\s*"([0-9a-f]{16,128})"/.exec(String(html || '')); return m ? m[1] : ''; };
+/* 2026-11-03：注入形态从内联 <script>window.__ctbToken=… 改为 <meta name="__ctbToken" content="…">
+   （内联脚本被程序页 CSP 的 script-src 'self' 拦掉——见 _服务端.mjs 同日注释）。 */
+const tokOf = html => { const m = /<meta name="__ctbToken" content="([0-9a-f]{16,128})">/.exec(String(html || '')); return m ? m[1] : ''; };
 
 (async () => {
   const PORT = await freePort();
@@ -174,13 +178,13 @@ const tokOf = html => { const m = /window\.__ctbToken\s*=\s*"([0-9a-f]{16,128})"
 
     const home = await req(PORT, '/index.html');
     const TOKEN = tokOf(home.text);
-    A('GET /index.html → 200 且响应里带 window.__ctbToken（服务端注入）',
+    A('GET /index.html → 200 且响应里带 __ctbToken meta（服务端注入）',
       home.status === 200 && !!TOKEN, 'status=' + home.status + ' token长度=' + TOKEN.length);
     A('token 长度足够（≥32 位十六进制，24 字节随机）', /^[0-9a-f]{32,}$/.test(TOKEN), TOKEN.slice(0, 8) + '…');
     A('启动日志只报 token 前 6 位、**不含全文**（日志会被启动器/计划任务收集）',
       /token 前 6 位/.test(srv.out) && srv.out.indexOf(TOKEN) < 0,
       oneLog(Array.from(srv.out.split('\n')).filter(l => /门禁/.test(l)).join(' ')));
-    const idxScript = home.text.indexOf('window.__ctbToken');
+    const idxScript = home.text.indexOf('__ctbToken');
     const idxHeadEnd = home.text.search(/<\/head\s*>/i);
     A('注入点在 </head> 之前（早于任何 <script src> 执行，host.js 读得到）',
       idxScript >= 0 && idxHeadEnd >= 0 && idxScript < idxHeadEnd, 'token@' + idxScript + ' </head>@' + idxHeadEnd);
@@ -188,8 +192,8 @@ const tokOf = html => { const m = /window\.__ctbToken\s*=\s*"([0-9a-f]{16,128})"
       /no-store/i.test(String(home.headers['cache-control'] || '')), String(home.headers['cache-control']));
     A('GET /（根路径）同样拿到注入后的首页', tokOf((await req(PORT, '/')).text) === TOKEN);
     const staticJs = await req(PORT, '/js/host.js');
-    A('静态 js 里**没有** token（注入只对根 index.html，不撒给被静态服务的文件）',
-      staticJs.status === 200 && !/__ctbToken/.test(staticJs.text) && staticJs.text.indexOf(TOKEN) < 0,
+    A('静态 js 里**没有 token 值**（注入只对根 index.html；js 里出现 meta 名是读 token 的代码，不算泄露）',
+      staticJs.status === 200 && staticJs.text.indexOf(TOKEN) < 0,
       'status=' + staticJs.status);
     /* 两次启动 token 必须不同（"每轮启动随机"是它的价值所在：跨会话重放无效） */
     srv2 = startAt(PORT2, SERVER);
@@ -200,7 +204,7 @@ const tokOf = html => { const m = /window\.__ctbToken\s*=\s*"([0-9a-f]{16,128})"
       !!TOKEN2 && TOKEN2 !== TOKEN, '第一次 ' + TOKEN.slice(0, 8) + '… 第二次 ' + (TOKEN2 || '(无)').slice(0, 8) + '…');
     await srv2.stop(); srv2 = null;
 
-    const LIBFILE = '/机密.txt';
+    const LIBFILE = '/机密.jpg';
     const ALLOWED = 'http://127.0.0.1:' + PORT;
 
     /* ══ ② S05：Host/authority 必须校验 ══ */
@@ -404,7 +408,9 @@ const tokOf = html => { const m = /window\.__ctbToken\s*=\s*"([0-9a-f]{16,128})"
       const src = fs.readFileSync(SERVER, 'utf8');
       const origLines = src.split('\n').length;
       const mutDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-s05-mut-'));
-      for (const f of ['_库根.mjs', '_安全写.mjs']) fs.copyFileSync(E.tool(f), path.join(mutDir, f));
+      /* ⚠ 带 `_服务端.mjs`：解析的是这些文件的依赖闭包，而新加的 `_区域坐标.mjs`
+         挂在它下面（它自己随后被下面的变异源码覆盖）。 */
+      E.copyToolDeps(['_服务端.mjs', '_库根.mjs', '_安全写.mjs'], mutDir);
       /* 变异实例用**同一套**程序根与库（只换 _服务端.mjs 的路径）：这样"变 200"只能归因于掏掉了门禁，
          而不是"另一个空程序目录 / 另一个库"造成的假象。 */
       const cases = [

@@ -692,6 +692,60 @@ console.log('\n══ 八、安全边界 ══');
   A('任务单带配方指纹', /指纹/.test(r.out) && /[0-9a-f]{12}/.test(r.out), '');
 }
 
+console.log('\n══ 九、批次 2 兼容：选卡是**纯追加**（不选卡时旧契约逐条不变）══');
+/* 批次 2 给 `组装` 加了 `--card` / `--card-conflict`，给 `清单` 加了 `--packs` 与经验包段落。
+   兼容红线只有一条：**不选卡时行为与今天逐字节相同**。本段钉的是"不需要外部基线"的那一半
+   （契约形状与既有字段一个不动）；"与改造前真引擎逐字节对拍"在 `tests\neg-card-select.cjs`
+   （它用 `git show 83dbe5c:src\tools\_配方.mjs` 取基线引擎对拍）。两份各管一段，不重复。 */
+{
+  const LIB2 = path.join(TMP, 'lib-card-contract');
+  fs.mkdirSync(path.join(LIB2, '_收件箱', '批次甲'), { recursive: true });
+  fs.writeFileSync(path.join(LIB2, '_收件箱', '批次甲', 'p01.png'), Buffer.from([0x89, 0x50, 0x4E, 0x47, 0, 0, 0, 0]));
+  const taskRecs = () => {
+    const d = path.join(LIB2, '_录题');
+    return fs.existsSync(d) ? fs.readdirSync(d).filter((f) => f.endsWith('.json'))
+      .map((f) => JSON.parse(fs.readFileSync(path.join(d, f), 'utf8'))) : [];
+  };
+
+  const r1 = engine(['组装', '--recipe', 'ingest-single', '--subject', '数学', '--data', LIB2]);
+  A('无 --card 的组装仍成功（选卡是可选参数，不是新前置）', r1.code === 0 && r1.out.length > 500, 'exit=' + r1.code + ' chars=' + r1.out.length);
+  A('★ 不选卡时任务单**没有**经验包段（纯追加：一个字节都不加）',
+    !r1.out.includes('### 本次追加的方法（经验包）'), '');
+  A('任务单四段结构逐条仍在（一/二/三/四 四个标题，旧契约形状没动）',
+    ['## 一、你要做的事', '## 二、任务指令', '## 三、回来之后', '## 四、本机留痕'].every((h) => r1.out.includes(h)), '');
+
+  const before = taskRecs().length;
+  const t1 = engine(['组装', '--recipe', 'ingest-single', '--subject', '数学', '--data', LIB2, '--task']);
+  const t2 = engine(['组装', '--recipe', 'ingest-single', '--subject', '数学', '--data', LIB2, '--task']);
+  const recs = taskRecs();
+  A('不选卡时任务记录照常落盘（--task 没被选卡改动）', t1.code === 0 && t2.code === 0 && recs.length === before + 2, 'exit=' + t1.code + '/' + t2.code);
+  const two = recs.slice(-2);
+  A('★ 不选卡时任务记录的 cards 仍是空数组（保持现值）',
+    two.length === 2 && two.every((r) => Array.isArray(r.cards) && r.cards.length === 0), JSON.stringify(two.map((r) => r.cards)));
+  A('★ 不选卡的 contractDigest 仍是 64 位 hex 且两次相同（摘要口径没被选卡改动）',
+    two.length === 2 && /^[0-9a-f]{64}$/.test(two[0].contractDigest || '') && two[0].contractDigest === two[1].contractDigest,
+    two.length === 2 ? two[0].contractDigest : '(记录数不足)');
+
+  const fp = engine(['指纹', '--recipe', 'ingest-single', '--json']);
+  const fpj = fp.code === 0 ? JSON.parse(fp.out) : null;
+  A('指纹 --json 的字段集合恰为旧契约那 5 个（不许"顺手"往里加字段）',
+    !!fpj && JSON.stringify(Object.keys(fpj).sort()) === JSON.stringify(['fingerprint', 'layers', 'recipe', 'subject', 'version']),
+    fpj ? Object.keys(fpj).join(',') : 'exit=' + fp.code);
+
+  const lj = engine(['清单', '--json']);
+  const ljo = lj.code === 0 ? JSON.parse(lj.out) : null;
+  A('清单 --json 的既有字段（root/recipes）与每条配方的字段集合不变',
+    !!ljo && Array.isArray(ljo.recipes) && 'root' in ljo &&
+    ljo.recipes.every((r) => JSON.stringify(Object.keys(r).sort()) === JSON.stringify(['id', 'kind', 'layers', 'title', 'version'])),
+    ljo ? 'recipes=' + ljo.recipes.length : 'exit=' + lj.code);
+  A('清单 --json **追加** packs 字段（经验包段落只加不改）',
+    !!ljo && 'packs' in ljo, ljo ? 'packs=' + JSON.stringify(ljo.packs).slice(0, 60) : '');
+
+  const off = engine(['指纹', '--recipe', 'ingest-single', '--card', 'a/b@1.0.0']);
+  A('选卡参数只对组装生效：指纹带 --card → exit 2（收下不用=静默忽略，因此直接拒）',
+    off.code === 2 && /只对/.test(off.err), 'exit=' + off.code);
+}
+
 /* 清场 */
 try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { }
 

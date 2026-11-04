@@ -227,7 +227,10 @@ async function waitListen(s, ms = 10000) {
         Math.abs(mutLines - origLines) <= 3, origLines + ' 行 → ' + mutLines + ' 行');
 
       const mutDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-h08a-mut-'));
-      for (const f of ['_库根.mjs', '_安全写.mjs']) fs.copyFileSync(E.tool(f), path.join(mutDir, f));
+      /* ★ 2026-11-03（批次 2）：依赖清单**不再写死** —— `E.copyToolDeps()` 从源码解析
+         `_服务端.mjs` 的相对 import 传递闭包。写死清单已踩两次（`_配方.mjs` 加 `_录题任务.mjs`、
+         `_服务端.mjs` 加 `_区域坐标.mjs`），表现都是"变异实例起不来 ⇒ 阴性对照静默失效"。 */
+      E.copyToolDeps(['_服务端.mjs', '_库根.mjs', '_安全写.mjs'], mutDir);
       const mutServer = path.join(mutDir, '_服务端.mjs');
       fs.writeFileSync(mutServer, mutB);
       const chk = spawnSync(process.execPath, ['--check', mutServer], { encoding: 'utf8' });
@@ -317,7 +320,9 @@ async function waitListen(s, ms = 10000) {
       /* 降级②：生成器成功但状态包读不出 → ok:false + degraded:"state-unreadable"（改前是 ok:true + 旧快照） */
       const appDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-h08a-gen-'));
       const libDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-h08a-genlib-'));
-      for (const f of ['_库根.mjs', '_安全写.mjs']) fs.copyFileSync(E.tool(f), path.join(appDir, f));
+      /* ⚠ 名单里**必须带 `_服务端.mjs`**：本函数解析的是"这些文件的依赖闭包"，
+         而 `_区域坐标.mjs` 是 `_服务端.mjs` 的依赖（它自己随后被下面那行覆盖成真源副本）。 */
+      E.copyToolDeps(['_服务端.mjs', '_库根.mjs', '_安全写.mjs'], appDir);
       fs.copyFileSync(SERVER, path.join(appDir, '_服务端.mjs'));
       /* 假生成器：**成功退出**，但写一个读不出来的状态包（半截 JSON） */
       fs.writeFileSync(path.join(appDir, '生成状态.mjs'),
@@ -350,7 +355,7 @@ async function waitListen(s, ms = 10000) {
       fs.mkdirSync(path.join(T, 'app'), { recursive: true });
       fs.mkdirSync(path.join(T, 'tools'), { recursive: true });
       fs.writeFileSync(path.join(T, 'app', 'index.html'), '<!doctype html><title>t</title>');
-      for (const f of ['_服务端.mjs', '_库根.mjs', '_安全写.mjs']) fs.copyFileSync(E.tool(f), path.join(T, 'tools', f));
+      E.copyToolDeps(['_服务端.mjs', '_库根.mjs', '_安全写.mjs'], path.join(T, 'tools'));
       const srvT = path.join(T, 'tools', '_服务端.mjs');
       const pf = path.join(T, 'app', '端口.json');
 

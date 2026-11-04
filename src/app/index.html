@@ -3,6 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- ★ 2026-11-03（R8 整改①「程序页纵深只有一层」）：程序页自己的 CSP。
+     改前：服务端模式的响应头只有 frame-ancestors，桌面壳模式（file://）连响应头都没有
+     ⇒ 程序页防 XSS 只有 stemHtmlSafe 净化器一层，被绕过即得 window.ctbHost。
+     现在 meta 与服务端 APP_CSP（src\tools\_服务端.mjs）逐字相同 —— 改一处必须同步另一处
+     （tests\neg-server-csp.cjs 机读对拍钉住）。判据逐条说明见 _服务端.mjs 的 APP_CSP 注释。 -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' file:; style-src 'self' file: 'unsafe-inline'; img-src 'self' file: data:; connect-src 'self' file:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">
 <title>拾光小册</title>
 <link rel="stylesheet" href="css/tokens.css">
 <link rel="stylesheet" href="css/app.css">
@@ -53,6 +59,7 @@
 <script src="js/views/paper.js"></script>
 <script src="js/views/pending.js"></script>
 <script src="js/views/ingest.js"></script>
+<script src="js/views/packs.js"></script>
 <script src="js/views/stats.js"></script>
 <script src="js/app.js"></script>
 </body>

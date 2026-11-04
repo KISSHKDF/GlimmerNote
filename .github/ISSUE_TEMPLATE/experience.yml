@@ -1,0 +1,115 @@
+# 经验贡献 Issue 表单（批次 3 · 公开仓贡献通道，2026-11-03 建）
+#
+# 这份表单是**字段白名单在公开仓这一侧的入口**。白名单与显式排除清单的真源是
+# `docs\经验包规范.md` 的「经验草稿与贡献导出」一节（草稿工具 `src\tools\_经验草稿.mjs` 同口径）。
+# 表单里没有的字段，就是这次不收的字段（"从零组装"，不是"过滤黑名单"）——所以这里**不设**
+# "补充信息 / 其他"这类自由框：多一个自由框，就等于多一条绕过白名单的通道。
+#
+# ⚠ 机读约定（改本文件必须遵守，否则 `tests\neg-contrib-templates.cjs` 当场红）：
+#   ① 每个收集字段（非 markdown）都要在 `id:` 的**下一行**写一行
+#      `# 白名单字段：<白名单里的字段名>`，且该字段的 label 里必须出现这个名字 ——
+#      注释与字段名必须对得上，不许拿注释凑数。
+#   ② 收集字段的集合必须与契约 §3.1 的七项**逐项相等**（多一个、少一个、改名都红）：
+#      方法正文 / 适用条件 / 合成案例 / 预期行为 / 反例 / 作者 / 版本。
+#   ③ `labels:` 里引用的标签必须都在 `.github\labels.yml` 里存在（本仓标签真源）。
+#
+# 为什么不新造一个"经验贡献"标签：`.github\labels.yml` 的上限 10 个已经用满，
+# 四档状态因此走 **Issue 标题前缀**（结论与理由登记在 labels.yml 顶部；
+# 复核口径的正文真源是 `CONTRIBUTING.md §八`）。表单只挂既有标签 enhancement。
+name: 经验贡献
+description: 把你对某道题/某条方法的纠正理由按白名单整理成公开稿（不要贴原图与真实信息）
+title: "[经验:试用中] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **提交前先看这一行（隐私红线）**：禁止贴孩子原图（试卷/作业扫描件）、真实姓名、学校、班级、
+        内容哈希（sha256）、本机路径、聊天原文、手写批注。案例必须是自己画的或改过的**合成**页，
+        正文里一律写「孩子A」「孩子B」——不要举任何真实化名。
+
+        没把握的字段就写下你的判断与不确定之处，**不要编**。维护者不采信未附反例的贡献（没有反例，
+        通常说明这条方法还没被推到过边界）。四档状态（试用中 / 可用 / 有争议 / 已并入）
+        怎么走、谁改：见 `CONTRIBUTING.md §八`。
+
+  - type: textarea
+    id: method
+    # 白名单字段：方法正文
+    attributes:
+      label: 方法正文
+      description: 一条能公开的方法，按步骤写（一步一行）。写清"看到什么 → 怎么判断 → 怎么做"，不要写"要注意质量"这种没法执行的话。
+      placeholder: |
+        1) 先看整页，圈出小问之间的公共条件
+        2) 只有相邻小问依赖同一条条件时，才把这些小问合并成一条记录
+        3) 批改痕迹只有符号、没有文字时，错因必须写进记录字段
+    validations:
+      required: true
+
+  - type: textarea
+    id: applies
+    # 白名单字段：适用条件
+    attributes:
+      label: 适用条件
+      description: 这条方法在什么题面、什么条件下成立，边界在哪（"什么情况下**不**用它"也要写）。
+      placeholder: 例：题干与配图在同一页、且小问之间共享一条条件时成立；跨页阅读时第 1 步不适用。
+    validations:
+      required: true
+
+  - type: textarea
+    id: case
+    # 白名单字段：合成案例
+    attributes:
+      label: 合成案例（input.svg + expected.json）
+      description: 案例必须是**合成**的（自己画的或改过的），禁止贴真实试卷/作业扫描件。贴两个代码块并标注文件名
+      placeholder: |
+        ```input.svg
+        <svg xmlns="http://www.w3.org/2000/svg" width="800" height="600">…</svg>
+        ```
+
+        ```expected.json
+        { "regions": [ { "role": "公共条件", "x": 0.1, "y": 0.2, "w": 0.4, "h": 0.1 } ] }
+        ```
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    # 白名单字段：预期行为
+    attributes:
+      label: 预期行为
+      description: 启停对照的实测口径：卡 on / 卡 off 各看到什么，**有数字就贴数字**（例：+4250 B / 102→104 ms）；只给一边不算对照。
+      placeholder: |
+        卡 on ：同一页拆成 2 条记录；体积/耗时 +4250 B / 102→104 ms
+        卡 off：基线（同一页仍是 1 条记录）
+    validations:
+      required: true
+
+  - type: textarea
+    id: counterexample
+    # 白名单字段：反例
+    attributes:
+      label: 反例
+      description: 你实测过、而这条方法**不成立**的情况。维护者不采信未附反例的贡献。
+      placeholder: 例：两个小问各自独立时，按第 2 步合并会把两条不同的错因压成一条 ⇒ 此时不成立。
+    validations:
+      required: true
+
+  - type: input
+    id: author
+    # 白名单字段：作者
+    attributes:
+      label: 作者
+      description: 署名（昵称即可，想匿名就写「匿名」）。**不要**写孩子真名、学校、班级。
+      placeholder: 匿名
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    # 白名单字段：版本
+    attributes:
+      label: 版本
+      description: 你实测时用的版本：`VERSION.json` 的 `version`；如果这条方法基于某个经验包，再附 `包id@包版本`。
+      placeholder: 2026.11.03.03 ｜ family-a/shared-stem@1.0.2
+    validations:
+      required: true

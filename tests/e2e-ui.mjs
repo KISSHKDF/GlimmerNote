@@ -123,9 +123,11 @@ const S = (name, why) => { skipped++; P('[SKIP]' + name + '  → ' + why); };
   A('卡片对账：model vs 状态包一致', await cdp.evalJs(`(function(){var n=0;CTB.model.state.data.forEach(function(k){k.subjects.forEach(function(s){n+=s.items.length})});return CTB.model.cards.length===n})()`));
   const nCards = await cdp.evalJs(`CTB.model.cards.length`);
   P('[i] 卡片总数 = ' + nCards);
-  A('侧栏 7 个导航项（2026-10-27 新增「录题」）', await cdp.evalJs(`document.querySelectorAll('#sidebar .nav-item[data-r]').length`) === 7);
+  /* ★ 2026-11-03（批次 2）：7 → 8 —— 侧栏新增只读入口「经验包」（`shell.js` 的 ROUTES）。
+     这条断言是"计数型"，加导航必须先改这里（同族的还有下面那个 route 循环的清单）。 */
+  A('侧栏 8 个导航项（2026-10-27 新增「录题」、2026-11-03 新增「经验包」）', await cdp.evalJs(`document.querySelectorAll('#sidebar .nav-item[data-r]').length`) === 8);
 
-  for (const r of ['dash', 'bank', 'review', 'paper', 'pending', 'ingest', 'stats']) {
+  for (const r of ['dash', 'bank', 'review', 'paper', 'pending', 'ingest', 'packs', 'stats']) {
     await cdp.evalJs(`CTB.shell.route('${r}')`); await sleep(400);
     const len = await cdp.evalJs(`document.getElementById('view').innerHTML.length`);
     A('路由 #' + r + ' 渲染非空', len > 500, len);
@@ -206,6 +208,15 @@ const S = (name, why) => { skipped++; P('[SKIP]' + name + '  → ' + why); };
   A('readFile 越界被壳拒绝', !!(esc1 && (esc1.ok === false || esc1.err)), JSON.stringify(esc1).slice(0, 140));
   const md1 = await cdp.evalJs(`CTB.host.readFile(CTB.model.relPathTmp(CTB.model.cards.find(function(c){return c.card.md}).card.md)).then(r=>r.ok&&r.text.length>50).catch(e=>({err:String(e)}))`);
   A('readFile 正常读取错题记录.md', md1 === true, md1);
+
+  /* ★ 2026-11-03（批次 1 收尾）：录题任务两个新 op 的桥级冒烟。
+     两个调用都**只读不落库**（不存在的任务在 loadTask 就 return 2，写不到盘），
+     所以可以安全地架在冻结真库上跑。端到端全流程（含写路径）在 neg-v2-ingest-task-e2e.cjs
+     的临时库里做，这里只证"壳通道活着、错误如实带回"。 */
+  const tc1 = await cdp.evalJs(`CTB.host.taskCheck('t-19990101-000000-dead00','{}').then(r=>r).catch(e=>({err:String(e&&e.message||e)}))`);
+  A('taskCheck 桥级可达：不存在的任务如实回 code 2', !!(tc1 && tc1.code === 2), JSON.stringify(tc1).slice(0, 140));
+  const tc2 = await cdp.evalJs(`CTB.host.taskConfirm('t-19990101-000000-dead00','').then(r=>r).catch(e=>({err:String(e&&e.message||e)}))`);
+  A('taskConfirm 桥级可达：不存在的任务如实回 code 2（未写任何东西）', !!(tc2 && tc2.code === 2), JSON.stringify(tc2).slice(0, 140));
 
   /* 证据图加载：**全量**（每一条未办结待办都要真能加载）。
      ⚠ 2026-10-10：原先上面还有一条"只抽查第一条带 evidence 的条目"的旧断言，

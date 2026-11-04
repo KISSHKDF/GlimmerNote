@@ -183,16 +183,41 @@ function cardsOf(idx, idxDir, subjectName) {
     /* 兜底寻址：只在原路径失效时才去找（常态零成本） */
     const rp = og && og.page ? resolveOrigWithVia(og.page) : null;
     const ri = og && og.import ? resolveOrigWithVia(og.import) : null;
-    pageVia = rp ? rp.via : null;
-    impVia = ri ? ri.via : null;
-    o.origPage = rp ? enc(String(rp.path)) : null;
+    /* ⚠ 这两行原本是 `rp ? rp.via : null`（同一个真值判据家族的最后一处，2026-11-03 一并对齐）。
+       语义不变（rp 真值但 via 为 null 时，两种写法都给 null）；对齐的意义是：
+       该函数里**再没有**"用真值判一个可能 `path:null` 的对象"的**代码**写法
+       （`grep -n 'rp ?' 生成状态.mjs` 只会命中注释，不再命中代码）。
+       另注：pageVia/impVia 目前**赋了值但全仓无人读**（第 129 行注释说"供界面提示与门禁判红用"，
+       与事实不符）—— 属"死声明 + 注释不实"，本任务只做口径对齐，是否删/接线留给后续单独立项。 */
+    pageVia = (rp && rp.via) ? rp.via : null;
+    impVia = (ri && ri.via) ? ri.via : null;
+    /* ⚠ 下面四行**不能**写成 `rp ? enc(String(rp.path)) : null`（2026-11-03 task-15 修）：
+       `resolveOrigWithVia` 在"解析过、但拿不到路径"时返回 `{path:null, via:null}` —— 一个**真值对象**
+       （歧义 fail-closed、或保全库里也没有匹配内容）。用真值判就会走到 `enc(String(null))`
+       = 字符串 `"null"` 落进状态包；而消费侧 `model.js:895` 是 `c.origPage ? H.relPath(c.origPage) : null`，
+       字符串 `"null"` **判真** ⇒ 这张卡被当成"**有**整页原卷"（界面去取一张不存在的图 = 破图），
+       而不是"未定位"。所以一律按"**真有路径**"判。
+       为什么不去改 `resolveOrigWithVia` 让它直接返回 null：那样这四行的判据就永远为真，
+       `tests\neg-orig-fallback.cjs` §6 的阴性对照（把这四行改回 `rp ? …` ⇒ 必须变红）会**失效** ——
+       缺陷必须仍然**构造得出来**，判据才算有牙齿。 */
+    o.origPage = (rp && rp.path) ? enc(String(rp.path)) : null;
     o.origBox = og && og.box ? og.box : null;
-    o.origImport = ri ? enc(String(ri.path)) : null;
+    o.origImport = (ri && ri.path) ? enc(String(ri.path)) : null;
     o.origBy = og && og.by ? og.by : null;
+    /* ★ 2026-11-03（批次 4「原图并排显示 + 区域高亮」）：把**区域**也递给界面。
+       之前只有 `origBox`（那一小块红框），界面画不出"角色分层"（错误位置/公共条件/配图）。
+       口径与 `docs\区域契约.md` 一致：`regions[]` 原样透传（归一化 0~1 + `pageSha` + `imgW/imgH`），
+       **磁盘旧值一律不改**、这里也不做换算（换算的唯一实现是前端 `normToPx`）。
+       为什么原样透传而不是挑字段：多一个字段前端不认识时它自己忽略，少一个字段界面就得猜 —— 猜必错。 */
+    o.origRegions = Array.isArray(og && og.regions) ? og.regions : null;
     /* 溯源状态：'direct'=原路径还在；'store'=原路径没了、从保全库按内容找回；
-       null=真的断了（保全库里也没有匹配内容）。界面据此提示，不静默。 */
-    o.origResolve = og && og.page ? (rp ? rp.via : 'lost') : null;
-    o.origImportResolve = og && og.import ? (ri ? ri.via : 'lost') : null;
+       'lost'=解析过但找不回（保全库里也没有 / 歧义 fail-closed）；null=台账里根本没这个字段。
+       取值集合 {direct, store, lost} 与 `docs\原图保全.md`、`_状态刷新.mjs:122` **同一个词、同一语义**
+       （'lost' 不是"没解析过"，是"解析过、确实找不回"，两份写入方必须一致）。
+       ⚠ 同样不能写成 `rp ? rp.via : 'lost'`：rp 真值但 `via` 为 null 时会写出 `null`，
+       与 `_状态刷新.mjs` 的 `'lost'` 漂移（两份实现必然漂移，本仓 L-286 家族）。 */
+    o.origResolve = (og && og.page) ? ((rp && rp.via) ? rp.via : 'lost') : null;
+    o.origImportResolve = (og && og.import) ? ((ri && ri.via) ? ri.via : 'lost') : null;
     /* 复习/盲解字段给默认值：老索引里可能整体缺这些键，界面读到 undefined 会显示怪东西 */
     o.reviews = Array.isArray(c.reviews) ? c.reviews : [];
     o.reviewStatus = c.reviewStatus || '未复习';

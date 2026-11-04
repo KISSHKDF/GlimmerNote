@@ -8,16 +8,22 @@
  *     `/_待确认.json` → 200 / 324907 B、`/_原卷台账.json` → 200 / 303986 B
  *   且**没有任何 `Cache-Control`**（该头只在程序根 index.html 分支发）。
  *
- * 判据（`src\tools\_服务端.mjs::staticAllowed`，唯一实现）——四道，任一命中即 403：
+ * 判据（`src\tools\_服务端.mjs::staticAllowed`，唯一实现）——四道前缀 + 一道类型准入，任一命中即 403：
  *   ① 任一路径段以 `.` 开头；② 目录段以 `_` 开头且不在 `{_原图, _收件箱}`；
- *   ③ 文件名以 `_` 开头且不在 `{_组卷台账.json}`；④ 文件名含 `.bak`。
+ *   ③ 文件名以 `_` 开头且不在 `{_组卷台账.json}`；④ 文件名含 `.bak`；
+ *   ⑤（2026-11-03 R8 整改③）**类型准入**：图片扩展名（jpg/jpeg/png/webp/gif/bmp/tif/tiff）
+ *     或白名单文本（`错题记录.md`/`_组卷台账.json`）。改前凡非 `_`/`.` 开头一律下发，
+ *     真库实测 48.2%（3034/6289）可被无 token 裸 GET 取走，其中 506 个题干.html 零消费方
+ *     （题干随 `_状态.json` 内联下发）——`题干.html` 因此从本用例的**正对照**移入**负对照**。
  *   库内（非程序根）响应必须带 `Cache-Control: no-store`。
  *
  * 本用例的库是**自建临时库**（%TEMP%），因此正/负对照都逐条可控、不依赖真库现状：
  *   负对照（必须 403）：`.git\config`、`.git\index`、`.git\objects\xx\yy`、`_状态.json`、
  *     `_待确认.json`、`_待确认清单.md`、`_原卷台账.json`、`_备份-真源\x.json`、`_影像备份\x.jpg`、
- *     `_原图\_快照\x`、`_原图\_来源映射.csv`、`x.json.bak-1`（+ `_盲解`/`_快照`/`_probe`）
- *   正对照（必须 200 + no-store + 字节相同）：卡片 `题图.jpg`/`题干.html`/`错题记录.md`、
+ *     `_原图\_快照\x`、`_原图\_来源映射.csv`、`x.json.bak-1`（+ `_盲解`/`_快照`/`_probe`）；
+ *     ⑤类新增：`题干.html`（R8 实测零静态消费方）、任意 `说明.html`、`先看这里.txt`、
+ *     `数据表.csv`、无扩展名文件（R8 缺口3"普通命名但不该下发"的负对照类别）。
+ *   正对照（必须 200 + no-store + 字节相同）：卡片 `题图.jpg`/`错题记录.md`、
  *     `_原图\<sha256>.jpg`、`_收件箱\<批次>\x.jpg`、`_组卷台账.json`（UI 唯一静态读的根台账）
  *   阴性自证：把白名单调用点掏掉（源码级替身）⇒ `.git/config` 必须变 200（缺陷复现）。
  *
@@ -83,6 +89,7 @@ function makeNoWhitelistRepo() {
 
 (async () => {
   /* ── 造库：负对照 + 正对照 ── */
+  const CARD = '九年级/物理/P0001-测试卡';
   const NEG = [
     ['.git/config', '库内 .git 整树（remote url 就在里面）'],
     ['.git/index', '库内 .git 索引（真实 198619 B）'],
@@ -99,13 +106,19 @@ function makeNoWhitelistRepo() {
     ['_原图/_快照/x', '未命名允许目录下的**子**隐藏目录'],
     ['_原图/_来源映射.csv', '保全库里以下划线开头的人工判读产物'],
     ['x.json.bak-1', '备份残留'],
+    /* ★ 2026-11-03（R8 整改③）：类型准入的负对照 —— "普通命名但不该下发"这一类（R8 缺口3）。
+       题干.html 曾被本用例的正对照钉成"必须 200"（主动维护了一个不必要的暴露面）；
+       现在移到这里：它零静态消费方（题干随 _状态.json 内联下发），必须 403。 */
+    [CARD + '/题干.html', '题干 HTML（零静态消费方：题干随 _状态.json 内联，界面从不 fetch 文件本体）'],
+    [CARD + '/说明.html', '任意库内 HTML（防"换名就放行"）'],
+    ['先看这里.txt', '库根普通 .txt（无静态消费者；"任何人放一个非下划线文件就被下发"到此为止）'],
+    ['数据表.csv', '普通命名 .csv（R8 真库实测 _原图 下 4 个 csv 均无消费者）'],
+    ['_收件箱/批次20261102/noext', '无扩展名文件（类型准入不给过）'],
   ];
   for (const [rel] of NEG) w(rel, 'NEG-' + rel);
 
-  const CARD = '九年级/物理/P0001-测试卡';
   const POS = [
     [CARD + '/题图.jpg', 'BIN-题图-测试卡'],
-    [CARD + '/题干.html', '<div class="stem">POS-题干-测试卡</div>'],
     [CARD + '/错题记录.md', '# POS-错题记录'],
     ['_原图/0123456789abcdef0123456789abcdef.jpg', 'BIN-保全库原图'],
     /* 真库的 `_原图` 是**两位十六进制分片**布局（实测 `_原图\00\<sha256>.jpg`）——
@@ -151,10 +164,17 @@ function makeNoWhitelistRepo() {
       const idxHtml = fs.readFileSync(path.join(ROOT, 'src', 'app', 'index.html'), 'utf8');
       A('GET /index.html → 200（程序入口照常）', home.status === 200, 'status=' + home.status);
       A('  ↳ 程序根 index.html 仍注入 token（白名单没把它拦掉）', /__ctbToken/.test(home.text), '');
-      A('  ↳ 程序根 CSP 不含 default-src（应用代码要能执行 host.js）', !/default-src/.test(String(home.headers['content-security-policy'])), String(home.headers['content-security-policy']));
+      A('  ↳ 程序根 CSP 含 default-src（2026-11-03 R8 整改①：程序页要有纵深第二层，不再只靠净化器）',
+        /default-src 'none'/.test(String(home.headers['content-security-policy'])), String(home.headers['content-security-policy']));
+      A('  ↳ 程序根 CSP 仍禁被框（frame-ancestors 保留）',
+        /frame-ancestors 'none'/.test(String(home.headers['content-security-policy'])), '');
       A('  ↳ 注入位置正确（在 </head> 之前，早于任何脚本）', home.text.indexOf('__ctbToken') < (home.text.search(/<\/head\s*>/i) + 7), '');
+      A('  ↳ token 是 meta 形态（2026-11-03：内联 <script> 会被程序页 CSP 的 script-src 拦掉）',
+        /<meta name="__ctbToken" content="[0-9a-f]+">/.test(home.text), '');
+      A('  ↳ 注入的是内联脚本的话必须红（防回退到被 CSP 拦的旧形态）',
+        !/<script>window\.__ctbToken/.test(home.text), '');
       A('  ↳ 程序根响应体除注入外与原文件逐字符一致',
-        home.text.replace(/<script>window\.__ctbToken="[0-9a-f]+";<\/script>/, '') === idxHtml,
+        home.text.replace(/<meta name="__ctbToken" content="[0-9a-f]+">/, '') === idxHtml,
         'len=' + home.text.length + '/' + idxHtml.length);
     }
 
