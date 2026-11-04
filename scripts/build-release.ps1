@@ -527,7 +527,11 @@ echo.
 echo [GlimmerNote] local server stopped. Press any key to close.
 pause >nul
 "@
-[IO.File]::WriteAllText($stageLauncher, ($launcherNote -replace "`r`n", "`n") -replace "`n", "`r`n", (New-Object System.Text.UTF8Encoding($false)))
+# ⚠ 换行归一必须**先算成一个变量**再传进去：`-replace` 是二元运算符，
+#   直接串在参数位里会被 PowerShell 解析成"多传了一个参数"
+#   （实测报 "Cannot find an overload for WriteAllText and the argument count: 4"）。
+$launcherText = ($launcherNote -replace "`r`n", "`n") -replace "`n", "`r`n"
+[IO.File]::WriteAllText($stageLauncher, $launcherText, (New-Object System.Text.UTF8Encoding($false)))
 
 # 终端用户版的完整性标签复位脚本（与仓库 scripts\fix-integrity.ps1 **不是同一份**：
 #   仓库那份自动解析「运行区 + 开发区」两处；这份只处理**本脚本所在目录的整棵树**，
