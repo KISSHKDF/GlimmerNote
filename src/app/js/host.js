@@ -306,6 +306,17 @@
     if (H.mode === 'shell') return bridge('taskConfirm', { taskId: taskId, note: note || '' }, 120000);
     throw new Error('「任务确认」需要桌面壳通道（拾光小册.exe）。');
   };
+  /* ★ 2026-11-04：录题**入库**通道（把校验通过的 JSON 落成真错题卡）。
+     为什么需要它：录题页走完「校验 + 人工确认」以前就**结束**了，页面写着「本页不落库」——
+     因为仓内当时**没有任何东西能把 JSON 变成卡**。实测 2026-11-04 19:36 那次录题：
+     任务记录 cards 是空数组、库里零张新卡，用户点完「确认」什么也没发生。
+     语义全在 `src\tools\_录题入库.mjs`（退出码 0 成功 / 1 前置不通过或门禁未过 /
+     2 用法错 / 3 与任务不匹配 —— 见 docs\录题任务契约.md）。
+     ⚠ 写用户库（卡目录 + 学科索引 + 任务记录）⇒ **只有桌面壳能做**（同 taskConfirm）。 */
+  H.ingestLand = async function (taskId, text, student, subject) {
+    if (H.mode === 'shell') return bridge('ingestLand', { taskId: taskId, text: text, student: student, subject: subject || '' }, 300000);
+    throw new Error('「建卡入库」需要桌面壳通道（拾光小册.exe）。');
+  };
   /* ★ 2026-11-03（批次 4「审核与正式入库」）：人工修订通道（候选 / 修订链 / 正式写入）。
      与壳侧三把 op 一一对应，分工同 `_待确认.mjs`：
        · reviewList      只读（读候选与修订链）

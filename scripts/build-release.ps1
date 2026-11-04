@@ -422,23 +422,41 @@ $readme = @'
 
    ★ __NODENOTE__
 
-   ⚠ 唯一需要系统自带的东西：**Microsoft Edge WebView2 运行时**。
-     它是 Windows 11 和较新的 Windows 10 自带的组件，多数机器不用管；
-     如果双击后弹窗说"缺少 WebView2"、或者窗口一片空白，去微软官网下载
-     「Microsoft Edge WebView2 Runtime (Evergreen)」装一次即可，装完不用重启。
+二、⚠ 唯一需要系统自带的东西：Microsoft Edge WebView2 运行时
+   桌面壳（拾光小册.exe）是用 WebView2 画的界面。**缺这个运行时，程序完全打不开**
+   （报错是 WebView2RuntimeNotFoundException，界面一片空白或直接报错退出）。
 
-二、目录说明
+   它是 Windows 11 和较新的 Windows 10 自带的组件，多数机器不用管。
+   如果双击后弹窗说"缺少 WebView2"、或者窗口一片空白：
+
+     下载地址（微软官方，普通用户点这个）：
+       https://developer.microsoft.com/microsoft-edge/webview2/consumer/
+     选「Evergreen Standalone Installer」的 **x64**，下载后双击安装。
+     · 这是**完整离线安装包**，断网也能装；
+     · 装完**不用重启电脑**，把拾光小册完全退出再重新打开即可；
+     · 装的时候如果问"是否允许此应用更改设备"，点**允许**（这样任何用户都能用）。
+       选"否"也能装，但只对当前这个 Windows 账号有效。
+
+   ★ 装完想确认装上没有？命令提示符里跑这一行：
+       reg query "HKLM\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" /v pv
+     有版本号 = 装好了；提示"找不到指定的注册表项" = 没装上。
+
+   ★ 暂时不想装运行时？可以用**网页版**先看题库（见本目录「网页版启动器.cmd」）。
+     但网页版只能浏览，**新建学生 / 组卷 / 批改 / 录题 / 打印 都要桌面壳**——
+     装上运行时才是正解。
+
+三、目录说明
    app    程序（exe + 运行库 + 工具链）。升级时整个替换，不要在里面放自己的东西。
    数据   你的题库。程序升级不会动它一个字节；备份就是把它整个拷走。
 
-三、校验完整性
+四、校验完整性
    同目录的 .sha256 是发布包的 SHA256。核对方法：
      certutil -hashfile 包名.zip SHA256
 
-四、日志在哪
+五、日志在哪
    %LOCALAPPDATA%\拾光小册\shell.log
 
-五、许可
+六、许可
    MIT，见仓库 LICENSE。
 '@
 $readme = $readme.Replace('__VER__', $ver)
@@ -448,8 +466,7 @@ $readme = $readme.Replace('__VER__', $ver)
 #   它说"app\node.exe 已内置、见内置Node说明.txt"，而那个包里**根本没有这两个文件**。
 #   凡是"同一份产物文案被多条互斥配置路径共享"的场景，文案必须跟着分支走 ——
 #   否则最小包会带着假承诺出厂（用户照着说明去找 node.exe，找不到）。
-$nodeNote = if ($WithoutNode) {
-@'
+$nodeNote = if ($WithoutNode) {@'
 本包是**精简包**：不含 Node.js 运行时，你**需要自己先装 Node.js ≥ 18**（https://nodejs.org/）。
   本程序的所有"写盘"动作（新建学生 / 组卷 / 批改 / 待办办结）都由 Node 工具链完成，
   没有 Node 就跑不起来。
@@ -464,6 +481,60 @@ $nodeNote = if ($WithoutNode) {
 $readme = $readme.Replace('__NODENOTE__', $nodeNote.TrimEnd())
 [IO.File]::WriteAllText((Join-Path $stage '使用说明.txt'), $readme + "`r`n", (New-Object System.Text.UTF8Encoding($true)))
 Write-Host "  已放：数据\先看这里.txt、使用说明.txt"
+
+# ── 2.5b) 两件"给终端用户救急"的东西（★ 2026-11-04 加）──
+# 起因：用户报障「朋友的机器上程序起不来」，根因是缺 WebView2 运行时。
+#   查包内文件时发现两处**该有却没有**的东西：
+#   ① README 的 FAQ 让终端用户跑 scripts\fix-integrity.ps1 修"低完整性标签"，
+#      而**那个脚本根本没进包**（包里连 scripts\ 目录都没有）⇒ 用户手里没有它，
+#      那条命令必然 FileNotFound。而"缺 WebView2"与"目录带低完整性标签"
+#      恰恰是同一台机器上最常撞的两个坑 —— 修标签的脚本不在包里，
+#      等于把最需要它的场合做成了不可用。
+#   ② 缺 WebView2 时**整包都打不开**（桌面壳起不来），但读数据其实不依赖它：
+#      app\tools\_服务端.mjs 是纯 Node 的本机 HTTP 服务端，能把界面与数据
+#      提供给普通浏览器。包里**没有任何启动它的入口** ⇒ 用户只能手工敲命令。
+# 改法：把「网页版启动器.cmd」与「修复完整性标签.ps1」一并放进包根，
+#      并在《使用说明.txt》里点明（见上面第「二」节）。
+#
+# ⚠ 网页版启动器是**兜底通道，不是替代品**：它只能浏览 + 待办办结 + 重建，
+#   新建学生/组卷/批改/录题/打印全都要桌面壳（写盘通道在壳里）。
+#   所以文案里必须同时写清"装运行时才是正解"，不能让人以为网页版是完整版。
+$stageLauncher = Join-Path $stage '网页版启动器.cmd'
+# ⚠ 这个 .cmd 里**只许有 ASCII 字符**（一条中文都不写）。
+#   理由：.cmd 是由 cmd.exe 按**当前代码页**读的，而代码页随系统语言变（中文 936 / 英文 437）。
+#   UTF-8 存的中文在 936 的机器上是乱码，改成 GBK 又在英文机器上乱码 ——
+#   而"双击一个 .cmd 看见乱码"会让人以为程序坏了。
+#   解法不是"再调一次 chcp"（chcp 65001 与 cmd.exe 的批量解析有已知的字节偏移坑），
+#   而是**让 .cmd 只说 ASCII**：中文说明交给 .mjs（node 读 UTF-8 永远正确）与《使用说明.txt》。
+$launcherNote = @"
+@echo off
+setlocal
+set "APP=%~dp0app"
+if not exist "%APP%\node.exe" (
+  echo [GlimmerNote] node.exe not found under "%APP%\node.exe".
+  echo Please extract the WHOLE package ^(do not copy only the app folder^).
+  pause
+  exit /b 1
+)
+if not exist "%APP%\tools\_web-launcher.mjs" (
+  echo [GlimmerNote] launcher script not found: "%APP%\tools\_web-launcher.mjs"
+  echo Please extract the WHOLE package ^(do not copy only the app folder^).
+  pause
+  exit /b 1
+)
+"%APP%\node.exe" "%APP%\tools\_web-launcher.mjs"
+echo.
+echo [GlimmerNote] local server stopped. Press any key to close.
+pause >nul
+"@
+[IO.File]::WriteAllText($stageLauncher, ($launcherNote -replace "`r`n", "`n") -replace "`n", "`r`n", (New-Object System.Text.UTF8Encoding($false)))
+
+# 终端用户版的完整性标签复位脚本（与仓库 scripts\fix-integrity.ps1 **不是同一份**：
+#   仓库那份自动解析「运行区 + 开发区」两处；这份只处理**本脚本所在目录的整棵树**，
+#   不依赖任何仓库内部结构 —— 终端用户手里没有仓库）。
+$stageFix = Join-Path $stage '修复完整性标签.ps1'
+Copy-Item (Join-Path $root 'scripts\fix-integrity-user.ps1') $stageFix -Force
+Write-Host "  已放：网页版启动器.cmd、修复完整性标签.ps1"
 
 # ── 3) 把所有文件时间钉到提交时间（zip 条目会继承文件 mtime）──
 Get-ChildItem $stageApp -Recurse -File | ForEach-Object { $_.LastWriteTimeUtc = $stampUtc }
