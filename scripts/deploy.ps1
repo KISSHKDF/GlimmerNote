@@ -117,6 +117,30 @@ try {
     Write-Host "  ⚠ 完整性标签复位异常（已跳过）：$($_.Exception.Message)" -ForegroundColor Yellow
   }
 
+  # ── 5c) 包根的「用户救急件」：跟着包一起落到运行区根（★ 2026-11-04 加）──
+  # 为什么要单独一步：铁律是"只替换 app\"，而这两个文件按设计住在**包根**（不在 app\ 里）
+  #   —— 「网页版启动器.cmd」（缺 WebView2 时的兜底入口）与「修复完整性标签.ps1」
+  #   （终端用户版标签复位）。它们**不是** app\ 的一部分，靠"只替换 app\"这一步到不了运行区。
+  #   结果（2026-11-04 实测）：包里有、app\tools\ 里也有那个 .mjs 引擎，
+  #   但运行区根**两个都查不到** ⇒ 用户拿到运行区后照样"缺 WebView2 就没路可走"。
+  #   做法：从**包**（不是源码树）复制到运行区根 ⇒ 运行区内容永远等于发布包内容。
+  #   ⚠ 只复制**这两个白名单文件**，不整目录搬包根（包根还有 使用说明.txt 等，
+  #     而运行区根已经有自己的「怎么试用.txt」等本机文件，整目录覆盖会误伤）。
+  $helperFiles = @('网页版启动器.cmd', '修复完整性标签.ps1')
+  $copiedHelpers = @()
+  foreach ($hf in $helperFiles) {
+    $srcHf = Join-Path $tmp $hf
+    if (Test-Path -LiteralPath $srcHf) {
+      Copy-Item -LiteralPath $srcHf -Destination (Join-Path $ProdRoot $hf) -Force
+      $copiedHelpers += $hf
+    }
+  }
+  if ($copiedHelpers.Count -gt 0) {
+    Write-Host ("  用户救急件：已放到运行区根 → " + ($copiedHelpers -join '、'))
+  } else {
+    Write-Host '  用户救急件：包里没有（老包），运行区根未新增' -ForegroundColor Yellow
+  }
+
   # ── 6) 归档发布包 + 写部署记录 ──
   # 注意：从 _releases 重新部署时，源就是目标，直接 Copy-Item 会报"不能覆盖自己"
   $destZip = Join-Path $relArchive $zipItem.Name
