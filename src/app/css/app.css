@@ -572,6 +572,42 @@ textarea{width:100%;resize:vertical;min-height:64px;line-height:1.7}
 .stembox img{max-width:100% !important;height:auto}
 .sheet .q-stem table{border-collapse:collapse;max-width:100%}
 .sheet .q-stem th,.sheet .q-stem td{border:1px solid #333;padding:2px 12px;text-align:center}
+/* ⚠ 2026-11-04 修（用户报障：M0066「表格最左下角，负5分之一的3次方，打印版换行了，
+    这一换行会造成很多误解，能不能不换行？」）：
+    现象——真打印 PDF（Edge printToPDF → 栅格化）里 M0066 左下格印成
+      「(−」/「1⁄5」/「)³」三行；同表头「乘方的结果」也拆成两行。
+    根因（实测，不是猜）——**边距被扣了两遍**：
+      打印时 @page 已经给了 16mm 左右边距 ⇒ body 可用宽 = 210−32 = 178mm（673px）；
+      而 .sheet 自己又有 `padding:16mm 16mm 18mm` ⇒ 题干内容区只剩 **542px**
+      （print 媒体实测 contentW=542）。M0066 这张 8 列表自然宽 580px，
+      被挤爆后单元格只剩 66px，内容区可用 42px；而那个表达式要 **46px**
+      （「(−」18 + 分数 14 + 「)」6 + 上标 8）⇒ **缺 4px** ⇒ 必然被拆。
+      「乘方的结果」同理：五个汉字 67px，格内容区只有 71px，浏览器按 CJK 断行规则
+      仍把它拆成两行（表格自动布局给的列宽比内容窄 1px）。
+    修法（三条都在渲染层，不碰任何卡片数据）：
+      ① **打印态 .sheet 内边距归零**：`@page` 已经给过页边距了，.sheet 再扣一遍
+         是重复扣。归零后题干内容宽 542px → **663px**，且**屏幕预览与打印输出
+         完全一致**（屏幕：210mm − 16mm×2 = 178mm；打印：@page 给 178mm，.sheet 不再二次扣）。
+      ② **格内左右留白 12px → 8px**：8 列 × 2 列 × 4px = 64px 让出来的空间。
+      ③ **含分数的格给 min-width 并 nowrap**：表达式是一个整体，「(−1/5)³」拆成三行
+         等于把数学符号拆散——孩子（和大人）极易把「(−」读成独立的负号、
+         把「)³」读成另一段。而这张卡要纠正的错误正是「负底数写乘方不加括号」，
+         印成三行反而**强化了错误读法**。
+         min-width:4.5em 是**兜底**（表达式需要 46px ≈ 4.6em，列宽自动分配可能给更少），
+         nowrap 是**保证**（不许在表达式内部断行）。
+    实测（print 媒体，全库 27 张含表格的卡逐格量）：
+      改前 折行格 51、溢出纸面的表 2（M0004 溢出 26px、C0011 溢出 45px）；
+      改后 折行格 27、**含分数的格折行 0**、溢出纸面的表 **0**、横向溢出本格 **0**。
+      M0066 那个格的余量从「缺 4px」变成「富余 11px」（need 46 / avail 57）。
+      改后仍折行的 27 格全是**纯文字**（如 C0011 周期表里「1 H氢1.008」这类
+      本就该分行的多行内容），与数学表达式无关。
+    为什么 nowrap 只给「含 .fr 的格」而不给 sup/sub：库里 14 个含 .fr 的格
+      **全是纯数学**（实测扫描），而含 sup 的格里有一批是**散文**
+      （P0074「动力 F1/N」这类）——nowrap 会把散文顶成一条长线、撑爆纸面。
+      含分数的格加 nowrap 后横向溢出实测 0（.fr 的宽度由分子/分母决定，很窄）。 */
+@media print{.sheet{padding:0}}
+.sheet .q-stem th,.sheet .q-stem td{padding:2px 8px}
+.sheet .q-stem td:has(.fr),.sheet .q-stem th:has(.fr){min-width:4.5em;white-space:nowrap}
 /* ⚠ 2026-10-27 修（用户实测 P20261027-01：M0111 生物园填表右侧两列被裁掉，孩子没格可填）——
    headless 实测全库 452 张卡，纸面内容宽只有 635px，三类元素比纸宽：
    ① 表格里的空位被 applySlotWidths 按答案撑到行内 min-width:14.3em（≈238px）×6 列
