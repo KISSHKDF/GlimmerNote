@@ -450,7 +450,7 @@ $readme = $readme.Replace('__VER__', $ver)
 #   否则最小包会带着假承诺出厂（用户照着说明去找 node.exe，找不到）。
 $nodeNote = if ($WithoutNode) {
 @'
-★ 本包是**精简包**：不含 Node.js 运行时，你**需要自己先装 Node.js ≥ 18**（https://nodejs.org/）。
+本包是**精简包**：不含 Node.js 运行时，你**需要自己先装 Node.js ≥ 18**（https://nodejs.org/）。
   本程序的所有"写盘"动作（新建学生 / 组卷 / 批改 / 待办办结）都由 Node 工具链完成，
   没有 Node 就跑不起来。
   装好后请确认命令行里 `node --version` 能正常输出。
