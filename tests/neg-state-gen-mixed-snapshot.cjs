@@ -31,6 +31,11 @@ const ROOT = path.resolve(__dirname, '..');
 const GEN = path.join(ROOT, 'src', 'tools', '生成状态.mjs');
 const SAFE_WRITE = pathToFileURL(path.join(ROOT, 'src', 'tools', '_安全写.mjs')).href;
 
+/* ★ 2026-11-05（H02 迁移后同步）：锁目录不再在 %TEMP%\glimmernote-write-state\<hash>，
+   迁到 %LOCALAPPDATA%\GlimmerNote\write-state\<hash>。stateDir 在 ② 里用
+   `_安全写.mjs lockPathOf`（唯一实现）解析；子进程显式传同一目录对齐。 */
+let stateDir = null;
+
 let worst = 0, passed = 0;
 /* ⚠ 本用例会 await 子进程；**如果某次 await 永远不落地，Node 会在事件循环空掉时直接 exit 0**，
    于是"一个字都没跑完"看起来像"全绿"（本用例第一版就这样假绿过一次：只打印了 ①，②③ 没跑，exit=0）。
@@ -73,13 +78,13 @@ A('`--out -`（纯读）不取锁', /OUT !== '-'/.test(src), '找到条件分支
 /* ---------- ② 动态判据：跑生成器，外部看锁 ---------- */
 const lib = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'gn-stategen-')), '库');
 fs.cpSync(path.join(ROOT, 'fixtures', '库-形状'), lib, { recursive: true });
-const stateDir = path.join(os.tmpdir(), 'glimmernote-write-state',
-  require('crypto').createHash('sha1').update(String(lib).toLowerCase()).digest('hex').slice(0, 16));
 
 async function runGenWithProbe(genPath) {
   /* 起生成器，同时高频读锁文件：只要在它跑完之前读到"锁里是它的 pid"就算持锁 */
   const p = spawn(process.execPath, [genPath, '--quiet'], {
-    cwd: ROOT, env: Object.assign({}, process.env, { CTB_DATA: lib, CTB_TXN_DIR: '' }),
+    /* ⚠ CTB_TXN_DIR 是"根"（其下再拼 <sha1(库根)>）—— 传 stateDir（dirname(lockPathOf)）
+       会嵌套出 <dir>\<key>\<key>，子进程写的锁探针看不见。必须传它的父目录。 */
+    cwd: ROOT, env: Object.assign({}, process.env, { CTB_DATA: lib, CTB_TXN_DIR: path.dirname(stateDir) }),
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   /* ⚠ close 监听必须在 spawn 之后**立刻**挂上：本用例第一版在轮询循环**之后**才挂，
@@ -105,6 +110,11 @@ async function runGenWithProbe(genPath) {
 }
 
 (async () => {
+  /* 用唯一实现拿这个库的锁目录（H02 迁移后不在 %TEMP% 了），并把同一目录显式传给子进程 */
+  stateDir = path.dirname((await import(pathToFileURL(path.join(ROOT, 'src', 'tools', '_安全写.mjs')).href)).lockPathOf(lib));
+  /* ⚠ CTB_TXN_DIR 的语义是"根"（stateDirOf 在其下再拼 <sha1(库根)> 子目录），
+     不是 lockPathOf 的 dirname —— 直接把 dirname 当根会嵌套出 <dir>\\<key>\\<key>。 */
+  process.env.CTB_TXN_DIR = path.dirname(stateDir);   // 子进程与探针共用同一根
   console.log('\n== ② 动态：生成器跑起来时，锁文件里必须是它自己 ==');
   const r1 = await runGenWithProbe(GEN);
   A('生成器自身正常退出（先确认探针没把环境搞坏）', r1.code === 0, 'exit=' + r1.code + ' err=' + String(r1.err).slice(0, 120));
