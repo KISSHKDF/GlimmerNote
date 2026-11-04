@@ -189,8 +189,24 @@
      证据截图那一张 —— 看不出"这一块在整页的哪儿、周边还有什么条件"。并排显示 = 让人一眼对上。
      换算**不在这里做**：调 `S.regionPx`（唯一实现在 shell.js，与灯箱同源）。 */
   const ROLE_NAME = { 错误位置: '错误位置', 公共条件: '公共条件', 配图: '配图' };
+  /* ★ 2026-11-04（真机看出问题后修）：**区域不在待办上，在卡上**。
+     起因（用无头浏览器把渲染后的 DOM 抓下来核对时发现）：待办条目只有 `origPage/origBox`（一个旧红框），
+     区域 `regions[]`（角色分层）是挂在**卡**上的（`_原卷台账.json` → 生成状态 的 `origRegions`）。
+     我第一版只读 `p.origRegions` ⇒ 永远取不到 ⇒ 界面静默退化成"红框对准（无角色记录）"，
+     看起来像"这台机器没有区域数据"，其实是**接线少了一条**。
+     现在两条路都走，并且**把来源显示出来**（不许静默）：
+       ① 待办自带区域（无卡待办可用 `定位` 登记自己的区域）；
+       ② 否则按 `学生|卡号` 去卡上取（与"去关联卡"按钮、灯箱同一条查找口径）。 */
+  function regionsOf(p) {
+    if (Array.isArray(p.origRegions) && p.origRegions.length) return { regions: p.origRegions, from: '待办登记' };
+    const x = (M.cards || []).find(c => String(c.kid) === String(p.student) && String(c.card && c.card.id) === String(p.cardId));
+    const r = x && x.card && x.card.origRegions;
+    if (Array.isArray(r) && r.length) return { regions: r, from: '关联卡 ' + U.esc(p.student) + '·' + U.esc(p.cardId) };
+    return { regions: [], from: null };
+  }
   function pairBlock(p) {
-    const regions = Array.isArray(p.origRegions) ? p.origRegions : [];
+    const ro = regionsOf(p);
+    const regions = ro.regions;
     const hasOrig = !!p.origPage;
     const boxOnly = !regions.length && Array.isArray(p.origBox) && p.origBox.length === 4;
     if (!hasOrig && !regions.length && !boxOnly) return '';
@@ -205,10 +221,11 @@
       ? regions.map((r, i) => '<span class="rp-chip ' + S.roleClass(r.role) + '" data-rp="' + i + '">' +
         U.esc(ROLE_NAME[r.role] || r.role || '（无角色）') + '</span>').join('')
       : '<span class="rp-chip r-other" data-rp="0">红框对准（无角色记录）</span>';
-    return '<div class="pd-pair" data-pair="' + U.esc(p.id) + '">' +
+    return '<div class="pd-pair" data-pair="' + U.esc(p.id) + '" data-region-from="' + U.esc(ro.from || '（无）') + '">' +
       '<div class="pair-hd">原图并排　<span class="small muted">左＝整页原卷，右＝证据截图；点左侧小标签可只看某一角色</span></div>' +
       '<div class="pair-row">' +
-      '<div class="pair-col"><div class="pair-cap">整页原卷' + (regions.length ? '（' + regions.length + ' 块区域）' : '') + '</div>' +
+      '<div class="pair-col"><div class="pair-cap">整页原卷' + (regions.length ? '（' + regions.length + ' 块区域）' : '') +
+      (ro.from ? '　<span class="small muted">区域来源：' + ro.from + '</span>' : '') + '</div>' +
       '<div class="pair-wrap"><img class="pair-orig" alt="整页原卷" src="' + U.esc(H.asset(p.origPage)) + '"' +
       ' data-regions="' + U.esc(JSON.stringify(regions.length ? regions : (boxOnly ? [{ role: '', x: p.origBox[0], y: p.origBox[1], w: p.origBox[2], h: p.origBox[3] }] : []))) + '">' +
       '<div class="pair-boxes"></div></div>' +

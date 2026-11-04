@@ -873,6 +873,17 @@ const unitTests = [
      **反例必须可跑**（指到真实案例 + 该案例 controls[] 里真有那条对照）⇒ 反例失去支撑时当场红。
      正向用真扩展包（化学 family-b/periodic-symbols）跑；装机路径（装/停）在临时包根抽查。 */
   ['neg-pack-extensions.cjs'],
+  /* ════════ ★ 2026-11-04 真机体检后补的两条（都是"以第三者身份打开程序"才发现的） ════════ */
+  /* ⑭ **真实浏览器 DOM** 级判据：批次 4 的 `neg-v2-review-sidebyside.cjs` 只证了"卡上有 origRegions"
+     与"源码里有 S.roleClass 字样"，**没证**待办那条路真能拿到区域 —— 真机一看：待办只有旧红框，
+     界面静默退化成"红框对准（无角色记录）"。这条真起服务端 + 真开无头浏览器（Edge/Chrome），
+     数区域框（必须 2 个、角色 r-err/r-cond）、数角色标签、看来源标注；阴性对照=卡上无区域时
+     必须老实退化成 1 个 r-other。没装浏览器则 RESULT=SKIP。 */
+  ['neg-v2-review-pair-dom.cjs'],
+  /* ⑮ 服务端模式**冷库首开**：库里还没有 `_状态.json` 时 `GET /api/state` 曾 500（页面白屏），
+     而启动横幅本来就承诺 "will rebuild on first /api/state"。判据：冷库 ⇒ 200 + 真状态包 + 自建成功；
+     阴性对照=重建也失败时仍 200，但必须挂 `degraded=state-missing-rebuild-failed` 并给原因。 */
+  ['neg-server-cold-library.cjs'],
 ];
 for (const [name] of unitTests) {
   worst = Math.max(worst, run(name));

@@ -918,8 +918,43 @@ const server = http.createServer(async (req, res) => {
       const fr = pendingFreshness();
       if (fr.status === 'stale') {
         /* ★ 2026-11-02 R6：`await`（刷新已是异步、不阻塞事件循环）；队列内的第二次判据用
-           `pendingNeedsRefresh()` 复查 —— 前一个请求刚把状态刷新过就不必再起子进程。 */
-        await serialized(async () => { if (pendingNeedsRefresh()) await refreshPendingSection(); });
+           `pendingNeedsRefresh()` 复查 —— 前一个请求刚把状态刷新过就不必再起子进程。
+           ★ 2026-11-04（真机发现）：**状态包整个不存在**时（首次打开一个还没有 `_状态.json` 的库，
+           浏览器/服务端模式），`_状态刷新.mjs` 会"读不到 _状态.json"直接非 0 退出 ⇒ 这里 await 抛错
+           ⇒ 整个 GET 变 500、页面白屏。而启动横幅本来就写着 `MISSING(will rebuild on first /api/state)`
+           —— 承诺了要重建，就别把 500 甩给页面。所以：刷新失败且内存里没有状态 ⇒ 按承诺 `doRebuild()`
+           （跑生成器、分钟级但正确，与桌面壳首开同一行为）；重建也失败 ⇒ 落成**显式降级标记**，仍不 500
+           （页面能看到"为什么没有数据"，而不是白屏）。 */
+        try {
+          await serialized(async () => { if (pendingNeedsRefresh()) await refreshPendingSection(); });
+        } catch (e) {
+          if (!state) {
+            const rb = await doRebuild();
+            if (!rb || !rb.ok) {
+              stateFail = {
+                code: 'state-missing-rebuild-failed',
+                detail: '库里还没有 _状态.json，且首次重建失败：' +
+                  String((rb && (rb.error || rb.toolErr)) || (e && e.message) || e),
+              };
+            }
+          } else {
+            stateFail = {
+              code: 'pending-refresh-failed',
+              detail: 'pending 分区刷新失败（内存快照仍可用）：' + String((e && e.message) || e),
+            };
+          }
+        }
+      } else if (!state) {
+        /* 台账 stat 不到（例如 `_待确认.json` 也没有）时 el 上面的分支不会进 —— 但状态包同样缺失，
+           同样按启动横幅的承诺重建一次，别让页面拿到 `{error:'no state'}` 却不知道为什么。 */
+        const rb = await doRebuild();
+        if (!rb || !rb.ok) {
+          stateFail = {
+            code: 'state-missing-rebuild-failed',
+            detail: '库里还没有 _状态.json，且首次重建失败：' +
+              String((rb && (rb.error || rb.toolErr)) || '（生成器没有返回原因）'),
+          };
+        }
       }
       const body = Object.assign({}, state || { error: 'no state' });
       /* ★ 2026-11-03（P2-2）：pending 条目**附加** boxNorm/imgW/imgH（唯一实现 `_区域坐标.mjs`）。
