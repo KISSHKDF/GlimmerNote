@@ -247,8 +247,14 @@ function readProcStartTime(pid) {
   if (process.platform === 'win32') {
     try {
       /* ⚠ 用 ToFileTime()（FILETIME，100ns 单位）—— 实测 UtcTicks 在管道环境下输出空/转型得 0。 */
+      /* ⚠ 2026-11-05（CI 偶发红两次后定位）：单次超从 5000ms 降到 **2500ms**。
+       *   背景：PowerShell 冷启动在慢机器/杀软扫描时可能好几秒；原 5 秒超时会让
+       *   **每一次判活**都阻塞那么久（等锁轮询里反复付这个代价）⇒ "立刻清掉僵尸锁"
+       *   变成"等好几秒才清"，CI 实测 5062ms。
+       *   实测本机冷启动约 220ms，2.5 秒留足余量；查不到就返回 0，
+       *   调用方退回**旧判据**（保守：宁可等，也不误删别人的锁）⇒ 降超时不会引入误删。 */
       const out = execFileSync('powershell', ['-NoProfile', '-Command',
-        '(Get-Process -Id ' + pid + ' -ErrorAction Stop).StartTime.ToFileTime()'], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] });
+        '(Get-Process -Id ' + pid + ' -ErrorAction Stop).StartTime.ToFileTime()'], { encoding: 'utf8', timeout: 2500, stdio: ['ignore', 'pipe', 'ignore'] });
       const ft = Number(String(out).trim());
       return Number.isFinite(ft) && ft > 0 ? Math.floor(ft / 10000) - 11644473600000 : 0;
     } catch { return 0; }

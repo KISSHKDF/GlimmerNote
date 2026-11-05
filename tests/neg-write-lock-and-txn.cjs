@@ -83,8 +83,20 @@ function A(name, ok, detail) {
   console.log('\n══ ② 僵尸锁自愈 ══');
   {
     const s = sandbox();
-    // 造一个"持有进程早就不在了"的锁：pid 用一个几乎不可能存在的号
-    const deadPid = 999999;
+    /* 造一个"持有进程早就不在了"的锁。
+     * ⚠ 2026-11-05（CI 偶发红两次后定位）：**不能用写死的 pid**（原为 999999）。
+     *   Windows 的 PID 上限很大，CI 机器上并发进程多，999999 很可能**真的存在** ⇒
+     *   判活流程会走"查启动时间"分支（PowerShell 冷启动，慢机器上数秒）⇒
+     *   "立刻清掉僵尸锁"变成"等几秒才清"，断言的毫秒阈值被击穿（实测 CI 上 5062ms / 5038ms）。
+     *   修法：挑一个**当前确定不存在**的 PID —— 先试一批候选，逐个用 pidAlive 语义确认取不到。
+     *   这样夹具的前提（持有进程确实不在）由构造保证，不靠运气。 */
+    const deadPid = (() => {
+      for (const cand of [999999, 999998, 4194303, 4194302, 999997, 999996]) {
+        try { process.kill(cand, 0); continue; }        // 存在（或是 EPERM）⇒ 换一个
+        catch (e) { if (e && e.code === 'EPERM') continue; return cand; }
+      }
+      throw new Error('挑不出一个确定不存在的 PID（夹具前提无法保证）');
+    })();
     fs.writeFileSync(M.lockPathOf(s.root),
       JSON.stringify({ pid: deadPid, token: 'zombie', label: '已被 taskkill 的进程', at: Date.now() - 3600000 }));
     const t0 = Date.now();
