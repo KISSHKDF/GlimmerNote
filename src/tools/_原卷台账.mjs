@@ -899,6 +899,9 @@ function gate(allowPxWrite = false) {
   const ORIG_RESOLVER = origResolver();
   let nViaStore = 0;
   const viaStoreSamples = [];
+  /* ★ 2026-11-05：影像备份兜底（保全库没有、但备份里有同路径副本） */
+  let nViaBackup = 0;
+  const viaBackupSamples = [];
   /* ⚠ 2026-10-15 修（I · 门禁检出盲区）：`未定位` 原先直接打印 `errs.length`，
      而 errs 里混了「未定位」「不在盘」「box 非法」「指向自身」等多种错因——
      数字名不副实；本次再往 errs 加「越出库根」会让这个数更失真。
@@ -957,9 +960,16 @@ function gate(allowPxWrite = false) {
       if (store && store.via === 'store') {
         nViaStore++;
         if (viaStoreSamples.length < 20) viaStoreSamples.push(`${c.key} 整页原路径已失效，已按内容从保全库找回：${store.path}`);
+      } else if (store && store.via === 'backup') {
+        /* ★ 2026-11-05：保全库没有、但**影像备份里有同路径副本** ⇒ 也不是断链。
+           实测：用户按「确认重复的就删掉」清理收件箱（那些照片是 52 张卡的溯源依据），
+           这批照片没进过保全库，但影像备份里有逐字节相同的副本 ⇒ 靠这一层兜住，
+           不让一次正常清理把 52 张卡的溯源打断。 */
+        nViaBackup++;
+        if (viaBackupSamples.length < 20) viaBackupSamples.push(`${c.key} 整页原路径已失效，已从影像备份的同路径副本找回：${store.path}`);
       } else {
         errs.push(`${c.key} 整页不在盘：${e.page}` +
-          (store ? '' : '（且保全库里也没有同内容副本 ⇒ 真的断了）'));
+          (store ? '' : '（且保全库与影像备份里都没有副本 ⇒ 真的断了）'));
       }
     }
     if (e.box && !boxOk(e.box)) errs.push(`${c.key} box 非法：${JSON.stringify(e.box)}`);
@@ -973,6 +983,9 @@ function gate(allowPxWrite = false) {
         if (store && store.via === 'store') {
           nViaStore++;
           if (viaStoreSamples.length < 20) viaStoreSamples.push(`${c.key} 导入原件原路径已失效，已按内容从保全库找回：${store.path}`);
+        } else if (store && store.via === 'backup') {
+          nViaBackup++;
+          if (viaBackupSamples.length < 20) viaBackupSamples.push(`${c.key} 导入原件原路径已失效，已从影像备份的同路径副本找回：${store.path}`);
         } else {
           warns.push(`${c.key} 导入原件失效：${e.import}`);
         }
@@ -996,7 +1009,8 @@ function gate(allowPxWrite = false) {
   for (const b of audit.bad) warns.push(`${b.key} 长宽比可疑 r=${b.r}（${b.page}）`);
   console.log('  ' + auditLine(audit));
   console.log(`门禁：卡 ${cards.length} ｜ 未定位 ${nUnlocated} ｜ 有整页无红框 ${noBox} ｜ 告警 ${warns.length}` +
-    (nViaStore ? ` ｜ **已从保全库按内容兜底 ${nViaStore} 条**（原路径失效但字节还在，不是断链）` : ''));
+    (nViaStore ? ` ｜ **已从保全库按内容兜底 ${nViaStore} 条**（原路径失效但字节还在，不是断链）` : '') +
+    (nViaBackup ? ` ｜ **已从影像备份兜底 ${nViaBackup} 条**（原路径失效，备份里有同路径副本，不是断链）` : ''));
   for (const w of warns) console.log('  ⚠ ' + w);
   /* ★ 2026-10-31：兜底明细也要打印（不静默）。
      用户看到"整页不在盘"会以为数据丢了；实际是路径失效、字节在保全库。
@@ -1005,6 +1019,11 @@ function gate(allowPxWrite = false) {
     console.log(`  ── 原路径失效但已按内容从保全库找回（${nViaStore} 条，**不是断链**）──`);
     for (const s of viaStoreSamples) console.log('  ✓ ' + s);
     if (nViaStore > viaStoreSamples.length) console.log(`    … 另有 ${nViaStore - viaStoreSamples.length} 条`);
+  }
+  if (nViaBackup) {
+    console.log(`  ── 原路径失效但已从影像备份的同路径副本找回（${nViaBackup} 条，**不是断链**）──`);
+    for (const s of viaBackupSamples) console.log('  ✓ ' + s);
+    if (nViaBackup > viaBackupSamples.length) console.log(`    … 另有 ${nViaBackup - viaBackupSamples.length} 条`);
   }
   /* ⚠ 2026-10-15 修（I · 输出截断遮蔽高严重级错误）：
      原先 `errs.slice(0, 40)` + "另有 N 条" —— 在**已有一批低严重级错误**
