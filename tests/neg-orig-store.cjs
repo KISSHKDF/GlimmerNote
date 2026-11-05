@@ -21,8 +21,8 @@ const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 const E = require('./_测试环境.cjs');
 
-let fails = 0;
-const A = (n, ok, d) => { console.log(`${ok ? '[OK]  ' : '[FAIL]'} ${n}${d !== undefined ? '  → ' + d : ''}`); if (!ok) fails++; };
+let fails = 0, asserts = 0;
+const A = (n, ok, d) => { asserts++; console.log(`${ok ? '[OK]  ' : '[FAIL]'} ${n}${d !== undefined ? '  → ' + d : ''}`); if (!ok) fails++; };
 
 /* 跑工具：返回 {code, out}；绝不抛（要断言"它会失败"） */
 const run = (args, lib) => {
@@ -91,6 +91,10 @@ const objectsOf = () => {
   A('1x-b ★ --dry=true ⇒ 预演、零写盘', r2.code === 0 && !fs.existsSync(STORE) && !fs.existsSync(LEDGER), 'exit=' + r2.code);
   const r3 = run(['入库', SRC, '--dry=maybe'], LIB);
   A('1x-c ★ --dry=maybe ⇒ 拒、零写盘', r3.code !== 0 && !fs.existsSync(LEDGER), 'exit=' + r3.code);
+  const r4 = run(['入库', SRC, '--batch', '--dry'], LIB);
+  A('1x-g ★ --batch 漏值紧跟 --dry ⇒ 报"缺值"、零写盘（修前 --dry 被吃成批次名 ⇒ 真写盘）', r4.code !== 0 && /缺值/.test(r4.out) && !fs.existsSync(LEDGER), 'exit=' + r4.code);
+  const r5 = run(['入库', SRC, '--batch=--dry', '--dry'], LIB);
+  A('1x-h 对照：--batch=--dry（= 形式显式给值）照常解析、--dry 生效零写盘', r5.code === 0 && !fs.existsSync(LEDGER), 'exit=' + r5.code);
   /* 阴性自证：把入口改回修前写法 ⇒ --dry=true 真写盘 */
   const TOOLP = E.tool('_原图.mjs');
   const SRC0 = fs.readFileSync(TOOLP, 'utf8');
@@ -203,5 +207,5 @@ const objectsOf = () => {
 }
 
 console.log('');
-console.log(`RESULT=${fails ? 'FAIL(' + fails + ')' : 'PASS'} 断言=${8 + 4 + 4 + 4 + 3 + 4 + 4 + 2 + 2} 失败=${fails}`);
+console.log(`RESULT=${fails ? 'FAIL(' + fails + ')' : 'PASS'} 断言=${asserts} 失败=${fails}`);
 process.exit(fails ? 1 : 0);

@@ -62,7 +62,9 @@ console.log('\n═══ F06 参数解析：--note --force 不再打开 force �
      真给了 --force ⇒ 放行到防重复/别的路径（exit 0）。两条对照就是"force 是否真开了"的行为判据。 */
   const r = run(['组卷', '--student', '测试生', '--ids', 'M0001', '--note', '--force']);
   const forced = run(['组卷', '--student', '测试生', '--ids', 'M0002', '--force']);
-  A('★ `--note --force`：force 被 note 当成值吃掉 ⇒ 指纹门禁照拦（exit 2）', r.code === 2,
+  /* 2026-11-05（PR #13 三次复审）：严格模式下"带值 flag 后紧跟本工具开关"改为当场报缺值（修前吃成值、照拦 exit 2）。
+     判据不变：force 没有被打开（非零退出、没组出卷）。 */
+  A('★ `--note --force`：force 不被打开 ⇒ 严格模式报"缺值"非零退出', r.code !== 0 && /缺值/.test(String(r.err || '') + String(r.out || '')),
     'exit=' + r.code + ' ' + String(r.err || '').split('\n')[0].slice(0, 60));
   A('★ 对照：显式 --force 真的放行（判据不是恒假）', forced.code === 0, 'exit=' + forced.code);
   A('静态：_标记复习.mjs 已 import _参数.mjs（迁移在场）', /import \{ parseArgs/.test(TOOL_SRC));
@@ -397,7 +399,7 @@ console.log('\n═══ 复审③ 教师异议：准入/组卷同判据拦，�
   /* 卡面：与 _录题入库 buildRecord 产出同构的最小片段 */
   const mdDir = path.join(libT, '测试生', '数学', 'M0003-测试'); fs.mkdirSync(mdDir, { recursive: true });
   const mdP = path.join(mdDir, '错题记录.md');
-  const MD0 = '# M0003\n\n## 正确答案\n\n**2**\n\n> 老师红笔：3 ⚠ 与采用答案不一致，组卷前须裁决（`_标记复习.mjs 异议裁决`）\n';
+  const MD0 = '# M0003\n\n## 正确答案\n\n**2**\n\n> 答案来源：官方答案 —— 站点答案\n\n> 老师红笔：3 ⚠ 与采用答案不一致，组卷前须裁决（`_标记复习.mjs 异议裁决`）\n';
   fs.writeFileSync(mdP, MD0, 'utf8');
   const rt = (a) => E.runToolSync('_标记复习.mjs', a, { data: libT });
   const adm = () => { try { return JSON.parse(String(rt(['准入', '--json']).out || '').trim().split('\n').pop()).admit['测试生|M0003']; } catch { return null; } };
@@ -417,6 +419,8 @@ console.log('\n═══ 复审③ 教师异议：准入/组卷同判据拦，�
   const mdAfter = fs.readFileSync(mdP, 'utf8');
   A('★ 裁决同步卡面：答案行改成老师红笔', /## 正确答案\n\n\*\*3\*\*\n/.test(mdAfter), mdAfter.slice(0, 120));
   A('★ 裁决同步卡面：过期的"须裁决"提示已换成"已裁决"', !/须裁决/.test(mdAfter) && /已裁决（老师定案/.test(mdAfter));
+  A('★ 裁决同步卡面：来源行改成 老师定案（与索引一致），旧"官方答案 —— 站点答案"不再残留',
+    /^> 答案来源：老师定案 —— .*异议裁决\(老师定案\)/m.test(mdAfter) && !/官方答案 —— 站点答案/.test(mdAfter) && (mdAfter.match(/^> 答案来源：/gm) || []).length === 1, mdAfter.split('\n').filter(l => l.startsWith('> 答案来源')).join(' | '));
   const after = JSON.parse(fs.readFileSync(ip, 'utf8')).items[2];
   A('★ 异议裁决（老师定案）⇒ answer 改为老师红笔、来源=老师定案、留裁决痕', ok.code === 0 && after.answer === '3' && after.answerSource === '老师定案' && !!after.teacherConflict.resolvedAt,
     'exit=' + ok.code + ' ' + JSON.stringify({ a: after.answer, s: after.answerSource }));

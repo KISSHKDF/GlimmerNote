@@ -905,7 +905,15 @@ switch (action) {
         const ti = lines.findIndex(l => l.startsWith('> 老师红笔：'));
         if (ai < 0 || ti < 0) throw new Error(item.id + ' 的 错题记录.md 里找不到「## 正确答案」答案行或「老师红笔」行，裁决未写盘：卡面结构与入库器产出不符');
         lines[ai] = '**' + String(item.answer || '（未能确认）') + '**';
-        lines[ti] = '> 老师红笔：' + tc.teacher + ' ✔ 已裁决（' + opt.as + '，' + tc.resolvedAt + '）：' + String(opt.note).replace(/\s+/g, ' ');
+        /* ★ 2026-11-05（PR #13 三次复审）：来源行也要同步 —— 修前只改答案行与老师红笔行，
+           `> 答案来源：官方答案 —— 站点答案` 原样留着，索引与卡面在"答案出自哪里"上分叉。
+           入库时 answerSourceNote 为空不会写来源行 ⇒ 此时在老师红笔行前补一行。 */
+        const srcLine = '> 答案来源：' + item.answerSource + ' —— ' + item.answerSourceNote;
+        const si = lines.findIndex(l => l.startsWith('> 答案来源：'));
+        if (si >= 0) lines[si] = srcLine;
+        else { lines.splice(ti, 0, srcLine, ''); }
+        const ti2 = lines.findIndex(l => l.startsWith('> 老师红笔：'));
+        lines[ti2] = '> 老师红笔：' + tc.teacher + ' ✔ 已裁决（' + opt.as + '，' + tc.resolvedAt + '）：' + String(opt.note).replace(/\s+/g, ' ');
         tx().writeText(md, lines.join('\n'));
       }
       done.push(item.id + ' → ' + opt.as + '（老师 ' + tc.teacher + ' / 原采用 ' + tc.adopted + '）');

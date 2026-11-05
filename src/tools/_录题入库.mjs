@@ -378,6 +378,10 @@ function cmdLand() {
             直到 `_标记复习.mjs 异议裁决` 人工裁决。 */
     if (typeof c.teacherAnswer !== 'string') {
       problems.push(id + ' 没有声明 teacherAnswer —— 照片上老师写了正确答案就原样填，没写就填空串 ""（每张卡必填：省略等于让"老师红笔被覆盖"这条检查失明）');
+    } else if (/^老师定案/.test(String(c.answerSource || '')) && c.teacherAnswer.trim() === '') {
+      /* ★ 2026-11-05（PR #13 三次复审）：老师红笔为空却写"老师定案" —— 修前空串被 teacherConflictOf 视为"不冲突"，
+         两道检查都绕过、直接进组卷池，卡面还会同时出现"老师没写出正确答案"与"来源：老师定案"。 */
+      problems.push(id + ' 的 answerSource=老师定案，但 teacherAnswer 为空（老师没写出正确答案）—— 自相矛盾：没有老师答案就不能"按老师定案"，改成 独立判卷 / 官方答案 / 未能确认');
     } else if (teacherConflictOf(c)) {
       if (/^老师定案/.test(String(c.answerSource || ''))) {
         problems.push(id + ' 的 answerSource=老师定案，但答案（' + c.answer + '）与老师红笔（' + c.teacherAnswer + '）不一致 —— 自相矛盾，按老师就填老师的答案，不按老师就别写老师定案');

@@ -60,7 +60,18 @@ export function parseArgs(argv, { valueFlags = [], start = 1, boolFlags = null }
     let prevIsValueFlag = false;   // 上一个 token 是"已知带值 flag 本身"（不是某个 flag 的值）
     for (const t of argv) {
       /* 上一个是已知带值 flag ⇒ 本 token 是它的**值**，原样保留（`--note --a=b` 的值就是 "--a=b"，M1 口径不破） */
-      if (prevIsValueFlag) { out.push(t); prevIsValueFlag = false; continue; }
+      if (prevIsValueFlag) {
+        /* ★ 2026-11-05（PR #13 三次复审）：严格模式下，带值 flag 后面紧跟的是**本工具声明的开关**
+           （如 `--batch --dry` 漏写了批次名）⇒ 修前 --dry 被当成 batch 的值吃掉 ⇒ DRY=false ⇒ 真写盘。
+           现在当场报错。值本身真要以"--开关名"开头的，写成 `--batch=--dry` 即可（`=` 形式不走这里）。 */
+        if (strict && typeof t === 'string' && t.startsWith('--')) {
+          const nk = t.slice(2).split('=')[0];
+          if (boolSetPre.has(nk)) {
+            throw new Error(out[out.length - 1] + ' 缺值：紧跟着的 ' + t + ' 是本工具的开关，不会被当成值（真要这个值请写 ' + out[out.length - 1] + '=' + t + '）。未执行任何动作。');
+          }
+        }
+        out.push(t); prevIsValueFlag = false; continue;
+      }
       let k = null;
       if (typeof t === 'string' && t.startsWith('--') && t.length > 2) {
         const eq = t.indexOf('=');

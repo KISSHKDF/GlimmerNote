@@ -557,6 +557,10 @@ const mkLandPage = (reply, over) => {
     fs.writeFileSync(cf, JSON.stringify(o), 'utf8');
     const r2 = run(['_录题入库.mjs', '入库', TID2, '--file', cf, '--student', '学生甲', '--subject', '数学', '--data', L]);
     A('G7 ★ 老师定案 却与老师红笔不一致 ⇒ 拒（notes 也救不了）', r2.code !== 0 && cardCount(L) === 0 && /自相矛盾/.test(r2.out), 'exit=' + r2.code);
+    Object.assign(o.result.cards[0], { answerSource: '老师定案', teacherAnswer: '  ', notes: '' });
+    fs.writeFileSync(cf, JSON.stringify(o), 'utf8');
+    const r2b = run(['_录题入库.mjs', '入库', TID2, '--file', cf, '--student', '学生甲', '--subject', '数学', '--data', L]);
+    A('G7 ★ 老师定案 却 teacherAnswer 为空/空白 ⇒ 拒（修前绕过两道检查直进组卷池）', r2b.code !== 0 && cardCount(L) === 0 && /teacherAnswer 为空/.test(r2b.out), 'exit=' + r2b.code);
     Object.assign(o.result.cards[0], { answerSource: '独立判卷', teacherAnswer: '12', notes: '与老师红笔不一致：老师 12，独立解 13' });
     fs.writeFileSync(cf, JSON.stringify(o), 'utf8');
     const r3 = run(['_录题入库.mjs', '入库', TID2, '--file', cf, '--student', '学生甲', '--subject', '数学', '--data', L]);
