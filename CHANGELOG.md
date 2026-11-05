@@ -18,7 +18,7 @@
 ## [2026.11.05.02] - 2026-11-05 · 合并评审（Muse + Hark，对 7309c45）整改：写锁迁移 / 入库事务 / 快照校验 / 参数解析 / 老师红笔不被悄悄覆盖（独立解法仲裁）
 
 **变更分类**：Fixed / Changed / Security
-**升级影响**：换程序目录 `app\`（工具 `_安全写/_录题入库/_快照/_参数/_标记复习/_web-launcher`、前端 `app.css` 仅注释）；`数据\` 结构零改动。写锁与事务日志目录统一到 `%LOCALAPPDATA%\拾光小册\write-state\`（原 `%LOCALAPPDATA%\GlimmerNote\write-state\` 与更早的 `%TEMP%\glimmernote-write-state\` 在**取到锁之后**自动迁走，空了才删父目录）。录题配方 `ingest-page` → v2.3.0、`ingest-single` → v2.2.0（指纹必变），新增可选字段 `teacherAnswer`。`_快照 --force-restore` 现在必须同时给 `--confirm-force=<文件名>`，且先记审计再恢复。写盘工具（`_标记复习/_原图/_录题入库/_作答门禁/_配图门禁/_盲解复核/_原卷台账/_待确认/_建学生/_笔形`）进入参数严格模式：拼错的 flag 当场报错；开关写成 `--x=false` 时真正关闭。录题回传的**每张卡**必须声明 `teacherAnswer`（老师没写填 `""`）；与老师红笔冲突的卡须 `_标记复习 异议裁决` 后才能组卷。
+**升级影响**：换程序目录 `app\`（工具 `_安全写/_录题入库/_快照/_参数/_标记复习/_web-launcher`、前端 `app.css` 仅注释）；`数据\` 结构零改动。写锁与事务日志目录统一到 `%LOCALAPPDATA%\拾光小册\write-state\`（原 `%LOCALAPPDATA%\GlimmerNote\write-state\` 与更早的 `%TEMP%\glimmernote-write-state\` 在**取到锁之后**自动迁走，空了才删父目录）。录题配方 `ingest-page` → v2.3.0、`ingest-single` → v2.2.0（指纹必变），新增字段 `teacherAnswer`（**每张卡必填**，见下）。`_快照 --force-restore` 现在必须同时给 `--confirm-force=<文件名>`，且先记审计再恢复。写盘工具（`_标记复习/_原图/_录题入库/_作答门禁/_配图门禁/_盲解复核/_原卷台账/_待确认/_建学生/_笔形`）进入参数严格模式：拼错的 flag 当场报错；开关写成 `--x=false` 时真正关闭。录题回传的**每张卡**必须声明 `teacherAnswer`（老师没写填 `""`）；与老师红笔冲突的卡须 `_标记复习 异议裁决` 后才能组卷。
 
 ### 起因
 
@@ -47,7 +47,7 @@ P2-4"NTP 校时跳变 >3 秒会误判活锁"要**分平台**说：
 | P2-4 | H1 判据在 Linux 上从未真正执行（PowerShell 不存在 ⇒ 恒 0） | 补 Linux 通道（`/proc/<pid>/stat` + `btime`）；`neg-lock-reclaim-race` 在 Linux 上 17/17 |
 | P2-6 | 注释称"热路径零开销" | 改为如实说明：Windows 上每个取锁进程一次 PowerShell 冷启动（正确性的代价） |
 | P1-5 | 快照内容校验只对 `.json`；掏空的 `错题记录.md`/`题干.html` 不用 force 就能恢复 | 非 JSON 真源按"非空白字符数"同口径两档（掏空 / 缩水过半），基准取恢复前与 git 最近 20 版最大者 |
-| P1-6 | 站点答案与老师红笔冲突无优先级；代码层看不到教师异议 | 配方写明老师红笔算打架一方、不许以官方答案覆盖；新增可选 `teacherAnswer`，入库器比对不一致且 notes 未交代即拒；隐私红线补"试卷抬头信息不算题干" |
+| P1-6 | 站点答案与老师红笔冲突无优先级；代码层看不到教师异议 | 配方写明老师红笔算打架一方、不许以官方答案覆盖；新增 `teacherAnswer` 字段（**每张卡必填**，schema `cards.items.required` 与入库器同口径校验，老师没写就填空串 `"`）；入库器比对不一致且 notes 未交代即拒；隐私红线补"试卷抬头信息不算题干" |
 | P2-1 | reviews 上限注释写"保留最近 50 条"，实际按批次整留可超 50 | 注释与提示改为如实口径（软上限，按批次整留）；不改行为（撤批按 paper 匹配需要整批） |
 | P2-2 | 动作名前带值 flag 的值静默丢失；未知 flag 吃掉动作名；不支持 `--x=y`；拼错 flag 静默丢弃 | 动作名前的值存进 opt；动作名槽里未知 flag 一律当布尔；支持 `--x=y`（带值 flag 后的 `--a=b` 仍原样当值）；新增 `boolFlags` 严格模式（写盘工具全部启用，见复审①） |
 | P2-3 | N5 localStorage 断言子串判据可假绿 | 改为"清后为空"或"JSON 逐字段全等默认值"两步判据 |
@@ -75,7 +75,7 @@ P2-4"NTP 校时跳变 >3 秒会误判活锁"要**分平台**说：
 - **严格模式未覆盖的工具**：`_录题任务/_着重号门禁/_经验包/_经验草稿/_配方/_路径护栏/生成状态` 仍是宽松模式（多为只读或自有写闸），待逐个迁移。
 
 - **P2-9 大文件拆分 / Markdown 双份收敛**：拆 2800 行的 C# 壳需要 Windows 上编译与全量 UI 回归才能验收，本版不动。
-- **Windows 运行时验证**：本版在 Linux 上实跑；quick / full、exe 构建、PowerShell 启动时间通道、裁图、§⑤ junction、headless Edge 排版需要在 Windows 上补跑。
+- **Windows 运行时验证**：托管 CI 的 runner 是 `windows-latest`（`.github/workflows/gate.yml`），但它只跑 `tests\run.mjs fixture`（合成库口径，零依赖自检）；本版的以下项需在**真实 Windows + 真实题库**上补跑：quick / full、exe 构建、PowerShell 启动时间通道、裁图、§⑤ junction、headless Edge 排版，以及本版新增用例 `neg-lock-migration-and-cache` / `neg-snapshot-text-and-force`（前者要真进程启动时间通道、后者要 git 历史）。
 
 ### 回归断言
 
