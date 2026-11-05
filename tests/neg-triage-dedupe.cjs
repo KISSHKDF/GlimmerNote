@@ -76,11 +76,11 @@ function makeLib() {
     },
   }, null, 1) + '\n', 'utf8');
 
-  /* 题库：一门课，已有 1 张卡（题面 "1+1=?"） */
+  /* 题库：一门课，已有 1 张卡（题面 "1+1=?"，source 带《书名》以便测卷头标题同源） */
   fs.mkdirSync(path.join(LIB, '九年级', '数学'), { recursive: true });
   fs.writeFileSync(path.join(LIB, '九年级', '数学', '_索引.json'), JSON.stringify({
     student: '学生甲', grade: '九年级', subject: '数学',
-    items: [{ id: 'M0001', dir: 'M0001-加法', question: '1+1=?', answer: '2', status: '在册' }],
+    items: [{ id: 'M0001', dir: 'M0001-加法', question: '1+1=?', answer: '2', status: '在册', source: '数学《合成练习册卷》· 第1页 · 第1题' }],
   }, null, 1) + '\n', 'utf8');
 
   return { a, b, c };
@@ -144,6 +144,68 @@ function main() {
   A('★ ③·b 题面加空格后仍判重复（归一化生效）',
     (G2.duplicates || []).some(d => d.name === 'B-新照片.png'),
     '重复=' + JSON.stringify((G2.duplicates || []).map(d => d.name)));
+
+  console.log('\n══ ③·c 同源材料检测：卷头标题命中库内书名 ⇒ 必须报出来 ══');
+  {
+    /* 造一份带 headerTitle 的判科结果：headerTitle 与库内卡的 source 里的《书名》同串 */
+    const judge3 = {
+      schema: 'glimmernote.triage-judge/v1',
+      items: (J.pending || []).map((x, i) => ({
+        idx: i, subject: '数学', confident: true, reason: '测试',
+        headerTitle: '合成练习册卷', stems: [],
+      })),
+    };
+    const j3f = path.join(TMP, 'judge3.json');
+    fs.writeFileSync(j3f, JSON.stringify(judge3, null, 1), 'utf8');
+    const g3 = runTool(['分组', '--in', j3f, '--dry', '--json'], LIB);
+    A('③·c 前置：分组真跑成功', g3.code === 0 && !!g3.json, 'exit=' + g3.code);
+    const G3 = g3.json || { sameSource: [] };
+    A('★ ③·c 卷头标题命中库内书名 ⇒ 报出"同源材料"',
+      (G3.sameSource || []).length > 0,
+      'sameSource=' + JSON.stringify((G3.sameSource || []).map(x => x.libraryMaterial)));
+
+    /* 阴性自证：摘掉互含判据 ⇒ 断言必须当场变红 */
+    const ORIG2 = fs.readFileSync(ENGINE, 'utf8');
+    const ANCHOR2 = 'if (kk.includes(hdr) || hdr.includes(kk)) {';
+    const hits2 = ORIG2.split(ANCHOR2).length - 1;
+    A('③·c 前置：阴性自证锚点存在且唯一', hits2 === 1, '出现 ' + hits2 + ' 次');
+    const mutSrc2 = ORIG2.replace(ANCHOR2, 'if (false) {   // 变异：摘掉卷头标题互含判据');
+    A('③·c 前置：变异真的发生了（不是空操作）', mutSrc2 !== ORIG2 && mutSrc2.includes('变异：摘掉卷头标题互含判据'));
+    A('③·c 前置：变异只动一行，行数不变', mutSrc2.split('\n').length === ORIG2.split('\n').length,
+      ORIG2.split('\n').length + ' 行 → ' + mutSrc2.split('\n').length + ' 行');
+
+    const deps2 = new Set();
+    const queue2 = ['_分流器.mjs'];
+    while (queue2.length) {
+      const f = queue2.shift();
+      if (deps2.has(f)) continue;
+      const src = path.join(ROOT, 'src', 'tools', f);
+      if (!fs.existsSync(src)) continue;
+      deps2.add(f);
+      const body = f === '_分流器.mjs' ? mutSrc2 : fs.readFileSync(src, 'utf8');
+      for (const m of body.matchAll(/from\s+'\.\/([^']+\.mjs)'/g)) if (!deps2.has(m[1])) queue2.push(m[1]);
+    }
+    const mutDir2 = path.join(TMP, 'mut2');
+    fs.mkdirSync(mutDir2, { recursive: true });
+    for (const f of deps2) fs.copyFileSync(path.join(ROOT, 'src', 'tools', f), path.join(mutDir2, f));
+    const mutEngine2 = path.join(mutDir2, '_分流器.mjs');
+    fs.writeFileSync(mutEngine2, mutSrc2, 'utf8');
+    const chk2 = spawnSync(process.execPath, ['--check', mutEngine2], { encoding: 'utf8' });
+    A('③·c 前置：变异体语法自检通过（node --check）', chk2.status === 0,
+      String(chk2.stderr || '').split('\n').filter(Boolean).slice(0, 2).join(' | '));
+
+    const r2 = spawnSync(process.execPath, [mutEngine2, '分组', '--in', j3f, '--dry', '--json', '--data', LIB], {
+      cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
+      env: Object.assign({}, process.env, { CTB_DATA: LIB }),
+    });
+    let mj2 = null; try { mj2 = JSON.parse(String(r2.stdout || '')); } catch { }
+    A('③·c 变异体真跑成功', r2.status === 0 && !!mj2, 'exit=' + r2.status);
+    A('★★ ③·c 阴性自证：旧逻辑下**不再**报同源（即断言★③·c 会当场变红）',
+      ((mj2 || {}).sameSource || []).length === 0,
+      'sameSource=' + JSON.stringify(((mj2 || {}).sameSource || []).map(x => x.libraryMaterial)));
+    A('③·c 仓库里的真源码未被改动（变异只在临时副本上做）', fs.readFileSync(ENGINE, 'utf8') === ORIG2);
+    try { fs.rmSync(mutDir2, { recursive: true, force: true }); } catch { }
+  }
 
   console.log('\n══ ④ 阴性自证：摘掉判重锚点（= 退回"不判重"）══');
   {
