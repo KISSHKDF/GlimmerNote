@@ -518,6 +518,43 @@ const mkLandPage = (reply, over) => {
     fs.writeFileSync(cf, JSON.stringify(mk({ notes: '与老师红笔不一致：老师写 12，菁优网写 13，独立解法得 13' })), 'utf8');
     const r2 = run(['_录题入库.mjs', '入库', TID2, '--file', cf, '--student', '学生甲', '--subject', '数学', '--data', L]);
     A('G4 对照：notes 交代了分歧 ⇒ 放行', cardCount(L) === 1, 'exit=' + r2.code + ' cards=' + cardCount(L));
+    /* ★ 2026-11-05（PR #13 复审 ③）：放行 ≠ 了结 —— 老师红笔落盘、冲突挂牌（组卷准入据此拦） */
+    const ix = JSON.parse(fs.readFileSync(path.join(L, '七年级-学生甲', '数学', '_索引.json'), 'utf8').replace(/^\uFEFF/, ''));
+    const it = ix.items[0] || {};
+    A('G4 ★ teacherAnswer 进了索引', it.teacherAnswer === '12', JSON.stringify(it.teacherAnswer));
+    A('G4 ★ 冲突卡挂 teacherConflict（未裁决）', !!it.teacherConflict && it.teacherConflict.teacher === '12' && !it.teacherConflict.resolvedAt, JSON.stringify(it.teacherConflict));
+    const md = fs.readFileSync(path.join(cardDirOf(L), '错题记录.md'), 'utf8');
+    A('G4 ★ 错题记录.md 写了老师红笔与"须裁决"', /老师红笔：12/.test(md) && /异议裁决/.test(md));
+  }
+  /* G5 · 官方答案省略 teacherAnswer ⇒ 拒（修前漏填即全盲） */
+  {
+    const L = freshLib('g5');
+    w(L, path.join('_录题', TID2 + '.json'), mkTask(true));
+    const o = mkCards({ taskId: TID2 }); Object.assign(o.result.cards[0], { answerSource: '官方答案' });
+    const cf = path.join(L, 'cards.json'); fs.writeFileSync(cf, JSON.stringify(o), 'utf8');
+    const r = run(['_录题入库.mjs', '入库', TID2, '--file', cf, '--student', '学生甲', '--subject', '数学', '--data', L]);
+    A('G5 ★ 官方答案却省略 teacherAnswer ⇒ 拒绝、零写盘', r.code !== 0 && cardCount(L) === 0 && /teacherAnswer/.test(r.out), 'exit=' + r.code);
+    Object.assign(o.result.cards[0], { teacherAnswer: '' });
+    fs.writeFileSync(cf, JSON.stringify(o), 'utf8');
+    const r2 = run(['_录题入库.mjs', '入库', TID2, '--file', cf, '--student', '学生甲', '--subject', '数学', '--data', L]);
+    A('G5 对照：teacherAnswer="" 明确声明老师没写 ⇒ 放行', r2.code === 0 && cardCount(L) === 1, 'exit=' + r2.code);
+    /* 幂等摘要含 teacherAnswer：只改老师红笔重提，不得被当成"同一份"跳过 */
+    Object.assign(o.result.cards[0], { teacherAnswer: '12', notes: '与老师红笔不一致：老师写 12，站点 13' });
+    fs.writeFileSync(cf, JSON.stringify(o), 'utf8');
+    const r3 = run(['_录题入库.mjs', '入库', TID2, '--file', cf, '--student', '学生甲', '--subject', '数学', '--data', L]);
+    A('G5 ★ 只改 teacherAnswer 重提 ⇒ 不被幂等跳过', !/幂等/.test(r3.out), r3.out.slice(0, 120));
+  }
+  /* G6 · 严格模式：写盘工具拼错开关当场拒（PR #13 复审 ①：修前 --dryy 被静默丢弃 ⇒ 真入库） */
+  {
+    const L = freshLib('g6');
+    w(L, path.join('_录题', TID2 + '.json'), mkTask(true));
+    const cf = path.join(L, 'cards.json'); fs.writeFileSync(cf, JSON.stringify(mkCards({ taskId: TID2 })), 'utf8');
+    const r = run(['_录题入库.mjs', '入库', TID2, '--file', cf, '--student', '学生甲', '--subject', '数学', '--data', L, '--dryy']);
+    A('G6 ★ 入库 --dryy ⇒ 报"未知参数"且零写盘', r.code !== 0 && /未知参数 --dryy/.test(r.out) && cardCount(L) === 0 && !fs.existsSync(cardDirOf(L)), 'exit=' + r.code + ' cards=' + cardCount(L));
+    const r2 = run(['_录题入库.mjs', '入库', TID2, '--file', cf, '--student', '学生甲', '--subject', '数学', '--data', L, '--dry=maybe']);
+    A('G6 ★ --dry=maybe（开关带非布尔值）⇒ 拒且零写盘', r2.code !== 0 && cardCount(L) === 0, 'exit=' + r2.code);
+    const r3 = run(['_录题入库.mjs', '入库', TID2, '--file', cf, '--student', '学生甲', '--subject', '数学', '--data', L, '--dry=true']);
+    A('G6 --dry=true ⇒ 预演（零写盘）', r3.code === 0 && /已整体回滚/.test(r3.out) && cardCount(L) === 0, 'exit=' + r3.code);
   }
 
   console.log('\nRESULT=' + (fails ? 'FAIL(' + fails + ')' : 'PASS') + ' 断言=' + total);

@@ -252,10 +252,11 @@ async function waitFor(cdp, expr, ok, tries, gap) {
               没清干净时残留的就是它；清干净时它绝不可能自己回来。 */
       /* ★ 2026-11-05（合并评审 P2-3）：上面的子串判据仍可假绿 —— 残留
          `{"recipe":"ingest-page","subject":"生物","conflict":"first"}` 同样"含 ingest-page、不含 ingest-single"。
-         现在分两步、不用或条件把两种情况一起放行：
-           ① "(空)" ⇒ 清干净了、页面还没写回 —— 通过；
-           ② 否则必须能解析成 JSON 且**逐字段全等** ingest.js 的默认值（recipe/subject/conflict 三个持久化字段），
-              任何一个字段是上轮真人选的值 ⇒ 判红。默认值串改了这里要同步（来源：views/ingest.js 的 st 初值）。 */
+         现在只认两种**精确**终态，二者取或（这是一个 OR 断言，但两支都是全等判据，不再有子串匹配）：
+           ① "(空)" ⇒ 清干净了、页面还没写回；
+           ② 能解析成 JSON 且**逐字段全等** ingest.js 的默认值（recipe/subject/conflict 三个持久化字段），且没有多余字段。
+           任何一个字段是上轮真人选的值 ⇒ 判红。默认值改了这里要同步（来源：views/ingest.js 的 st 初值）。
+           ⚠ 本断言需要真壳 + CDP，只能在 Windows 上实跑；Linux 上只做了语法检查。 */
       const after = String(lsAfter);
       const DEFAULTS = { recipe: 'ingest-page', subject: '数学', conflict: 'deny' };
       let parsed = null;

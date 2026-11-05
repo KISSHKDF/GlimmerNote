@@ -18,14 +18,18 @@
 ## [2026.11.05.02] - 2026-11-05 · 合并评审（Muse + Hark，对 7309c45）整改：写锁迁移 / 入库事务 / 快照校验 / 参数解析 / 老师红笔优先
 
 **变更分类**：Fixed / Changed / Security
-**升级影响**：换程序目录 `app\`（工具 `_安全写/_录题入库/_快照/_参数/_标记复习/_web-launcher`、前端 `app.css` 仅注释）；`数据\` 结构零改动。写锁与事务日志目录统一到 `%LOCALAPPDATA%\拾光小册\write-state\`（原 `%LOCALAPPDATA%\GlimmerNote\write-state\` 与更早的 `%TEMP%\glimmernote-write-state\` 在**取到锁之后**自动迁走，空了才删父目录）。录题配方 `ingest-page` → v2.3.0、`ingest-single` → v2.2.0（指纹必变），新增可选字段 `teacherAnswer`。`_快照 --force-restore` 现在必须同时给 `--confirm-force=<文件名>`。`_标记复习` 进入参数严格模式：拼错的 flag 当场报错。
+**升级影响**：换程序目录 `app\`（工具 `_安全写/_录题入库/_快照/_参数/_标记复习/_web-launcher`、前端 `app.css` 仅注释）；`数据\` 结构零改动。写锁与事务日志目录统一到 `%LOCALAPPDATA%\拾光小册\write-state\`（原 `%LOCALAPPDATA%\GlimmerNote\write-state\` 与更早的 `%TEMP%\glimmernote-write-state\` 在**取到锁之后**自动迁走，空了才删父目录）。录题配方 `ingest-page` → v2.3.0、`ingest-single` → v2.2.0（指纹必变），新增可选字段 `teacherAnswer`。`_快照 --force-restore` 现在必须同时给 `--confirm-force=<文件名>`，且先记审计再恢复。写盘工具（`_标记复习/_录题入库/_作答门禁/_配图门禁/_盲解复核/_原卷台账/_待确认/_建学生/_笔形`）进入参数严格模式：拼错的 flag 当场报错；开关写成 `--x=false` 时真正关闭。答案来源含"官方答案"的录题回传必须声明 `teacherAnswer`；与老师红笔冲突的卡须 `_标记复习 异议裁决` 后才能组卷。
 
 ### 起因
 
 合并评审报告（`GlimmerNote-合并评审报告-20261105-7309c45-Muse-Hark`）列出 P0 四项、P1 六项、P2 十项。
-本版逐项处理；每项修复都配"掏掉修法必须复现缺陷"的阴性自证。P2-4 中"NTP 校时跳变 >3 秒会误判"一条
-**不成立**（进程启动时间是内核在创建时记下的 FILETIME，事后校时不改它；锁的写入方与检查方读的是同一个值），未改；
-同条里"Linux 上未被证明"属实，已补 Linux 通道（见下）。
+本版逐项处理；每项修复都配"掏掉修法必须复现缺陷"的阴性自证。PR #13 复审又指出三个合并前必修的口子
+（写盘工具拼错开关仍真写盘 / 本 PR 引入的 `--x=false` 回归 / teacherAnswer 入库后丢失），已在同一 PR 内修掉，见下表"复审"行。
+
+P2-4"NTP 校时跳变 >3 秒会误判活锁"要**分平台**说：
+- **Windows**：不成立。`Get-Process StartTime` 读的是内核在进程创建时记下的 FILETIME，事后校时不改它；写入方与检查方读同一个值。未改。
+- **Linux**：本版新增的 `/proc/<pid>/stat` 通道用"开机后 jiffies + `/proc/stat` 的 btime"换算。jiffies 是单调的，但 **btime 是否随墙钟步进而变，本版没有证明**；
+  若 btime 在两次读取之间变了，同一进程会算出不同的启动时间。写入方与检查方各读一次，理论上存在误判窗口。列为已知局限，待实测。
 
 ### Fixed
 
@@ -45,23 +49,32 @@
 | P1-5 | 快照内容校验只对 `.json`；掏空的 `错题记录.md`/`题干.html` 不用 force 就能恢复 | 非 JSON 真源按"非空白字符数"同口径两档（掏空 / 缩水过半），基准取恢复前与 git 最近 20 版最大者 |
 | P1-6 | 站点答案与老师红笔冲突无优先级；代码层看不到教师异议 | 配方写明老师红笔算打架一方、不许以官方答案覆盖；新增可选 `teacherAnswer`，入库器比对不一致且 notes 未交代即拒；隐私红线补"试卷抬头信息不算题干" |
 | P2-1 | reviews 上限注释写"保留最近 50 条"，实际按批次整留可超 50 | 注释与提示改为如实口径（软上限，按批次整留）；不改行为（撤批按 paper 匹配需要整批） |
-| P2-2 | 动作名前带值 flag 的值静默丢失；未知 flag 吃掉动作名；不支持 `--x=y`；拼错 flag 静默丢弃 | 动作名前的值存进 opt；动作名槽里未知 flag 一律当布尔；支持 `--x=y`（带值 flag 后的 `--a=b` 仍原样当值）；新增 `boolFlags` 严格模式，`_标记复习` 首个启用 |
+| P2-2 | 动作名前带值 flag 的值静默丢失；未知 flag 吃掉动作名；不支持 `--x=y`；拼错 flag 静默丢弃 | 动作名前的值存进 opt；动作名槽里未知 flag 一律当布尔；支持 `--x=y`（带值 flag 后的 `--a=b` 仍原样当值）；新增 `boolFlags` 严格模式（写盘工具全部启用，见复审①） |
 | P2-3 | N5 localStorage 断言子串判据可假绿 | 改为"清后为空"或"JSON 逐字段全等默认值"两步判据 |
 | P2-7 | 写锁目录 `GlimmerNote\` 与过程目录 `拾光小册\` 两个名字；`_录题入库` 自拼 `LOCALAPPDATA \|\| ''` 可能写到当前目录 | 统一到 `拾光小册\`；`_录题入库` 改走 `_过程目录.mjs` |
 | P2-8 | `neg-shell-source-and-reparse` §⑤ 在 Linux 上恒红；`neg-ingest-land` 裁图段在 Linux 上恒红 | 非 Windows 显式 SKIP（打印原因、不计入通过） |
 | P2-10 | 网页启动器不认 `CTB_PORT`、开发区找不到端口文件、`cmd.exe` 异步错误接不住；修标签脚本无包形校验；nowrap 屏幕态意图未写明 | 启动器对齐服务端口径；`opener.on('error')`；脚本要求 `app\拾光小册.exe` 在场才动手；CSS 注释写明两态必须同排版 |
 | 测试 | `neg-recipe-contract` 断言名写 ≥、判据写 `===` 某个版本号 | 改成真正的 semver ≥ |
+| 复审① | 严格模式只在 `_标记复习` 启用：`_录题入库 --dryy` 拼错仍**真入库** | 严格模式推广到所有写盘工具（`_录题入库/_作答门禁/_配图门禁/_盲解复核/_原卷台账/_待确认/_建学生/_笔形`）；布尔清单按 `opt.x`/`val('x')` 机扫后人工核对 |
+| 复审② | **本 PR 引入的回归**：`--force=false` 被拆成 `--force false` ⇒ `opt.force="false"` ⇒ 真值 | 开关的 `=` 值只认布尔字面量：true/1/yes/on ⇒ 开，false/0/no/off ⇒ 真正的 `false`，其它值（严格模式或已声明开关）⇒ 报错 |
+| 复审③ | teacherAnswer 入库后丢失；漏填即全盲；notes 写一句就放行、不挂待复核；组卷不看教师异议；幂等摘要不含它 | 含"官方答案"的卡**必须声明** teacherAnswer（老师没写填 `""`，省略即拒）；落进索引与错题记录.md；冲突卡挂 `teacherConflict`，`准入`与`组卷`同一判据挡在池外；新增 `_标记复习 异议裁决 --as 老师定案\|官方答案 --note` 唯一裁决入口；幂等摘要纳入 teacherAnswer |
+| 复审 | `--force-restore` 审计写失败只警告、被拒的不留痕 | 改"先记后做"：被拒记 refused；放行前记 attempt，**写不进即中止不恢复**；结束记 done / reverted；配阴性自证 |
 
 ### 未做（写清楚，不冒充已修）
+
+- **已知局限（本版只做到部分）**：撤归档只清毒 `nextDue`，毒 `reviews[].date` 本体未清（只在屏幕点名，下次重算还会再提示）；
+  PID 启动时间缓存 2 秒 TTL，2 秒内的 PID 复用仍可能误判；非 JSON 快照校验只算非空白字符数、不看关键段落（留下 HTML 骨架、或缩水不到一半都会放行）；
+  `--force-restore` 审计与备份同目录同权限，只防误操作无痕、不防有意篡改；改了 teacherAnswer 重提会作为新内容**再建一张卡**（沿用"内容变了即新内容"的既有口径），不是原卡更新。
+- **严格模式未覆盖的工具**：`_原图/_录题任务/_着重号门禁/_经验包/_经验草稿/_配方/_路径护栏/生成状态` 仍是宽松模式（多为只读或自有写闸），待逐个迁移。
 
 - **P2-9 大文件拆分 / Markdown 双份收敛**：拆 2800 行的 C# 壳需要 Windows 上编译与全量 UI 回归才能验收，本版不动。
 - **Windows 运行时验证**：本版在 Linux 上实跑；quick / full、exe 构建、PowerShell 启动时间通道、裁图、§⑤ junction、headless Edge 排版需要在 Windows 上补跑。
 
 ### 回归断言
 
-- 新增 `tests\neg-lock-migration-and-cache.cjs`（25 断言，含两组阴性自证）、`tests\neg-snapshot-text-and-force.cjs`（10 断言，含阴性自证），均进 HERMETIC 白名单与 quick。
-- `neg-ingest-land` 新增 G 段（--dry 真预演 / 注入故障整体回滚 / 掏掉回滚必留残卡 / 老师红笔比对）。
-- `neg-mark-review-gates` 新增 P1-1 撤归档毒日期与 P2-2 解析器段。
+- 新增 `tests\neg-lock-migration-and-cache.cjs`（25 断言，含两组阴性自证）、`tests\neg-snapshot-text-and-force.cjs`（15 断言，含两组阴性自证），均进 HERMETIC 白名单与 quick。
+- `neg-ingest-land` 新增 G1–G6（--dry 真预演 / 注入故障整体回滚 / 掏掉回滚必留残卡 / 老师红笔比对与落盘 / 省略 teacherAnswer 即拒 / 幂等摘要 / 写盘工具 --dryy 与 --dry=maybe 零写盘）。
+- `neg-mark-review-gates` 新增 P1-1 撤归档毒日期、P2-2 解析器、`--force=false`、教师异议准入/组卷/裁决（含阴性自证）。
 - `neg-recipe-contract` 新增老师红笔优先与 `teacherAnswer` 字段断言。
 
 ## [2026.11.05.01] - 2026-11-05 · MUSE 全面评审整改（漏提交的 8 项 + 新问题 5 项 + Hark 4 项）+ 录题配方新增「先搜公开题库」流程

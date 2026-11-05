@@ -59,6 +59,9 @@ const { action, opt } = parseArgs(argv, {
     ...COMMON_VALUE_FLAGS,
     // 本工具专属的带值 flag（**布尔开关不要列进来**：json 是开关）
   ],
+  /* ★ 2026-11-05（PR #13 复审 ①）：写盘工具一律严格模式 —— 拼错的开关（如 --dryy）当场报错，绝不静默丢弃后真写盘。
+     清单 = 本文件用到的布尔开关（机扫 opt.x / val('x') 后人工核对），新增开关必须同步加进来，否则会被拒。 */
+  boolFlags: ['json', 'help', 'h'],
 });
 const dstr = x => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
 const today = () => dstr(new Date());

@@ -64,7 +64,7 @@ const argv = process.argv.slice(2);
    不再静默丢弃后真写盘。布尔开关清单与 opt.* 用法、壳的 mark 映射（CTBShellV2.cs op: mark）逐一核对过。 */
 const { action, opt } = parseArgs(argv, {
   valueFlags: [...COMMON_VALUE_FLAGS],
-  boolFlags: ['force', 'dry', 'json', 'refresh', 'interleave', 'no-interleave', 'help'],
+  boolFlags: ['force', 'dry', 'json', 'refresh', 'interleave', 'no-interleave', 'help', 'h'],
 });
 const dstr = x => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;  // 本地日期，勿用 toISOString（UTC+8 会倒退一天）
 const today = () => dstr(new Date());
@@ -177,6 +177,10 @@ function pendingMap(ledger) {
   return m;
 }
 
+/** ★ 2026-11-05（PR #13 复审 ③）：教师异议未裁决 ⇒ 不是合格的第二来源（组卷准入与组卷门禁同一判据，唯一实现在此）。
+ *  teacherConflict 由 `_录题入库.mjs` 在"官方答案与老师红笔不一致、notes 交代了分歧"时挂上；
+ *  只有 `异议裁决` 动作能把它标为已裁决（resolvedAt）。 */
+const teacherConflictOpen = it => !!(it && it.teacherConflict && typeof it.teacherConflict === 'object' && !it.teacherConflict.resolvedAt);
 const revsOf = it => (Array.isArray(it.reviews) ? it.reviews : []).filter(Boolean).sort((a, b) => String(a.date).localeCompare(String(b.date)));
 function passStreak(revs) {
   let p = 0;
@@ -467,11 +471,14 @@ switch (action) {
       let can = 0; const noSrc = [], noBlind = [];
       for (const { item } of itemsOf(j)) {
         const b = ['已通过', '已修正'].includes(item.blindStatus || '');
-        const a = okSrc(item);
+        const tc = teacherConflictOpen(item);
+        const a = okSrc(item) && !tc;
         const key = j.student + '|' + item.id;
-        const why = (b && a) ? '' : (!b ? ('盲解未过：' + (item.blindStatus || '未盲解')) : ('缺第二来源：' + (item.answerSource || 'answerSource 字段为空')));
+        const why = (b && a) ? '' : (!b ? ('盲解未过：' + (item.blindStatus || '未盲解'))
+          : tc ? ('教师异议待裁决：老师红笔 ' + item.teacherConflict.teacher + ' ≠ 采用 ' + item.teacherConflict.adopted)
+          : ('缺第二来源：' + (item.answerSource || 'answerSource 字段为空')));
         admit[key] = { ok: b && a, why };
-        if (b && a) can++; else if (!a) noSrc.push(item.id + '[' + (item.answerSource || '（缺字段）') + ']'); else noBlind.push(item.id + '[' + (item.blindStatus || '未盲解') + ']');
+        if (b && a) can++; else if (!a) noSrc.push(item.id + '[' + (tc ? '教师异议待裁决' : (item.answerSource || '（缺字段）')) + ']'); else noBlind.push(item.id + '[' + (item.blindStatus || '未盲解') + ']');
       }
       const total = can + noSrc.length + noBlind.length;
       totalAll += total; canAll += can;
@@ -561,9 +568,11 @@ switch (action) {
       if (!s) return false;
       return SRC_PREFIX_OK.some(p => s.startsWith(p)) || SRC_EXACT_OK.includes(s);
     };
-    const noSrc = ids.filter(id => !answerSourceOk(byId[id]));
+    /* ★ 2026-11-05（PR #13 复审 ③）：教师异议未裁决的卡，官方答案不算合格第二来源（与 准入 同判据） */
+    const noSrc = ids.filter(id => !answerSourceOk(byId[id]) || teacherConflictOpen(byId[id]));
     if (noSrc.length && !opt.force) {
-      console.error('✖ 答案来源门禁拦截（answerSource 无独立判卷/官方答案等第二来源）：' + noSrc.map(id => `${id}[${(byId[id].answerSource || '（缺字段）')}]`).join(' '));
+      console.error('✖ 答案来源门禁拦截（answerSource 无独立判卷/官方答案等第二来源，或教师异议待裁决）：' + noSrc.map(id => `${id}[${teacherConflictOpen(byId[id]) ? '教师异议待裁决' : (byId[id].answerSource || '（缺字段）')}]`).join(' '));
+      if (noSrc.some(id => teacherConflictOpen(byId[id]))) console.error('   → 教师异议：node _标记复习.mjs 异议裁决 --student ' + json.student + ' --ids <编号> --as 老师定案|官方答案 --note "<依据>"');
       console.error('   → 按《错题本系统方案》四之九做「全卷独立判卷复核」：转录无记号判卷清稿 → 无上下文子代理独立判卷 → 与红笔对照落 answerSource。');
       console.error('     查看全局：node _标记复习.mjs 准入 --student ' + json.student);
       process.exit(2);
@@ -864,6 +873,37 @@ switch (action) {
     console.log(rows.join('\n'));
     writeJson(file, json);
     refreshAll(loadLedger());
+    break;
+  }
+
+  case '异议裁决': {
+    /* ★ 2026-11-05（PR #13 复审 ③）：裁决"老师红笔 vs 官方答案"的唯一入口。
+       --as 老师定案 ⇒ answer 改成老师红笔、answerSource=老师定案；--as 官方答案 ⇒ 保留采用答案。
+       两种都要 --note 写依据（独立解法的关键步骤），裁决结果留在 teacherConflict 里（resolvedAt/resolvedAs/resolvedNote），不删历史。 */
+    if (!opt.student || !opt.ids) throw new Error('异议裁决需要 --student 与 --ids');
+    if (!['老师定案', '官方答案'].includes(opt.as)) throw new Error('异议裁决需要 --as 老师定案 或 --as 官方答案');
+    if (!opt.note || opt.note === true) throw new Error('异议裁决需要 --note 写明裁决依据（独立解法的关键步骤）');
+    const ids = splitIds(opt.ids);
+    const { file, json } = findIndexFile(opt.student);
+    const done = [], skipped = [];
+    for (const { item } of itemsOf(json)) {
+      if (!ids.includes(item.id)) continue;
+      if (!teacherConflictOpen(item)) { skipped.push(item.id + ' 没有待裁决的教师异议'); continue; }
+      const tc = item.teacherConflict;
+      if (!opt.dry) {
+        if (opt.as === '老师定案') { item.answer = tc.teacher; item.answerSource = '老师定案'; }
+        tc.resolvedAt = today(); tc.resolvedAs = opt.as; tc.resolvedNote = String(opt.note);
+        item.answerSourceNote = (item.answerSourceNote ? item.answerSourceNote + '；' : '') + '异议裁决(' + opt.as + ')：' + opt.note;
+      }
+      done.push(item.id + ' → ' + opt.as + '（老师 ' + tc.teacher + ' / 原采用 ' + tc.adopted + '）');
+    }
+    const notFound = ids.filter(id => !done.some(r => r.startsWith(id + ' ')) && !skipped.some(r => r.startsWith(id + ' ')));
+    if (notFound.length) throw new Error(json.student + ' 库中不存在编号 ' + notFound.join(',') + '（未写盘）');
+    if (done.length && !opt.dry) { json.updatedAt = today(); writeJson(file, json); }
+    console.log('异议裁决 ' + done.length + ' 题' + (opt.dry ? '（--dry 未写盘）' : ''));
+    done.forEach(x => console.log('   ' + x));
+    skipped.forEach(x => console.log('   ↔ ' + x));
+    if (done.length && !opt.dry) refreshAll(loadLedger());
     break;
   }
 

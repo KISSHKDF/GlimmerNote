@@ -378,5 +378,52 @@ console.log('\n═══ P1-1 撤归档：毒 nextDue 重算，毒 reviews[].dat
   }
 }
 
+/* ════════ PR #13 复审：--force=false 语义 + 教师异议准入 ════════ */
+console.log('\n═══ 复审② --force=false 不得被当成真值 ═══');
+{
+  const r = run(['组卷', '--student', '测试生', '--ids', 'M0002', '--force=false']);
+  A('★ 组卷 --force=false ⇒ 门禁照拦（exit 2，与没写 --force 一致）', r.code === 2, 'exit=' + r.code + ' ' + String(r.err || '').split('\n')[0].slice(0, 60));
+  const r2 = run(['组卷', '--student', '测试生', '--ids', 'M0002', '--force=maybe']);
+  A('★ 组卷 --force=maybe ⇒ 拒（开关不收非布尔值）', r2.code !== 0 && /是开关/.test(r2.err || ''), 'exit=' + r2.code);
+}
+console.log('\n═══ 复审③ 教师异议：准入/组卷同判据拦，异议裁决后放行 ═══');
+{
+  const libT = makeLib(path.join(tmpRoot, 'libT'));
+  const ip = path.join(libT, '测试生', '数学', '_索引.json');
+  const ix = JSON.parse(fs.readFileSync(ip, 'utf8'));
+  Object.assign(ix.items[2], { answerSource: '官方答案', answer: '2', teacherAnswer: '3',
+    teacherConflict: { teacher: '3', adopted: '2', source: '官方答案', note: 't', at: '2026-11-05' } });
+  fs.writeFileSync(ip, JSON.stringify(ix, null, 1), 'utf8');
+  const rt = (a) => E.runToolSync('_标记复习.mjs', a, { data: libT });
+  const adm = () => { try { return JSON.parse(String(rt(['准入', '--json']).out || '').trim().split('\n').pop()).admit['测试生|M0003']; } catch { return null; } };
+  const a1 = adm();
+  A('★ 准入：教师异议未裁决 ⇒ 不可组卷且原因点名', a1 && a1.ok === false && /教师异议/.test(a1.why), JSON.stringify(a1));
+  const g = rt(['组卷', '--student', '测试生', '--ids', 'M0003', '--no-repeat-days', '0']);
+  A('★ 组卷：教师异议未裁决 ⇒ 答案来源门禁拦（exit 2）', g.code === 2 && /教师异议/.test(g.err || ''), 'exit=' + g.code);
+  const bad = rt(['异议裁决', '--student', '测试生', '--ids', 'M0003', '--as', '老师定案']);
+  A('异议裁决缺 --note ⇒ 拒', bad.code !== 0);
+  const ok = rt(['异议裁决', '--student', '测试生', '--ids', 'M0003', '--as', '老师定案', '--note', '独立解：1+1=2 …按老师']);
+  const after = JSON.parse(fs.readFileSync(ip, 'utf8')).items[2];
+  A('★ 异议裁决（老师定案）⇒ answer 改为老师红笔、来源=老师定案、留裁决痕', ok.code === 0 && after.answer === '3' && after.answerSource === '老师定案' && !!after.teacherConflict.resolvedAt,
+    'exit=' + ok.code + ' ' + JSON.stringify({ a: after.answer, s: after.answerSource }));
+  const a2 = adm();
+  A('★ 裁决后准入放行', a2 && a2.ok === true, JSON.stringify(a2));
+  /* 变异自证：准入去掉教师异议判据 ⇒ 未裁决也放行 */
+  const mutSrc = TOOL_SRC.replace('const a = okSrc(item) && !tc;', 'const a = okSrc(item);');
+  A('变异锚点命中（准入的教师异议判据）', mutSrc !== TOOL_SRC);
+  if (mutSrc !== TOOL_SRC) {
+    const libM = makeLib(path.join(tmpRoot, 'libTm'));
+    const ipm = path.join(libM, '测试生', '数学', '_索引.json');
+    fs.writeFileSync(ipm, JSON.stringify(ix, null, 1), 'utf8');
+    try {
+      fs.writeFileSync(TOOL, mutSrc, 'utf8');
+      const r = E.runToolSync('_标记复习.mjs', ['准入', '--json'], { data: libM });
+      let m = null; try { m = JSON.parse(String(r.out || '').trim().split('\n').pop()).admit['测试生|M0003']; } catch { }
+      A('★ 自证 · 掏掉判据 ⇒ 未裁决的教师异议被放行（判据有牙齿）', m && m.ok === true, JSON.stringify(m));
+    } finally { fs.writeFileSync(TOOL, TOOL_SRC, 'utf8'); }
+    A('变异源码已还原', fs.readFileSync(TOOL, 'utf8') === TOOL_SRC);
+  }
+}
+
 console.log('\nRESULT=' + (fail ? 'FAIL(' + fail + ')' : 'PASS') + '  断言=' + (pass + fail) + ' 通过=' + pass + ' 失败=' + fail);
 process.exit(fail ? 1 : 0);

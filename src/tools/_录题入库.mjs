@@ -37,6 +37,9 @@ import { displaySize } from './_图尺寸.mjs';
 /* ───────────────── 参数 ───────────────── */
 const { action: _cmd, opt, positional } = parseArgs(process.argv.slice(2), {
   valueFlags: [...COMMON_VALUE_FLAGS, 'task', 'file', 'student', 'grade', 'slots', 'note', 'date', 'reason'],
+  /* ★ 2026-11-05（PR #13 复审 ①）：写盘工具一律严格模式 —— 拼错的开关（如 --dryy）当场报错，绝不静默丢弃后真写盘。
+     清单 = 本文件用到的布尔开关（机扫 opt.x / val('x') 后人工核对），新增开关必须同步加进来，否则会被拒。 */
+  boolFlags: ['dry', 'json', 'help', 'h'],
 });
 const cmd = _cmd || '';
 const val = (k, d = '') => { const v = opt[k]; return (v === undefined || v === true) ? d : v; };
@@ -51,6 +54,9 @@ let _root = null;
 const ROOT = () => (_root || (_root = libraryRoot()));
 
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
+/** 老师红笔与采用答案是否冲突（去空白、全半角归一后比；老师没写 ⇒ 不算冲突） */
+const normAns = v => String(v || '').normalize('NFKC').replace(/\s+/g, '');
+const teacherConflictOf = c => typeof c.teacherAnswer === 'string' && c.teacherAnswer.trim() !== '' && normAns(c.teacherAnswer) !== normAns(c.answer);
 const dstr = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const today = () => dstr();
 
@@ -198,6 +204,12 @@ function buildRecord(id, c, meta) {
   L.push('');
   if (c.answerSourceNote) {
     L.push('> 答案来源：' + c.answerSource + ' —— ' + c.answerSourceNote);
+    L.push('');
+  }
+  /* ★ 2026-11-05（PR #13 复审 ③）：老师红笔写出的答案随卡落盘（修前只在入库那一刻比对，之后就丢了） */
+  if (typeof c.teacherAnswer === 'string') {
+    L.push('> 老师红笔：' + (c.teacherAnswer ? c.teacherAnswer : '（老师没写出正确答案）') +
+      (meta.teacherConflict ? ' ⚠ 与采用答案不一致，组卷前须裁决（`_标记复习.mjs 异议裁决`）' : ''));
     L.push('');
   }
   if (c.notes) {
@@ -356,15 +368,19 @@ function cmdLand() {
     if (c.answerSource && !['独立判卷', '老师定案', '官方答案', '红笔订正+官方答案页核对', '未能确认'].includes(c.answerSource)) {
       problems.push(id + ' 的 answerSource 取值不在契约内：' + c.answerSource);
     }
-    /* ★ 2026-11-05（合并评审 P1-6）：官方答案不得悄悄覆盖老师红笔。
-       配方要求老师写了正确答案就原样填 teacherAnswer；这里比对（去空白、全半角归一）：
-       answerSource=官方答案 且 answer 与 teacherAnswer 不一致 ⇒ notes 必须交代"与老师红笔不一致"，否则拒。
-       修前：只校验 answerSource 在五值枚举内，教师异议在代码层面完全不可见。 */
-    if (c.teacherAnswer && String(c.answerSource || '').startsWith('官方答案')) {
-      const norm = v => String(v || '').normalize('NFKC').replace(/\s+/g, '');
-      if (norm(c.teacherAnswer) !== norm(c.answer) && !/老师红笔不一致|与老师.*不一致/.test(String(c.notes || '') + String(c.answerSourceNote || ''))) {
-        problems.push(id + ' 的 answerSource=官方答案，但答案（' + c.answer + '）与老师红笔（' + c.teacherAnswer + '）不一致且未交代分歧 —— ' +
-          '老师批改不能被站点答案悄悄覆盖：独立解法裁决后改成 老师定案 / 未能确认，或在 notes 写明"与老师红笔不一致：…"');
+    /* ★ 2026-11-05（合并评审 P1-6 → PR #13 复审 ③ 收紧）：官方答案不得悄悄覆盖老师红笔。
+       ① 答案来源含"官方答案"的卡，**必须声明** teacherAnswer（老师没写出正确答案就填空串）——
+          修前漏填即全盲：比对只在"已填"时发生。
+       ② 已填且与采用答案不一致：notes 没交代 ⇒ 拒；交代了 ⇒ 放行入库，但卡上挂 teacherConflict，
+          组卷准入把它挡在池外，直到 `_标记复习.mjs 异议裁决` 人工裁决（修前"写一句话就放行、不挂待复核"）。 */
+    if (/官方答案/.test(String(c.answerSource || ''))) {
+      if (typeof c.teacherAnswer !== 'string') {
+        problems.push(id + ' 的 answerSource=' + c.answerSource + '，但没有声明 teacherAnswer —— 照片上老师写了正确答案就原样填，没写就填空串 ""（不许省略：省略等于让"官方答案覆盖老师"这条检查失明）');
+      } else if (teacherConflictOf(c)) {
+        if (!/老师红笔不一致|与老师.*不一致/.test(String(c.notes || '') + String(c.answerSourceNote || ''))) {
+          problems.push(id + ' 的 answerSource=' + c.answerSource + '，但答案（' + c.answer + '）与老师红笔（' + c.teacherAnswer + '）不一致且未交代分歧 —— ' +
+            '老师批改不能被站点答案悄悄覆盖：独立解法裁决后改成 老师定案 / 未能确认，或在 notes 写明"与老师红笔不一致：…"（入库后仍须 异议裁决 才能组卷）');
+        }
       }
     }
     if (c.causeCode && !/^[KLS][1-7]$/.test(String(c.causeCode))) problems.push(id + ' 的 causeCode 非法：' + c.causeCode);
@@ -393,6 +409,7 @@ function cmdLand() {
     difficulty: c.difficulty, hasFigure: c.hasFigure, confidence: c.confidence,
     sourceImageSha256: c.sourceImageSha256, notes: c.notes, bbox: c.bbox,
     answerMode: c.answerMode, answerSlots: c.answerSlots,
+    teacherAnswer: c.teacherAnswer,   // ★ 2026-11-05（PR #13 复审 ③）：改了老师红笔重提，必须被当成新内容，不许幂等跳过
   }))));
   if (task.landedDigest && task.landedDigest === digest && Array.isArray(task.landedCardIds) && task.landedCardIds.length) {
     console.log('✔ 已入库过（幂等跳过）——任务 ' + taskId + ' 的这批内容已经进库：' + task.landedCardIds.join('、'));
@@ -461,7 +478,7 @@ function cmdLand() {
         recipe: task.recipe && task.recipe.id, recipeVer: task.recipe && task.recipe.version,
         fingerprint: task.recipe && task.recipe.fingerprint,
         imageRel: task.image && task.image.rel, imageSha: task.image && task.image.sha256,
-        taskId, date: today(),
+        taskId, date: today(), teacherConflict: teacherConflictOf(c),
       }));
 
       /* 索引条目（**不含** answerMode/answerSlots —— 红线：只能由 `_作答门禁.mjs` 写） */
@@ -486,6 +503,9 @@ function cmdLand() {
           blindStatus: '未盲解', blindSolveAt: '', blindSolver: '', blindNote: '', blindFingerprint: '',
           answerSource: c.answerSource || '未能确认',
           answerSourceNote: c.answerSourceNote || '',
+          /* ★ 2026-11-05（PR #13 复审 ③）：老师红笔进索引；冲突挂 teacherConflict，组卷准入据此拦（见 _标记复习 准入） */
+          teacherAnswer: typeof c.teacherAnswer === 'string' ? c.teacherAnswer : '',
+          teacherConflict: teacherConflictOf(c) ? { teacher: c.teacherAnswer, adopted: c.answer || '', source: c.answerSource, note: String(c.notes || '').slice(0, 300), at: today() } : null,
           answerNote: c.answerNote || '',
         };
         itemsOwner.push(it);

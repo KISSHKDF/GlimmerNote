@@ -52,6 +52,9 @@ export function parseArgs(argv, { valueFlags = [], start = 1, boolFlags = null }
      ① `--x=y` 一律拆成 `--x y` 再解析（修前得到键名 "x=y"、x 静默缺失）。
      ② 传了 boolFlags 的工具进入**严格模式**：既不在 valueFlags 也不在 boolFlags 的 flag 当场报错，
         拼错的 `--dryy` 不再被静默吞掉然后真写盘。不传 boolFlags 的工具保持老口径（逐个迁移）。 */
+  const strict = Array.isArray(boolFlags);
+  const boolSetPre = new Set(boolFlags || []);
+  const explicitFalse = new Set();
   {
     const out = [];
     let prevIsValueFlag = false;   // 上一个 token 是"已知带值 flag 本身"（不是某个 flag 的值）
@@ -61,7 +64,20 @@ export function parseArgs(argv, { valueFlags = [], start = 1, boolFlags = null }
       let k = null;
       if (typeof t === 'string' && t.startsWith('--') && t.length > 2) {
         const eq = t.indexOf('=');
-        if (eq > 2) { out.push(t.slice(0, eq), t.slice(eq + 1)); continue; }   // `--x=y` ⇒ 值已就位
+        if (eq > 2) {
+          const ek = t.slice(2, eq), ev = t.slice(eq + 1);
+          if (valueSet.has(ek)) { out.push('--' + ek, ev); continue; }            // `--x=y` ⇒ 值已就位
+          /* ★ 2026-11-05（PR #13 复审 ②，本 PR 引入的回归）：开关写成 `--force=false` 时，
+             修前一律拆成 `--force false` ⇒ 未知 flag 吃掉 "false" 当值 ⇒ opt.force="false" ⇒ !!"false" 为真，
+             "关闭"变成"打开"。现在开关只认布尔字面量：真值 ⇒ 开；假值 ⇒ 明确为 false；其它值 ⇒ 严格模式报错。 */
+          if (/^(true|1|yes|on)$/i.test(ev)) { out.push('--' + ek); continue; }
+          if (/^(false|0|no|off)$/i.test(ev)) { explicitFalse.add(ek); continue; }
+          if (strict || boolSetPre.has(ek)) {
+            throw new Error('--' + ek + ' 是开关，不接受值 ' + JSON.stringify(ev) + '（只能写 --' + ek + '，或 --' + ek + '=true / --' + ek + '=false）。未执行任何动作。');
+          }
+          out.push('--' + ek, ev);                                                  // 宽松模式下的未声明 flag：保留老口径
+          continue;
+        }
         k = t.slice(2);
       }
       out.push(t);
@@ -69,8 +85,7 @@ export function parseArgs(argv, { valueFlags = [], start = 1, boolFlags = null }
     }
     argv = out;
   }
-  const strict = Array.isArray(boolFlags);
-  const boolSet = new Set(boolFlags || []);
+  const boolSet = boolSetPre;
   const checkKnown = k => {
     if (strict && !valueSet.has(k) && !boolSet.has(k)) {
       throw new Error('未知参数 --' + k + '（拼错了？本工具接受：' +
@@ -131,6 +146,9 @@ export function parseArgs(argv, { valueFlags = [], start = 1, boolFlags = null }
       opt[k] = true;
     }
   }
+  /* 显式假值（`--dry=false`）：先过严格模式的拼写检查，再落成**真正的 false**（不是字符串 "false"）。
+     与同名真值冲突时取 false —— 拿不准就关，开关默认是"更保守"的那一侧。 */
+  for (const k of explicitFalse) { checkKnown(k); opt[k] = false; }
   return { action, opt, positional };
 }
 

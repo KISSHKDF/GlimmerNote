@@ -172,9 +172,22 @@ if (args.includes('--restore')) {
           （防止从别的命令行复制粘贴时把 --force-restore 带过来）；
        ② 审计：每次强制恢复在 `_备份-真源\_强制恢复审计.log` 追加一行（时间/文件/来源/前后字节数/操作者）。
      审计日志与备份同目录、同权限 —— 它防的是"误操作无痕"，不防有意篡改，这一点如实写在这里。 */
+  /* ★ 2026-11-05（PR #13 复审）：审计改成"先记后做"。修前审计在恢复**之后**追加、写失败只警告 ⇒
+       恢复成功却无痕；被拒的强制恢复也不留痕。现在：
+         · 被拒（二次确认缺失/不符）⇒ 尽力记一行 status=refused（写不进也照样拒，拒绝本身是安全的一侧）；
+         · 放行前先记 status=attempt，**写不进就中止、不恢复**；恢复结束再记 done / reverted。 */
+  const auditFile = path.join(path.dirname(abs), '_备份-真源', '_强制恢复审计.log');
+  const audit = (rec) => {
+    fs.mkdirSync(path.dirname(auditFile), { recursive: true });
+    fs.appendFileSync(auditFile, JSON.stringify(Object.assign({
+      at: new Date().toISOString(), file: rel,
+      by: (() => { try { return os.userInfo().username; } catch { return ''; } })(),
+    }, rec)) + '\n', 'utf8');
+  };
   if (forceRestore) {
     const conf = (args.find(a => a.startsWith('--confirm-force=')) || '').slice('--confirm-force='.length);
     if (conf !== path.basename(abs)) {
+      try { audit({ status: 'refused', reason: conf ? '--confirm-force 文件名不符：' + conf : '缺 --confirm-force', version: ver || '' }); } catch { }
       console.error('✖ --force-restore 会跳过"掏空/缩水"内容校验，需要二次确认：再加 --confirm-force=' + path.basename(abs) +
         '（文件名必须与要恢复的文件一致）。未执行任何恢复。');
       process.exit(2);
@@ -302,6 +315,12 @@ if (args.includes('--restore')) {
      判据（与 JSON 同口径的两档，只是计量单位换成"非空白字符数"）：
        ① 基准非空 ⇒ 恢复后不得为空白；② 恢复后 < 基准的一半 ⇒ 判"缩水过多"。
      基准 = 恢复前内容 与 git 最近 20 版里最大的那一版 中更大者（与 JSON 的"最富历史版"同理）。 */
+  if (forceRestore) {
+    try { audit({ status: 'attempt', source: srcDesc, bytesBefore: preCopy ? preCopy.length : null, bytesAfter: content.length }); }
+    catch (e) { console.error('✖ --force-restore 的审计行写不进去（' + e.message + '），按"先记后做"中止，未恢复任何内容。'); process.exit(1); }
+    /* 恢复走到哪一步都要有收尾行：正常结束记 done，校验失败自动退回记 reverted（exit 钩子里写，覆盖所有 process.exit 路径） */
+    process.on('exit', (code) => { try { audit({ status: code === 0 ? 'done' : 'reverted', source: srcDesc, exitCode: code }); } catch { } });
+  }
   const isText = !/\.json$/i.test(abs);
   const weight = buf => (buf ? buf.toString('utf8').replace(/^\uFEFF/, '').replace(/\s+/g, '').length : 0);
   let textBase = 0;
@@ -332,19 +351,7 @@ if (args.includes('--restore')) {
     if (why) console.log('  ⚠ --force-restore：' + why + '，按显式意图放行。');
     else console.log('  ✔ 文本内容校验通过（非空白字符 ' + nowW + (textBase ? ' / 基准 ' + textBase : '') + '）');
   }
-  if (forceRestore) {
-    try {
-      const bdir = path.join(path.dirname(abs), '_备份-真源');
-      fs.mkdirSync(bdir, { recursive: true });
-      const line = JSON.stringify({
-        at: new Date().toISOString(), file: rel, source: srcDesc,
-        bytesBefore: preCopy ? preCopy.length : null, bytesAfter: content.length,
-        by: (() => { try { return os.userInfo().username; } catch { return ''; } })(),
-      });
-      fs.appendFileSync(path.join(bdir, '_强制恢复审计.log'), line + '\n', 'utf8');
-      console.log('  ⚠ 已记入 _备份-真源\\_强制恢复审计.log');
-    } catch (e) { console.error('  ⚠ 审计行写入失败：' + e.message); }
-  }
+  if (forceRestore) console.log('  ⚠ 已记入 _备份-真源\\_强制恢复审计.log（attempt → done/reverted）');
   /* 安全网 3：**同构性**校验 —— 拿"正常的旧内容"当基准，比"损坏的当前内容"当基准合理。
      合法但结构不对的 JSON（如 batches 从数组变成字符串）照样让下游工具炸，
      正是 `_安全写.mjs` 开头警告的"形状漂移"。不一致 ⇒ 判红并**自动退回**。 */

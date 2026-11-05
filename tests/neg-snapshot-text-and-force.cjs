@@ -72,10 +72,32 @@ console.log('\n══ ② P0-4：--force-restore 需要二次确认，且留审�
   A('★ --confirm-force 文件名不符 ⇒ exit 2', rw.status === 2, 'exit=' + rw.status);
   const r2 = t.run('--restore', REL, t.head, '--force-restore', '--confirm-force=错题记录.md');
   A('给齐二次确认 ⇒ 按显式意图放行（exit 0，内容为掏空版）', r2.status === 0 && fs.readFileSync(t.abs, 'utf8') === EMPTY, 'exit=' + r2.status + ' ' + String(r2.stderr || '').slice(0, 120));
-  const log = fs.existsSync(t.audit) ? fs.readFileSync(t.audit, 'utf8').trim().split('\n') : [];
-  let rec = null; try { rec = JSON.parse(log[log.length - 1]); } catch { }
-  A('★ 审计日志多了一行，含文件与来源', !!rec && rec.file === REL && /git/.test(rec.source || ''), log[log.length - 1] || '（无）');
+  const log = fs.existsSync(t.audit) ? fs.readFileSync(t.audit, 'utf8').trim().split('\n').map(l => { try { return JSON.parse(l); } catch { return {}; } }) : [];
+  const st = log.map(x => x.status).join(',');
+  A('★ 被拒的两次也留痕（refused ×2）', log.filter(x => x.status === 'refused').length === 2, st);
+  A('★ 放行的那次"先记后做"：attempt 在前、done 在后', /attempt,done$/.test(st), st);
+  const att = log.find(x => x.status === 'attempt') || {};
+  A('审计行含文件与来源', att.file === REL && /git/.test(att.source || ''), JSON.stringify(att).slice(0, 160));
   fs.rmSync(t.mini, { recursive: true, force: true });
+}
+
+console.log('\n══ ②b 审计写不进 ⇒ 中止、不恢复（先记后做）══');
+{
+  const run2 = (mutate) => {
+    const t = setup('d', mutate);
+    fs.mkdirSync(t.audit, { recursive: true });      // 让审计文件路径是个目录 ⇒ appendFileSync 必失败
+    const r = t.run('--restore', REL, t.head, '--force-restore', '--confirm-force=错题记录.md');
+    const out = { code: r.status, content: fs.readFileSync(t.abs, 'utf8') };
+    fs.rmSync(t.mini, { recursive: true, force: true });
+    return out;
+  };
+  const ok = run2();
+  A('★ 审计写不进 ⇒ 非零退出且文件未被恢复', ok.code !== 0 && ok.content === RICH, 'exit=' + ok.code);
+  const ANCHOR = "catch (e) { console.error('✖ --force-restore 的审计行写不进去（' + e.message + '），按\"先记后做\"中止，未恢复任何内容。'); process.exit(1); }";
+  const src = fs.readFileSync(path.join(E.TOOLS, '_快照.mjs'), 'utf8');
+  A('变异锚点存在（审计失败即中止）', src.includes(ANCHOR));
+  const bad = run2(s => s.replace(ANCHOR, 'catch (e) { }'));
+  A('★ 阴性自证 · 去掉"写不进就中止" ⇒ 无痕恢复成功（判据有牙齿）', bad.code === 0 && bad.content === EMPTY, 'exit=' + bad.code);
 }
 
 console.log('\n══ ③ 阴性自证：掏掉文本校验 ⇒ 掏空版被直接恢复 ══');
