@@ -83,16 +83,62 @@ function runGate(cwd, args, env) {
 }
 
 /* ── 步骤 1：找到 PR 的 head 与 base ───────────────────────────────────── */
+/**
+ * 优先用 GitHub CLI（gh）：它自带凭据管理、输出稳定、还能顺带给出 CI 结论。
+ * 找不到 gh 就回退到 REST API（curl）→ 再回退到 git ls-remote（公开仓免凭据）。
+ * 三条路都留着 ⇒ 本机没装 gh 也能跑（零依赖优先，别把"装个 CLI"变成硬前置）。
+ */
+function ghBin() {
+  // ① 显式指定优先（GH_BIN）—— 指错了就当"没有 gh"，直接走回退链
+  if (process.env.GH_BIN) {
+    return fs.existsSync(process.env.GH_BIN) ? process.env.GH_BIN : null;
+  }
+  // ② PATH 里的 gh
+  const w = spawnSync('where', ['gh'], { encoding: 'utf8', timeout: 20 * 1000 });
+  if (w.status === 0 && w.stdout.trim()) return w.stdout.split(/\r?\n/)[0].trim();
+  // ③ 常见安装位置
+  for (const p of [
+    'C:\\Program Files\\GitHub CLI\\gh.exe',
+    'C:\\Program Files (x86)\\GitHub CLI\\gh.exe',
+    path.join(process.env.LOCALAPPDATA || '', 'Programs', 'GitHub CLI', 'gh.exe'),
+  ]) {
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
+const GH = ghBin();
+
+function ghJson(args) {
+  if (!GH) return null;
+  const r = spawnSync(GH, args, { encoding: 'utf8', maxBuffer: 64e6, timeout: 90 * 1000 });
+  if (r.status !== 0 || !r.stdout) return null;
+  try { return JSON.parse(r.stdout); } catch { return null; }
+}
+
 function remoteInfo(pr) {
-  // 公开仓可直接用 API；私有仓走 git 兜底
+  // ① gh（带凭据、能拿 CI 状态）
+  const j = ghJson(['pr', 'view', String(pr), '--repo', `${REPO_OWNER}/${REPO_NAME}`,
+    '--json', 'number,title,state,author,headRefOid,headRefName,baseRefName,mergeable,additions,deletions,changedFiles,statusCheckRollup']);
+  if (j && j.headRefOid) {
+    return {
+      api: true,
+      head: { sha: j.headRefOid, ref: j.headRefName },
+      base: { ref: j.baseRefName, sha: null },
+      title: j.title, author: j.author && j.author.login,
+      stats: { additions: j.additions, deletions: j.deletions, changedFiles: j.changedFiles },
+      checks: (j.statusCheckRollup || []).map((c) => ({ name: c.name || c.context, status: c.status, conclusion: c.conclusion })),
+    };
+  }
+  // ② REST API（公开仓免凭据）
   const url = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/pulls/${pr}`;
   const r = spawnSync('curl', ['-sSL', '-H', 'Accept: application/vnd.github+json', url], {
     encoding: 'utf8', maxBuffer: 16e6, timeout: 60 * 1000,
   });
   if (r.status === 0 && r.stdout && r.stdout.trim().startsWith('{')) {
     try {
-      const j = JSON.parse(r.stdout);
-      if (j && j.head && j.base) return j;
+      const j2 = JSON.parse(r.stdout);
+      if (j2 && j2.head && j2.base) return j2;
     } catch { /* 落到 git 兜底 */ }
   }
   return null;
@@ -176,13 +222,26 @@ function runPs1Parse(dir) {
 
 /* ── 主流程 ───────────────────────────────────────────────────────────── */
 function listPRs() {
+  // ① gh pr list（带凭据，含状态与 CI 结论）
+  const j = ghJson(['pr', 'list', '--repo', `${REPO_OWNER}/${REPO_NAME}`,
+    '--state', 'all', '--limit', '20', '--json',
+    'number,state,title,author,headRefOid,updatedAt,statusCheckRollup,isDraft']);
+  if (Array.isArray(j)) {
+    return j.map((p) => ({
+      number: p.number, state: p.state, title: p.title,
+      user: p.author && p.author.login, head: p.headRefOid, updated: p.updatedAt,
+      draft: p.isDraft,
+      ci: (p.statusCheckRollup || []).map((c) => `${c.name || c.context}=${c.conclusion || c.status}`).join(','),
+    }));
+  }
+  // ② REST API
   const r = spawnSync('curl', ['-sSL', '-H', 'Accept: application/vnd.github+json',
     `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/pulls?state=all&per_page=20&sort=updated&direction=desc`],
     { encoding: 'utf8', maxBuffer: 32e6, timeout: 60 * 1000 });
   try {
-    const j = JSON.parse(String(r.stdout || '[]'));
-    if (!Array.isArray(j)) return [];
-    return j.map((p) => ({ number: p.number, state: p.state, title: p.title, user: p.user && p.user.login, head: p.head && p.head.sha, updated: p.updated_at }));
+    const a = JSON.parse(String(r.stdout || '[]'));
+    if (!Array.isArray(a)) return [];
+    return a.map((p) => ({ number: p.number, state: p.state, title: p.title, user: p.user && p.user.login, head: p.head && p.head.sha, updated: p.updated_at, ci: '' }));
   } catch { return []; }
 }
 
@@ -190,10 +249,10 @@ function main() {
   if (has('--list')) {
     const prs = listPRs();
     if (!prs.length) { console.log('（拿不到 PR 列表：可能仓库私有或网络受限）'); return 0; }
-    console.log('PR 列表（最新在前）：');
+    console.log(`PR 列表（最新在前）${GH ? '　[数据源：gh CLI]' : '　[数据源：REST API]'}`);
     for (const p of prs) {
-      console.log(`  #${p.number} [${p.state}] ${p.title}`);
-      console.log(`      作者=${p.user}  head=${p.head}  更新=${p.updated}`);
+      console.log(`  #${p.number} [${p.state}]${p.draft ? '[draft]' : ''} ${p.title}`);
+      console.log(`      作者=${p.user}  head=${String(p.head).slice(0, 12)}  更新=${p.updated}${p.ci ? '  CI=' + p.ci : ''}`);
     }
     return 0;
   }
@@ -215,6 +274,14 @@ function main() {
   const baseRef = arg('--base') || (api && api.base && api.base.ref ? `origin/${api.base.ref}` : 'origin/main');
   console.log(`head = ${headSha}`);
   console.log(`base = ${baseRef}`);
+  if (api && api.title) {
+    console.log(`标题：${api.title}`);
+    if (api.author) console.log(`作者：${api.author}`);
+    if (api.stats) console.log(`改动：${api.stats.changedFiles} 文件  +${api.stats.additions} / -${api.stats.deletions}`);
+  }
+  if (api && api.checks && api.checks.length) {
+    console.log(`托管 CI：${api.checks.map((c) => `${c.name}=${c.conclusion || c.status}`).join('、')}`);
+  }
 
   // 拉 PR ref 到本地（只读远端）
   git(['fetch', '--no-tags', 'origin', `refs/pull/${pr}/head:refs/verify/pr${pr}`]);
