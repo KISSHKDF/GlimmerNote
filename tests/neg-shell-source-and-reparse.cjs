@@ -316,7 +316,12 @@ fs.mkdirSync(path.join(LIB, 'sub'), { recursive: true });
 fs.writeFileSync(path.join(LIB, 'inside.txt'), 'INSIDE\n');
 fs.writeFileSync(path.join(LIB, 'sub', 'in.txt'), 'SUB\n');
 fs.writeFileSync(path.join(OUTSIDE, 'secret.txt'), 'OUTSIDE-SECRET\n');
+/* ★ 2026-11-05（合并评审 P2-8）：§⑤ 按构造是 Windows-only —— 判据用 path.win32 拼反斜杠路径，
+   POSIX 的 realpath 把反斜杠当普通文件名字符，于是"旧判据放行/新判据拒绝"在 Linux 上必然误判（修前 FAIL 4 条）。
+   非 Windows 一律走下面已有的显式 SKIP 分支（打印原因、不计入通过），不再让 fixture 在 Linux 上恒红。 */
+const IS_WIN = process.platform === 'win32';
 const mkJunction = (link, target) => {
+  if (!IS_WIN) return { ok: false, err: '非 Windows（' + process.platform + '）：junction 与 path.win32 判据只在 Windows 上成立' };
   try { fs.symlinkSync(target, link, 'junction'); return { ok: true }; }
   catch (e) { return { ok: false, err: String(e.code || e.message) }; }
 };

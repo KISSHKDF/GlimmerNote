@@ -60,7 +60,12 @@ const argv = process.argv.slice(2);
    带值 flag 清单 = COMMON_VALUE_FLAGS（student/ids/note/date/at/paper/results/to/title/
    subject/no-repeat-days/leech-at… 都在其中）；force/dry/json/refresh/interleave 是布尔，
    绝不能进带值表（会把下一个 flag 吃掉 —— 见 _参数.mjs 头部注释的 auto/apply 教训）。 */
-const { action, opt } = parseArgs(argv, { valueFlags: [...COMMON_VALUE_FLAGS] });
+/* ★ 2026-11-05（合并评审 P2-2）：本工具管组卷门禁，进严格模式 —— 拼错的 flag（如 --dryy）当场报错，
+   不再静默丢弃后真写盘。布尔开关清单与 opt.* 用法、壳的 mark 映射（CTBShellV2.cs op: mark）逐一核对过。 */
+const { action, opt } = parseArgs(argv, {
+  valueFlags: [...COMMON_VALUE_FLAGS],
+  boolFlags: ['force', 'dry', 'json', 'refresh', 'interleave', 'no-interleave', 'help'],
+});
 const dstr = x => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;  // 本地日期，勿用 toISOString（UTC+8 会倒退一天）
 const today = () => dstr(new Date());
 /* ★ 2026-11-04（外部复核实测 F02/High1）：日期唯一校验（三条判据缺一不可）——
@@ -302,8 +307,10 @@ function recomputeNextDue(it) {
 
 /* ★ 2026-11-04（外部复核实测 F08e）：reviews[] 上限。CHANGELOG 2026.11.04.01 声称
    "保留最近 50 条"但代码里从来没有 slice —— 文档与代码不符正是本轮的病根。
-   口径：保留**最近 50 条**（同一批次的记录全留，撤批要按 paper 匹配 —— 只按条数裁
-   可能把同批次的一部分裁掉，撤批时错误次数就回退不干净）；
+   口径：保留**最近 50 条所涉及的批次**，这些批次的记录全留 —— 所以是**软上限**，条数可能略超 50
+   （2026-11-05 合并评审 P2-1 实测：55 条、某批次横跨第 50 条边界 ⇒ 输出 52 条）。
+   为什么不做硬截断：撤批按 paper 匹配，只按条数裁可能把同批次的一部分裁掉，撤批时错误次数就回退不干净。
+   上界：50 + 跨边界那一个批次在本卡上的条数（正常流程每卡每批次 1 条 ⇒ 恰好 50）；
    被裁掉的都是最旧的，对 passStreak / nextDue / errorCount 三条下游判定无影响。 */
 const REVIEWS_KEEP = 50;
 function capReviews(list) {
@@ -312,7 +319,7 @@ function capReviews(list) {
   const papers = [...new Set(arr.slice(-REVIEWS_KEEP).map(r => r.paper))];
   return arr.filter(r => papers.includes(r.paper));
 }
-const REVIEWS_CAP_NOTE = '（reviews 超过 ' + REVIEWS_KEEP + ' 条：已按口径裁掉最旧的记录，同一批次的记录全留）';
+const REVIEWS_CAP_NOTE = '（reviews 超过 ' + REVIEWS_KEEP + ' 条：已裁掉最旧的批次；按批次整留，条数可能略超 ' + REVIEWS_KEEP + '）';
 
 function actGrading(paperId, resultsStr, date, note) {
   /* ★ 2026-11-04（F02 纵深防御）：actGrading 还有别的调用方（同步路径 b.gradedAt || b.date），
@@ -414,7 +421,20 @@ function actUnarchive(student, ids, to, note, write = false) {
       item.unarchiveAt = today();
       item.unarchiveNote = note || '';
     }
-    rows.push(item.id + ' [' + subject + '] 已归档 → ' + back + '（复习记录推导显示为「' + naturalStatus(item) + '」）');
+    /* ★ 2026-11-05（合并评审 P1-1）：撤归档 = 这张卡重新进复习流转，存量毒日期必须在这里处理掉。
+       修前只清归档字段，历史毒 nextDue（如 2026-13-45）原样带回在册 ⇒ 排期/首页/组卷按它算。
+       现在：nextDue 不合法 ⇒ 按剩余复习记录重算（recomputeNextDue 遇到毒 reviews[].date 会清空并响亮提示）；
+       reviews[] 里的毒日期**不改写**（那是历史记录，改了就无从核对），但逐条报出来，让人去核。 */
+    const okDate = d => { try { validDate(d); return true; } catch { return false; } };
+    const warn = [];
+    if (item.nextDue && !okDate(item.nextDue)) {
+      const was = item.nextDue;
+      if (write) recomputeNextDue(item);
+      warn.push('nextDue 非法 ' + JSON.stringify(was) + (write ? ' → 已重算为 ' + JSON.stringify(item.nextDue || '（空）') : '（写盘时会重算）'));
+    }
+    const badRevs = revsOf(item).filter(r => !okDate(r.date));
+    if (badRevs.length) warn.push('复习记录里有 ' + badRevs.length + ' 条非法日期（' + badRevs.map(r => JSON.stringify(r.date)).join('、') + '，批次 ' + [...new Set(badRevs.map(r => r.paper || '?'))].join('、') + '）—— 未改写历史，请人工核对');
+    rows.push(item.id + ' [' + subject + '] 已归档 → ' + back + '（复习记录推导显示为「' + naturalStatus(item) + '」）' + (warn.length ? ' ⚠ ' + warn.join('；') : ''));
     touched++;
   }
   const notFound = ids.filter(id => !rows.some(r => r.startsWith(id + ' ')) && !skipped.some(r => r.startsWith(id + ' ')));

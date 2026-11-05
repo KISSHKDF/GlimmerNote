@@ -15,6 +15,55 @@
 
 版本号遵循日期制 `YYYY.MM.DD.NN`。版本号唯一真源：`VERSION.json`。
 
+## [2026.11.05.02] - 2026-11-05 · 合并评审（Muse + Hark，对 7309c45）整改：写锁迁移 / 入库事务 / 快照校验 / 参数解析 / 老师红笔优先
+
+**变更分类**：Fixed / Changed / Security
+**升级影响**：换程序目录 `app\`（工具 `_安全写/_录题入库/_快照/_参数/_标记复习/_web-launcher`、前端 `app.css` 仅注释）；`数据\` 结构零改动。写锁与事务日志目录统一到 `%LOCALAPPDATA%\拾光小册\write-state\`（原 `%LOCALAPPDATA%\GlimmerNote\write-state\` 与更早的 `%TEMP%\glimmernote-write-state\` 在**取到锁之后**自动迁走，空了才删父目录）。录题配方 `ingest-page` → v2.3.0、`ingest-single` → v2.2.0（指纹必变），新增可选字段 `teacherAnswer`。`_快照 --force-restore` 现在必须同时给 `--confirm-force=<文件名>`。`_标记复习` 进入参数严格模式：拼错的 flag 当场报错。
+
+### 起因
+
+合并评审报告（`GlimmerNote-合并评审报告-20261105-7309c45-Muse-Hark`）列出 P0 四项、P1 六项、P2 十项。
+本版逐项处理；每项修复都配"掏掉修法必须复现缺陷"的阴性自证。P2-4 中"NTP 校时跳变 >3 秒会误判"一条
+**不成立**（进程启动时间是内核在创建时记下的 FILETIME，事后校时不改它；锁的写入方与检查方读的是同一个值），未改；
+同条里"Linux 上未被证明"属实，已补 Linux 通道（见下）。
+
+### Fixed
+
+| 编号 | 缺陷 | 修法 |
+|---|---|---|
+| P0-1 | 旧布局迁移写在 `stateDirOf()` 里：只读探针 `lockPathOf()` 都会在**没持锁**时回滚事务；两进程可双重回滚 | 迁移挪进 `onAcquired()`（已持锁）；`stateDirOf()` 只算路径 |
+| P0-2 | 迁移完 `rmSync(%TEMP%\glimmernote-write-state, recursive)` 删整个父目录，**别的库**未迁的 journal 一起没了 | 只删本库自己的 `<key>` 目录；父目录非递归 `rmdirSync`，非空即保留 |
+| P2-5 | 旧日志可能属于还在跑的旧版本工具；`CTB_TXN_DIR` 覆盖时旧事务成孤儿 | 旧日志 pid 存活 ⇒ 本轮不碰；回滚失败 ⇒ 旧目录原样保留；覆盖时也检查旧位置 |
+| P0-3 | `_录题入库` 注释"锁 + 事务"，实际只有锁（`withLibWrite` 被 import 未用）；中途失败留半张卡；`--dry` 照样写盘 | 整段进 `openTransaction`（新增 `tx.mkdir/trackDir`：回滚时删空的新建目录）；门禁子进程在 commit 之后跑；`--dry` 改为写完整体回滚、不留备份件 |
+| P0-4 | `--force-restore` 无二次确认、无审计 | 必须同时给 `--confirm-force=<文件名>`；每次强制恢复追加一行到 `_备份-真源\_强制恢复审计.log`（同目录同权限：防误操作无痕，不防有意篡改） |
+| P1-1 | 撤归档不处理存量毒日期 | 毒 `nextDue` 按剩余合法记录重算；毒 `reviews[].date` 逐条点名（含批次号）但不改写历史 |
+| P1-2 | `procStartCache` 以 PID 为键永不失效 ⇒ 等锁期间 PID 复用被当成原持有者 | 只永久缓存本进程；别的 PID 缓存 2 秒且观察到死亡立即作废 |
+| P1-3 | `startedAt = procStartTime(self) \|\| Date.now()`：拿取锁时刻冒充启动时间，可能抢走活锁 | 查不到写 0（检查方走旧判据） |
+| P1-4 | 注释描述"心跳刷新 + HEARTBEAT_STALE_MS"，代码里不存在 | 删除；注释写明"没有心跳" |
+| P2-4 | H1 判据在 Linux 上从未真正执行（PowerShell 不存在 ⇒ 恒 0） | 补 Linux 通道（`/proc/<pid>/stat` + `btime`）；`neg-lock-reclaim-race` 在 Linux 上 17/17 |
+| P2-6 | 注释称"热路径零开销" | 改为如实说明：Windows 上每个取锁进程一次 PowerShell 冷启动（正确性的代价） |
+| P1-5 | 快照内容校验只对 `.json`；掏空的 `错题记录.md`/`题干.html` 不用 force 就能恢复 | 非 JSON 真源按"非空白字符数"同口径两档（掏空 / 缩水过半），基准取恢复前与 git 最近 20 版最大者 |
+| P1-6 | 站点答案与老师红笔冲突无优先级；代码层看不到教师异议 | 配方写明老师红笔算打架一方、不许以官方答案覆盖；新增可选 `teacherAnswer`，入库器比对不一致且 notes 未交代即拒；隐私红线补"试卷抬头信息不算题干" |
+| P2-1 | reviews 上限注释写"保留最近 50 条"，实际按批次整留可超 50 | 注释与提示改为如实口径（软上限，按批次整留）；不改行为（撤批按 paper 匹配需要整批） |
+| P2-2 | 动作名前带值 flag 的值静默丢失；未知 flag 吃掉动作名；不支持 `--x=y`；拼错 flag 静默丢弃 | 动作名前的值存进 opt；动作名槽里未知 flag 一律当布尔；支持 `--x=y`（带值 flag 后的 `--a=b` 仍原样当值）；新增 `boolFlags` 严格模式，`_标记复习` 首个启用 |
+| P2-3 | N5 localStorage 断言子串判据可假绿 | 改为"清后为空"或"JSON 逐字段全等默认值"两步判据 |
+| P2-7 | 写锁目录 `GlimmerNote\` 与过程目录 `拾光小册\` 两个名字；`_录题入库` 自拼 `LOCALAPPDATA \|\| ''` 可能写到当前目录 | 统一到 `拾光小册\`；`_录题入库` 改走 `_过程目录.mjs` |
+| P2-8 | `neg-shell-source-and-reparse` §⑤ 在 Linux 上恒红；`neg-ingest-land` 裁图段在 Linux 上恒红 | 非 Windows 显式 SKIP（打印原因、不计入通过） |
+| P2-10 | 网页启动器不认 `CTB_PORT`、开发区找不到端口文件、`cmd.exe` 异步错误接不住；修标签脚本无包形校验；nowrap 屏幕态意图未写明 | 启动器对齐服务端口径；`opener.on('error')`；脚本要求 `app\拾光小册.exe` 在场才动手；CSS 注释写明两态必须同排版 |
+| 测试 | `neg-recipe-contract` 断言名写 ≥、判据写 `===` 某个版本号 | 改成真正的 semver ≥ |
+
+### 未做（写清楚，不冒充已修）
+
+- **P2-9 大文件拆分 / Markdown 双份收敛**：拆 2800 行的 C# 壳需要 Windows 上编译与全量 UI 回归才能验收，本版不动。
+- **Windows 运行时验证**：本版在 Linux 上实跑；quick / full、exe 构建、PowerShell 启动时间通道、裁图、§⑤ junction、headless Edge 排版需要在 Windows 上补跑。
+
+### 回归断言
+
+- 新增 `tests\neg-lock-migration-and-cache.cjs`（25 断言，含两组阴性自证）、`tests\neg-snapshot-text-and-force.cjs`（10 断言，含阴性自证），均进 HERMETIC 白名单与 quick。
+- `neg-ingest-land` 新增 G 段（--dry 真预演 / 注入故障整体回滚 / 掏掉回滚必留残卡 / 老师红笔比对）。
+- `neg-mark-review-gates` 新增 P1-1 撤归档毒日期与 P2-2 解析器段。
+- `neg-recipe-contract` 新增老师红笔优先与 `teacherAnswer` 字段断言。
+
 ## [2026.11.05.01] - 2026-11-05 · MUSE 全面评审整改（漏提交的 8 项 + 新问题 5 项 + Hark 4 项）+ 录题配方新增「先搜公开题库」流程
 
 **变更分类**：Fixed / Added

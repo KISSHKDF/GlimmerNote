@@ -353,8 +353,8 @@ A：程序是**绿色免安装**的，**没有注册表残留、没有服务、�
 | 要删的 | 路径 | 是什么 | 能不能删 |
 |---|---|---|---|
 | ① 运行区 | 你自己放程序的那个文件夹（如 `<你选的目录>\GlimmerNote`） | 程序 + 题库 | 能（**题库要先备份**） |
-| ② 用户数据 | `%LOCALAPPDATA%\拾光小册\` | 日志 `shell.log`、WebView2 用户数据 `wv2-profile\`（**几十 MiB**）、过程件 `proc\` | 能 |
-| ③ 写锁残留 | `%TEMP%\glimmernote-write-state\` | 写锁与事务日志 | 能（程序没在跑时） |
+| ② 用户数据 | `%LOCALAPPDATA%\拾光小册\` | 日志 `shell.log`、WebView2 用户数据 `wv2-profile\`（**几十 MiB**）、过程件 `proc\`、写锁与事务日志 `write-state\` | 能（`write-state\` 要在程序没在跑时删） |
+| ③ 旧版写锁残留 | `%TEMP%\glimmernote-write-state\`、`%LOCALAPPDATA%\GlimmerNote\` | 旧版本留下的写锁与事务日志（新版本取锁时会自动迁走，空了就删） | 能（程序没在跑时） |
 
 ⚠ **`%LOCALAPPDATA%\拾光小册\经验包\` 里是你自己装的经验包 —— 那是用户数据，不是垃圾。**
 想留着就别删这个子目录；想彻底清空就整个删（删之前同样先备份）。

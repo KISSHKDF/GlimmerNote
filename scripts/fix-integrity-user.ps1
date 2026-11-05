@@ -43,6 +43,17 @@ if (-not (Test-Path -LiteralPath $target)) {
   exit 1
 }
 
+# ★ 2026-11-05（合并评审 P2-10）：包形校验。本脚本对**所在目录的整棵树**改标签；
+#   若它被单独拷到别处（比如桌面、某个盘根）再运行，会把那整棵树改掉。
+#   所以只在"看起来是拾光小册解压目录"时才动手：必须有 app\拾光小册.exe（发布包的固定形状，见 build-release.ps1 的 mustHave）。
+$looksLikePkg = (Test-Path -LiteralPath (Join-Path $target 'app') -PathType Container) -and
+                (Test-Path -LiteralPath (Join-Path (Join-Path $target 'app') '拾光小册.exe') -PathType Leaf)
+if (-not $looksLikePkg) {
+  Write-Host "✖ 这个目录看起来不是拾光小册的解压目录（缺 app\拾光小册.exe）：$target" -ForegroundColor Red
+  Write-Host '  本脚本会修改所在目录整棵树的完整性标签，只能放在解压目录里运行。未做任何修改。' -ForegroundColor Yellow
+  exit 2
+}
+
 $m = @(icacls.exe $target 2>&1 | Select-String -Pattern 'Mandatory')
 $before = if ($m.Count -gt 0) { $m[0].ToString().Trim() } else { '(当前无 Mandatory 行 —— 说明没有显式标签，Windows 会按继承处理)' }
 Write-Host "  现在：$before"

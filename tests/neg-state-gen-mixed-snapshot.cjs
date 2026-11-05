@@ -32,7 +32,7 @@ const GEN = path.join(ROOT, 'src', 'tools', '生成状态.mjs');
 const SAFE_WRITE = pathToFileURL(path.join(ROOT, 'src', 'tools', '_安全写.mjs')).href;
 
 /* ★ 2026-11-05（H02 迁移后同步）：锁目录不再在 %TEMP%\glimmernote-write-state\<hash>，
-   迁到 %LOCALAPPDATA%\GlimmerNote\write-state\<hash>。stateDir 在 ② 里用
+   迁到 %LOCALAPPDATA%\拾光小册\write-state\<hash>（2026-11-05 目录名统一，原为 GlimmerNote\）。stateDir 在 ② 里用
    `_安全写.mjs lockPathOf`（唯一实现）解析；子进程显式传同一目录对齐。 */
 let stateDir = null;
 

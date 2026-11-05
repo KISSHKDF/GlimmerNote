@@ -366,6 +366,11 @@ if (mode === 'fixture') {
        ② 抽屉/确认框的 HTML 汇点收口：未转义的动态文本进 innerHTML。 */
     ['neg-shell-writegate.cjs', '桌面壳写闸取放必须一一配对 + 释放必须在 finally 上（18 断言，带三组阴性自证）'],
     ['neg-confirm-html-sanitize.cjs', '抽屉/确认框 HTML 汇点收口（12 载荷 + S.confirm 直测 + 富文本回归 + 阴性自证，37 断言）'],
+    /* ★ 2026-11-05（合并评审整改）：两个新用例零库依赖（自建 %TEMP% 夹具 / 迷你 git 仓）。
+       已在**干净克隆**（`git clone --no-hardlinks` 到临时目录，无真库、无 exe）上实测通过 —— 但实测平台是 Linux；
+       Windows 干净克隆上首跑请照常核对一次（PowerShell 启动时间通道只在 Windows 上走）。 */
+    ['neg-lock-migration-and-cache.cjs', '写锁旧布局迁移只在持锁后、只动本库 + 启动时间缓存随 PID 死亡作废（含阴性自证）'],
+    ['neg-snapshot-text-and-force.cjs', '快照恢复：md/html 掏空不许直接恢复 + --force-restore 二次确认与审计（含阴性自证）'],
   ];
   const SKIPPED = [
     ['portability.cjs', '需要已构建的 src\\app\\拾光小册.exe（gitignored）'],
@@ -700,6 +705,7 @@ const unitTests = [
   /* ★ 2026-10-31（Lead 本轮新写，原为游离文件）：写锁僵尸回收的 TOCTOU + 事务回滚保留恢复材料。
      「游离 = 能绿但没人跑」，本仓已把它当缺陷处理（见上面 D-049/D-050 那段），故一并登记。 */
   ['neg-lock-reclaim-race.cjs'],
+  ['neg-lock-migration-and-cache.cjs'],   // ★ 2026-11-05 合并评审 P0-1/P0-2/P1-2/P1-3/P2-5：旧布局迁移只在持锁后、只动本库；启动时间缓存随 PID 死亡作废
   /* P01：发行包夹带开发机日志。实测 release\GlimmerNote-2026.10.30.03 的 app\shell.log 有 480 字节，
      内容是本机绝对路径；根因是打包脚本整目录复制界面目录。本用例从 build-release.ps1 里**读出真实
      黑名单**在临时目录上实跑，并用"规则掏空"做阴性自证。 */
@@ -754,6 +760,7 @@ const unitTests = [
      （台账旧、索引新，两边都报成功）。本用例用一个真持锁者占库，断言 restore 在锁释放前
      不写目标文件、且释放后才完成；阴性自证：摘掉取锁后它当场插队改写。 */
   ['neg-snapshot-restore-lock.cjs'],
+  ['neg-snapshot-text-and-force.cjs'],    // ★ 2026-11-05 合并评审 P1-5/P0-4：md/html 掏空不许直接恢复；--force-restore 二次确认 + 审计
   /* D01：题卡元数据回显不走净化器，`lastReviewedAt`/`blindSolveAt` 未转义 ⇒ 索引里放
      `<img src=x onerror=…>` 打开卡片详情即执行。静态（源级判据防新字段漏）+ 动态（真跑前端渲染）
      双判据；阴性自证：摘掉 U.esc 后同一 payload 原样进 HTML。 */

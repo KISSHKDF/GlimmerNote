@@ -46,8 +46,37 @@ export const TOOL_DIR = path.dirname(fileURLToPath(import.meta.url));
  * @param {number}   opts.start       从第几个参数开始当 flag（默认 1：argv[0] 是动作名）
  * @returns {{action: string|undefined, opt: object, positional: string[]}}
  */
-export function parseArgs(argv, { valueFlags = [], start = 1 } = {}) {
+export function parseArgs(argv, { valueFlags = [], start = 1, boolFlags = null } = {}) {
   const valueSet = new Set(valueFlags);
+  /* ★ 2026-11-05（合并评审 P2-2）：
+     ① `--x=y` 一律拆成 `--x y` 再解析（修前得到键名 "x=y"、x 静默缺失）。
+     ② 传了 boolFlags 的工具进入**严格模式**：既不在 valueFlags 也不在 boolFlags 的 flag 当场报错，
+        拼错的 `--dryy` 不再被静默吞掉然后真写盘。不传 boolFlags 的工具保持老口径（逐个迁移）。 */
+  {
+    const out = [];
+    let prevIsValueFlag = false;   // 上一个 token 是"已知带值 flag 本身"（不是某个 flag 的值）
+    for (const t of argv) {
+      /* 上一个是已知带值 flag ⇒ 本 token 是它的**值**，原样保留（`--note --a=b` 的值就是 "--a=b"，M1 口径不破） */
+      if (prevIsValueFlag) { out.push(t); prevIsValueFlag = false; continue; }
+      let k = null;
+      if (typeof t === 'string' && t.startsWith('--') && t.length > 2) {
+        const eq = t.indexOf('=');
+        if (eq > 2) { out.push(t.slice(0, eq), t.slice(eq + 1)); continue; }   // `--x=y` ⇒ 值已就位
+        k = t.slice(2);
+      }
+      out.push(t);
+      prevIsValueFlag = k !== null && valueSet.has(k);
+    }
+    argv = out;
+  }
+  const strict = Array.isArray(boolFlags);
+  const boolSet = new Set(boolFlags || []);
+  const checkKnown = k => {
+    if (strict && !valueSet.has(k) && !boolSet.has(k)) {
+      throw new Error('未知参数 --' + k + '（拼错了？本工具接受：' +
+        [...valueSet].filter(Boolean).map(x => '--' + x).concat([...boolSet].map(x => '--' + x)).join(' ') + '）。未执行任何动作。');
+    }
+  };
   const opt = {};
   const positional = [];
   let action;
@@ -67,11 +96,17 @@ export function parseArgs(argv, { valueFlags = [], start = 1 } = {}) {
            修法：已知带值 flag 在动作名槽里也**无条件消费下一个参数**（与主循环同判据）；
            未知 flag 仍按老口径（下一个不像 flag 就当它的值）。 */
         const k = t.slice(2);
+        checkKnown(k);
+        /* ★ 2026-11-05（合并评审 P2-2）：修前这里只"跳过 flag 连同值"、**不存进 opt** ⇒
+           `--student 学生甲 状态` 得 opt={}，值静默丢失。现在存进 opt（与动作名之后同口径）。
+           未知 flag 在动作名槽里**一律当布尔**、不吃下一个参数：修前 `--force 组卷 --student x`
+           会把"组卷"吃成 force 的值 ⇒ action=undefined（动作名劫持）。 */
         if (valueSet.has(k)) {
-          if (i + 1 < argv.length) { i++; }   // 它的值在动作名前 —— 跳过 flag 连同值
+          if (i + 1 < argv.length) { opt[k] = argv[++i]; }
+          else { opt[k] = true; }
           continue;
         }
-        if (i + 1 < argv.length && !argv[i + 1].startsWith('--') && argv[i + 1] !== '--') { i++; }
+        opt[k] = true;
         continue;
       }
       action = t; i++; break;
@@ -82,6 +117,7 @@ export function parseArgs(argv, { valueFlags = [], start = 1 } = {}) {
     if (t === '--') { for (let j = i + 1; j < argv.length; j++) positional.push(argv[j]); break; }
     if (!t.startsWith('--')) { positional.push(t); continue; }
     const k = t.slice(2);
+    checkKnown(k);
     if (valueSet.has(k)) {
       /* ★ 已知带值 flag：**无条件**消费下一个参数（哪怕它长得像 flag）。
          这是修 M1 的核心：值是 "--force" 时，它就是 "--force" 这个**值**，

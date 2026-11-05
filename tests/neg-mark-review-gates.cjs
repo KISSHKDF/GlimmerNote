@@ -67,7 +67,8 @@ console.log('\n═══ F06 参数解析：--note --force 不再打开 force �
   A('★ 对照：显式 --force 真的放行（判据不是恒假）', forced.code === 0, 'exit=' + forced.code);
   A('静态：_标记复习.mjs 已 import _参数.mjs（迁移在场）', /import \{ parseArgs/.test(TOOL_SRC));
   /* 变异自证：换回旧解析器 ⇒ --note --force 必须凭空开 force（指纹门禁被绕过） */
-  const oldParser = 'const { action, opt } = parseArgs(argv, { valueFlags: [...COMMON_VALUE_FLAGS] });';
+  /* 2026-11-05：解析器调用改成多行（加了 boolFlags 严格模式），锚点改用正则匹配整段调用 */
+  const oldParser = /const \{ action, opt \} = parseArgs\(argv, \{[\s\S]*?\n\}\);|const \{ action, opt \} = parseArgs\(argv, \{ valueFlags: \[\.\.\.COMMON_VALUE_FLAGS\] \}\);/;
   const legacy = 'const action = argv[0]; const opt = {}; for (let i = 1; i < argv.length; i++) { const t = argv[i]; if (!t.startsWith("--")) continue; const k = t.slice(2); if (i + 1 < argv.length && !argv[i + 1].startsWith("--")) { opt[k] = argv[++i]; } else { opt[k] = true; } }';
   const mutSrc = TOOL_SRC.replace(oldParser, legacy);
   A('变异锚点命中（解析器行可替换）', mutSrc !== TOOL_SRC, mutSrc === TOOL_SRC ? '锚点没命中' : '');
@@ -85,6 +86,32 @@ console.log('\n═══ F06 参数解析：--note --force 不再打开 force �
     }
     A('变异源码已还原', fs.readFileSync(TOOL, 'utf8') === TOOL_SRC);
   }
+}
+
+/* ════════ P2-2：解析器收口（2026-11-05 合并评审）════════ */
+console.log('\n═══ P2-2 参数解析：动作名前的值不丢 / --x=y / 拼错 flag 当场报错 ═══');
+{
+  const { pathToFileURL } = require('url');
+  const P = path.join(REPO, 'src', 'tools', '_参数.mjs');
+  const code = `import(${JSON.stringify(pathToFileURL(P).href)}).then(({ parseArgs: p, COMMON_VALUE_FLAGS: C }) => {
+    const o = {};
+    o.pre = p(['--student', '学生甲', '状态'], { valueFlags: C });
+    o.hijack = p(['--force', '组卷', '--student', 'x'], { valueFlags: C });
+    o.eq = p(['组卷', '--ids=M0001', '--note', '--a=b'], { valueFlags: C });
+    try { p(['组卷', '--dryy'], { valueFlags: C, boolFlags: ['dry'] }); o.strict = 'no-throw'; } catch (e) { o.strict = e.message; }
+    o.loose = p(['组卷', '--dryy'], { valueFlags: C });
+    console.log(JSON.stringify(o));
+  });`;
+  const r = require('child_process').spawnSync(process.execPath, ['--input-type=module', '-e', code], { encoding: 'utf8' });
+  let o = {};
+  try { o = JSON.parse(String(r.stdout).trim()); } catch { }
+  A('★ 动作名前的带值 flag 存进 opt（修前值静默丢失）', o.pre && o.pre.action === '状态' && o.pre.opt.student === '学生甲', JSON.stringify(o.pre));
+  A('★ 动作名前的未知 flag 不再吃掉动作名', o.hijack && o.hijack.action === '组卷' && o.hijack.opt.student === 'x', JSON.stringify(o.hijack));
+  A('★ --ids=M0001 拆成键值；带值 flag 后的 "--a=b" 原样当值', o.eq && o.eq.opt.ids === 'M0001' && o.eq.opt.note === '--a=b', JSON.stringify(o.eq && o.eq.opt));
+  A('★ 严格模式：拼错的 --dryy 当场报错', /未知参数 --dryy/.test(o.strict || ''), String(o.strict).slice(0, 40));
+  A('对照：不传 boolFlags 的工具保持老口径（不报错）', o.loose && o.loose.opt.dryy === true);
+  const rd = run(['组卷', '--student', '测试生', '--ids', 'M0001', '--dryy']);
+  A('★ _标记复习 已进严格模式：组卷 --dryy ⇒ 非零退出、未执行', rd.code !== 0 && /未知参数 --dryy/.test(rd.err || ''), 'exit=' + rd.code);
 }
 
 /* ════════ F02：非法日期拒绝且不写盘 ════════ */
@@ -308,6 +335,46 @@ console.log('\n═══ F08e reviews 上限：超 50 条裁最旧，同批次�
       JSON.stringify(got) === JSON.stringify(expected), '裁掉 ' + (53 - revs.length) + ' 条');
   } else {
     A('★ 行为验证前置：组卷成功', false, 'exit=' + rg.code);
+  }
+}
+
+/* ════════ P1-1：撤归档处理毒日期（2026-11-05 合并评审）════════ */
+console.log('\n═══ P1-1 撤归档：毒 nextDue 重算，毒 reviews[].date 点名不改写 ═══');
+{
+  const libU = makeLib(path.join(tmpRoot, 'libU'));
+  const idxPath = path.join(libU, '测试生', '数学', '_索引.json');
+  const idx = JSON.parse(fs.readFileSync(idxPath, 'utf8'));
+  const it = idx.items[1];   // M0002
+  it.status = '已归档'; it.archivedAt = '2026-10-01'; it.archivedReason = 't';
+  it.nextDue = '2026-13-45';                                   // 历史毒 nextDue
+  it.reviews = [
+    { date: '2026-02-30', paper: 'P20260000-01', result: '错', note: '' },   // 历史毒记录（不存在的日期）
+    { date: '2026-10-01', paper: 'P20260000-02', result: '对', note: '' },
+  ];
+  fs.writeFileSync(idxPath, JSON.stringify(idx, null, 1), 'utf8');
+  const r = E.runToolSync('_标记复习.mjs', ['撤归档', '--student', '测试生', '--ids', 'M0002'], { data: libU });
+  const after = JSON.parse(fs.readFileSync(idxPath, 'utf8')).items[1];
+  A('撤归档成功', r.code === 0 && after.status !== '已归档', 'exit=' + r.code + ' status=' + after.status);
+  A('★ 毒 nextDue 不再原样带回（按最后一条合法记录重算 = 2026-10-08）', after.nextDue === '2026-10-08', 'nextDue=' + after.nextDue);
+  A('★ 毒 reviews[].date 被点名（含批次号），提示人工核对', /非法日期[\s\S]*2026-02-30[\s\S]*P20260000-01/.test(r.out || ''), String(r.out || '').slice(0, 200));
+  A('毒 reviews[].date 未被改写（历史记录不擅改）', after.reviews.some(x => x.date === '2026-02-30'));
+  /* 变异自证：掏掉重算 ⇒ 毒 nextDue 原样留下 */
+  const mutSrc = TOOL_SRC.replace('      if (write) recomputeNextDue(item);\n', '');
+  if (mutSrc !== TOOL_SRC) {
+    const libM = makeLib(path.join(tmpRoot, 'libUm'));
+    const ip = path.join(libM, '测试生', '数学', '_索引.json');
+    fs.writeFileSync(ip, JSON.stringify(idx, null, 1), 'utf8');
+    try {
+      fs.writeFileSync(TOOL, mutSrc, 'utf8');
+      E.runToolSync('_标记复习.mjs', ['撤归档', '--student', '测试生', '--ids', 'M0002'], { data: libM });
+      const m = JSON.parse(fs.readFileSync(ip, 'utf8')).items[1];
+      A('★ 自证 · 掏掉重算 ⇒ 毒 nextDue 原样留下（判据有牙齿）', m.nextDue === '2026-13-45', 'nextDue=' + m.nextDue);
+    } finally {
+      fs.writeFileSync(TOOL, TOOL_SRC, 'utf8');
+    }
+    A('变异源码已还原', fs.readFileSync(TOOL, 'utf8') === TOOL_SRC);
+  } else {
+    A('变异锚点命中（recomputeNextDue 行）', false);
   }
 }
 
