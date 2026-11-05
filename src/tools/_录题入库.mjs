@@ -27,7 +27,8 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { libraryRoot, toolPath } from './_库根.mjs';
-import { readJsonStrict, writeJsonAtomic, writeTextAtomic, acquireLibLock, withLibWrite } from './_安全写.mjs';
+import { readJsonStrict, writeJsonAtomic, acquireLibLock, openTransaction } from './_安全写.mjs';
+import { procPath } from './_过程目录.mjs';
 import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
 import { extractJsonText } from './_配方.mjs';
 import { slotCount } from './_空位.mjs';
@@ -35,7 +36,10 @@ import { displaySize } from './_图尺寸.mjs';
 
 /* ───────────────── 参数 ───────────────── */
 const { action: _cmd, opt, positional } = parseArgs(process.argv.slice(2), {
-  valueFlags: [...COMMON_VALUE_FLAGS, 'task', 'file', 'student', 'grade', 'slots', 'note', 'date', 'reason'],
+  valueFlags: [...COMMON_VALUE_FLAGS, 'task', 'file', 'in', 'student', 'grade', 'slots', 'note', 'date', 'reason'],   // 'in' = --file 的老别名（二次复审：严格模式下漏列会误杀）
+  /* ★ 2026-11-05（PR #13 复审 ①）：写盘工具一律严格模式 —— 拼错的开关（如 --dryy）当场报错，绝不静默丢弃后真写盘。
+     清单 = 本文件用到的布尔开关（机扫 opt.x / val('x') 后人工核对），新增开关必须同步加进来，否则会被拒。 */
+  boolFlags: ['dry', 'json', 'help', 'h'],
 });
 const cmd = _cmd || '';
 const val = (k, d = '') => { const v = opt[k]; return (v === undefined || v === true) ? d : v; };
@@ -50,6 +54,9 @@ let _root = null;
 const ROOT = () => (_root || (_root = libraryRoot()));
 
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
+/** 老师红笔与采用答案是否冲突（去空白、全半角归一后比；老师没写 ⇒ 不算冲突） */
+const normAns = v => String(v || '').normalize('NFKC').replace(/\s+/g, '');
+const teacherConflictOf = c => typeof c.teacherAnswer === 'string' && c.teacherAnswer.trim() !== '' && normAns(c.teacherAnswer) !== normAns(c.answer);
 const dstr = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const today = () => dstr();
 
@@ -197,6 +204,12 @@ function buildRecord(id, c, meta) {
   L.push('');
   if (c.answerSourceNote) {
     L.push('> 答案来源：' + c.answerSource + ' —— ' + c.answerSourceNote);
+    L.push('');
+  }
+  /* ★ 2026-11-05（PR #13 复审 ③）：老师红笔写出的答案随卡落盘（修前只在入库那一刻比对，之后就丢了） */
+  if (typeof c.teacherAnswer === 'string') {
+    L.push('> 老师红笔：' + (c.teacherAnswer ? c.teacherAnswer : '（老师没写出正确答案）') +
+      (meta.teacherConflict ? ' ⚠ 与采用答案不一致，组卷前须裁决（`_标记复习.mjs 异议裁决`）' : ''));
     L.push('');
   }
   if (c.notes) {
@@ -355,6 +368,28 @@ function cmdLand() {
     if (c.answerSource && !['独立判卷', '老师定案', '官方答案', '红笔订正+官方答案页核对', '未能确认'].includes(c.answerSource)) {
       problems.push(id + ' 的 answerSource 取值不在契约内：' + c.answerSource);
     }
+    /* ★ 2026-11-05（合并评审 P1-6 → PR #13 复审 ③ → 二次复审 ③ 收紧）：老师红笔不得被悄悄覆盖。
+       口径：老师是"打架的一方"，由独立解法仲裁 —— **不是**"老师永远优先"。
+       ① **每张卡**都必须声明 teacherAnswer（老师没写出正确答案就填空串）—— 修前只查"官方答案"来源，
+          独立判卷 / 老师定案 漏填就全盲。
+       ② 已填且与采用答案不一致：
+          · answerSource=老师定案 ⇒ 自相矛盾，直接拒（"按老师定案"却和老师写的不一样）；
+          · 其它来源：notes 没交代 ⇒ 拒；交代了 ⇒ 入库但挂 teacherConflict，组卷准入挡在池外，
+            直到 `_标记复习.mjs 异议裁决` 人工裁决。 */
+    if (typeof c.teacherAnswer !== 'string') {
+      problems.push(id + ' 没有声明 teacherAnswer —— 照片上老师写了正确答案就原样填，没写就填空串 ""（每张卡必填：省略等于让"老师红笔被覆盖"这条检查失明）');
+    } else if (/^老师定案/.test(String(c.answerSource || '')) && c.teacherAnswer.trim() === '') {
+      /* ★ 2026-11-05（PR #13 三次复审）：老师红笔为空却写"老师定案" —— 修前空串被 teacherConflictOf 视为"不冲突"，
+         两道检查都绕过、直接进组卷池，卡面还会同时出现"老师没写出正确答案"与"来源：老师定案"。 */
+      problems.push(id + ' 的 answerSource=老师定案，但 teacherAnswer 为空（老师没写出正确答案）—— 自相矛盾：没有老师答案就不能"按老师定案"，改成 独立判卷 / 官方答案 / 未能确认');
+    } else if (teacherConflictOf(c)) {
+      if (/^老师定案/.test(String(c.answerSource || ''))) {
+        problems.push(id + ' 的 answerSource=老师定案，但答案（' + c.answer + '）与老师红笔（' + c.teacherAnswer + '）不一致 —— 自相矛盾，按老师就填老师的答案，不按老师就别写老师定案');
+      } else if (!/老师红笔不一致|与老师.*不一致/.test(String(c.notes || '') + String(c.answerSourceNote || ''))) {
+        problems.push(id + ' 的 answerSource=' + c.answerSource + '，但答案（' + c.answer + '）与老师红笔（' + c.teacherAnswer + '）不一致且未交代分歧 —— ' +
+          '老师批改不能被悄悄覆盖：独立解法裁决后改成 老师定案 / 未能确认，或在 notes 写明"与老师红笔不一致：…"（入库后仍须 异议裁决 才能组卷）');
+      }
+    }
     if (c.causeCode && !/^[KLS][1-7]$/.test(String(c.causeCode))) problems.push(id + ' 的 causeCode 非法：' + c.causeCode);
     if (c.confidence && !['high', 'medium', 'low'].includes(c.confidence)) problems.push(id + ' 的 confidence 非法：' + c.confidence);
     if (c.subject && c.subject !== subj) problems.push(id + ' 的 subject（' + c.subject + '）与本次入库的学科（' + subj + '）不符');
@@ -381,6 +416,7 @@ function cmdLand() {
     difficulty: c.difficulty, hasFigure: c.hasFigure, confidence: c.confidence,
     sourceImageSha256: c.sourceImageSha256, notes: c.notes, bbox: c.bbox,
     answerMode: c.answerMode, answerSlots: c.answerSlots,
+    teacherAnswer: c.teacherAnswer,   // ★ 2026-11-05（PR #13 复审 ③）：改了老师红笔重提，必须被当成新内容，不许幂等跳过
   }))));
   if (task.landedDigest && task.landedDigest === digest && Array.isArray(task.landedCardIds) && task.landedCardIds.length) {
     console.log('✔ 已入库过（幂等跳过）——任务 ' + taskId + ' 的这批内容已经进库：' + task.landedCardIds.join('、'));
@@ -394,22 +430,30 @@ function cmdLand() {
     console.error('  原图缺失时：_原卷台账 会少一条溯源；这不拦入库（卡面内容已经齐了），但请把原图补回库内再重跑一次溯源登记。');
   }
 
-  /* ⑨ 写盘（锁 + 事务） */
+  /* ⑨ 写盘（锁 + 事务）
+     ★ 2026-11-05（复核 P0-3）：修前这里注释写"锁 + 事务"，代码只拿了锁（withLibWrite 被 import 却没用）。
+       建卡目录 → 题干.html → 裁图 → _裁图记录.json → 错题记录.md → 索引 → 任务记录 是**跨文件**写，
+       中途任何一步抛错（磁盘满 / 占用 / 索引写失败）都会留下半张卡，而幂等锚 landedDigest 最后才写，
+       重跑会撞上残留目录。现在整段进 openTransaction：失败整体回滚（含新建的空卡目录）。
+       --dry 也改成**真预演**：全部写完后整体回滚，库里不留任何东西（修前 --dry 照样写盘）。
+       门禁子进程放在 commit **之后**跑：子工具继承锁、会开自己的事务，同一个 journal 不能有两个主人。 */
   const root = ROOT();
   const release = acquireLibLock(root, { label: '_录题入库' });
+  let tx = null;
   try {
+    tx = openTransaction(root, { label: '_录题入库 ' + taskId });
     const made = [];
     const figs = [];
     const answers = [];
     for (const { id, c } of plan) {
       const dn = dirNameOf(id, c.title);
       const abs = path.join(tgt.dirAbs, dn);
-      fs.mkdirSync(abs, { recursive: true });
+      tx.mkdir(abs);
 
       /* 题干.html */
       const hasBlank = /_{3,}|＿{2,}/.test(String(c.questionText || '')) || (Array.isArray(c.answerSlots) && c.answerSlots.length > 0);
       const html = buildStemHtml(c.questionText, hasBlank);
-      writeTextAtomic(path.join(abs, '题干.html'), html);
+      tx.writeText(path.join(abs, '题干.html'), html);
 
       /* 原卷截图（AI 给了 bbox 才裁；没给就不裁，明确报出来） */
       let cropped = null;
@@ -418,6 +462,7 @@ function cmdLand() {
           const ds = displaySize(srcImg);
           if (!ds || !ds.w || !ds.h) throw new Error('读不出原图尺寸（格式不支持或文件损坏）');
           const [nx, ny, nw, nh] = c.bbox;
+          tx.snapshot(path.join(abs, '原卷截图.jpg'));   // 先登记：回滚时新图删掉、旧图恢复
           cropWithDotnet(srcImg, path.join(abs, '原卷截图.jpg'), nx, ny, nw, nh, 1400);
           const px = [Math.round(nx * ds.w), Math.round(ny * ds.h), Math.max(1, Math.round(nw * ds.w)), Math.max(1, Math.round(nh * ds.h))];
           cropped = { out: '原卷截图.jpg', box: [nx, ny, nw, nh], px, srcPx: { w: ds.w, h: ds.h } };
@@ -428,7 +473,7 @@ function cmdLand() {
 
       /* _裁图记录.json（原卷溯源的唯一 sidecar，`_原卷台账.mjs` 只认它） */
       if (cropped) {
-        writeJsonAtomic(path.join(abs, '_裁图记录.json'), {
+        tx.writeJson(path.join(abs, '_裁图记录.json'), {
           src: task.image.rel, out: cropped.out, normBox: cropped.box, cropPx: cropped.px,
           srcPx: cropped.srcPx, scale: 1, by: '录题入库:' + taskId, date: today(),
           note: c.source || '',
@@ -436,11 +481,11 @@ function cmdLand() {
       }
 
       /* 错题记录.md */
-      writeTextAtomic(path.join(abs, '错题记录.md'), buildRecord(id, c, {
+      tx.writeText(path.join(abs, '错题记录.md'), buildRecord(id, c, {
         recipe: task.recipe && task.recipe.id, recipeVer: task.recipe && task.recipe.version,
         fingerprint: task.recipe && task.recipe.fingerprint,
         imageRel: task.image && task.image.rel, imageSha: task.image && task.image.sha256,
-        taskId, date: today(),
+        taskId, date: today(), teacherConflict: teacherConflictOf(c),
       }));
 
       /* 索引条目（**不含** answerMode/answerSlots —— 红线：只能由 `_作答门禁.mjs` 写） */
@@ -465,6 +510,9 @@ function cmdLand() {
           blindStatus: '未盲解', blindSolveAt: '', blindSolver: '', blindNote: '', blindFingerprint: '',
           answerSource: c.answerSource || '未能确认',
           answerSourceNote: c.answerSourceNote || '',
+          /* ★ 2026-11-05（PR #13 复审 ③）：老师红笔进索引；冲突挂 teacherConflict，组卷准入据此拦（见 _标记复习 准入） */
+          teacherAnswer: typeof c.teacherAnswer === 'string' ? c.teacherAnswer : '',
+          teacherConflict: teacherConflictOf(c) ? { teacher: c.teacherAnswer, adopted: c.answer || '', source: c.answerSource, note: String(c.notes || '').slice(0, 300), at: today() } : null,
           answerNote: c.answerNote || '',
         };
         itemsOwner.push(it);
@@ -484,7 +532,7 @@ function cmdLand() {
 
     /* 写索引（原子写） */
     tgt.idx.updatedAt = today();
-    writeJsonAtomic(tgt.idxFile, tgt.idx, { backup: true, newline: true });
+    tx.writeJson(tgt.idxFile, tgt.idx, { backup: !DRY, newline: true });   // --dry 不留备份件（真预演 = 库里零新增）
 
     /* 把回传的 cards 写回任务记录（让"确认"确认的是真东西） */
     const tj = JSON.parse(fs.readFileSync(taskFile(taskId), 'utf8'));
@@ -492,20 +540,28 @@ function cmdLand() {
     tj.landedAt = today();
     tj.landedCardIds = made.map(m => m.id);
     tj.landedDigest = digest;              /* 幂等锚：同一份内容重跑 ⇒ 同一个摘要 ⇒ 跳过 */
-    writeJsonAtomic(taskFile(taskId), tj, { indent: 1 });
-
-    /* 门禁声明文件（放过程目录，不落库根 —— 过程文件规范 §三） */
-    const procDir = path.join(process.env.LOCALAPPDATA || '', '拾光小册', 'proc');
-    fs.mkdirSync(procDir, { recursive: true });
-    const figFile = path.join(procDir, '录题入库-配图-' + taskId + '.json');
-    const ansFile = path.join(procDir, '录题入库-作答-' + taskId + '.json');
-    writeJsonAtomic(figFile, figs, { newline: true });
-    if (answers.length) writeJsonAtomic(ansFile, answers, { newline: true });
+    tx.writeJson(taskFile(taskId), tj, { indent: 1 });
 
     if (DRY) {
-      console.log('--dry：已规划 ' + made.length + ' 张卡，未写盘（实际写了索引与卡目录——dry 请在副本库跑）');
+      const r = tx.rollback();
+      tx = null;
+      if (r && r.failed && r.failed.length) {
+        console.error('✖ --dry 预演后回滚未完成（事务日志已保留，下次取锁会重试）：' + r.failed.join('；'));
+        return 1;
+      }
+      console.log('--dry：已预演 ' + made.length + ' 张卡（' + made.map(m => m.id).join('、') + '），已整体回滚，库未改动');
       return 0;
     }
+    tx.commit();
+    tx = null;
+
+    /* 门禁声明文件（放过程目录，不落库根 —— 过程文件规范 §三）
+       ★ 2026-11-05（复核 P2-7）：改走 `_过程目录.mjs` 的唯一实现。修前自己拼
+       `LOCALAPPDATA || ''` ⇒ 变量缺失时是**相对路径**，会在当前工作目录（可能就是库根）下建目录。 */
+    const figFile = procPath('录题入库-配图-' + taskId + '.json');
+    const ansFile = procPath('录题入库-作答-' + taskId + '.json');
+    writeJsonAtomic(figFile, figs, { newline: true });
+    if (answers.length) writeJsonAtomic(ansFile, answers, { newline: true });
 
     /* ⑩ 当场跑门禁（不留"事后手跑"的欠账） */
     const gates = [];
@@ -560,6 +616,12 @@ function cmdLand() {
       return 1;
     }
     return 0;
+  } catch (e) {
+    if (tx) {
+      const r = tx.rollback();
+      if (r && (r.restored || r.removed)) console.error('[事务] 入库失败，已整体回滚（恢复 ' + r.restored + '、删除 ' + r.removed + '）');
+    }
+    throw e;
   } finally {
     release();
   }

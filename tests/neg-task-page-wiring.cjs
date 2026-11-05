@@ -284,7 +284,7 @@ const mkPage = (over) => {
 
   const card = (sha) => ({
     subject: SHA_TXT, title: '合成题', questionText: '1+1=?', studentAnswer: '3',
-    answerSource: '独立判卷', causeCode: 'K1', confidence: 'high', sourceImageSha256: sha,
+    answerSource: '独立判卷', causeCode: 'K1', confidence: 'high', sourceImageSha256: sha, teacherAnswer: '',
   });
   const envelope = (taskId, imgSha) => ({
     envelope: { schema: 'glimmernote.ingest-result/v1', taskId, imageSha256: imgSha },

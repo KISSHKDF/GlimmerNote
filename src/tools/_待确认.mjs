@@ -209,6 +209,9 @@ const { action: _action, opt } = parseArgs(argv, {
     //   auto/apply/dry/force/json/all-archived/allArchived 是开关 ——
     //   列进来会把后面的 flag 吃掉（`定位 --auto --dry` ⇒ --dry 被吞 ⇒ 只预览变成真写盘）。
   ],
+  /* ★ 2026-11-05（PR #13 复审 ①）：写盘工具一律严格模式 —— 拼错的开关（如 --dryy）当场报错，绝不静默丢弃后真写盘。
+     清单 = 本文件用到的布尔开关（机扫 opt.x / val('x') 后人工核对），新增开关必须同步加进来，否则会被拒。 */
+  boolFlags: ['all-archived', 'allArchived', 'apply', 'auto', 'dry', 'force', 'json', 'help', 'h'],
 });
 /* 缺省动作 = 状态（与改前 `argv[0] || '状态'` 同口径）。 */
 const action = _action || '状态';

@@ -13,7 +13,7 @@
         "type": "object",
         "required": [
           "subject", "title", "questionText", "studentAnswer",
-          "answerSource", "causeCode", "confidence", "sourceImageSha256"
+          "answerSource", "causeCode", "confidence", "sourceImageSha256", "teacherAnswer"
         ],
         "additionalProperties": false,
         "properties": {
@@ -29,6 +29,7 @@
             "enum": ["独立判卷", "老师定案", "官方答案", "红笔订正+官方答案页核对", "未能确认"]
           },
           "answerSourceNote": { "type": "string", "maxLength": 500 },
+          "teacherAnswer": { "type": "string", "maxLength": 500, "description": "照片上老师用红笔写出的正确答案，原样转录；老师没写出答案就填空串。每张卡必填（入库器校验，不分答案来源）。程序据此拦『官方答案悄悄覆盖老师批改』，冲突卡须异议裁决后才能组卷。" },
           "causeCode": {
             "type": "string",
             "enum": ["K1", "K2", "K3", "K4", "K5", "K6", "K7", "L1", "L2", "L3", "L4", "S1", "S2", "S3", "S4", "S5"]

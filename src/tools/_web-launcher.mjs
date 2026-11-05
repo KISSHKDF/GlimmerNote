@@ -41,8 +41,18 @@ const APP_ROOT = path.resolve(TOOL_DIR, '..');
 
 /* 端口真源与 _服务端.mjs 同口径：程序根 端口.json 的 default。
    这里**只读**它用于"告诉用户该开哪个网址"，服务端自己会再读一遍（两处读同一个文件）。 */
+/* ★ 2026-11-05（合并评审 P2-10）：与服务端 resolvePort() 对齐 ——
+     ① `CTB_PORT` 优先（修前不认它：设了这个变量时启动器探错端口，30 秒后报失败，服务端却在别的端口孤儿运行）；
+     ② 候选加上开发区布局的 `src\app\端口.json`（修前开发区直接 exit 2）。 */
 function readPort() {
-  for (const p of [path.join(APP_ROOT, '端口.json'), path.join(path.resolve(APP_ROOT, '..'), '端口.json')]) {
+  const env = String(process.env.CTB_PORT == null ? '' : process.env.CTB_PORT).trim();
+  if (env) {
+    const n = Number(env);
+    if (/^[0-9]{1,5}$/.test(env) && n >= 1 && n <= 65535) return n;
+    console.error('[网页版] ✖ CTB_PORT 不是合法端口号：' + JSON.stringify(env) + '（服务端会以同样理由拒绝启动）');
+    return null;
+  }
+  for (const p of [path.join(APP_ROOT, '端口.json'), path.join(APP_ROOT, 'app', '端口.json'), path.join(path.resolve(APP_ROOT, '..'), '端口.json')]) {
     try {
       if (!fs.existsSync(p)) continue;
       const j = JSON.parse(fs.readFileSync(p, 'utf8').replace(/^\uFEFF/, ''));
@@ -90,8 +100,11 @@ function maybeOpen(url) {
     console.log('[网页版] 已跳过自动打开浏览器。请手动访问：' + url);
   } else {
     try {
-      /* cmd /c start：Windows 上最不挑食的开浏览器方式（不依赖 start 的参数解析差异）。 */
-      spawn('cmd.exe', ['/c', 'start', '""', url], { stdio: 'ignore', detached: true }).unref();
+      /* cmd /c start：Windows 上最不挑食的开浏览器方式（不依赖 start 的参数解析差异）。
+         ★ 2026-11-05（P2-10）：spawn 失败（非 Windows 无 cmd.exe）是**异步** 'error' 事件，try/catch 接不住 ⇒ 挂监听兜底。 */
+      const opener = spawn('cmd.exe', ['/c', 'start', '""', url], { stdio: 'ignore', detached: true });
+      opener.on('error', () => console.log('[网页版] 没能自动打开浏览器，请手动访问：' + url));
+      opener.unref();
       console.log('[网页版] 已打开浏览器：' + url);
     } catch (e) {
       console.log('[网页版] 没能自动打开浏览器，请手动访问：' + url);

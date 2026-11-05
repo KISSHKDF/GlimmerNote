@@ -60,7 +60,7 @@ function card(over = {}) {
     answerSource: '独立判卷', answerSourceNote: '竖式重算',
     causeCode: 'S1', causeNote: '把两个负数相加当成减法',
     kpoints: ['有理数加法'], difficulty: '易', hasFigure: false,
-    confidence: 'high', sourceImageSha256: SHA, notes: '',
+    confidence: 'high', sourceImageSha256: SHA, notes: '', teacherAnswer: '',
   };
   for (const k of Object.keys(over)) {
     if (over[k] === '<<DEL>>') delete c[k]; else c[k] = over[k];
@@ -157,10 +157,19 @@ console.log('\n══ 二·补、公开题库比对流程（2026-11-05 家长定
   }
   const meta1 = JSON.parse(read('ingest-page/meta.json'));
   const meta2 = JSON.parse(read('ingest-single/meta.json'));
-  A('ingest-page 升版 ≥2.2.0 且 changelog 顶条记了题库比对',
-    meta1.version === '2.2.0' && /题库/.test(meta1.changelog[0].note || ''), meta1.version);
-  A('ingest-single 升版 ≥2.1.0 且 changelog 顶条记了题库比对',
-    meta2.version === '2.1.0' && /题库/.test(meta2.changelog[0].note || ''), meta2.version);
+  /* 2026-11-05：原判据写死 `version === '2.2.0'` 且要求**顶条** changelog 提题库 ⇒ 任何后续升版都会误红
+     （断言名写的是 ≥，判据却是 ===）。改成真正的 ≥ 比较 + "某一条 changelog 记了题库比对"。 */
+  const semverGte = (v, min) => { const a = String(v).split('.').map(Number), b = min.split('.').map(Number); for (let k = 0; k < 3; k++) { if ((a[k] || 0) !== b[k]) return (a[k] || 0) > b[k]; } return true; };
+  const logged = m => (m.changelog || []).some(e => /题库/.test(e.note || ''));
+  A('ingest-page 升版 ≥2.2.0 且 changelog 记了题库比对', semverGte(meta1.version, '2.2.0') && logged(meta1), meta1.version);
+  A('ingest-single 升版 ≥2.1.0 且 changelog 记了题库比对', semverGte(meta2.version, '2.1.0') && logged(meta2), meta2.version);
+  /* 2026-11-05（合并评审 P1-6）：老师红笔 vs 站点答案的优先级必须写进配方，teacherAnswer 字段两份 schema 都有 */
+  A('★ base.md 写明老师红笔算打架一方', /老师红笔[\s\S]{0,40}打架的一方|算打架的一方/.test(read('_core/base.md')), '');
+  A('★ base.md 写明试卷抬头信息不进检索词', /抬头/.test(read('_core/base.md')), '');
+  for (const id of ['ingest-page', 'ingest-single']) {
+    A(`★ ${id}/prompt.md 写明不许以官方答案覆盖老师`, /不许[\s\S]{0,20}官方答案[\s\S]{0,10}覆盖老师/.test(read(id + '/prompt.md')), '');
+    A(`★ ${id}/schema.json 有 teacherAnswer 字段`, !!JSON.parse(read(id + '/schema.json')).properties.cards.items.properties.teacherAnswer, '');
+  }
 }
 
 console.log('\n══ 三、schema 真校验（阴性样本必须被拒）══');

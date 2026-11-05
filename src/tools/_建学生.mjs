@@ -49,6 +49,9 @@ const { opt } = parseArgs(argv, {
     // 本工具专属的带值 flag（**布尔开关不要列进来**：json 是开关）
   ],
   start: 0,
+  /* ★ 2026-11-05（PR #13 复审 ①）：写盘工具一律严格模式 —— 拼错的开关（如 --dryy）当场报错，绝不静默丢弃后真写盘。
+     清单 = 本文件用到的布尔开关（机扫 opt.x / val('x') 后人工核对），新增开关必须同步加进来，否则会被拒。 */
+  boolFlags: ['json', 'help', 'h'],
 });
 /* 取值语义与改前 `valOf` 一致：给了 flag 但没给值 ⇒ 回落默认值（不是 `true`）。 */
 const valOf = (k, d) => { const v = opt[k]; return (v === undefined || v === true) ? d : v; };

@@ -604,7 +604,10 @@ textarea{width:100%;resize:vertical;min-height:64px;line-height:1.7}
     为什么 nowrap 只给「含 .fr 的格」而不给 sup/sub：库里 14 个含 .fr 的格
       **全是纯数学**（实测扫描），而含 sup 的格里有一批是**散文**
       （P0074「动力 F1/N」这类）——nowrap 会把散文顶成一条长线、撑爆纸面。
-      含分数的格加 nowrap 后横向溢出实测 0（.fr 的宽度由分子/分母决定，很窄）。 */
+      含分数的格加 nowrap 后横向溢出实测 0（.fr 的宽度由分子/分母决定，很窄）。
+    ★ 2026-11-05（合并评审 P2-10 澄清）：②③ **有意**不放进 @media print —— .sheet 是"打印预览"，
+      屏幕上看到的必须就是印出来的样子，两态排版不许分叉；只有 ① 是打印专属（屏幕态没有 @page 边距）。
+      ② 的 8px 规则与上一条 12px 规则同特异性，靠**源码顺序**覆盖：两条不要调换位置。 */
 @media print{.sheet{padding:0}}
 .sheet .q-stem th,.sheet .q-stem td{padding:2px 8px}
 .sheet .q-stem td:has(.fr),.sheet .q-stem th:has(.fr){min-width:4.5em;white-space:nowrap}

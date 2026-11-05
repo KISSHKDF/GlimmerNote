@@ -231,6 +231,7 @@ function runChild(scriptPath, root, holdMs) {
         procStartTime: () => 1111111111111,
         lockHolderAlive: cur => cur && cur.pid !== 999999,
         recoverTransactions: () => '',
+        migrateLegacyState: () => '',   // 2026-11-05：onAcquired 里新增的旧布局迁移（P0-1），桩成空操作
         sleepMs() { },
         readLockFile(p) { try { return JSON.parse(fakeFs.readFileSync(p)); } catch { return null; } },
       };
