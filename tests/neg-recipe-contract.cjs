@@ -60,7 +60,7 @@ function card(over = {}) {
     answerSource: '独立判卷', answerSourceNote: '竖式重算',
     causeCode: 'S1', causeNote: '把两个负数相加当成减法',
     kpoints: ['有理数加法'], difficulty: '易', hasFigure: false,
-    confidence: 'high', sourceImageSha256: SHA, notes: '',
+    confidence: 'high', sourceImageSha256: SHA, notes: '', teacherAnswer: '',
   };
   for (const k of Object.keys(over)) {
     if (over[k] === '<<DEL>>') delete c[k]; else c[k] = over[k];

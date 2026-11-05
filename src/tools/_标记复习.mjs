@@ -894,6 +894,19 @@ switch (action) {
         if (opt.as === '老师定案') { item.answer = tc.teacher; item.answerSource = '老师定案'; }
         tc.resolvedAt = today(); tc.resolvedAs = opt.as; tc.resolvedNote = String(opt.note);
         item.answerSourceNote = (item.answerSourceNote ? item.answerSourceNote + '；' : '') + '异议裁决(' + opt.as + ')：' + opt.note;
+        /* ★ 2026-11-05（PR #13 二次复审 ②）：卡面 错题记录.md 同步 —— 修前只改索引，卡面仍是原采用答案、
+           还挂着"须裁决"的过期提示，索引与卡面对不上。改两处：「## 正确答案」下的答案行、「老师红笔」行的状态。
+           md 找不到或结构对不上 ⇒ 不静默：整次裁决报错回滚（索引也不写），宁可不裁也不留分叉。 */
+        const md = path.join(path.dirname(file), String(item.dir || ''), '错题记录.md');
+        if (!item.dir || !fs.existsSync(md)) throw new Error(item.id + ' 的卡面 错题记录.md 不存在（' + md + '），裁决未写盘：先修卡面再裁决');
+        const lines = fs.readFileSync(md, 'utf8').split(/\r?\n/);
+        const h = lines.findIndex(l => l.trim() === '## 正确答案');
+        const ai = h < 0 ? -1 : lines.findIndex((l, i) => i > h && /^\*\*.*\*\*\s*$/.test(l.trim()));
+        const ti = lines.findIndex(l => l.startsWith('> 老师红笔：'));
+        if (ai < 0 || ti < 0) throw new Error(item.id + ' 的 错题记录.md 里找不到「## 正确答案」答案行或「老师红笔」行，裁决未写盘：卡面结构与入库器产出不符');
+        lines[ai] = '**' + String(item.answer || '（未能确认）') + '**';
+        lines[ti] = '> 老师红笔：' + tc.teacher + ' ✔ 已裁决（' + opt.as + '，' + tc.resolvedAt + '）：' + String(opt.note).replace(/\s+/g, ' ');
+        tx().writeText(md, lines.join('\n'));
       }
       done.push(item.id + ' → ' + opt.as + '（老师 ' + tc.teacher + ' / 原采用 ' + tc.adopted + '）');
     }

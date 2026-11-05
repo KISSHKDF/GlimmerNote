@@ -212,7 +212,7 @@ const mkLandPage = (reply, over) => {
       subject: '数学', title: '煮面条工序时间', source: '第一章数学 · 第3题', sourceDate: '2026-11-04',
       questionText: '小敏煮面条，最少需要 ____ min。',
       studentAnswer: '22', answer: '13',
-      answerSource: '独立判卷', answerSourceNote: '可并行工序共 3min，再烧水 7min，再煮 3min，合计 13min',
+      answerSource: '独立判卷', answerSourceNote: '可并行工序共 3min，再烧水 7min，再煮 3min，合计 13min', teacherAnswer: '',
       causeCode: 'L1', causeNote: '把能并行的工序串行相加了',
       kpoints: ['统筹优化'], difficulty: '中', hasFigure: false, confidence: 'high',
       sourceImageSha256: o.sha || IMG_SHA, notes: '', bbox: [0.02, 0.29, 0.96, 0.08],
@@ -530,7 +530,7 @@ const mkLandPage = (reply, over) => {
   {
     const L = freshLib('g5');
     w(L, path.join('_录题', TID2 + '.json'), mkTask(true));
-    const o = mkCards({ taskId: TID2 }); Object.assign(o.result.cards[0], { answerSource: '官方答案' });
+    const o = mkCards({ taskId: TID2 }); Object.assign(o.result.cards[0], { answerSource: '官方答案' }); delete o.result.cards[0].teacherAnswer;
     const cf = path.join(L, 'cards.json'); fs.writeFileSync(cf, JSON.stringify(o), 'utf8');
     const r = run(['_录题入库.mjs', '入库', TID2, '--file', cf, '--student', '学生甲', '--subject', '数学', '--data', L]);
     A('G5 ★ 官方答案却省略 teacherAnswer ⇒ 拒绝、零写盘', r.code !== 0 && cardCount(L) === 0 && /teacherAnswer/.test(r.out), 'exit=' + r.code);
@@ -543,6 +543,33 @@ const mkLandPage = (reply, over) => {
     fs.writeFileSync(cf, JSON.stringify(o), 'utf8');
     const r3 = run(['_录题入库.mjs', '入库', TID2, '--file', cf, '--student', '学生甲', '--subject', '数学', '--data', L]);
     A('G5 ★ 只改 teacherAnswer 重提 ⇒ 不被幂等跳过', !/幂等/.test(r3.out), r3.out.slice(0, 120));
+  }
+  /* G7 · 二次复审 ③：teacherAnswer 每张卡必填，不分来源；老师定案却与老师红笔不一致 ⇒ 自相矛盾直接拒 */
+  {
+    const L = freshLib('g7');
+    w(L, path.join('_录题', TID2 + '.json'), mkTask(true));
+    const cf = path.join(L, 'cards.json');
+    const o = mkCards({ taskId: TID2 }); delete o.result.cards[0].teacherAnswer;
+    fs.writeFileSync(cf, JSON.stringify(o), 'utf8');
+    const r = run(['_录题入库.mjs', '入库', TID2, '--file', cf, '--student', '学生甲', '--subject', '数学', '--data', L]);
+    A('G7 ★ 独立判卷 漏填 teacherAnswer ⇒ 拒、零写盘', r.code !== 0 && cardCount(L) === 0 && /teacherAnswer/.test(r.out), 'exit=' + r.code);
+    Object.assign(o.result.cards[0], { answerSource: '老师定案', teacherAnswer: '12', notes: '与老师红笔不一致：随便写一句' });
+    fs.writeFileSync(cf, JSON.stringify(o), 'utf8');
+    const r2 = run(['_录题入库.mjs', '入库', TID2, '--file', cf, '--student', '学生甲', '--subject', '数学', '--data', L]);
+    A('G7 ★ 老师定案 却与老师红笔不一致 ⇒ 拒（notes 也救不了）', r2.code !== 0 && cardCount(L) === 0 && /自相矛盾/.test(r2.out), 'exit=' + r2.code);
+    Object.assign(o.result.cards[0], { answerSource: '独立判卷', teacherAnswer: '12', notes: '与老师红笔不一致：老师 12，独立解 13' });
+    fs.writeFileSync(cf, JSON.stringify(o), 'utf8');
+    const r3 = run(['_录题入库.mjs', '入库', TID2, '--file', cf, '--student', '学生甲', '--subject', '数学', '--data', L]);
+    const ix = cardCount(L) ? JSON.parse(fs.readFileSync(path.join(L, '七年级-学生甲', '数学', '_索引.json'), 'utf8').replace(/^\uFEFF/, '')).items[0] : {};
+    A('G7 ★ 独立判卷 与老师不一致（已交代）⇒ 入库但挂 teacherConflict', r3.code === 0 && !!(ix.teacherConflict && ix.teacherConflict.teacher === '12'), 'exit=' + r3.code);
+  }
+  /* G8 · --in 老别名在严格模式下仍可用（二次复审：误杀） */
+  {
+    const L = freshLib('g8');
+    w(L, path.join('_录题', TID2 + '.json'), mkTask(true));
+    const cf = path.join(L, 'cards.json'); fs.writeFileSync(cf, JSON.stringify(mkCards({ taskId: TID2 })), 'utf8');
+    const r = run(['_录题入库.mjs', '入库', TID2, '--in', cf, '--student', '学生甲', '--subject', '数学', '--data', L]);
+    A('G8 ★ --in <文件>（--file 老别名）⇒ 正常入库', r.code === 0 && cardCount(L) === 1, 'exit=' + r.code + ' ' + r.out.slice(0, 80));
   }
   /* G6 · 严格模式：写盘工具拼错开关当场拒（PR #13 复审 ①：修前 --dryy 被静默丢弃 ⇒ 真入库） */
   {

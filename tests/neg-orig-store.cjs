@@ -82,6 +82,32 @@ const objectsOf = () => {
   A('1d --dry 不删源（4 个源文件全在）', objectsOf().length === 0 && fs.existsSync(path.join(SRC, 'a.jpg')));
 }
 
+/* ════════ 1x. 严格模式（PR #13 二次复审 ①）：拼错 / 带值的 --dry 不许落成真写盘 ════════
+   修前 DRY = process.argv.includes('--dry')：`--dryy` 被宽松解析静默丢弃、`--dry=true` 精确匹配不命中 ⇒ 两者都真入库。 */
+{
+  const r1 = run(['入库', SRC, '--dryy'], LIB);
+  A('1x-a ★ --dryy ⇒ 报"未知参数"非零退出、库与台账都不存在', r1.code !== 0 && /未知参数 --dryy/.test(r1.out) && !fs.existsSync(STORE) && !fs.existsSync(LEDGER), 'exit=' + r1.code);
+  const r2 = run(['入库', SRC, '--dry=true'], LIB);
+  A('1x-b ★ --dry=true ⇒ 预演、零写盘', r2.code === 0 && !fs.existsSync(STORE) && !fs.existsSync(LEDGER), 'exit=' + r2.code);
+  const r3 = run(['入库', SRC, '--dry=maybe'], LIB);
+  A('1x-c ★ --dry=maybe ⇒ 拒、零写盘', r3.code !== 0 && !fs.existsSync(LEDGER), 'exit=' + r3.code);
+  /* 阴性自证：把入口改回修前写法 ⇒ --dry=true 真写盘 */
+  const TOOLP = E.tool('_原图.mjs');
+  const SRC0 = fs.readFileSync(TOOLP, 'utf8');
+  const ANCHOR = "const DRY = GLOBAL_OPT.dry === true;";
+  A('1x-d 变异锚点存在', SRC0.includes(ANCHOR));
+  let wrote = false;
+  try {
+    fs.writeFileSync(TOOLP, SRC0.replace(ANCHOR, "const DRY = process.argv.includes('--dry');"), 'utf8');
+    const LIBM = E.makeTempLib();
+    fs.cpSync(SRC, path.join(LIBM, '_测试源'), { recursive: true });
+    run(['入库', path.join(LIBM, '_测试源'), '--dry=true'], LIBM);
+    wrote = fs.existsSync(path.join(LIBM, '_原图台账.json'));
+  } finally { fs.writeFileSync(TOOLP, SRC0, 'utf8'); }
+  A('1x-e ★ 自证 · 改回 argv.includes ⇒ --dry=true 真写了台账（判据有牙齿）', wrote);
+  A('1x-f 变异源码已还原', fs.readFileSync(TOOLP, 'utf8') === SRC0);
+}
+
 /* ════════ 2. 入库：去重、扩展名保留、非影像件也保全 ════════ */
 {
   const r = run(['入库', SRC, '--batch', '夹具批次'], LIB);

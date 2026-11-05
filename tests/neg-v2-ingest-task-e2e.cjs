@@ -371,7 +371,7 @@ async function waitFor(cdp, expr, ok, tries, gap) {
       result: {
         pageSummary: { totalQuestions: 3, markedWrong: 1 },
         cards: [{ subject: '数学', title: '合成题', questionText: '1+1=?', studentAnswer: '3',
-          answerSource: '独立判卷', causeCode: 'K1', confidence: 'high', sourceImageSha256: sha }],
+          answerSource: '独立判卷', causeCode: 'K1', confidence: 'high', sourceImageSha256: sha, teacherAnswer: '' }],
         skipped: [{ what: '第2题', reason: '未作答' }],
       },
     });

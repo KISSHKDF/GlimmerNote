@@ -391,9 +391,14 @@ console.log('\n═══ 复审③ 教师异议：准入/组卷同判据拦，�
   const libT = makeLib(path.join(tmpRoot, 'libT'));
   const ip = path.join(libT, '测试生', '数学', '_索引.json');
   const ix = JSON.parse(fs.readFileSync(ip, 'utf8'));
-  Object.assign(ix.items[2], { answerSource: '官方答案', answer: '2', teacherAnswer: '3',
+  Object.assign(ix.items[2], { dir: 'M0003-测试', answerSource: '官方答案', answer: '2', teacherAnswer: '3',
     teacherConflict: { teacher: '3', adopted: '2', source: '官方答案', note: 't', at: '2026-11-05' } });
   fs.writeFileSync(ip, JSON.stringify(ix, null, 1), 'utf8');
+  /* 卡面：与 _录题入库 buildRecord 产出同构的最小片段 */
+  const mdDir = path.join(libT, '测试生', '数学', 'M0003-测试'); fs.mkdirSync(mdDir, { recursive: true });
+  const mdP = path.join(mdDir, '错题记录.md');
+  const MD0 = '# M0003\n\n## 正确答案\n\n**2**\n\n> 老师红笔：3 ⚠ 与采用答案不一致，组卷前须裁决（`_标记复习.mjs 异议裁决`）\n';
+  fs.writeFileSync(mdP, MD0, 'utf8');
   const rt = (a) => E.runToolSync('_标记复习.mjs', a, { data: libT });
   const adm = () => { try { return JSON.parse(String(rt(['准入', '--json']).out || '').trim().split('\n').pop()).admit['测试生|M0003']; } catch { return null; } };
   const a1 = adm();
@@ -402,7 +407,16 @@ console.log('\n═══ 复审③ 教师异议：准入/组卷同判据拦，�
   A('★ 组卷：教师异议未裁决 ⇒ 答案来源门禁拦（exit 2）', g.code === 2 && /教师异议/.test(g.err || ''), 'exit=' + g.code);
   const bad = rt(['异议裁决', '--student', '测试生', '--ids', 'M0003', '--as', '老师定案']);
   A('异议裁决缺 --note ⇒ 拒', bad.code !== 0);
+  /* 卡面缺失 ⇒ 整次裁决拒、索引不动（不许留下"索引已裁、卡面未裁"的分叉） */
+  fs.renameSync(mdP, mdP + '.bak');
+  const miss = rt(['异议裁决', '--student', '测试生', '--ids', 'M0003', '--as', '老师定案', '--note', 'x']);
+  const ixMiss = JSON.parse(fs.readFileSync(ip, 'utf8')).items[2];
+  A('★ 卡面 md 缺失 ⇒ 裁决拒且索引未改', miss.code !== 0 && ixMiss.answer === '2' && !ixMiss.teacherConflict.resolvedAt, 'exit=' + miss.code);
+  fs.renameSync(mdP + '.bak', mdP);
   const ok = rt(['异议裁决', '--student', '测试生', '--ids', 'M0003', '--as', '老师定案', '--note', '独立解：1+1=2 …按老师']);
+  const mdAfter = fs.readFileSync(mdP, 'utf8');
+  A('★ 裁决同步卡面：答案行改成老师红笔', /## 正确答案\n\n\*\*3\*\*\n/.test(mdAfter), mdAfter.slice(0, 120));
+  A('★ 裁决同步卡面：过期的"须裁决"提示已换成"已裁决"', !/须裁决/.test(mdAfter) && /已裁决（老师定案/.test(mdAfter));
   const after = JSON.parse(fs.readFileSync(ip, 'utf8')).items[2];
   A('★ 异议裁决（老师定案）⇒ answer 改为老师红笔、来源=老师定案、留裁决痕', ok.code === 0 && after.answer === '3' && after.answerSource === '老师定案' && !!after.teacherConflict.resolvedAt,
     'exit=' + ok.code + ' ' + JSON.stringify({ a: after.answer, s: after.answerSource }));

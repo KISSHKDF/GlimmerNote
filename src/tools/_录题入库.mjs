@@ -36,7 +36,7 @@ import { displaySize } from './_图尺寸.mjs';
 
 /* ───────────────── 参数 ───────────────── */
 const { action: _cmd, opt, positional } = parseArgs(process.argv.slice(2), {
-  valueFlags: [...COMMON_VALUE_FLAGS, 'task', 'file', 'student', 'grade', 'slots', 'note', 'date', 'reason'],
+  valueFlags: [...COMMON_VALUE_FLAGS, 'task', 'file', 'in', 'student', 'grade', 'slots', 'note', 'date', 'reason'],   // 'in' = --file 的老别名（二次复审：严格模式下漏列会误杀）
   /* ★ 2026-11-05（PR #13 复审 ①）：写盘工具一律严格模式 —— 拼错的开关（如 --dryy）当场报错，绝不静默丢弃后真写盘。
      清单 = 本文件用到的布尔开关（机扫 opt.x / val('x') 后人工核对），新增开关必须同步加进来，否则会被拒。 */
   boolFlags: ['dry', 'json', 'help', 'h'],
@@ -368,19 +368,22 @@ function cmdLand() {
     if (c.answerSource && !['独立判卷', '老师定案', '官方答案', '红笔订正+官方答案页核对', '未能确认'].includes(c.answerSource)) {
       problems.push(id + ' 的 answerSource 取值不在契约内：' + c.answerSource);
     }
-    /* ★ 2026-11-05（合并评审 P1-6 → PR #13 复审 ③ 收紧）：官方答案不得悄悄覆盖老师红笔。
-       ① 答案来源含"官方答案"的卡，**必须声明** teacherAnswer（老师没写出正确答案就填空串）——
-          修前漏填即全盲：比对只在"已填"时发生。
-       ② 已填且与采用答案不一致：notes 没交代 ⇒ 拒；交代了 ⇒ 放行入库，但卡上挂 teacherConflict，
-          组卷准入把它挡在池外，直到 `_标记复习.mjs 异议裁决` 人工裁决（修前"写一句话就放行、不挂待复核"）。 */
-    if (/官方答案/.test(String(c.answerSource || ''))) {
-      if (typeof c.teacherAnswer !== 'string') {
-        problems.push(id + ' 的 answerSource=' + c.answerSource + '，但没有声明 teacherAnswer —— 照片上老师写了正确答案就原样填，没写就填空串 ""（不许省略：省略等于让"官方答案覆盖老师"这条检查失明）');
-      } else if (teacherConflictOf(c)) {
-        if (!/老师红笔不一致|与老师.*不一致/.test(String(c.notes || '') + String(c.answerSourceNote || ''))) {
-          problems.push(id + ' 的 answerSource=' + c.answerSource + '，但答案（' + c.answer + '）与老师红笔（' + c.teacherAnswer + '）不一致且未交代分歧 —— ' +
-            '老师批改不能被站点答案悄悄覆盖：独立解法裁决后改成 老师定案 / 未能确认，或在 notes 写明"与老师红笔不一致：…"（入库后仍须 异议裁决 才能组卷）');
-        }
+    /* ★ 2026-11-05（合并评审 P1-6 → PR #13 复审 ③ → 二次复审 ③ 收紧）：老师红笔不得被悄悄覆盖。
+       口径：老师是"打架的一方"，由独立解法仲裁 —— **不是**"老师永远优先"。
+       ① **每张卡**都必须声明 teacherAnswer（老师没写出正确答案就填空串）—— 修前只查"官方答案"来源，
+          独立判卷 / 老师定案 漏填就全盲。
+       ② 已填且与采用答案不一致：
+          · answerSource=老师定案 ⇒ 自相矛盾，直接拒（"按老师定案"却和老师写的不一样）；
+          · 其它来源：notes 没交代 ⇒ 拒；交代了 ⇒ 入库但挂 teacherConflict，组卷准入挡在池外，
+            直到 `_标记复习.mjs 异议裁决` 人工裁决。 */
+    if (typeof c.teacherAnswer !== 'string') {
+      problems.push(id + ' 没有声明 teacherAnswer —— 照片上老师写了正确答案就原样填，没写就填空串 ""（每张卡必填：省略等于让"老师红笔被覆盖"这条检查失明）');
+    } else if (teacherConflictOf(c)) {
+      if (/^老师定案/.test(String(c.answerSource || ''))) {
+        problems.push(id + ' 的 answerSource=老师定案，但答案（' + c.answer + '）与老师红笔（' + c.teacherAnswer + '）不一致 —— 自相矛盾，按老师就填老师的答案，不按老师就别写老师定案');
+      } else if (!/老师红笔不一致|与老师.*不一致/.test(String(c.notes || '') + String(c.answerSourceNote || ''))) {
+        problems.push(id + ' 的 answerSource=' + c.answerSource + '，但答案（' + c.answer + '）与老师红笔（' + c.teacherAnswer + '）不一致且未交代分歧 —— ' +
+          '老师批改不能被悄悄覆盖：独立解法裁决后改成 老师定案 / 未能确认，或在 notes 写明"与老师红笔不一致：…"（入库后仍须 异议裁决 才能组卷）');
       }
     }
     if (c.causeCode && !/^[KLS][1-7]$/.test(String(c.causeCode))) problems.push(id + ' 的 causeCode 非法：' + c.causeCode);
