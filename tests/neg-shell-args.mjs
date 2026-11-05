@@ -318,5 +318,19 @@ A('格式合法但库里没有 → 退出 1（与"参数非法=2"分得开）', 
 A('带白名单外键的真实结果不受影响（仍退出 0）', injected.code === 0, 'code=' + injected.code);
 fs.rmSync(libRoot, { recursive: true, force: true });
 
+console.log('\n═══ AddFlag 拒绝以 -- 开头的值（2026-11-04 F06：C# 侧双保险，与 _参数.mjs 互相独立）═══');
+/* 修前：前端把 note="--force" 送进来，AddFlag 原样拼出 `--note --force` ——
+   QuoteArgs 只防 shell 分词，不防 Node argv 解析。已迁移到 _参数.mjs 的工具靠
+   "已知带值 flag 无条件消费下一个参数"兜住了，旗舰工具迁移前直接中招。
+   判据：AddFlag 体内必须有 StartsWith("--") 拒绝 + 阴性自证（掏掉拒绝必须抓得到）。 */
+{
+  const addFlagBody = (/static void AddFlag\(List<string> args, string payload, string key, string flag\)\s*\{([\s\S]*?)\n        \}/.exec(CS) || [''])[1];
+  A('AddFlag 源码块可解析（判据不是恒真）', addFlagBody.length > 20, 'len=' + addFlagBody.length);
+  A('★ AddFlag 拒绝以 -- 开头的值（StartsWith("--") 检查在场）', /StartsWith\("--"\)/.test(addFlagBody), '');
+  A('★ 拒绝时报错点名是哪个字段（fail-loud，不是静默丢）', /key/.test(addFlagBody) && /throw/.test(addFlagBody), '');
+  const mut = addFlagBody.replace(/if \(v\.StartsWith\("--"\)\)[\s\S]*?\n\s*\}/, '');
+  A('阴性自证：掏掉 -- 检查后判据立刻为假', mut !== addFlagBody && !/StartsWith\("--"\)/.test(mut), '');
+}
+
 console.log('\nRESULT=' + (fail ? 'FAIL' : 'PASS') + ' 断言=' + (pass + fail));
 process.exit(fail ? 1 : 0);

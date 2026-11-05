@@ -102,6 +102,59 @@ function runChild(scriptPath, root, holdMs) {
     violations ? '违反 ' + violations + ' 次；样例 ' + JSON.stringify(firstBad) : '0 次');
   A('进程都成功拿到过锁（不是靠"全失败"换来的绿）', acquired >= ROUNDS, acquired + ' 次');
 
+  /* ★ 2026-11-04（H1 整改专项）：**PID 复用**的僵尸锁。
+     修前判据只有 pidAlive：pid 999999 死 ⇒ 能回收；但"PID 被无关新进程复用"时
+     pidAlive 为真 ⇒ 僵尸锁被当活锁，等满 120 秒超时。修后判据 lockHolderAlive
+     比对锁文件里的 startedAt 与真实进程启动时间 ⇒ 复用者对不上 ⇒ 照样回收。
+     判据：造一个 pid=**当前真实进程**（pidAlive 真）但 startedAt 是陈年旧值的锁，
+     断言 ①新取锁能立刻回收它（不被 120s 挡死）②锁文件新形态带 startedAt 字段。 */
+  {
+    const libP = path.join(mkTmp('libpid'), '库');
+    fs.mkdirSync(libP, { recursive: true });
+    const lockP = SW.lockPathOf(libP);
+    fs.writeFileSync(lockP, JSON.stringify({
+      pid: process.pid, token: 'reused-pid-token', label: 'pid-reuse-sim', at: Date.now(),
+      startedAt: 1735689600000,   // 2025-01-01：与当前进程真实启动时间必然对不上 ⇒ 判"复用者"
+                                  //（不能用 0 —— 0 是"老版本锁文件"的向后兼容分支，按设计退回旧判据）
+    }));
+    const t0 = Date.now();
+    let got = false, err = '';
+    let releasedH1 = null;
+    try { releasedH1 = SW.acquireLibLock(libP, { label: 'H1-reclaim', timeoutMs: 5000, pollMs: 10 }); got = true; }
+    catch (e) { err = String(e.message).slice(0, 100); }
+    A('★ PID 复用的僵尸锁（pid 活着但启动时间对不上）⇒ 5 秒内被回收（不再等满超时）',
+      got && (Date.now() - t0) < 5000, got ? '耗时 ' + (Date.now() - t0) + 'ms' : '超时报错：' + err);
+    /* ★ 释放前读锁文件：释放会 unlink（设计如此），所以 startedAt 断言必须趁持有期内做。 */
+    const curDuring = (() => { try { return JSON.parse(fs.readFileSync(lockP, 'utf8')); } catch { return null; } })();
+    A('★ 新写的锁文件带 startedAt（PID 复用判据的输入必须在场）',
+      !!curDuring && Number(curDuring.startedAt) > 0 && curDuring.token !== 'reused-pid-token',
+      curDuring ? 'token=' + String(curDuring.token).slice(0, 8) + ' startedAt=' + curDuring.startedAt : '(读不到)');
+    if (releasedH1) releasedH1();
+    /* 阴性对照：startedAt 与真实启动时间一致的"真活锁"必须**不被**回收（不许把判据写成见锁就抢） */
+    const libQ = path.join(mkTmp('liblive'), '库');
+    fs.mkdirSync(libQ, { recursive: true });
+    const lockQ = SW.lockPathOf(libQ);
+    fs.writeFileSync(lockQ, JSON.stringify({
+      pid: process.pid, token: 'genuinely-alive-token', label: 'genuine', at: Date.now(),
+      /* ⚠ 必须走 ToFileTime（UtcTicks 在管道环境输出空 → 0 → 命中"老版本锁"兼容分支 → 断言假红）。
+         更稳的口径：直接调被测模块自己的 __test_procStartTime —— 它就是要被验证的通道，
+         阴性对照用它取真值、上面那条"通道可用"断言管它没静默失效，两层合起来才闭合。 */
+      startedAt: SW.__test_procStartTime(process.pid),
+    }));
+    let blocked = false;
+    try { SW.acquireLibLock(libQ, { label: 'H1-negative', timeoutMs: 1500, pollMs: 10 }); }
+    catch (e) { blocked = /超时/.test(String(e.message)); }
+    A('阴性对照：startedAt 真实一致的活锁不被回收（判据不是"见锁就抢"）', blocked, blocked ? '1.5s 超时被挡' : '被错误回收');
+    /* 阴性自证 2：**工具侧能查到真实启动时间** —— 若 PowerShell 通道失效（procStartTime 恒 0），
+       lockHolderAlive 退回旧判据，上面"复用者被回收"那一条会因 real=0 而假绿（退回分支也回收不了？
+       不 —— 退回分支按 pidAlive 判活 ⇒ 复用者反而不回收，第一条就红；这条是防"通道静默失效
+       导致 startedAt 写成 0、判据永远走退回分支"的退化形态）。 */
+    const selfStart = SW.__test_procStartTime ? SW.__test_procStartTime(process.pid) : 0;
+    A('★ 进程启动时间通道可用（procStartTime 能查到本进程的启动时间）',
+      selfStart > 0 && Math.abs(selfStart - Date.now()) < 90 * 24 * 3600 * 1000,
+      selfStart > 0 ? 'startedAt=' + new Date(selfStart).toISOString().slice(0, 19) : '查不到（通道失效）');
+  }
+
   /* ② 阴性自证（确定性交错）：把"互斥内重读判活"掏掉后，同一个交错必须变成双重持锁。
          ⚠ 为什么这一段不用真进程：竞态窗口极窄（真进程 20 轮只命中 0~1 次），
          用它做自证会变成"时红时绿"的假门禁。这里把两个进程的**系统调用交错固定下来**，
@@ -162,7 +215,7 @@ function runChild(scriptPath, root, holdMs) {
         statSync() { return { mtimeMs: Date.now() }; },
       };
       let code = srcAll.slice(a, b).replace(/\bexport /g, '');
-      if (broken) code = code.replace('if (again && pidAlive(again.pid)) return false;       // 持有者活着：绝不删',
+      if (broken) code = code.replace(/if \(again && lockHolderAlive\(again\)\) return false;[^\n]*/,
         '/* [阴性自证] 去掉互斥内重读判活 */');
       const ctx = {
         fs: fakeFs, path, crypto: require('crypto'),
@@ -172,6 +225,11 @@ function runChild(scriptPath, root, holdMs) {
         stateDirOf: () => '/virtual-state',
         inheritedToken: () => '',
         pidAlive: p => p !== 999999,          // 只有僵尸锁的 pid 是"死的"
+        /* ★ 2026-11-04（H1 后同步）：判活改走 lockHolderAlive —— 桩按同一语义给：
+           僵尸锁（999999）判死、B（202）可信存活；变异自证的锚点行同步更新（见上）。
+           procStartTime 也一并给桩（新锁体写入 startedAt 时会调它）。 */
+        procStartTime: () => 1111111111111,
+        lockHolderAlive: cur => cur && cur.pid !== 999999,
         recoverTransactions: () => '',
         sleepMs() { },
         readLockFile(p) { try { return JSON.parse(fakeFs.readFileSync(p)); } catch { return null; } },

@@ -1,6 +1,6 @@
 {
   "id": "ingest-single",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "title": "录入单道错题（一题一张照片）",
   "kind": "ingest",
   "summary": "只拍一道题：题面 + 孩子的作答 + 老师的红笔批改都在画面里。最稳、最省事的入口，适合零散错题。",
@@ -10,8 +10,14 @@
   ],
   "outputs": "cards.json —— 符合 schema.json 的错题数组，通常 1 条",
   "appliesTo": {
-    "stages": ["小学", "初中", "高中"],
-    "subjects": ["*"]
+    "stages": [
+      "小学",
+      "初中",
+      "高中"
+    ],
+    "subjects": [
+      "*"
+    ]
   },
   "layers": [
     "_core/base.md",
@@ -23,8 +29,12 @@
     "subject": true,
     "images": 1
   },
-  "updatedAt": "2026-10-27",
+  "updatedAt": "2026-11-05",
   "changelog": [
+    {
+      "version": "2.1.0",
+      "note": "新增「先搜公开题库再判卷」流程（家长 2026-11-05 定）：命中且题干一致写官方答案+站点；答案打架由独立解法仲裁；检索词隐私红线。prompt 加一节与自检项、反例库补 A-11/A-12。正文只做加法，未改任何既有判据。"
+    },
     {
       "version": "2.0.0",
       "note": "并入本仓：错因改 K/L/S 16 类（原 6 类通用键丢弃）、新增必填 confidence 与 sourceImageSha256、学科层改占位符按科加载（原三科混拼）"

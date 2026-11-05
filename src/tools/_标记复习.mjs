@@ -42,6 +42,7 @@ import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { libraryRoot, toolPath } from './_库根.mjs';
 import { readJsonStrict, writeJsonAtomic, acquireLibLock, openTransaction } from './_安全写.mjs';
+import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
 
 /* ★ 2026-10-23 程序与数据分家：ROOT 现在是**用户库根**，不再是"本脚本所在目录"。
    兄弟工具一律用 toolPath(...)，见 _库根.mjs。 */
@@ -51,18 +52,46 @@ const LADDER = [1, 3, 7, 15, 30, 60, 90];
 const OK_RES = ['对', '半对', '错'];
 
 const argv = process.argv.slice(2);
-const action = argv[0];
-const opt = {};
-for (let i = 1; i < argv.length; i++) {
-  const t = argv[i];
-  if (!t.startsWith('--')) continue;
-  const k = t.slice(2);
-  if (i + 1 < argv.length && !argv[i + 1].startsWith('--')) { opt[k] = argv[++i]; }
-  else { opt[k] = true; }
-}
+/* ★ 2026-11-04（外部复核实测 F06/N2）：参数解析迁移到**唯一实现** `_参数.mjs`。
+   本文件原先自抄一份"下一个参数像不像 flag 决定它是不是值"的解析器 ⇒
+   `组卷 --student 学生甲 --ids C0101 --note --force` 会把 `--force` 解析成**开关**，
+   盲解 / 答案来源 / 作答契约 / 防重复印卷四道门禁全被绕过 —— 而 CHANGELOG 2026.11.04.01
+   声称本文件已迁移，实际 blob 零改动（MUSE 复核抓到的漏提交）。现在补上。
+   带值 flag 清单 = COMMON_VALUE_FLAGS（student/ids/note/date/at/paper/results/to/title/
+   subject/no-repeat-days/leech-at… 都在其中）；force/dry/json/refresh/interleave 是布尔，
+   绝不能进带值表（会把下一个 flag 吃掉 —— 见 _参数.mjs 头部注释的 auto/apply 教训）。 */
+const { action, opt } = parseArgs(argv, { valueFlags: [...COMMON_VALUE_FLAGS] });
 const dstr = x => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;  // 本地日期，勿用 toISOString（UTC+8 会倒退一天）
 const today = () => dstr(new Date());
-const addDays = (d, n) => { const x = new Date(d + 'T00:00:00'); x.setDate(x.getDate() + n); return dstr(x); };
+/* ★ 2026-11-04（外部复核实测 F02/High1）：日期唯一校验（三条判据缺一不可）——
+   ① 形状 `YYYY-MM-DD`；② 是真实存在的那一天（2 月 30 日会被 JS Date 静默进位成 3 月 2 日，
+   连 NaN 检查都抓不住）；③ 往返一致（防任何进位）。
+   修前 `addDays` 直接 `new Date(d+'T00:00:00')` 拼串：`2026-13-45 + 7 天 = NaN-NaN-NaN`，
+   `2026-02-30 + 1 = 2026-03-03`，**工具不报错**。这类卡在前端 model.js 被判 baddate，
+   不进到期池、不进 KPI、不进侧栏角标 ⇒ 在复习流里彻底失踪。
+   非法一律 throw ⇒ 本工具的 exit 钩子把事务整体回滚，真源不留半截状态。 */
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+function validDate(d, what) {
+  const s = String(d === undefined || d === null ? '' : d).trim();
+  if (!DATE_RE.test(s)) {
+    throw new Error('日期不合法（' + (what || 'date') + '）：' + JSON.stringify(s) +
+      '。要求 YYYY-MM-DD 且是真实存在的那一天（非法示例：2026-13-45、2026-02-30）。本次动作已中止，未写任何文件。');
+  }
+  const [y, m, dd] = s.split('-').map(Number);
+  const x = new Date(y, m - 1, dd);
+  if (x.getFullYear() !== y || x.getMonth() !== m - 1 || x.getDate() !== dd) {
+    throw new Error('日期不存在（' + (what || 'date') + '）：' + s +
+      '（JS Date 会把它静默进位，必须在这里拒绝）。本次动作已中止，未写任何文件。');
+  }
+  return s;
+}
+const addDays = (d, n) => {
+  const s = validDate(d, 'addDays 输入日期');
+  const [y, m, dd] = s.split('-').map(Number);
+  const x = new Date(y, m - 1, dd);
+  x.setDate(x.getDate() + n);
+  return dstr(x);
+};
 const num = v => { const n = parseInt(v, 10); return Number.isFinite(n) ? n : 0; };
 
 /* ⚠ 2026-10-10（BUG-01/02）：这两处原先直接 fs.writeFileSync / JSON.parse。
@@ -251,17 +280,44 @@ function intervalOf(res, pass) {
   const LADDER_OK = [7, 15, 30, 60, 90];
   return LADDER_OK[Math.min(Math.max(pass, 1), LADDER_OK.length) - 1];
 }
-/** 按"剩余复习记录"重算某卡的 nextDue（没有记录则清空）。撤批后必须调用，否则留着被撤批次的旧日期。 */
+/** 按"剩余复习记录"重算某卡的 nextDue（没有记录则清空）。撤批后必须调用，否则留着被撤批次的旧日期。
+ *  ★ 2026-11-04（F02 侧记）：存量数据里可能躺着毒日期（历史写入过 `2026-13-45`）。
+ *  修前这里直接 `addDays(last.date, …)` ⇒ 撤批会把毒日期重新毒化进 nextDue。
+ *  现在对**已存的**日期先做同一条校验：非法就跳过重算并清空 nextDue（响亮提示），
+ *  不让"撤一次批"变成"重新生成一遍毒日期"。 */
 function recomputeNextDue(it) {
   const revs = revsOf(it);
   if (!revs.length) { it.nextDue = ''; return ''; }
   const last = revs[revs.length - 1];
   const pass = passStreak(revs);
-  it.nextDue = addDays(last.date, intervalOf(last.result, pass));
+  try {
+    it.nextDue = addDays(last.date, intervalOf(last.result, pass));
+  } catch (e) {
+    console.error('⚠ ' + it.id + ' 的复习记录里存着非法日期 ' + JSON.stringify(last.date) +
+      '（历史遗留毒数据）：nextDue 已清空，请核对这条记录。原始报错：' + e.message);
+    it.nextDue = '';
+  }
   return it.nextDue;
 }
 
+/* ★ 2026-11-04（外部复核实测 F08e）：reviews[] 上限。CHANGELOG 2026.11.04.01 声称
+   "保留最近 50 条"但代码里从来没有 slice —— 文档与代码不符正是本轮的病根。
+   口径：保留**最近 50 条**（同一批次的记录全留，撤批要按 paper 匹配 —— 只按条数裁
+   可能把同批次的一部分裁掉，撤批时错误次数就回退不干净）；
+   被裁掉的都是最旧的，对 passStreak / nextDue / errorCount 三条下游判定无影响。 */
+const REVIEWS_KEEP = 50;
+function capReviews(list) {
+  const arr = (Array.isArray(list) ? list : []).filter(Boolean)
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  const papers = [...new Set(arr.slice(-REVIEWS_KEEP).map(r => r.paper))];
+  return arr.filter(r => papers.includes(r.paper));
+}
+const REVIEWS_CAP_NOTE = '（reviews 超过 ' + REVIEWS_KEEP + ' 条：已按口径裁掉最旧的记录，同一批次的记录全留）';
+
 function actGrading(paperId, resultsStr, date, note) {
+  /* ★ 2026-11-04（F02 纵深防御）：actGrading 还有别的调用方（同步路径 b.gradedAt || b.date），
+     四个入口各自校验之外，这里再校验一次 —— 它拿到的 date 必须已合法。 */
+  const day = validDate(date, '批改日期');
   const ledger = loadLedger();
   const b = ledger.batches.find(x => x.paperId === paperId);
   if (!b) throw new Error('台账中找不到批次 ' + paperId);
@@ -273,7 +329,16 @@ function actGrading(paperId, resultsStr, date, note) {
     if (!pair.trim()) continue;
     const i = pair.indexOf('=');
     if (i < 0) throw new Error('结果格式应为 编号=对|半对|错，收到：' + pair);
-    parsed[pair.slice(0, i).trim().toUpperCase()] = pair.slice(i + 1).trim();
+    const key = pair.slice(0, i).trim().toUpperCase();
+    /* ★ 2026-11-04（外部复核实测 F08c）：重复键后来居上。修前 `parsed[key]=value`
+       静默覆盖 —— `M0001=对,M0001=错` 按"错"落库，第一次的判分无声消失。
+       判分是复习流的全部下游推断（连对/错误次数/建议日）的输入，静默改判 = 数据被悄悄污染。
+       现在响亮拒绝：说明是哪两个值打架，让人重发一条干净的。 */
+    if (key in parsed) {
+      throw new Error('批改串里有重复编号：' + key + ' 同时给了「' + parsed[key] + '」和「' +
+        pair.slice(i + 1).trim() + '」。一条批改串里每个编号只能出现一次（后来居上会静默覆盖判分，已拒绝）。');
+    }
+    parsed[key] = pair.slice(i + 1).trim();
   }
   const log = [];
   for (const id of b.items) {
@@ -285,18 +350,21 @@ function actGrading(paperId, resultsStr, date, note) {
     const prevList = revsOf(it);
     const prev = prevList.find(r => r.paper === paperId);           // 同一批次重复回录时按最后一次结果修正，不双计
     const before = prev ? prev.result : null;
-    it.reviews = prevList.filter(r => r.paper !== paperId).concat([{ date, paper: paperId, result: res, note: note || '' }]);
+    const merged = prevList.filter(r => r.paper !== paperId).concat([{ date: day, paper: paperId, result: res, note: note || '' }]);
+    const capped = capReviews(merged);
+    if (capped.length < merged.length) console.log('   ' + id + REVIEWS_CAP_NOTE);
+    it.reviews = capped;
     if (res === '错' && before !== '错') it.errorCount = num(it.errorCount) + 1;
     if (res !== '错' && before === '错') it.errorCount = Math.max(1, num(it.errorCount) - 1);
     const pass = passStreak(revsOf(it));
-    it.nextDue = addDays(date, intervalOf(res, pass));
+    it.nextDue = addDays(day, intervalOf(res, pass));
     b.results = b.results || {};
     b.results[id] = res;
     log.push({ id, res, pass, nextDue: it.nextDue, status: '' });
   }
   b.results = b.results || {};
   const filled = b.items.filter(id => b.results[id]);
-  if (b.items.length && filled.length >= b.items.length) { b.status = '已批改'; b.gradedAt = date; }
+  if (b.items.length && filled.length >= b.items.length) { b.status = '已批改'; b.gradedAt = day; }
   if (String(b.source || '').startsWith('首页')) b.source = '首页(已入库)';
   if (note) b.note = note;
   writeJson(LEDGER, ledger);
@@ -418,7 +486,26 @@ switch (action) {
 
   case '组卷': {
     if (!opt.student || !opt.ids) throw new Error('组卷需要 --student 与 --ids');
+    /* ★ 2026-11-04（外部复核实测 F03/High2）：**解析后**判空。`--ids ','` 是 truthy，
+       能过 420 行的原始字符串检查；splitIds 过滤后是空数组 ⇒ 各门禁对空集空转通过，
+       写出 `items: []` 的"幽灵批次"并**消耗一个批次号**（水印只增不复用，号收不回来），
+       而批改完成条件要求 items.length 非空 ⇒ 该批次永远停在「待批改」。
+       现在解析后立即拒绝：空集不进任何门禁、不碰 paperSeq、不写盘。 */
     const ids = splitIds(opt.ids);
+    if (!ids.length) {
+      throw new Error('组卷 --ids 解析后是空的（收到：' + JSON.stringify(String(opt.ids)) +
+        '）。只含分隔符的串不会产出任何题，拒绝入账 —— 批次号也不允许被这种卷消耗。');
+    }
+    /* ★ 2026-11-04（外部复核实测 F08a）：同一批次内重复编号响亮拒绝。
+       修前 `ordered = ids.slice()` 原样入账 ⇒ `--ids C0107,C0107,C0107` 把同一张卡
+       印三遍、答案册对不上号。这里选**拒绝**而不是静默去重：重复更可能是调用方
+       （界面选卡 / 手打）出了错，静默去重会把"卷面 3 题、台账 1 题"的错位埋下去；
+       真想只印一张，请发一条不含重复编号的串。 */
+    const dupIds = ids.filter((id, i) => ids.indexOf(id) !== i);
+    if (dupIds.length) {
+      throw new Error('组卷 --ids 里有重复编号：' + [...new Set(dupIds)].join(',') +
+        '。同一张卡在一个批次里只许出现一次（重复印题会让孩子对着答案册抄，判分失真）。');
+    }
     const { file, json } = findIndexFile(opt.student, { subject: opt.subject, ids });
     const known = {}, byId = {};
     for (const { item, subject } of itemsOf(json)) { known[item.id] = subject; byId[item.id] = item; }
@@ -494,7 +581,8 @@ switch (action) {
       }
     }
     const subject = opt.subject || known[ids[0]];
-    const date = opt.date || today();
+    /* ★ 2026-11-04（F02）：组卷 --date 四入口之一。非法日期直接抛错 ⇒ 事务整体回滚。 */
+    const date = opt.date ? validDate(opt.date, '组卷 --date') : today();
     /* ── 作答契约门禁（2026-10-25 建）：答案不全 / 图上作答未登记 的题不得进组卷池 ──
        用户同一天三条报障：「M0066 答案好像不全」「M0011 在图上写出答案，所以组卷时这类题目
        不需要再留答题区」「M0084 给出的下横线长度根本不够写答案」。这三类缺陷的共同特征是
@@ -665,7 +753,8 @@ switch (action) {
 
   case '批改': {
     if (!opt.paper || !opt.results) throw new Error('批改需要 --paper 与 --results="M0001=对,M0002=错"');
-    const r = actGrading(opt.paper, opt.results, opt.date || today(), opt.note);
+    /* ★ 2026-11-04（F02）：批改 --date 四入口之一（actGrading 内还会再校验一次作纵深防御）。 */
+    const r = actGrading(opt.paper, opt.results, opt.date ? validDate(opt.date, '批改 --date') : today(), opt.note);
     console.log('已回录 ' + r.batch.paperId + '（批次状态：' + r.batch.status + '）');
     r.log.forEach(l => console.log('   ' + l.id + ' 结果=' + l.res + ' → ' + l.status + ' · 连对 ' + l.pass + ' 次 · 建议复习 ' + l.nextDue));
     if (r.batch.status === '已掌握' || r.log.some(l => l.status === '已掌握')) console.log('   ★ 有题连对 2 次 → 已掌握，默认退出组卷池；可说“归档 Mxxxx”永久沉淀');
@@ -713,6 +802,13 @@ switch (action) {
     if (!opt.student || !opt.ids) throw new Error('归档需要 --student 与 --ids');
     const { file, json } = findIndexFile(opt.student);
     const ids = splitIds(opt.ids);
+    /* ★ 2026-11-04（外部复核实测 F05/High4）：归档对不存在的编号**静默成功** ——
+       循环内未命中直接 continue、循环后无 notFound 检查、随后无条件写盘 + 全量刷新。
+       全打错编号也"显示成功"（还白刷一遍 updatedAt）；部分命中时未命中的静默丢弃。
+       而撤归档（actUnarchive）在同一份代码里早就有 notFound 检查 —— 口径不一致原封未动。
+       现在与撤归档同口径：notFound 必须抛错并列出未命中项；**零命中不写盘**。
+       归档日期四入口之一：--at 也过同一条日期校验（补注已归档条目的分支同样要过）。 */
+    const at = opt.at ? validDate(opt.at, '归档 --at') : '';
     const rows = [];
     for (const { item, subject } of itemsOf(json)) {
       if (!ids.includes(item.id)) continue;
@@ -720,18 +816,30 @@ switch (action) {
       if (item.status === '已归档') {
         const chg = [];
         if (opt.reason) { item.archivedReason = opt.reason; chg.push('原因=' + opt.reason); }
-        if (opt.at) { item.archivedAt = opt.at; chg.push('日期=' + opt.at); }
+        if (at) { item.archivedAt = at; chg.push('日期=' + at); }
         rows.push('   ' + item.id + ' [' + subject + '] 已是已归档' + (chg.length ? ' → 补注 ' + chg.join('，') : '（无变化）'));
         continue;
       }
       if (derive(item, new Set()).pass < 2 && !opt.force) throw new Error(item.id + ' 尚未连对 2 次（已掌握），归档需加 --force（或 --reason 说明为何提前沉淀）');
       item.status = '已归档';
-      item.archivedAt = opt.at || today();
+      item.archivedAt = at || today();
       item.archivedReason = opt.reason || '已掌握沉淀';
       // 重新归档 = 撤归档标记作废，否则卡上会同时挂着「已归档」和一条过期的 unarchiveAt 留痕
       item.unarchiveAt = '';
       item.unarchiveNote = '';
       rows.push('   ' + item.id + ' [' + subject + '] → 已归档（' + item.archivedAt + '·' + item.archivedReason + '）');
+    }
+    const notFound = ids.filter(id => !rows.some(r => r.includes('   ' + id + ' [')));
+    if (notFound.length) {
+      if (!rows.length) {
+        throw new Error(json.student + ' 库中不存在编号 ' + notFound.join(',') +
+          '（一个都没命中，不写盘 —— 与撤归档同口径；核对编号后再来）。');
+      }
+      throw new Error(json.student + ' 库中不存在编号 ' + notFound.join(',') +
+        '（部分命中：命中的已在上面列出但**本次未写盘**；把编号改对后整批重来，避免一半归档一半丢）。');
+    }
+    if (!rows.length) {
+      throw new Error('归档没有命中任何条目（--ids：' + ids.join(',') + '），未写盘。');
     }
     console.log(rows.join('\n'));
     writeJson(file, json);
@@ -765,6 +873,18 @@ switch (action) {
     for (const b of ledger.batches) byId[b.paperId] = b;
     const added = [], merged = [];
     for (const nb of (pkg.papers || [])) {
+      /* ★ 2026-11-04（外部复核实测 F08b）：同步包缺 `date` 的批次绕过防重复门禁。
+         修前直接 `ledger.batches.push({date: nb.date, …})`：缺日期照入库，而防重复门禁
+         是 `if (!b.date || …) continue` ⇒ 该批次的题**永远不进**窗口比较 ⇒ 永远不被拦。
+         回录还用 `b.gradedAt || b.date` 可为 undefined ⇒ 毒日期路径。
+         现在响亮拒绝整个包（同步包是首页导出的整体，单条缺日期说明导出端有毛病，
+         静默补日期反而伪造不可追溯的数据）。回录日期也过同一条校验。 */
+      if (!nb || typeof nb !== 'object') throw new Error('同步包里有不是对象的 papers 条目：' + JSON.stringify(nb).slice(0, 80));
+      if (!nb.date || !DATE_RE.test(String(nb.date).trim()) || (() => { try { validDate(nb.date, '同步包 date'); return false; } catch { return true; } })()) {
+        throw new Error('同步包里的批次 ' + (nb.paperId || '（缺 paperId）') + ' 缺 date 或日期不合法：' +
+          JSON.stringify(nb.date === undefined ? null : nb.date) +
+          '。缺日期的批次会**永久绕过**防重复组卷门禁（门禁比不了窗口），已拒绝整个包 —— 请在首页修好日期再导出。');
+      }
       const results = {};
       if (nb.results) for (const [k, v] of Object.entries(nb.results)) if (v) results[k.toUpperCase()] = v;
       const ex = byId[nb.paperId];
@@ -776,9 +896,9 @@ switch (action) {
         continue;
       }
       ledger.batches.push({
-        paperId: nb.paperId, date: nb.date, student: nb.student, subject: nb.subject || '',
+        paperId: nb.paperId, date: validDate(nb.date, '同步包 date'), student: nb.student, subject: nb.subject || '',
         title: nb.title || '', items: (nb.items || []).map(s => s.toUpperCase()), status: nb.status || '待批改',
-        results, gradedAt: nb.gradedAt || null, source: '首页(待同步)', note: nb.note || ''
+        results, gradedAt: nb.gradedAt ? validDate(nb.gradedAt, '同步包 gradedAt') : null, source: '首页(待同步)', note: nb.note || ''
       });
       byId[nb.paperId] = ledger.batches[ledger.batches.length - 1];
       added.push(nb.paperId);
@@ -789,7 +909,7 @@ switch (action) {
       const b = byId[pid];
       const pairs = Object.entries(b.results || {}).map(([k, v]) => k + '=' + v).join(',');
       if (!pairs) continue;
-      const r = actGrading(pid, pairs, b.gradedAt || b.date, '同步包回录');
+      const r = actGrading(pid, pairs, validDate(b.gradedAt || b.date, '同步回录日期'), '同步包回录');
       console.log('批次 ' + pid + ' 已回录（' + r.batch.status + '）');
       r.log.forEach(l => console.log('   ' + l.id + ' ' + l.res + ' → ' + l.status + ' · 建议复习 ' + l.nextDue));
     }

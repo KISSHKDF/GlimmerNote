@@ -48,6 +48,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { libraryRoot } from './_库根.mjs';
 import { readJsonStrict, writeJsonAtomic, acquireLibLock } from './_安全写.mjs';
+import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
 
 const ROOT = libraryRoot();
 const STORE = path.join(ROOT, '_原图');
@@ -158,27 +159,14 @@ function saveLedger(doc, { backup = true } = {}) {
 const kb = (n) => (n / 1024).toFixed(0) + ' KB';
 const mb = (n) => (n / 1048576).toFixed(1) + ' MB';
 
-/* 参数解析：**必须区分"带值的选项"与"开关"**。
-   ⚠ 实测踩过：第一版把所有不以 `--` 开头的参数都当成路径，
-   于是 `入库 <目录> --batch "批次名"` 里的 "批次名" 被当成路径 ⇒ 报"路径不存在"。
-   这里显式声明哪些选项吃值，其余一律当开关 —— 反面判据（`--dry` 后面跟路径）
-   才不会把路径吃掉。 */
+/* 参数解析：★ 2026-11-05（外部复核实测 N2）：迁移到**唯一实现** `_参数.mjs`。
+   本文件原先自带一份 VALUE_OPTS + parseArgs —— 与旧解析器同病："下一个参数像不像 flag
+   决定它是不是值" ⇒ 值以 `--` 开头会被解析成另一个开关（M1 同族，见 _参数.mjs 头部）。
+   迁移后：已知带值 flag 无条件消费下一个参数（哪怕长得像 flag）。
+   ⚠ 本文件没有动作名参数（argv[0] 就是子命令，已在上面 `const [cmd, …rest]` 拆出），
+   解析 rest ⇒ start=0（无动作名槽）；带值表 = 本文件专属 VALUE_OPTS + COMMON_VALUE_FLAGS。 */
 const VALUE_OPTS = new Set(['batch', 'student', 'subject', 'diff', 'from', 'sha', 'derived-from', 'op', 'file', 'note']);
-function parseArgs(argv) {
-  const opts = {}; const positional = [];
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a.startsWith('--')) {
-      const k = a.slice(2);
-      if (VALUE_OPTS.has(k)) {
-        const nxt = argv[i + 1];
-        if (nxt !== undefined && !nxt.startsWith('--')) { opts[k] = nxt; i++; }
-        else opts[k] = true;
-      } else opts[k] = true;
-    } else positional.push(a);
-  }
-  return { opts, positional };
-}
+const parseArgsLocal = (argv) => parseArgs(argv, { valueFlags: [...VALUE_OPTS, ...COMMON_VALUE_FLAGS], start: 0 });
 
 /* 清理上次崩溃留下的 .tmp（>5 分钟的）。持锁期间不会有别的入库在写。 */
 function sweepTmp() {
@@ -299,7 +287,7 @@ function scanLibrary(targets, out = []) {
 }
 
 function cmdIngest(argv) {
-  const { opts, positional: paths } = parseArgs(argv);
+  const { opt: opts, positional: paths } = parseArgsLocal(argv);
   if (opts.scan) {
     if (paths.length) fail('--scan 与显式路径不能同时给（--scan 会自己扫全库）。');
     paths.push(...scanLibrary([ROOT]));
@@ -423,7 +411,7 @@ function cmdVerify() {
 
 /* ══════════════ 名册 ══════════════ */
 function cmdRoster(argv) {
-  const { opts } = parseArgs(argv);
+  const { opt: opts } = parseArgsLocal(argv);
   const doc = loadLedger();
   const keys = Object.keys(doc.objects).sort();
   let bytes = 0;
@@ -473,7 +461,7 @@ function scanStore() {
 }
 
 function cmdSnapshot(argv) {
-  const { opts } = parseArgs(argv);
+  const { opt: opts } = parseArgsLocal(argv);
 
   if (opts.list) {
     if (!fs.existsSync(SNAP_DIR)) { say('（还没有快照）'); return 0; }
@@ -603,7 +591,7 @@ function checkCopy(sha, where, abs, label, o) {
 }
 
 function cmdCrosscheck(argv) {
-  const { opts } = parseArgs(argv);
+  const { opt: opts } = parseArgsLocal(argv);
   const from = typeof opts.from === 'string' ? opts.from : null;
   if (!from) {
     console.error('✖ 核对需要 `--from <备份根>`（形如 `_影像备份\\` 的目录树，或一份 `_原图\\` 的副本）。');
@@ -696,7 +684,7 @@ function cmdCrosscheck(argv) {
  *   恢复出来但台账里没有的对象（孤儿）在报告里如实计数，交给 `校验` 复核。
  */
 function cmdRestore(argv) {
-  const { opts } = parseArgs(argv);
+  const { opt: opts } = parseArgsLocal(argv);
   const from = typeof opts.from === 'string' ? opts.from : null;
   if (!from) {
     console.error('✖ 恢复需要 `--from <备份根>`（形如 `_影像备份\\` 的目录树，或一份 `_原图\\` 的副本）。');
@@ -812,7 +800,7 @@ function cmdRestore(argv) {
  *   本工具只负责"另存 + 登记 + 不覆盖"这三件事；实际旋转/增强由外部工具（.NET/PowerShell 等）做完再喂进来。
  */
 function cmdDerive(argv) {
-  const { opts } = parseArgs(argv);
+  const { opt: opts } = parseArgsLocal(argv);
   const fromSha = typeof opts['derived-from'] === 'string' ? opts['derived-from'].trim().toUpperCase() : '';
   const op = typeof opts.op === 'string' ? opts.op.trim() : '';
   const file = typeof opts.file === 'string' ? opts.file : '';

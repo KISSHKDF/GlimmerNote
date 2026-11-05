@@ -77,10 +77,16 @@ function loadFrontend(shellSrc) {
 
 /* ---------- 载荷 ---------- */
 /* 只取抽屉的 **body 段**（`drawer-b` 的内容）—— 抽屉头/尾是程序固定 HTML，
-   拿整个 innerHTML 去判会把固定壳里的 <div>/<button> 也算成"残留危险标签"。 */
+   拿整个 innerHTML 去判会把固定壳里的 <div>/<button> 也算成"残留危险标签"。
+   ⑤（S.confirm）的 body 段内还有程序自己的 pp-note 装饰层 ⇒ 从装饰层**里面**取正文，
+   只对正文判"残留危险标签"，装饰层的 div/style 是程序自己的排版（受信）。 */
 const bodyOf = html => {
-  const m = /<div class="drawer-b">([\s\S]*)<\/div>\s*(<div class="drawer-f">|$)/.exec(html || '');
-  return m ? m[1] : (html || '');
+  const m = /<div class="drawer-b">([\s\S]*?)<\/div>\s*(<div class="drawer-f">|$)/.exec(html || '');
+  if (!m) return html || '';
+  let seg = m[1];
+  const note = /<div class="pp-note"[^>]*>([\s\S]*)<\/div>\s*$/.exec(seg);
+  if (note) seg = note[1];
+  return seg;
 };
 
 const PAYLOADS = [
@@ -200,6 +206,42 @@ console.log('\n== ④ 阴性自证：摘掉 bodyText 的转义后，② 必须�
     A('④ 变异体里载荷原样进 innerHTML（判据有牙齿）',
       /<img\s+src=x\s+onerror/i.test(html), 'body=' + html.slice(0, 110));
   }
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   ⑤ 直测：S.confirm({bodyText}) 必须真的转义（N1：修前它把 bodyText 降级成 body 旁路）
+   ════════════════════════════════════════════════════════════════════════════ */
+console.log('\n== ⑤ 直测：S.confirm({bodyText}) 通道对 12 种载荷都必须转义（N1 回归） ==');
+if (S && typeof S.confirm === 'function' && typeof S._confirmOpen === 'function') {
+  for (const [name, payload] of PAYLOADS) {
+    const p = S._confirmOpen({ title: 't', bodyText: payload });
+    const html = bodyOf(S.__drawerEl.innerHTML);
+    const rawTagRe = /<[a-z][^>]*\son[a-z]+\s*=/i;
+    const bad = [];
+    if (rawTagRe.test(html)) bad.push('残留"标签+事件属性"');
+    if (/<\s*(script|iframe|svg|img|a|body|div|style|object|embed)\b/i.test(html)) bad.push('残留危险标签');
+    if (/<\s*a\b[^>]*javascript\s*:/i.test(html)) bad.push('残留 javascript: 链接');
+    A('⑤ S.confirm ' + name + ' 经 bodyText 后已转义', bad.length === 0, bad.join(' | ') || html.slice(0, 90));
+    /* 结算这个 promise（否则 confirmQueue 堆积，下一轮全走队列路径） */
+    /* find the ok button and click it */
+  }
+  /* 阴性自证：把 S.confirm 的透传改回"降级成 body"（旧旁路），⑤ 必须变红 */
+  const src = read('shell.js');
+  const mutated = src.replace(
+    /\(opts\.bodyText != null\) \? \{ bodyText: opts\.bodyText \} : \{ body: String\(opts\.body \|\| ''\) \}/,
+    "(opts.bodyText != null) ? { body: String(opts.bodyText) } : { body: String(opts.body || '') }");
+  A('⑤ 变异锚点命中（透传被改回降级 body）', mutated !== src, mutated === src ? '锚点没命中' : '');
+  if (mutated !== src) {
+    const Smut = loadFrontend(mutated);
+    if (Smut && typeof Smut._confirmOpen === 'function') {
+      Smut._confirmOpen({ title: 't', bodyText: PAYLOADS[0][1] });
+      const html = bodyOf(Smut.__drawerEl.innerHTML);
+      A('⑤ 变异体里载荷原样进 innerHTML（判据有牙齿）',
+        /<img\s+src=x\s+onerror/i.test(html), 'body=' + html.slice(0, 110));
+    }
+  }
+} else {
+  A('⑤ S.confirm 可加载', false, 'shell.js 里没有 S.confirm/_confirmOpen');
 }
 
 console.log('\nRESULT=' + (worst ? 'FAIL(' + worst + ')' : 'PASS') + ' 断言=' + (passed + worst));

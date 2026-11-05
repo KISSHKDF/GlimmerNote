@@ -365,7 +365,7 @@ if (mode === 'fixture') {
        ① 壳的写闸取放配对：一次 taskConfirm 就把写闸焊死 ⇒ 界面回归一跑、写路径全堵死；
        ② 抽屉/确认框的 HTML 汇点收口：未转义的动态文本进 innerHTML。 */
     ['neg-shell-writegate.cjs', '桌面壳写闸取放必须一一配对 + 释放必须在 finally 上（18 断言，带三组阴性自证）'],
-    ['neg-confirm-html-sanitize.cjs', '抽屉/确认框 HTML 汇点收口（12 载荷 + 富文本回归 + 阴性自证，26 断言）'],
+    ['neg-confirm-html-sanitize.cjs', '抽屉/确认框 HTML 汇点收口（12 载荷 + S.confirm 直测 + 富文本回归 + 阴性自证，37 断言）'],
   ];
   const SKIPPED = [
     ['portability.cjs', '需要已构建的 src\\app\\拾光小册.exe（gitignored）'],
@@ -601,6 +601,11 @@ const unitTests = [
      ② 入账后不清空选题篮（localStorage 持久化）→ 下次直接再印一遍。
      真跑工具（副本库，不碰真库）+ 变异自证（把 REPEAT_DAYS 掏成 0，拦截必须消失）。 */
   ['neg-paper-no-repeat.cjs'],
+  /* ★ 2026-11-05（MUSE 复核整改）：_标记复习.mjs 八项守卫（F02/F03/F05/F06/F08a/F08b/F08c/F08e）。
+     起因：CHANGELOG 2026.11.04.01 声称修了这 8 项，但该文件在 PR #9 的 diff 里零改动
+     （blob 6adf193d… 前后相同）—— "文档说修了、代码里不存在"。本用例每项都真跑工具
+     （副本库）+ 变异自证（掏掉守卫必须复现缺陷），防"只改 CHANGELOG"复发。 */
+  ['neg-mark-review-gates.cjs'],
   /* ★ 2026-10-25（用户实测：第一张英语卷「组卷入账」报裸堆栈）：同一学生按学科拆多份索引
      （七年级-某学生\数学 与 英语 都指向同一个 student），findIndexFile 旧实现"取扫描序第一个"永远命中
      字母序靠前的数学，英语卷必在编号检查处 throw；前端又只留 stderr 尾部 400 字，原因行被切掉。

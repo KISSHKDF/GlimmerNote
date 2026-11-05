@@ -453,16 +453,38 @@
         S._confirmNext();
       };
       const escFn = e => { if (e.key === 'Escape') { e.stopPropagation(); settle(false); } };
-      /* ★ 2026-11-04（M2）：确认框支持 `bodyText`（**纯文本**）。
-         转义**只在抽屉汇点做一次**（`S.drawer` 里的 `U.esc`）——
-         这一层若再转义一次就会双重转义（`&amp;amp;`，界面显示成 `&amp;`）。
-         所以这里只负责**换行 → <br>**，不碰转义。 */
-      const noteInner = (opts.bodyText != null)
-        ? String(opts.bodyText).replace(/\r?\n/g, '<br>')
-        : String(opts.body || '');
+      /* ★ 2026-11-04（外部复核实测 N1·严重）：bodyText 在这里**降级成 body** 是旁路。
+         修前：`noteInner = String(opts.bodyText).replace(换行→<br>)`，然后以 `body:`（受信 HTML）
+         传给 S.drawer —— 而抽屉只对 `bodyText` 分支转义（:503），`body` 原样进 innerHTML。
+         于是 `S.confirm({bodyText})` 的转义**完全无效**：paper.js 的 healthText
+         （值来自 dataHealth，拼着 Node JSON.parse 报错的前 30 字符回显）带着
+         `<img src=x onerror=…>` 一路进 innerHTML —— M2 的修复在唯一真实调用点上失效。
+         修法：bodyText **原样透传**给抽屉的 `bodyText` 分支（转义在抽屉汇点做一次，
+         与注释"转义只在抽屉汇点做一次"真正一致），这里只负责换行排版交给抽屉。
+         直测用例：tests\neg-confirm-html-sanitize.cjs ⑤（S.confirm({bodyText}) 12 载荷）。 */
+      /* ★ 2026-11-04（外部复核实测 N1·严重）：bodyText 在这里**降级成 body** 是旁路。
+         修前：`noteInner = String(opts.bodyText).replace(换行→<br>)`，然后以 `body:`（受信 HTML）
+         传给 S.drawer —— 而抽屉只对 `bodyText` 分支转义（:503），`body` 原样进 innerHTML。
+         于是 `S.confirm({bodyText})` 的转义**完全无效**：paper.js 的 healthText
+         （值来自 dataHealth，拼着 Node JSON.parse 报错的前 30 字符回显）带着
+         `<img src=x onerror=…>` 一路进 innerHTML —— M2 的修复在唯一真实调用点上失效。
+         修法：`...notePayload` 让 bodyText **原样走抽屉的 bodyText 分支**（转义在抽屉汇点
+         做一次，与注释"转义只在抽屉汇点做一次"真正一致）；noteInner 只用于外层
+         pp-note 装饰框 —— 它**必须**基于转义后的文本，这里直接复用抽屉转义过的产物
+         （见下方 body 组装）。直测用例：tests\neg-confirm-html-sanitize.cjs ⑤。 */
+      const notePayload = (opts.bodyText != null) ? { bodyText: opts.bodyText } : { body: String(opts.body || '') };
+      /* 外层装饰框的正文：bodyText 时**不能再拼原始文本**（会二次进 innerHTML）——
+         让抽屉先转义，这里拿转义产物包一层边框。抽屉汇点 = S.drawer（bodyHtml），
+         但装饰框要求在 body 传 HTML ⇒ 换个做法：bodyText 时不传装饰 body，
+         抽屉的 bodyText 分支已带转义 + <br>；装饰边框由 confirm 自建一层
+         —— 用 **text 汇点**做不到（这里是字符串拼 HTML），所以退而求其次：
+         在 bodyText 分支下边框交给抽屉的既有样式，body 参数留空。
+         （实测：pp-note 边框只是视觉提示，danger 红边在标题与按钮上已表达；
+          两全的做法是给 drawer 增加 noteStyle 选项，见抽屉汇点。） */
       S.drawer({
         title: opts.title || '请确认',
-        body: '<div class="pp-note" style="margin:0;border-left:4px solid ' + (opts.danger ? 'var(--bad)' : 'var(--warn)') + '">' + noteInner + '</div>',
+        ...notePayload,
+        noteStyle: opts.bodyText != null ? (opts.danger ? 'bad' : 'warn') : undefined,
         footer: '<span class="small muted" style="flex:1"></span>' +
           '<button class="btn" id="cfCancel">' + U.esc(opts.cancel || '取消') + '</button>' +
           '<button class="btn ' + (opts.danger ? 'danger' : 'primary') + '" id="cfOk">' + U.esc(opts.ok || '确定') + '</button>',
@@ -499,9 +521,12 @@
     const wrap = U.$id('drawerWrap');
     wrap.hidden = false;
     /* bodyText（纯文本，汇点转义）与 body（受信 HTML）二选一；两个都给时 bodyText 优先。
-       换行转 <br>：纯文本里的换行在 HTML 里不换行 ⇒ 确认框会挤成一坨。 */
+       换行转 <br>：纯文本里的换行在 HTML 里不换行 ⇒ 确认框会挤成一坨。
+       ★ 2026-11-04（N1）：新增 noteStyle —— 确认框的装饰边框（warn/bad 色条）由**汇点**统一包，
+       调用方不再把 bodyText 拼进自己的 body HTML（那是 N1 旁路的根源）。 */
     const bodyHtml = (opts.bodyText != null)
-      ? U.esc(String(opts.bodyText)).replace(/\r?\n/g, '<br>')
+      ? '<div class="pp-note" style="margin:0;' + (opts.noteStyle === 'bad' ? 'border-left:4px solid var(--bad)' : opts.noteStyle === 'warn' ? 'border-left:4px solid var(--warn)' : '') + '">' +
+        U.esc(String(opts.bodyText)).replace(/\r?\n/g, '<br>') + '</div>'
       : String(opts.body || '');
     U.$id('drawer').innerHTML =
       '<div class="drawer-h"><b>' + U.esc(opts.title || '') + '</b>' +
@@ -710,7 +735,11 @@
     if (it.q) ctx += '<div class="lb-q">' + U.esc(it.q) + '</div>';
     if (it.detail) ctx += '<div class="lb-d">' + U.esc(it.detail) + '</div>';
     if (it.hint) ctx += '<div class="lb-hint">🧭 ' + U.esc(it.hint) + '</div>';
-    if (it.cap) ctx += '<div class="lb-d">' + it.cap + '</div>';
+    /* ★ 2026-11-04（外部复核实测 N1 附带）：`it.cap` 修前**未转义**原样进 innerHTML。
+       现状全仓无生产者（死字段），但灯箱是通用汇点 —— 谁明天往 items 里塞一条带
+       动态文本的 cap 就是同一个坑（本仓已栽过 paper.js/review.js 两族"漏一处"）。
+       防御性收口：cap 与 q/detail/hint 同走 U.esc；需要富文本的调用方继续用 foot（受信）。 */
+    if (it.cap) ctx += '<div class="lb-d">' + U.esc(String(it.cap)) + '</div>';
     const ctxEl = U.$id('lbCtx');
     ctxEl.innerHTML = ctx || (it.foot ? '' : '<div class="lb-d muted">对照红框区域查看</div>');
     if (it.foot) ctxEl.innerHTML += '<div class="lb-foot" id="lbFoot">' + it.foot + '</div>';

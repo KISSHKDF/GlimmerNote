@@ -402,30 +402,14 @@ async function doRebuild() {
 }
 
 /* ---------- 响应头：安全加固 + CORS 白名单（BUG-17） ----------
-   改前：**所有**响应都发 `Access-Control-Allow-Origin: *`，且 `Origin: null` 直接放行 ⇒
-   本机任意网页（或它内嵌的 `<iframe sandbox>`，其源是不透明源，发出的 `Origin` 也是 `null`）
-   都能读走状态包、并 `POST /api/pending` 往人工判读真源里写内容（改前实测：`Origin: null` 的 POST = HTTP 200）。
-    ★ 2026-11-02 R13：下面这句"不引入 token"**已作废**（那是 2026-10-11 那轮的历史决策）。
-      当前状态：每次启动随机 token 已上线（本文件 §Token 段 = TOKEN/TOKEN_HEADER/tokenVerdict），
-      Host/Origin/静态白名单/pending 新鲜度的权威判据见 docs\服务端安全边界.md §2/§3/§5/§7。
-   当时（**不引入 token**，理由与残余风险见 docs\服务端安全边界.md §2 入口三道门 / §3 随机 token）：
-     ① 发 `X-Frame-Options: DENY` + CSP `frame-ancestors 'none'`：本服务自己的页面不得被任何页面嵌 iframe；
-     ② CORS 只回显白名单来源（`http://127.0.0.1:PORT` / `http://localhost:PORT`）与 file:// 客户端的 `null`，
-        **绝不再发通配 `*`**；无 Origin 的同源/非浏览器客户端不需要 ACAO；
-     ③ POST `/api/pending` 只收 `Content-Type: application/json`（实测现有两个客户端 v1 首页 `syncPend`、
-        v2 `host.js pendingResolve` 都带这个头），`fetch` 默认的 `text/plain` 与表单式跨源简单请求一律 415。
-   ★ 2026-10-30 S02：上面 ② 里"与 file:// 客户端的 `null`"这一条**已作废**，见紧邻的说明。 */
+   ★ 2026-11-05（外部复核实测 H05）：本段注释原先记着两条"已作废"的历史叙事
+   （R13 不引入 token / S02 信任 Origin:null）—— 历史和审计过程按 AGENTS.md
+   "一份事实只住一个家"住 CHANGELOG 与 docs\服务端安全边界.md，这里只留**当前判据**：
+   ① 每次启动随机 token（本文件 §Token 段）；
+   ② Host/Origin/静态白名单/pending 新鲜度的权威判据见 docs\服务端安全边界.md §2/§3/§5/§7；
+   ③ `Origin: null`（一切不透明源共有的字符串）不信任：其余一律 403 且不回显 ACAO；
+   ④ CORS 只回显白名单来源，绝不通配 `*`；POST 只收 application/json。 */
 const ALLOWED_ORIGINS = new Set(['http://127.0.0.1:' + PORT, 'http://localhost:' + PORT]);
-/* ★ 2026-10-30 S02：**取消对 `Origin: null` 的信任**（改前这里有一行 `if (origin === 'null') return 'null';`）。
-   为什么必须取消：`null` 不是"file:// 专用"标记，它是**所有不透明源**共同的字符串 —— 攻击者页面里
-   一个 `<iframe sandbox>` 发出来的请求，`Origin` 也正是 `null`，两者在 HTTP 层不可区分。
-   改前实测（独立实例 + 临时库）：`GET /api/state` → 200 且 `ACAO: null`；`GET /<库内文件>` → 200
-   并读出文件原文；`POST /api/pending` → 400（**已经穿过来源门禁**，只是被载荷校验拦住）。
-   现在只认两种来源：① 无 Origin（同源请求 / curl 这类非浏览器客户端；浏览器对同源 GET 也不发 Origin）；
-   ② ALLOWED_ORIGINS 里的同端口 http 来源。其余（含 `null`）一律 403，且**不回显任何 ACAO**。
-   **取舍（确认可接受）**：file:// 直开的页面不能再连服务端 —— 它读数据必须靠 `ACAO: null`。
-   三形态里 file:// 走的是**桌面壳 postMessage** 通道；server 模式只服务 `http://127.0.0.1:PORT/`
-   这个同源页面。host.js 对应改成"没有服务端注入的 token 就根本不进 server 模式"（见该文件 §来源门禁）。 */
 function corsOrigin(origin) {
   if (!origin) return null;                            // 同源 / 非浏览器客户端：不需要 ACAO
   if (ALLOWED_ORIGINS.has(origin)) return origin;       // 回显具体来源（不用 '*'，也就不会带上 cookie 语义）

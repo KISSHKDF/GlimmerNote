@@ -134,6 +134,35 @@ console.log('\n══ 二、学科分派（物理题不许带英语规则）═�
   A('不给 --subject 必须报错（不许猜学科）', r.code === 2, 'code=' + r.code);
 }
 
+console.log('\n══ 二·补、公开题库比对流程（2026-11-05 家长定的规则；配方层必须在场）══');
+/* 判据设计：规则必须同时钉在**核心层**（所有配方自动带上）与**两个配方 prompt**（照着做的正文）里，
+   反例库各带"假装查过/盲从站点"两条。少一处就是静默退化（配方会被人不断追加反例）。 */
+{
+  const read = p => fs.readFileSync(path.join(RECIPES, p), 'utf8');
+  const core = read('_core/base.md');
+  A('★ 核心层（_core/base.md）有「先搜公开题库」流程', core.includes('先与公开题库比对') || core.includes('先搜再解'), '');
+  A('★ 核心层把「官方答案」的 note 口径写清（站点 + 比对点）', core.includes('站点') && core.includes('answerSourceNote'), '');
+  A('★ 核心层有检索词隐私红线（禁学生化名/班级/学校/路径）',
+    core.includes('隐私红线') && core.includes('学生化名') && core.includes('某同学'), '');
+  A('★ 核心层有"答案打架由独立解法仲裁"判据（不许盲从站点）', core.includes('仲裁') && core.includes('分歧'), '');
+  A('★ 核心层有"不能上网要明说"判据（不许假装查过）', core.includes('不能上网') || core.includes('无网络'), '');
+  for (const id of ['ingest-page', 'ingest-single']) {
+    const p = read(id + '/prompt.md');
+    A(`★ ${id}/prompt.md 有「先搜题库」正文（含站点清单）`,
+      /先搜题库|先用题干原文检索|与公开题库比对/.test(p) && p.includes('菁优网') && p.includes('作业帮'), '');
+    A(`★ ${id}/prompt.md 自检清单含题库检索项`, /题库检索做过了/.test(p), '');
+    const ap = read(id + '/anti-patterns.md');
+    A(`★ ${id}/anti-patterns.md 有「不搜题库」反例`, /不搜题库|闷头独立判卷/.test(ap), '');
+    A(`★ ${id}/anti-patterns.md 有「盲从站点」反例`, /答案打架|照抄/.test(ap) && /仲裁/.test(ap), '');
+  }
+  const meta1 = JSON.parse(read('ingest-page/meta.json'));
+  const meta2 = JSON.parse(read('ingest-single/meta.json'));
+  A('ingest-page 升版 ≥2.2.0 且 changelog 顶条记了题库比对',
+    meta1.version === '2.2.0' && /题库/.test(meta1.changelog[0].note || ''), meta1.version);
+  A('ingest-single 升版 ≥2.1.0 且 changelog 顶条记了题库比对',
+    meta2.version === '2.1.0' && /题库/.test(meta2.changelog[0].note || ''), meta2.version);
+}
+
 console.log('\n══ 三、schema 真校验（阴性样本必须被拒）══');
 {
   const ok = writeJson('ok.json', { cards: [card()] });
