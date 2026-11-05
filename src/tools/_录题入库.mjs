@@ -54,6 +54,8 @@ let _root = null;
 const ROOT = () => (_root || (_root = libraryRoot()));
 
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
+/** 文件是否存在且是普通文件（改卡动作找原图时用） */
+const isFile = p => { try { return fs.statSync(p).isFile(); } catch { return false; } };
 /** 老师红笔与采用答案是否冲突（去空白、全半角归一后比；老师没写 ⇒ 不算冲突） */
 const normAns = v => String(v || '').normalize('NFKC').replace(/\s+/g, '');
 const teacherConflictOf = c => typeof c.teacherAnswer === 'string' && c.teacherAnswer.trim() !== '' && normAns(c.teacherAnswer) !== normAns(c.answer);
@@ -269,6 +271,338 @@ function cropWithDotnet(src, out, nx, ny, nw, nh, maxW) {
   }
 }
 
+/**
+ * 裁图**空白检测**（2026-11-05 实测踩到的坑，加这道闸的直接原因）：
+ *
+ *   实测：AI 给第1题的 bbox 偏上了 0.05（框到「评价检测」标签而不是题干），
+ *   入库器**照单全收**裁出 1400×70 的图（5967 字节，几乎全是白），
+ *   门禁全绿、卡照样进库 —— 直到人点开「原卷截图」才发现框里没有题。
+ *
+ *   为什么现有门禁抓不到：作答契约查的是**题干文本**（在题干.html 里，没错），
+ *   配图门禁查的是**有没有配图**（hasFigure=false 就放行），
+ *   原卷溯源查的是**裁图记录有没有写**（写了就算过）——
+ *   没有任何一道门禁看**裁出来的图里到底有没有东西**。
+ *
+ *   判据：裁图里「非白像素」占比。题目那一块必有印刷体（黑字）+ 可能的红笔，
+ *   而框错时框到的往往是标签页眉或页边留白。
+ *
+ *   ⚠ 阈值是**实测标定**的，不是拍的（2026-11-05 在真库上量了 40 张已有卡的裁图）：
+ *     · 框错的那张（偏上 0.05，框到「评价检测」标签）：**2.59%**
+ *     · 正常的题目块：库里 40 张样本最低 **14.07%**、中位 23.54%
+ *   取 **5%**：比框错的低 1.9 倍、比真实最低的高 2.8 倍 —— 两边都有余量。
+ *   取 0.8%（最初拍的值）会**抓不到**框错的那张（2.59% > 0.8%）—— 已按实测改正。
+ *
+ *   ⚠ 只**报警并跳过这张卡的裁图**，不阻断整批入库：
+ *   框错了可以重裁，卡的内容本身可能是对的。
+ */
+function cropInkRatio(file) {
+  /* 用 .NET 读像素（Node 无内置图像解码，装依赖又违反本仓"零依赖"纪律）。
+     取样策略：缩到最多 400×400 再数 —— 题目块里的笔画足够密，
+     缩到这个尺寸后非白像素占比不会变（都是"有字"的地方变黑）。 */
+  const ps = [
+    'param([string]$F)',
+    'Add-Type -AssemblyName System.Drawing',
+    '$img=[System.Drawing.Image]::FromFile($F)',
+    '$w=$img.Width; $h=$img.Height',
+    '$max=400',
+    'if($w -gt $max -or $h -gt $max){ $k=[math]::Min($max/$w,$max/$h); $w=[int]($w*$k); $h=[int]($h*$k) }',
+    'if($w -lt 1){$w=1}; if($h -lt 1){$h=1}',
+    '$bmp=New-Object System.Drawing.Bitmap($w,$h)',
+    '$g=[System.Drawing.Graphics]::FromImage($bmp)',
+    '$g.DrawImage($img,0,0,$w,$h)',
+    '$g.Dispose()',
+    '$ink=0; $total=$w*$h',
+    'for($y=0;$y -lt $h;$y+=1){ for($x=0;$x -lt $w;$x+=1){ $c=$bmp.GetPixel($x,$y); if(($c.R+$c.G+$c.B) -lt 690){$ink++} } }',
+    '$bmp.Dispose(); $img.Dispose()',
+    'Write-Output ("{0:F6}" -f ($ink/$total))',
+  ].join("\r\n");
+  const tmp = path.join(os.tmpdir(), 'gn-ink-' + process.pid + '-' + Date.now() + '.ps1');
+  try {
+    fs.writeFileSync(tmp, '﻿' + ps, 'utf8');
+    const out = execFileSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', tmp, '-F', file], { encoding: 'utf8', stdio: 'pipe' });
+    const v = parseFloat(String(out || '').trim());
+    return Number.isFinite(v) ? v : null;
+  } catch {
+    return null;   /* 读不动 ⇒ 不知道，不下结论（宁可不下结论也不误杀） */
+  } finally {
+    try { fs.unlinkSync(tmp); } catch { }
+  }
+}
+const CROP_MIN_INK = 0.05;   /* 5% —— 实测标定：框错的 2.59%，真实卡最低 14.07% */
+
+/**
+ * 裁「题图.jpg」：**只含插图**，不含孩子的作答与红笔。
+ *
+ * 为什么要有它（2026-11-05 实测踩到的坑）：
+ *   配图门禁只认两个资产名：`题图.jpg`（纯图）/ `题干.jpg`（旧式整题自足截图）。
+ *   原卷截图（含作答与红笔）**不算**图资产 —— 这是对的：契约明说
+ *   「题图自带笔迹 ⇒ 重做卷等于泄答案」，所以图必须单独裁一份干净的。
+ *   而契约原先只让 AI 给 `bbox`（整道题的位置），**没让 AI 说清"图在哪儿"**
+ *   ⇒ 程序无从裁出题图 ⇒ 「题干提到图、图却没落地」的卡混进库（实测 P0116/P0117）。
+ *   现在契约加 `figBbox`（插图自己的框），本函数据此裁图。
+ *
+ * @returns {{ok:boolean, file?:string, why?:string}}
+ */
+function cropFigure(srcImg, outFile, fb) {
+  if (!srcImg) return { ok: false, why: '找不到原图' };
+  if (!Array.isArray(fb) || fb.length !== 4) return { ok: false, why: '没给 figBbox' };
+  const [nx, ny, nw, nh] = fb;
+  if ([nx, ny, nw, nh].some(v => typeof v !== 'number' || !isFinite(v) || v < 0 || v > 1)) return { ok: false, why: 'figBbox 不是 4 个 0~1 的数字' };
+  if (nw <= 0.001 || nh <= 0.001) return { ok: false, why: 'figBbox 的宽或高为 0' };
+  try {
+    cropWithDotnet(srcImg, outFile, nx, ny, nw, nh, 1200);
+  } catch (e) {
+    return { ok: false, why: '裁图失败：' + String(e && e.message || e).slice(0, 120) };
+  }
+  /* 题图也过一遍空白检测：框到留白 ⇒ 同样是没落地 */
+  const ink = cropInkRatio(outFile);
+  if (ink !== null && ink < CROP_MIN_INK) {
+    try { fs.unlinkSync(outFile); } catch { }
+    return { ok: false, why: 'figBbox 框出来的题图几乎全是空白（非白像素 ' + (ink * 100).toFixed(2) + '%）' };
+  }
+  return { ok: true, file: outFile };
+}
+
+/* ───────────────── 主流程：改卡（2026-11-05 新增） ───────────────── */
+
+/**
+ * 改一张**已在库**的卡：重写题干/裁图/错题记录，**保留复习状态**。
+ *
+ * 为什么需要它（2026-11-05 实测踩到的坑）：
+ *   卡入库后发现 bbox 框错了（框到页边留白而不是题目），
+ *   而 `入库` 只新建、不覆盖 ⇒ 没有修正路径 ⇒ 要么手工改库（危险），
+ *   要么把错卡留着（更坏：卡面挂一张空图，印出来是空白）。
+ *   本动作补上这条路径：**按卡号**重写，索引里那条**原地更新**（不删行、不换号），
+ *   复习状态（reviews/reviewStatus/errorCount/nextDue…）**原样保留**。
+ *
+ * 边界（刻意保守）：
+ *   · 只改**内容**字段（question/answer/studentAnswer/causeCode/kpoints/source 等）与裁图；
+ *   · **不改** id、不改 status、不改任何复习/掌握字段；
+ *   · 改完照旧跑四道门禁（作答契约/配图/原卷溯源/盲解清稿）；
+ *   · `--dry` 真预演（写完整体回滚）。
+ *
+ * 用法：改卡 <卡号> --file <cards.json> [--student <学生>] [--subject <学科>]
+ *   cards.json 里放**这一张**卡（用它的 title/questionText 等字段）。
+ */
+function cmdFix() {
+  const cardId = positional[0] || val('card', '');
+  const file = val('file', '') || val('in', '');
+  const student = val('student', '');
+  const subject = val('subject', '');
+  if (!cardId) return fail('用法：改卡 <卡号> --file <cards.json> [--student <学生>] [--subject <学科>]', 2);
+  if (!file || !fs.existsSync(path.resolve(file))) return fail('用法：改卡 <卡号> --file <cards.json>（--file 必填且须存在）', 2);
+
+  /* ① 读回传内容（只取第一张卡） */
+  const raw = fs.readFileSync(path.resolve(file), 'utf8');
+  const ex = extractJsonText(raw);
+  if (!ex || !ex.ok) return fail('回传内容不是合法 JSON：' + String((ex && ex.error && ex.error.message) || '抽取不到 JSON 对象'), 1);
+  const obj = ex.value;
+  const payload = (obj && obj.result && obj.result.cards) ? obj.result.cards : (obj && obj.cards) ? obj.cards : null;
+  if (!Array.isArray(payload) || !payload.length) return fail('回传内容里没有 cards（没有要改的卡）', 1);
+  if (payload.length > 1) return fail('改卡一次只改一张（收到 ' + payload.length + ' 张）——一次改一张，改错了当场看得见', 2);
+  const c = payload[0];
+
+  /* ② 找卡：按学生+学科+卡号定位索引条目 */
+  const root = ROOT();
+  const idxFiles = [];
+  const walk = (dir, depth) => {
+    if (depth > 3) return;
+    let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      if (!e.isDirectory()) { if (e.name === '_索引.json') idxFiles.push(path.join(dir, e.name)); continue; }
+      if (e.name.startsWith('_') || e.name.startsWith('.')) continue;
+      walk(path.join(dir, e.name), depth + 1);
+    }
+  };
+  walk(root, 0);
+  let hit = null;
+  for (const f of idxFiles) {
+    let j;
+    try { j = readJsonStrict(f, { shape: x => Array.isArray(x.items) || (!!x.subjects && typeof x.subjects === 'object'), what: '索引', label: path.basename(f) }); }
+    catch { continue; }
+    if (student && String(j.student || '') !== student) continue;
+    const subj = subject || (j.subject || '');
+    const groups = j.subjects && typeof j.subjects === 'object'
+      ? Object.entries(j.subjects).map(([n, v]) => [n, v.items || []])
+      : [[subj, j.items || []]];
+    for (const [sn, items] of groups) {
+      const it = items.find(x => String(x.id) === cardId);
+      if (it) { hit = { idxFile: f, j, subject: sn, items, item: it, base: path.dirname(f), student: String(j.student || '') }; break; }
+    }
+    if (hit) break;
+  }
+  if (!hit) return fail('找不到卡 ' + cardId + '（--student/--subject 是否与库里一致？先跑 `node src\\tools\\_录题入库.mjs` 的用法说明）', 2);
+
+  const oldDir = hit.item.dir || cardId;
+  const abs = path.join(hit.base, hit.subject, oldDir);
+  if (!fs.existsSync(abs)) return fail('卡的目录不见了：' + abs + '（索引与磁盘不同步——先查 `_体检.mjs`）', 2);
+
+  console.log('改卡 ' + cardId + '（' + hit.subject + '）：' + path.basename(abs));
+  console.log('  原 question：' + String(hit.item.question || '').slice(0, 60));
+  console.log('  新 question：' + String(c.questionText || '').slice(0, 60));
+
+  /* ③ 找到原图：优先用回传的 sourceImageSha256 去台账/收件箱找；找不到就只改文本不动裁图 */
+  let srcImg = null;
+  const sha = String(c.sourceImageSha256 || '').toLowerCase();
+  if (sha) {
+    const led = path.join(root, '_原卷台账.json');
+    if (isFile(led)) {
+      try {
+        const doc = JSON.parse(fs.readFileSync(led, 'utf8'));
+        for (const k of Object.keys((doc && doc.cards) || {})) {
+          const cc = doc.cards[k];
+          for (const f of ['page', 'import']) {
+            if (typeof cc[f] !== 'string' || !cc[f].trim()) continue;
+            const p = path.resolve(root, cc[f]);
+            if (!isFile(p)) continue;
+            try { if (sha256(fs.readFileSync(p)) === sha) { srcImg = p; break; } } catch { }
+          }
+          if (srcImg) break;
+        }
+      } catch { }
+    }
+    if (!srcImg) {
+      /* 回退：按内容指纹在收件箱里找（台账没登记原图时） */
+      const inbox = path.join(root, '_收件箱');
+      const found = [];
+      const scan = (d, dep) => {
+        if (dep > 3) return;
+        let ents; try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+        for (const e of ents) {
+          const p = path.join(d, e.name);
+          if (e.isDirectory()) { scan(p, dep + 1); continue; }
+          if (!/\.(jpe?g|png|webp|bmp)$/i.test(e.name)) continue;
+          found.push(p);
+        }
+      };
+      scan(inbox, 0);
+      for (const p of found) {
+        try { if (sha256(fs.readFileSync(p)) === sha) { srcImg = p; break; } } catch { }
+      }
+    }
+  }
+  if (!srcImg) console.log('  ⚠ 找不到原图（按 sha256 没找到）——只改文本与索引，**不重裁图**');
+
+  /* ④ 写盘（锁 + 事务） */
+  const release = acquireLibLock(root, { label: '_录题入库 改卡 ' + cardId });
+  let tx = null;
+  try {
+    tx = openTransaction(root, { label: '_录题入库 改卡 ' + cardId });
+
+    /* ④a 题干.html */
+    const hasBlank = /_{3,}|＿{2,}/.test(String(c.questionText || '')) || (Array.isArray(c.answerSlots) && c.answerSlots.length > 0);
+    tx.writeText(path.join(abs, '题干.html'), buildStemHtml(c.questionText, hasBlank));
+
+    /* ④b 裁图（有了原图且给了 bbox 才重裁；空白 ⇒ 撤掉旧图） */
+    let cropped = null;
+    let cropBlank = false;
+    if (srcImg && Array.isArray(c.bbox)) {
+      try {
+        const ds = displaySize(srcImg);
+        if (ds && ds.w && ds.h) {
+          const [nx, ny, nw, nh] = c.bbox;
+          tx.snapshot(path.join(abs, '原卷截图.jpg'));
+          cropWithDotnet(srcImg, path.join(abs, '原卷截图.jpg'), nx, ny, nw, nh, 1400);
+          const ink = cropInkRatio(path.join(abs, '原卷截图.jpg'));
+          if (ink !== null && ink < CROP_MIN_INK) {
+            cropBlank = true;
+            console.error('⚠ ' + cardId + ' 的 bbox 框出来的原卷截图几乎全是空白（非白像素占比 ' + (ink * 100).toFixed(2) + '% < ' + (CROP_MIN_INK * 100).toFixed(1) + '%）');
+            console.error('  ⇒ 多半是 bbox 偏了。已**撤掉这张裁图**（卡面不再挂空图），旧图也没了——请核对 bbox 后再改一次。');
+          }
+          const px = [Math.round(nx * ds.w), Math.round(ny * ds.h), Math.max(1, Math.round(nw * ds.w)), Math.max(1, Math.round(nh * ds.h))];
+          cropped = { out: '原卷截图.jpg', box: [nx, ny, nw, nh], px, srcPx: { w: ds.w, h: ds.h } };
+        }
+      } catch (e) {
+        console.error('⚠ ' + cardId + ' 裁图失败（不影响改卡）：' + String(e && e.message || e).slice(0, 160));
+      }
+    }
+    if (cropBlank) {
+      try { fs.unlinkSync(path.join(abs, '原卷截图.jpg')); } catch { }
+      cropped = null;
+    }
+    if (cropped) {
+      tx.writeJson(path.join(abs, '_裁图记录.json'), {
+        src: path.relative(root, srcImg).split(path.sep).join('/'), out: cropped.out,
+        normBox: cropped.box, cropPx: cropped.px, srcPx: cropped.srcPx, scale: 1,
+        by: '录题改卡:' + cardId, date: today(), note: c.source || '',
+      }, { newline: true });
+    }
+
+    /* ④c 错题记录.md */
+    tx.writeText(path.join(abs, '错题记录.md'), buildRecord(cardId, c, {
+      recipe: 'ingest-page', recipeVer: '', fingerprint: '',
+      imageRel: srcImg ? path.relative(root, srcImg).split(path.sep).join('/') : '',
+      imageSha: sha, taskId: '', date: today(), teacherConflict: teacherConflictOf(c),
+    }));
+
+    /* ④d 索引条目：**只改内容字段，复习/状态字段原样保留** */
+    const it = hit.item;
+    if (c.source !== undefined) it.source = c.source || '';
+    if (c.sourceDate !== undefined) it.sourceDate = c.sourceDate || '';
+    if (c.questionText !== undefined) it.question = String(c.questionText || '').replace(/\s+/g, ' ').trim();
+    if (c.answer !== undefined) it.answer = c.answer || '';
+    if (c.studentAnswer !== undefined) it.studentAnswer = c.studentAnswer || '';
+    if (Array.isArray(c.kpoints)) it.kpoints = c.kpoints;
+    if (c.causeCode !== undefined) { it.causeCode = c.causeCode || ''; it.causeLayer = String(c.causeCode || '')[0] || ''; }
+    if (c.causeNote !== undefined) it.causeDesc = c.causeNote || '';
+    if (c.difficulty !== undefined) it.difficulty = c.difficulty || '中';
+    if (c.answerSource !== undefined) it.answerSource = c.answerSource || '未能确认';
+    if (c.answerSourceNote !== undefined) it.answerSourceNote = c.answerSourceNote || '';
+    it.teacherAnswer = typeof c.teacherAnswer === 'string' ? c.teacherAnswer : (it.teacherAnswer || '');
+    it.teacherConflict = teacherConflictOf(c) ? { teacher: c.teacherAnswer, adopted: c.answer || '', source: c.answerSource, note: String(c.notes || '').slice(0, 300), at: today() } : null;
+    if (cropped) it.hasImage = true;
+    else if (cropBlank) it.hasImage = false;
+    hit.j.updatedAt = today();
+    tx.writeJson(hit.idxFile, hit.j, { backup: !DRY, newline: true });
+
+    /* ④e 配图登记（如实登记，见入库器里同一段注释的说明）：
+     *   修卡时配图状态可能变了（重裁了图 / 撤了空图 / 补裁了题图），登记必须跟着改，
+     *   否则配图门禁会拿旧登记判 —— 门禁就成了摆设。 */
+    {
+      /* 题图：hasFigure=true 且给了 figBbox ⇒ 重新裁「题图.jpg」（纯图，无笔迹）。 */
+      let figCropped = false;
+      if (c.hasFigure === true && srcImg && Array.isArray(c.figBbox)) {
+        const r = cropFigure(srcImg, path.join(abs, '题图.jpg'), c.figBbox);
+        if (r.ok) { figCropped = true; console.log('  · 题图已裁出（题图.jpg）'); }
+        else console.error('⚠ ' + cardId + ' 没裁出题图：' + r.why);
+      }
+      const stemHtmlNow = (() => { try { return fs.readFileSync(path.join(abs, '题干.html'), 'utf8'); } catch { return ''; } })();
+      const stemHasSvg = /<svg[\s>]/i.test(stemHtmlNow);
+      const hasFigFile = figCropped || fs.existsSync(path.join(abs, '题图.jpg'));
+      const figNeed = !!c.hasFigure;
+      const figKind = stemHasSvg ? 'svg' : (hasFigFile ? 'jpg' : 'none');
+      const figRef = stemHasSvg ? '题干.html 内联 SVG' : (hasFigFile ? '题图.jpg' : '');
+      const figFile = path.join(root, '_配图台账.json');
+      let led = { cards: {} };
+      if (isFile(figFile)) { try { led = JSON.parse(fs.readFileSync(figFile, 'utf8')); } catch { led = { cards: {} }; } }
+      if (!led.cards || typeof led.cards !== 'object') led.cards = {};
+      led.cards[(hit.student || student) + '|' + cardId] = {
+        need: figNeed && (stemHasSvg || hasFigFile), kind: figKind, ref: figRef,
+        note: c.notes || (stemHasSvg ? '题干含图，随题干.html 内联印刷'
+          : hasFigFile ? '题图单独裁出（题图.jpg，只含图、不含孩子的作答与红笔）'
+            : '题干提到图，但**既没内联也没裁到题图** —— 需人工补图'),
+        by: '录题改卡:' + cardId, date: today(),
+      };
+      tx.writeJson(figFile, led, { backup: !DRY, newline: true });
+    }
+
+    if (!DRY) {
+      const r = tx.commit && tx.commit();
+      void r;
+    } else {
+      tx.rollback();
+    }
+    console.log('✔ 改卡完成：' + cardId + '（内容已更新；复习状态与卡号原样保留）' + (DRY ? '  [dry：已整体回滚]' : ''));
+    return 0;
+  } catch (e) {
+    console.error('✖ 改卡失败：' + String(e && e.message || e));
+    if (tx) { try { const r = tx.rollback(); if (r && (r.restored || r.removed)) console.error('[事务] 已整体回滚（恢复 ' + r.restored + '、删除 ' + r.removed + '）'); } catch { } }
+    return 1;
+  } finally {
+    release();
+  }
+}
+
 /* ───────────────── 主流程：入库 ───────────────── */
 function cmdLand() {
   const taskId = positional[0] || val('task', '');
@@ -401,6 +735,23 @@ function cmdLand() {
         problems.push(id + ' 的 bbox 越界：x+w=' + (b[0] + b[2]).toFixed(4) + '，y+h=' + (b[1] + b[3]).toFixed(4) + '（都应 ≤ 1）');
       }
     }
+    /* ★ 2026-11-05（补契约缺口）：hasFigure=true 时必须给 **figBbox**（插图自己的框）。
+       起因：P0116/P0117（走马灯图、扫地车图）入库后配图门禁判「缺图」——
+       因为契约只让 AI 给 `bbox`（整道题的位置），**没有让 AI 说清"图在哪儿"**，
+       程序无从裁出「题图.jpg」，于是"题干提到图、图却没落地"。
+       以前的入库器还会**假登记**（hasFigure=true 一律写成"题干.html 内联 SVG"，
+       而 buildStemHtml 只包纯文本、永远产不出内联 SVG）⇒ 配图门禁被架空。已一并改掉。 */
+    if (c.hasFigure === true && c.figBbox === undefined) {
+      problems.push(id + ' 标了 hasFigure=true 却没给 figBbox —— 程序不知道"图在哪儿"，裁不出题图.jpg（配图门禁会判缺图）。请给出插图自己的框（归一化 [x,y,w,h]）');
+    }
+    if (c.figBbox !== undefined) {
+      const f = c.figBbox;
+      if (!Array.isArray(f) || f.length !== 4 || f.some(v => typeof v !== 'number' || !isFinite(v) || v < 0 || v > 1)) {
+        problems.push(id + ' 的 figBbox 必须是 4 个 0~1 的数字（归一化 [x,y,w,h]），收到：' + JSON.stringify(f));
+      } else if (f[0] + f[2] > 1.001 || f[1] + f[3] > 1.001) {
+        problems.push(id + ' 的 figBbox 越界：x+w=' + (f[0] + f[2]).toFixed(4) + '，y+h=' + (f[1] + f[3]).toFixed(4) + '（都应 ≤ 1）');
+      }
+    }
   }
   if (problems.length) {
     for (const p of problems) console.error('  - ' + p);
@@ -457,6 +808,7 @@ function cmdLand() {
 
       /* 原卷截图（AI 给了 bbox 才裁；没给就不裁，明确报出来） */
       let cropped = null;
+      let cropBlank = false;
       if (srcImg && Array.isArray(c.bbox)) {
         try {
           const ds = displaySize(srcImg);
@@ -464,11 +816,30 @@ function cmdLand() {
           const [nx, ny, nw, nh] = c.bbox;
           tx.snapshot(path.join(abs, '原卷截图.jpg'));   // 先登记：回滚时新图删掉、旧图恢复
           cropWithDotnet(srcImg, path.join(abs, '原卷截图.jpg'), nx, ny, nw, nh, 1400);
+          /* ★ 2026-11-05：裁图**空白检测**（bbox 框错的最常见表现）。
+             框到页边留白/标签 ⇒ 裁出来的图几乎全白 ⇒ 卡印出来是空白。
+             实测踩到过：AI 给的 bbox 偏上 0.05，裁出 1400×70 的近白图，
+             三道门禁全绿、卡照样进库，直到人点开原卷截图才发现里面没有题。
+             这里只**报警 + 撤掉这张裁图**，不阻断整批（框错了可重裁，卡内容本身可能对）。 */
+          const ink = cropInkRatio(path.join(abs, '原卷截图.jpg'));
+          if (ink !== null && ink < CROP_MIN_INK) {
+            cropBlank = true;
+            console.error('⚠ ' + id + ' 的 bbox 框出来的原卷截图几乎全是空白（非白像素占比 ' + (ink * 100).toFixed(2) + '% < ' + (CROP_MIN_INK * 100).toFixed(1) + '%）');
+            console.error('  ⇒ 多半是 bbox 偏了（框到页边留白/标签而不是题目）。已**撤掉这张裁图**，卡面内容仍入库。');
+            console.error('  修法：回原图核对该题的题号与位置，改 bbox 后重新入库（bbox 在 cards.json 里）。');
+          }
           const px = [Math.round(nx * ds.w), Math.round(ny * ds.h), Math.max(1, Math.round(nw * ds.w)), Math.max(1, Math.round(nh * ds.h))];
           cropped = { out: '原卷截图.jpg', box: [nx, ny, nw, nh], px, srcPx: { w: ds.w, h: ds.h } };
         } catch (e) {
           console.error('⚠ ' + id + ' 裁图失败（不影响入库）：' + String(e && e.message || e).slice(0, 160));
         }
+      }
+      /* 空白裁图不算裁图：撤掉文件、不写裁图记录 ⇒ 卡面不会挂一张空图。
+         ⚠ 直接 unlink（事务对象没有 remove 方法）：这个文件是**本次新建**的，
+         回滚时整个卡目录会被删掉，不会留下"删不回去"的窟窿。 */
+      if (cropBlank) {
+        try { fs.unlinkSync(path.join(abs, '原卷截图.jpg')); } catch { /* 撤不掉就留着，下面的记录不写 */ }
+        cropped = null;
       }
 
       /* _裁图记录.json（原卷溯源的唯一 sidecar，`_原卷台账.mjs` 只认它） */
@@ -478,6 +849,20 @@ function cmdLand() {
           srcPx: cropped.srcPx, scale: 1, by: '录题入库:' + taskId, date: today(),
           note: c.source || '',
         }, { newline: true });
+      }
+
+      /* 「题图.jpg」：**只含插图**，不含孩子的作答与红笔（见 cropFigure 的说明）。
+         hasFigure=true 时按 figBbox 裁；没有 figBbox ⇒ 契约检查已拦（见 ⑧），
+         这里只兜底：没裁到就如实记 need=false，不假装有图。 */
+      let figCropped = false;
+      if (c.hasFigure === true && srcImg) {
+        const r = cropFigure(srcImg, path.join(abs, '题图.jpg'), c.figBbox);
+        if (r.ok) {
+          figCropped = true;
+          console.log('  · ' + id + ' 题图已裁出（题图.jpg）');
+        } else {
+          console.error('⚠ ' + id + ' 没裁出题图：' + r.why + ' —— 该卡按"无图"登记（配图门禁会点名）');
+        }
       }
 
       /* 错题记录.md */
@@ -518,10 +903,28 @@ function cmdLand() {
         itemsOwner.push(it);
       }
 
+      /* 配图登记（2026-11-05 修一个**假登记**）：
+       *   修前：hasFigure=true ⇒ 一律写 kind='svg'、ref='题干.html 内联 SVG'。
+       *   但 buildStemHtml() **只包纯文本**，永远不会产出内联 SVG ——
+       *   于是"题干提到图、但图没登记"的卡被登记成"已内联"，配图门禁因此失明：
+       *   实测 P0116/P0117（题干含「如图」，图在原卷上、没重画）就是这么混过去的。
+       *   现在**如实登记**：题干.html 里真的有 <svg> 才算内联；
+       *   否则看有没有**题图.jpg**（按 figBbox 单独裁的纯图）；
+       *   连它也没有 ⇒ need=false 并写明"需人工补图"。
+       *   ⚠ kind 必须落在配图门禁认识的取值里（svg | jpg | none）——
+       *   写门禁不认识的 kind，门禁就查不出资产 ⇒ 又一次失明。
+       *   登记与实际资产一致 ⇒ 配图门禁才有牙齿。 */
+      const stemHasSvg = /<svg[\s>]/i.test(String(c.stemHtml || '')) || /<svg[\s>]/i.test(fs.readFileSync(path.join(abs, '题干.html'), 'utf8'));
+      const hasFigFile = figCropped || fs.existsSync(path.join(abs, '题图.jpg'));
+      const figNeed = !!c.hasFigure;
+      const figKind = stemHasSvg ? 'svg' : (hasFigFile ? 'jpg' : 'none');
+      const figRef = stemHasSvg ? '题干.html 内联 SVG' : (hasFigFile ? '题图.jpg' : '');
       figs.push({
-        card: student + '|' + id, need: !!c.hasFigure, kind: c.hasFigure ? 'svg' : 'none',
-        ref: c.hasFigure ? '题干.html 内联 SVG' : true,
-        note: c.notes || (c.hasFigure ? '题干含图，随题干.html 内联印刷' : '纯文字题，原卷无印刷配图'),
+        card: student + '|' + id, need: figNeed && (stemHasSvg || hasFigFile), kind: figKind,
+        ref: figRef,
+        note: c.notes || (stemHasSvg ? '题干含图，随题干.html 内联印刷'
+          : hasFigFile ? '题图单独裁出（题图.jpg，只含图、不含孩子的作答与红笔）'
+            : '题干提到图，但**既没内联也没裁到题图** —— 需人工补图'),
         by: '录题入库:' + taskId, date: today(),
       });
       if (c.answerMode) {
@@ -563,11 +966,18 @@ function cmdLand() {
     writeJsonAtomic(figFile, figs, { newline: true });
     if (answers.length) writeJsonAtomic(ansFile, answers, { newline: true });
 
-    /* ⑩ 当场跑门禁（不留"事后手跑"的欠账） */
+    /* ⑩ 当场跑门禁（不留"事后手跑"的欠账）
+     * ⚠ ★ 2026-11-05 修一个**真 bug**：配图登记原来也走 `_作答门禁.mjs 批量` ——
+     *   把**配图声明文件**喂给了**作答门禁**。于是：
+     *     · 配图台账根本没人写（入库路径下新卡的配图登记全部丢失）；
+     *     · 作答门禁却收到一份形状不对的文件（它只认 {card,mode,slots}）。
+     *   实测：临时库上入库后 `_配图台账.json` 里查无此卡；而「改卡」路径是直接写台账的
+     *   ⇒ 两条路径行为不一致，真库上看着"没问题"（因为那几张是改卡写的）。
+     *   现在各走各的门禁：作答声明 → `_作答门禁.mjs 批量`，配图声明 → `_配图门禁.mjs 批量`。 */
     const gates = [];
-    const runGate = (label, args) => {
+    const runGate = (label, script, args) => {
       try {
-        const r = execFileSync('node', [toolPath('_作答门禁.mjs'), ...args], { encoding: 'utf8', stdio: 'pipe', env: { ...process.env, CTB_DATA: root } });
+        const r = execFileSync('node', [toolPath(script), ...args], { encoding: 'utf8', stdio: 'pipe', env: { ...process.env, CTB_DATA: root } });
         gates.push({ label, ok: true, out: String(r || '').trim() });
       } catch (e) {
         const msg = String((e && e.stdout) || '') + String((e && e.stderr) || '');
@@ -575,9 +985,9 @@ function cmdLand() {
       }
     };
     if (answers.length) {
-      runGate('作答契约门禁', ['批量', '--file', ansFile]);
+      runGate('作答契约门禁', '_作答门禁.mjs', ['批量', '--file', ansFile]);
     }
-    runGate('配图门禁', ['批量', '--file', figFile]);
+    runGate('配图门禁', '_配图门禁.mjs', ['批量', '--file', figFile]);
     /* 原卷溯源：只对**有裁图**的卡跑（有裁图的卡才有 sidecar） */
     if (made.some(m => m.cropped)) {
       try {
@@ -633,12 +1043,17 @@ const HELP = [
   '',
   '用法：',
   '  node src\\tools\\_录题入库.mjs 入库 <taskId> --file <cards.json> --student <学生化名> [--subject <学科>] [--note <备注>]',
+  '  node src\\tools\\_录题入库.mjs 改卡 <卡号> --file <cards.json> [--student <学生化名>] [--subject <学科>]',
   '',
-  '前置条件（缺一不可，程序不替你做）：',
+  '入库前置条件（缺一不可，程序不替你做）：',
   '  · 任务记录存在且**已人工确认**（第三层，契约 §四）',
   '  · 回传 JSON 的信封 taskId / imageSha256 与任务记录一致（第二层）',
   '  · 每张卡的 sourceImageSha256 等于任务记录的原图 sha',
   '  · 学生·学科落点存在（学生索引里有这一科）',
+  '',
+  '改卡（2026-11-05 新增）：重写**已在库**那一张的题干/裁图/记录，',
+  '  索引条目**原地更新**（不删行、不换号），**复习状态原样保留**。',
+  '  一次只改一张；--dry 预览。',
   '',
   '通用参数：--data <库根>（与其它工具同口径）｜--json 输出机器可读｜--dry 预览',
   '退出码：0 成功 · 1 前置不通过/门禁未过 · 2 用法错/任务不存在 · 3 与任务不匹配',
@@ -647,6 +1062,7 @@ const HELP = [
 let code = 0;
 switch (cmd) {
   case '入库': code = cmdLand(); break;
+  case '改卡': code = cmdFix(); break;
   case '':
   case '--help':
   case '-h':
