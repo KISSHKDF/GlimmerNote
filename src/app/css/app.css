@@ -481,6 +481,14 @@ html[data-theme="dark"] .hm-cell{stroke:rgba(255,255,255,.05)}
 /* 2026-10-21：告警横幅的"红"档。待办工作台用它报「编号重号」——那是会让办结静默失效的数据故障，
    与普通的"缺题号"提示不是一个量级，不能共用同一个黄色。 */
 .pp-note.bad{background:var(--bad-soft);color:var(--bad-ink);font-weight:600}
+/* ★ 2026-11-05（用户报障「没人看、没人懂」）：欠账横幅与欠账条目的样式。
+   「回了但没人执行」是**比缺题号更重**的问题（回答白给了），必须一眼看见 ⇒ 用红档 + 左边框。 */
+.owes-banner{line-height:1.75}
+.owes-banner code{background:rgba(0,0,0,.06);padding:1px 5px;border-radius:4px}
+.pd-item.owes{border-color:var(--bad);box-shadow:inset 3px 0 0 var(--bad)}
+.pd-owes{margin-top:8px;padding:9px 12px;border-radius:9px;background:var(--bad-soft);color:var(--bad-ink);
+  font-size:var(--fs-xs);line-height:1.75}
+.pd-owes b{color:var(--bad-ink)}
 .opt-row{display:flex;flex-wrap:wrap;gap:var(--s4);align-items:center}
 .opt-item{display:flex;align-items:center;gap:var(--s2);font-size:var(--fs-sm);color:var(--text2)}
 input[type=number],input[type=text],input[type=date],select,textarea{

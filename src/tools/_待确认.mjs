@@ -353,6 +353,35 @@ function boxNormFields(it) {
     : { boxNormWhy: r.why };
 }
 
+/* ===== 待办条目 → 状态包输出形状（单一实现，2026-11-05）=====
+   起因：用户报障「照你这样说，你设置这个待办有什么用？……问了问题也认真回答了，
+   可是根本没人看，没人懂」。取证发现**已办结条目根本不在状态包的 `items` 里**
+   （`门禁 --json` 只输出未确认条目）⇒ 前端「显示已办结」勾选框读同一个数组，勾上也是空的。
+   用户的回话落了库，界面上却像从来没发生过 —— 这就是"没人看、没人懂"的直接成因。
+   现在：未办结与已办结**共用这一个序列化函数**（形状一致，只是字段多寡不同），
+   避免两处各写一份导致再次漂移（教训 L-306：同一判据只住一个家）。 */
+function pendingItemOut(it) {
+  return {
+    id: it.id, student: it.student, subject: it.subject, cardId: it.cardId,
+    kind: it.kind, askWho: it.askWho, question: it.question,
+    detail: it.detail, source: it.source, raisedAt: it.raisedAt,
+    status: it.status || '未确认',
+    evidence: normEv(it.evidence || ''),
+    /* false = 图上不了：缺图 / 通配符 / 文件不在。前端据此渲染显式红块并禁用「打开原图」。 */
+    evidenceOk: evOk(it.evidence),
+    qRef: it.qRef || '', box: Array.isArray(it.box) ? it.box : null,
+    /* ★ 2026-11-03（批次 2 / P2-2）：读取侧附加的归一化坐标（唯一实现 `_区域坐标.mjs`）。
+       有像素 box ⇒ `boxNorm/imgW/imgH`；量不出图 ⇒ 只 `boxNormWhy`（**不给 0**）；
+       没有 box ⇒ 一个字段都不加（旧形状原样，前端旧路径不受影响）。磁盘旧值一字未改。 */
+    ...(boxNormFields(it) || {}),
+    /* v2.6：待办级整页定位（无卡待办的原图链路）。origPage 传**原始相对路径**（未编码），
+       前端 H.asset 对未编码路径整段 encodeURI，与 evidence 同一通道；有卡条目此字段为空、照旧走 M.origOf。 */
+    origPage: normEv(it.origPage || ''), origBox: Array.isArray(it.origBox) ? it.origBox : null,
+    evidenceFix: it.evidenceFix || '', evidenceNote: it.evidenceNote || '',
+    boxFix: it.boxFix || '', origFix: it.origFix || '',
+  };
+}
+
 /* ===== v2.7（2026-10-19）证据图与待办「对位」基础设施 =====
    起因：用户质询「错题库中的待办，你提出的问题，与你给出的切图，完全不对应」。
    实测 39 条未确认里 25 条的题面页码与卡片页码不同 —— 证据图挂的是**错题卡自己的裁图**，
@@ -1614,23 +1643,23 @@ if (action === '清单') {
       ids: pend.map(it => it.id),
       /* v2.8：重号清单。前端拿到非空数组时必须在工作台顶部显式报红（别再让"办完还在"无声发生）。 */
       dupId: dupIds.map(d => ({ id: d.id, count: d.count })),
-      items: pend.map(it => ({
-        id: it.id, student: it.student, subject: it.subject, cardId: it.cardId,
-        kind: it.kind, askWho: it.askWho, question: it.question,
-        detail: it.detail, source: it.source, raisedAt: it.raisedAt,
-        evidence: normEv(it.evidence || ''),
-        /* false = 图上不了：缺图 / 通配符 / 文件不在。前端据此渲染显式红块并禁用「打开原图」。 */
-        evidenceOk: evOk(it.evidence),
-        qRef: it.qRef || '', box: Array.isArray(it.box) ? it.box : null,
-        /* ★ 2026-11-03（批次 2 / P2-2）：读取侧附加的归一化坐标（唯一实现 `_区域坐标.mjs`）。
-           有像素 box ⇒ `boxNorm/imgW/imgH`；量不出图 ⇒ 只 `boxNormWhy`（**不给 0**）；
-           没有 box ⇒ 一个字段都不加（旧形状原样，前端旧路径不受影响）。磁盘旧值一字未改。 */
-        ...(boxNormFields(it) || {}),
-        /* v2.6：待办级整页定位（无卡待办的原图链路）。origPage 传**原始相对路径**（未编码），
-           前端 H.asset 对未编码路径整段 encodeURI，与 evidence 同一通道；有卡条目此字段为空、照旧走 M.origOf。 */
-        origPage: normEv(it.origPage || ''), origBox: Array.isArray(it.origBox) ? it.origBox : null,
-        evidenceFix: it.evidenceFix || '', evidenceNote: it.evidenceNote || '',
-        boxFix: it.boxFix || '', origFix: it.origFix || '',
+      items: pend.map(it => pendingItemOut(it)),
+      /* ★★ 2026-11-05（用户报障「照你这样说，你设置这个待办有什么用？……问了问题也认真回答了，
+         可是根本没人看，没人懂」）：**已办结条目此前根本不在 `items` 里** ⇒
+         前端那个「显示已办结」勾选框读的是同一个数组，勾上也是空的 ——
+         用户的回话落了库，**界面上却像从来没发生过**。这就是"没人看、没人懂"的直接成因。
+         现在：已办结条目也进 `items`，带 `status` 供前端分区显示（`M.pendingOpen()` 只取未确认，
+         所以未办结工作面不受影响）。**已办结条目一律带 `answer`（你的原话）**，
+         且带 `verdict`/`disposition`/`verdictNote`/`dispositionNote` —— 让"你的回话有没有被执行"
+         在界面上直接看得见，不必去翻 JSON。 */
+      doneItems: doneAll.map(it => ({
+        ...pendingItemOut(it),
+        answer: it.answer || '',
+        verdict: it.verdict || '', verdictNote: it.verdictNote || '', verdictAt: it.verdictAt || '',
+        disposition: it.disposition || '', dispositionNote: it.dispositionNote || '', dispositionAt: it.dispositionAt || '',
+        resolvedAt: it.resolvedAt || '',
+        /* true = 你的回话已被消费（判定+处置都登记了）；false = 回了但没人执行（欠账）。 */
+        closed: !!(it.verdict && it.disposition),
       })),
     }));
   } else if (pend.length) {
