@@ -21,8 +21,8 @@ const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 const E = require('./_测试环境.cjs');
 
-let fails = 0;
-const A = (n, ok, d) => { console.log(`${ok ? '[OK]  ' : '[FAIL]'} ${n}${d !== undefined ? '  → ' + d : ''}`); if (!ok) fails++; };
+let fails = 0, asserts = 0;
+const A = (n, ok, d) => { asserts++; console.log(`${ok ? '[OK]  ' : '[FAIL]'} ${n}${d !== undefined ? '  → ' + d : ''}`); if (!ok) fails++; };
 
 /* 跑工具：返回 {code, out}；绝不抛（要断言"它会失败"） */
 const run = (args, lib) => {
@@ -80,6 +80,36 @@ const objectsOf = () => {
   A('1b --dry 后库目录不存在', !fs.existsSync(STORE));
   A('1c --dry 后台账不存在', !fs.existsSync(LEDGER));
   A('1d --dry 不删源（4 个源文件全在）', objectsOf().length === 0 && fs.existsSync(path.join(SRC, 'a.jpg')));
+}
+
+/* ════════ 1x. 严格模式（PR #13 二次复审 ①）：拼错 / 带值的 --dry 不许落成真写盘 ════════
+   修前 DRY = process.argv.includes('--dry')：`--dryy` 被宽松解析静默丢弃、`--dry=true` 精确匹配不命中 ⇒ 两者都真入库。 */
+{
+  const r1 = run(['入库', SRC, '--dryy'], LIB);
+  A('1x-a ★ --dryy ⇒ 报"未知参数"非零退出、库与台账都不存在', r1.code !== 0 && /未知参数 --dryy/.test(r1.out) && !fs.existsSync(STORE) && !fs.existsSync(LEDGER), 'exit=' + r1.code);
+  const r2 = run(['入库', SRC, '--dry=true'], LIB);
+  A('1x-b ★ --dry=true ⇒ 预演、零写盘', r2.code === 0 && !fs.existsSync(STORE) && !fs.existsSync(LEDGER), 'exit=' + r2.code);
+  const r3 = run(['入库', SRC, '--dry=maybe'], LIB);
+  A('1x-c ★ --dry=maybe ⇒ 拒、零写盘', r3.code !== 0 && !fs.existsSync(LEDGER), 'exit=' + r3.code);
+  const r4 = run(['入库', SRC, '--batch', '--dry'], LIB);
+  A('1x-g ★ --batch 漏值紧跟 --dry ⇒ 报"缺值"、零写盘（修前 --dry 被吃成批次名 ⇒ 真写盘）', r4.code !== 0 && /缺值/.test(r4.out) && !fs.existsSync(LEDGER), 'exit=' + r4.code);
+  const r5 = run(['入库', SRC, '--batch=--dry', '--dry'], LIB);
+  A('1x-h 对照：--batch=--dry（= 形式显式给值）照常解析、--dry 生效零写盘', r5.code === 0 && !fs.existsSync(LEDGER), 'exit=' + r5.code);
+  /* 阴性自证：把入口改回修前写法 ⇒ --dry=true 真写盘 */
+  const TOOLP = E.tool('_原图.mjs');
+  const SRC0 = fs.readFileSync(TOOLP, 'utf8');
+  const ANCHOR = "const DRY = GLOBAL_OPT.dry === true;";
+  A('1x-d 变异锚点存在', SRC0.includes(ANCHOR));
+  let wrote = false;
+  try {
+    fs.writeFileSync(TOOLP, SRC0.replace(ANCHOR, "const DRY = process.argv.includes('--dry');"), 'utf8');
+    const LIBM = E.makeTempLib();
+    fs.cpSync(SRC, path.join(LIBM, '_测试源'), { recursive: true });
+    run(['入库', path.join(LIBM, '_测试源'), '--dry=true'], LIBM);
+    wrote = fs.existsSync(path.join(LIBM, '_原图台账.json'));
+  } finally { fs.writeFileSync(TOOLP, SRC0, 'utf8'); }
+  A('1x-e ★ 自证 · 改回 argv.includes ⇒ --dry=true 真写了台账（判据有牙齿）', wrote);
+  A('1x-f 变异源码已还原', fs.readFileSync(TOOLP, 'utf8') === SRC0);
 }
 
 /* ════════ 2. 入库：去重、扩展名保留、非影像件也保全 ════════ */
@@ -177,5 +207,5 @@ const objectsOf = () => {
 }
 
 console.log('');
-console.log(`RESULT=${fails ? 'FAIL(' + fails + ')' : 'PASS'} 断言=${8 + 4 + 4 + 4 + 3 + 4 + 4 + 2 + 2} 失败=${fails}`);
+console.log(`RESULT=${fails ? 'FAIL(' + fails + ')' : 'PASS'} 断言=${asserts} 失败=${fails}`);
 process.exit(fails ? 1 : 0);

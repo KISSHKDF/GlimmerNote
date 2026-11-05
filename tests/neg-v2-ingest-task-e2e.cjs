@@ -250,10 +250,23 @@ async function waitFor(cdp, expr, ok, tries, gap) {
               且**必须**是"值以 ingest-page 开头 + JSON 里没有上轮真人残留的其他字段"才放行。
               更硬的一刀：直接断言**值里没有 ingest-single**（真人残留的那个值）——
               没清干净时残留的就是它；清干净时它绝不可能自己回来。 */
+      /* ★ 2026-11-05（合并评审 P2-3）：上面的子串判据仍可假绿 —— 残留
+         `{"recipe":"ingest-page","subject":"生物","conflict":"first"}` 同样"含 ingest-page、不含 ingest-single"。
+         现在只认两种**精确**终态，二者取或（这是一个 OR 断言，但两支都是全等判据，不再有子串匹配）：
+           ① "(空)" ⇒ 清干净了、页面还没写回；
+           ② 能解析成 JSON 且**逐字段全等** ingest.js 的默认值（recipe/subject/conflict 三个持久化字段），且没有多余字段。
+           任何一个字段是上轮真人选的值 ⇒ 判红。默认值改了这里要同步（来源：views/ingest.js 的 st 初值）。
+           ⚠ 本断言需要真壳 + CDP，只能在 Windows 上实跑；Linux 上只做了语法检查。 */
       const after = String(lsAfter);
-      const notDirty = after === '(空)' || (after.indexOf('ingest-page') >= 0 && after.indexOf('ingest-single') < 0);
-      A('★ 清掉跨运行残留的 localStorage（残留值里不得再有真人选的 ingest-single）',
-        notDirty, '清后=' + after.slice(0, 100));
+      const DEFAULTS = { recipe: 'ingest-page', subject: '数学', conflict: 'deny' };
+      let parsed = null;
+      try { parsed = JSON.parse(after); } catch { }
+      const isEmpty = after === '(空)';
+      const isDefault = !!parsed && typeof parsed === 'object' &&
+        Object.keys(DEFAULTS).every(k => parsed[k] === DEFAULTS[k]) &&
+        Object.keys(parsed).every(k => k in DEFAULTS);
+      A('★ 清掉跨运行残留的 localStorage（清后为空，或 JSON 逐字段全等默认值）',
+        isEmpty || isDefault, '清后=' + after.slice(0, 100));
     } catch (e) {
       A('★ 清掉跨运行残留的 localStorage', false, String(e && e.message || e).slice(0, 140));
     }
@@ -358,7 +371,7 @@ async function waitFor(cdp, expr, ok, tries, gap) {
       result: {
         pageSummary: { totalQuestions: 3, markedWrong: 1 },
         cards: [{ subject: '数学', title: '合成题', questionText: '1+1=?', studentAnswer: '3',
-          answerSource: '独立判卷', causeCode: 'K1', confidence: 'high', sourceImageSha256: sha }],
+          answerSource: '独立判卷', causeCode: 'K1', confidence: 'high', sourceImageSha256: sha, teacherAnswer: '' }],
         skipped: [{ what: '第2题', reason: '未作答' }],
       },
     });

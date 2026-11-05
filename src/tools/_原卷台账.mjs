@@ -1071,6 +1071,9 @@ const { action: _cmd, opt } = parseArgs(argv, {
     // 本工具专属的带值 flag（**布尔开关不要列进来**：dry/force/verbose/px-cache 是开关）
     'key', 'page', 'dir', 'per',
   ],
+  /* ★ 2026-11-05（PR #13 复审 ①）：写盘工具一律严格模式 —— 拼错的开关（如 --dryy）当场报错，绝不静默丢弃后真写盘。
+     清单 = 本文件用到的布尔开关（机扫 opt.x / val('x') 后人工核对），新增开关必须同步加进来，否则会被拒。 */
+  boolFlags: ['dry', 'force', 'px-cache', 'verbose', 'json', 'help', 'h'],
 });
 /* 缺省命令 = 覆盖（与改前 `argv[0] || '覆盖'` 同口径）。 */
 const cmd = _cmd || '覆盖';

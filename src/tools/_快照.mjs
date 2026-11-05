@@ -21,6 +21,7 @@
 import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import { readJsonStrict, writeTextAtomic, acquireLibLock } from './_安全写.mjs';
 import { libraryRoot } from './_库根.mjs';
 
@@ -38,9 +39,10 @@ const USAGE = `用法：
   node _快照.mjs --list              打印纳管清单
   node _快照.mjs --status            历史快照数 + 当前未快照改动（未快照则 exit 1）
   node _快照.mjs --restore-list <文件>          列出该真源的全部历史版本
-  node _快照.mjs --restore <文件> [版本] [--force-restore]   恢复该真源（默认最近一版），恢复前自动备份
-  （--force-restore：跳过"掏空/缩水"内容校验。用途：**有意**恢复一个旧的小版本，
+  node _快照.mjs --restore <文件> [版本] [--force-restore --confirm-force=<文件名>]   恢复该真源（默认最近一版），恢复前自动备份
+  （--force-restore：跳过"掏空/缩水"内容校验（JSON 与 md/html/csv 同口径）。用途：**有意**恢复一个旧的小版本，
     或有意恢复一个清零后的空态 —— "最富历史基线"会把这两种合法意图误判成内容丢失。
+    必须同时给 --confirm-force=<要恢复的文件名> 做二次确认；每次强制恢复记入 _备份-真源\\_强制恢复审计.log。
     恢复前内容仍会留档进 _备份-真源\\，恢复后仍要过形状守卫与同构校验。）`;
 
 const FLAGS = ['--dry', '--list', '--status', '--restore', '--restore-list', '--force-restore'];
@@ -66,7 +68,7 @@ const CRITICAL_FIELDS_BY_NAME = {
   '_原图台账.json': ['objects'],
   '_笔形台账.json': ['items'],
 };
-const unknown = args.filter(a => a.startsWith('--') && !FLAGS.includes(a));
+const unknown = args.filter(a => a.startsWith('--') && !FLAGS.includes(a) && !a.startsWith('--confirm-force='));
 if (unknown.length) {
   console.error('✖ 未知参数：' + unknown.join(' '));
   console.error(USAGE);
@@ -164,6 +166,33 @@ if (args.includes('--restore')) {
   const ver = positional[1] || null;         // 可选：git short/full hash
   if (!rel) { console.error(USAGE); process.exit(2); }
   const abs = path.join(ROOT, rel);
+  /* ★ 2026-11-05（合并评审 P0-4）：--force-restore 是**显式绕过口**，不是安全机制。
+     修前只要多打一个 flag 就跳过内容校验，且不留任何审计痕迹。现在：
+       ① 二次确认：必须同时给 `--confirm-force=<文件名>`，且文件名与要恢复的文件一致
+          （防止从别的命令行复制粘贴时把 --force-restore 带过来）；
+       ② 审计：每次强制恢复在 `_备份-真源\_强制恢复审计.log` 追加一行（时间/文件/来源/前后字节数/操作者）。
+     审计日志与备份同目录、同权限 —— 它防的是"误操作无痕"，不防有意篡改，这一点如实写在这里。 */
+  /* ★ 2026-11-05（PR #13 复审）：审计改成"先记后做"。修前审计在恢复**之后**追加、写失败只警告 ⇒
+       恢复成功却无痕；被拒的强制恢复也不留痕。现在：
+         · 被拒（二次确认缺失/不符）⇒ 尽力记一行 status=refused（写不进也照样拒，拒绝本身是安全的一侧）；
+         · 放行前先记 status=attempt，**写不进就中止、不恢复**；恢复结束再记 done / reverted。 */
+  const auditFile = path.join(path.dirname(abs), '_备份-真源', '_强制恢复审计.log');
+  const audit = (rec) => {
+    fs.mkdirSync(path.dirname(auditFile), { recursive: true });
+    fs.appendFileSync(auditFile, JSON.stringify(Object.assign({
+      at: new Date().toISOString(), file: rel,
+      by: (() => { try { return os.userInfo().username; } catch { return ''; } })(),
+    }, rec)) + '\n', 'utf8');
+  };
+  if (forceRestore) {
+    const conf = (args.find(a => a.startsWith('--confirm-force=')) || '').slice('--confirm-force='.length);
+    if (conf !== path.basename(abs)) {
+      try { audit({ status: 'refused', reason: conf ? '--confirm-force 文件名不符：' + conf : '缺 --confirm-force', version: ver || '' }); } catch { }
+      console.error('✖ --force-restore 会跳过"掏空/缩水"内容校验，需要二次确认：再加 --confirm-force=' + path.basename(abs) +
+        '（文件名必须与要恢复的文件一致）。未执行任何恢复。');
+      process.exit(2);
+    }
+  }
 
   let src = null, srcDesc = '', fromGit = false;
   if (ver) {
@@ -281,8 +310,48 @@ if (args.includes('--restore')) {
     }
     if (best && bestScore > 0) histObj = best;           // 内容比对用"最富"的那版
   }
+  /* ★ 2026-11-05（合并评审 P1-5）：非 JSON 真源（错题记录.md / 题干.html / 收件箱 csv·md / _撤卡留档）的内容基准。
+     修前内容校验整段包在 `if (/\.json$/i)` 里 ⇒ 掏空的 md/html **不用 --force-restore 就直接恢复通过**。
+     判据（与 JSON 同口径的两档，只是计量单位换成"非空白字符数"）：
+       ① 基准非空 ⇒ 恢复后不得为空白；② 恢复后 < 基准的一半 ⇒ 判"缩水过多"。
+     基准 = 恢复前内容 与 git 最近 20 版里最大的那一版 中更大者（与 JSON 的"最富历史版"同理）。 */
+  if (forceRestore) {
+    try { audit({ status: 'attempt', source: srcDesc, bytesBefore: preCopy ? preCopy.length : null, bytesAfter: content.length }); }
+    catch (e) { console.error('✖ --force-restore 的审计行写不进去（' + e.message + '），按"先记后做"中止，未恢复任何内容。'); process.exit(1); }
+    /* 恢复走到哪一步都要有收尾行：正常结束记 done，校验失败自动退回记 reverted（exit 钩子里写，覆盖所有 process.exit 路径） */
+    process.on('exit', (code) => { try { audit({ status: code === 0 ? 'done' : 'reverted', source: srcDesc, exitCode: code }); } catch { } });
+  }
+  const isText = !/\.json$/i.test(abs);
+  const weight = buf => (buf ? buf.toString('utf8').replace(/^\uFEFF/, '').replace(/\s+/g, '').length : 0);
+  let textBase = 0;
+  if (isText) {
+    textBase = weight(preCopy);
+    for (const h of historyOf(rel).slice(0, 20)) {
+      try { textBase = Math.max(textBase, weight(gitBin('show', h.full + ':' + rel))); } catch { }
+    }
+  }
   /* 安全网 2：原子写（不半截） */
   writeTextAtomic(abs, content.toString('utf8'));
+  if (isText) {
+    const nowW = weight(content);
+    let why = '';
+    if (textBase > 0 && nowW === 0) why = '内容被掏空（基准 ' + textBase + ' 个非空白字符 → 现 0）';
+    else if (textBase > 0 && nowW < textBase * 0.5) why = '内容大幅缩水（基准 ' + textBase + ' → 现 ' + nowW + ' 个非空白字符，低于一半）';
+    if (why && !forceRestore) {
+      console.error('  ✖ 恢复内容未通过校验：' + why + '。若这是**有意**恢复的旧小版本，加 --force-restore --confirm-force=' + path.basename(abs) + '。');
+      if (preCopy) {
+        try { writeTextAtomic(abs, preCopy); console.error('  ✔ 已自动退回恢复前版本（文件内容已还原）'); }
+        catch (e2) { console.error('  ✖ 退回也失败：' + e2.message + '（请手动从 _备份-真源\\ 恢复）'); }
+      } else {
+        try { fs.unlinkSync(abs); } catch { }
+        console.error('  ✔ 恢复前文件不存在，已删除刚写入的版本');
+      }
+      process.exit(1);
+    }
+    if (why) console.log('  ⚠ --force-restore：' + why + '，按显式意图放行。');
+    else console.log('  ✔ 文本内容校验通过（非空白字符 ' + nowW + (textBase ? ' / 基准 ' + textBase : '') + '）');
+  }
+  if (forceRestore) console.log('  ⚠ 已记入 _备份-真源\\_强制恢复审计.log（attempt → done/reverted）');
   /* 安全网 3：**同构性**校验 —— 拿"正常的旧内容"当基准，比"损坏的当前内容"当基准合理。
      合法但结构不对的 JSON（如 batches 从数组变成字符串）照样让下游工具炸，
      正是 `_安全写.mjs` 开头警告的"形状漂移"。不一致 ⇒ 判红并**自动退回**。 */

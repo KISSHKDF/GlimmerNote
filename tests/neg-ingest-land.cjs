@@ -35,6 +35,10 @@ const { spawnSync } = require('child_process');
 const E = require('./_测试环境.cjs');
 
 let fails = 0, total = 0;
+/* ★ 2026-11-05（合并评审 P2-8 同类）：裁图走 PowerShell + System.Drawing，只有 Windows 有。
+   非 Windows 上依赖裁图产物的断言**显式 SKIP**（打印出来、不计入通过），不冒充通过、也不误报回归。 */
+const CAN_CROP = process.platform === 'win32';
+const SKIP = (n, why) => console.log('[SKIP] ' + n + '  → ' + why);
 const A = (n, ok, d) => {
   total++;
   console.log(`${ok ? '[OK]  ' : '[FAIL]'} ${n}${d !== undefined ? '  → ' + String(d).slice(0, 220) : ''}`);
@@ -208,7 +212,7 @@ const mkLandPage = (reply, over) => {
       subject: '数学', title: '煮面条工序时间', source: '第一章数学 · 第3题', sourceDate: '2026-11-04',
       questionText: '小敏煮面条，最少需要 ____ min。',
       studentAnswer: '22', answer: '13',
-      answerSource: '独立判卷', answerSourceNote: '可并行工序共 3min，再烧水 7min，再煮 3min，合计 13min',
+      answerSource: '独立判卷', answerSourceNote: '可并行工序共 3min，再烧水 7min，再煮 3min，合计 13min', teacherAnswer: '',
       causeCode: 'L1', causeNote: '把能并行的工序串行相加了',
       kpoints: ['统筹优化'], difficulty: '中', hasFigure: false, confidence: 'high',
       sourceImageSha256: o.sha || IMG_SHA, notes: '', bbox: [0.02, 0.29, 0.96, 0.08],
@@ -234,10 +238,15 @@ const mkLandPage = (reply, over) => {
   A('C1 索引里真的多了一张卡（M0001）', idx.items.length === 1 && idx.items[0].id === 'M0001',
     'items=' + idx.items.length + ' id=' + (idx.items[0] && idx.items[0].id));
   const cardDir = path.join(LIB, '七年级-学生甲', '数学', 'M0001-煮面条工序时间');
-  for (const f of ['题干.html', '错题记录.md', '原卷截图.jpg']) {
+  for (const f of ['题干.html', '错题记录.md']) {
     A('C1 卡目录里有 ' + f, fs.existsSync(path.join(cardDir, f)));
   }
-  A('C1 裁图记录 sidecar 在（_原卷台账 只认它）', fs.existsSync(path.join(cardDir, '_裁图记录.json')));
+  if (CAN_CROP) {
+    A('C1 卡目录里有 原卷截图.jpg', fs.existsSync(path.join(cardDir, '原卷截图.jpg')));
+    A('C1 裁图记录 sidecar 在（_原卷台账 只认它）', fs.existsSync(path.join(cardDir, '_裁图记录.json')));
+  } else {
+    SKIP('C1 原卷截图.jpg / 裁图 sidecar', '非 Windows 无 System.Drawing，裁图不可用（Windows 上必须跑）');
+  }
   A('C1 任务记录回写了 cards[]（"确认"确认的是真东西，不是空盒子）', (() => {
     const j = JSON.parse(fs.readFileSync(path.join(LIB, '_录题', TID + '.json'), 'utf8').replace(/^\uFEFF/, ''));
     return Array.isArray(j.cards) && j.cards.length === 1;
@@ -361,28 +370,32 @@ const mkLandPage = (reply, over) => {
   const g = gatesRun(LIB);
   A('E1 入库后作答契约门禁**通过**（答案齐全）', g.answer === 0, 'exit=' + g.answer + ' ' + g.out.slice(0, 300));
   A('E2 入库后配图门禁**通过**', g.figure === 0, 'exit=' + g.figure);
-  A('E3 入库后原卷溯源台账门禁**通过**（裁图 sidecar 被折进去了）', g.ledger === 0, 'exit=' + g.ledger);
-  A('E4 原卷台账里能查到这张卡的溯源（page/box 都在）', (() => {
-    const p = path.join(LIB, '_原卷台账.json');
-    if (!fs.existsSync(p)) return false;
-    const j = JSON.parse(fs.readFileSync(p, 'utf8').replace(/^\uFEFF/, ''));
-    const e = (j.cards || {})['学生甲|M0001'];
-    return !!e && !!e.box && !!e.by;
-  })(), '');
-  A('E5 盲解清稿已备好（只有题干；卡面显示「未盲解」是事实，但材料不能欠账）',
-    (() => {
-      const d = path.join(LIB, '_盲解');
-      if (!fs.existsSync(d)) return false;
-      const f = fs.readdirSync(d).find(x => /盲解清稿/.test(x));
-      if (!f) return false;
-      const txt = fs.readFileSync(path.join(d, f), 'utf8');
-      /* 清稿的自我声明：**只含题干**，不含任何答案、孩子答案与错因 */
-      if (!/只含题干/.test(txt)) return false;
-      /* 且**不许**含答案（否则盲解就白做了） */
-      const body = txt.split('【作答】')[0];
-      if (/13min|13 min|统筹优化/.test(body)) return false;
-      return /M0001/.test(txt);
+  if (!CAN_CROP) {
+    SKIP('E3/E4 原卷溯源台账', '依赖裁图 sidecar，非 Windows 不可用');
+  } else {
+    A('E3 入库后原卷溯源台账门禁**通过**（裁图 sidecar 被折进去了）', g.ledger === 0, 'exit=' + g.ledger);
+    A('E4 原卷台账里能查到这张卡的溯源（page/box 都在）', (() => {
+      const p = path.join(LIB, '_原卷台账.json');
+      if (!fs.existsSync(p)) return false;
+      const j = JSON.parse(fs.readFileSync(p, 'utf8').replace(/^\uFEFF/, ''));
+      const e = (j.cards || {})['学生甲|M0001'];
+      return !!e && !!e.box && !!e.by;
     })(), '');
+    A('E5 盲解清稿已备好（只有题干；卡面显示「未盲解」是事实，但材料不能欠账）',
+      (() => {
+        const d = path.join(LIB, '_盲解');
+        if (!fs.existsSync(d)) return false;
+        const f = fs.readdirSync(d).find(x => /盲解清稿/.test(x));
+        if (!f) return false;
+        const txt = fs.readFileSync(path.join(d, f), 'utf8');
+        /* 清稿的自我声明：**只含题干**，不含任何答案、孩子答案与错因 */
+        if (!/只含题干/.test(txt)) return false;
+        /* 且**不许**含答案（否则盲解就白做了） */
+        const body = txt.split('【作答】')[0];
+        if (/13min|13 min|统筹优化/.test(body)) return false;
+        return /M0001/.test(txt);
+      })(), '');
+  }
 
   /* ═════════ F · 阴性自证（判据有牙齿） ═════════ */
   console.log('\n═══ F · 阴性自证：摘掉前置检查 ⇒ 判据必须变红 ═══');
@@ -445,6 +458,134 @@ const mkLandPage = (reply, over) => {
     const n = cardCount(L);
     A('F2 变异体**确实放行了**错配的信封（证明 D2 那条判据抓得住）',
       rm.status === 0 && n === 1, 'exit=' + rm.status + ' cards=' + n + ' ' + String(rm.stderr || '').slice(0, 200));
+  }
+
+  /* ═════════ G · 事务（2026-11-05 合并评审 P0-3）═════════
+     修前入库只拿锁、没有事务：建卡目录 → 题干 → 记录 → 索引 → 任务记录 中途抛错就留半张卡；
+     --dry 照样写盘。判据：注入故障 ⇒ 库**原样**（无卡目录、索引无新条目）；--dry ⇒ 库原样。
+     阴性自证：同样注入故障、但把回滚掏掉 ⇒ 必须留下残卡（证明 G2 抓得住）。 */
+  console.log('\n═══ G · 事务：中途失败整体回滚；--dry 是真预演 ═══');
+  const cardDirOf = L => path.join(L, '七年级-学生甲', '数学', 'M0001-煮面条工序时间');
+  const taskCards = L => {
+    const j = JSON.parse(fs.readFileSync(path.join(L, '_录题', TID2 + '.json'), 'utf8').replace(/^\uFEFF/, ''));
+    return Array.isArray(j.cards) ? j.cards.length : -1;
+  };
+  {
+    const L = freshLib('g1');
+    w(L, path.join('_录题', TID2 + '.json'), mkTask(true));
+    const cf = path.join(L, 'cards.json');
+    fs.writeFileSync(cf, JSON.stringify(mkCards({ taskId: TID2 })), 'utf8');
+    const r = run(['_录题入库.mjs', '入库', TID2, '--file', cf, '--student', '学生甲', '--subject', '数学', '--data', L, '--dry']);
+    A('G1 --dry ⇒ exit 0 且说明已回滚', r.code === 0 && /已整体回滚/.test(r.out), 'exit=' + r.code + ' ' + r.out.slice(0, 160));
+    A('G1 --dry 后索引无新卡', cardCount(L) === 0, 'cards=' + cardCount(L));
+    A('G1 --dry 后卡目录不存在（新建的空目录也回滚掉）', !fs.existsSync(cardDirOf(L)));
+    A('G1 --dry 后任务记录未被回写', taskCards(L) === 0, 'cards[]=' + taskCards(L));
+  }
+  const INJECT_AT = '    tx.writeJson(taskFile(taskId), tj, { indent: 1 });';
+  A('G 注入锚点存在（写任务记录那一行）', LAND.includes(INJECT_AT));
+  const inject = src => src.replace(INJECT_AT, "    throw new Error('注入故障：写任务记录前');\n" + INJECT_AT);
+  {
+    const L = freshLib('g2');
+    w(L, path.join('_录题', TID2 + '.json'), mkTask(true));
+    const cf = path.join(L, 'cards.json');
+    fs.writeFileSync(cf, JSON.stringify(mkCards({ taskId: TID2 })), 'utf8');
+    const rm = runMutant(absolutize(inject(LAND)), L, TID2, cf);
+    A('G2 中途故障 ⇒ 非零退出', rm.status !== 0, 'exit=' + rm.status);
+    A('G2 ★ 中途故障后索引无新卡（索引已写过一次，被回滚）', cardCount(L) === 0, 'cards=' + cardCount(L));
+    A('G2 ★ 中途故障后卡目录不存在', !fs.existsSync(cardDirOf(L)));
+  }
+  {
+    const ROLLBACK_AT = '      const r = tx.rollback();\n      if (r && (r.restored || r.removed)) console.error';
+    A('G3 变异锚点存在（catch 里的回滚）', LAND.includes(ROLLBACK_AT));
+    const L = freshLib('g3');
+    w(L, path.join('_录题', TID2 + '.json'), mkTask(true));
+    const cf = path.join(L, 'cards.json');
+    fs.writeFileSync(cf, JSON.stringify(mkCards({ taskId: TID2 })), 'utf8');
+    const mutant = absolutize(inject(LAND).replace(ROLLBACK_AT, '      const r = null;\n      if (r && (r.restored || r.removed)) console.error'));
+    runMutant(mutant, L, TID2, cf);
+    A('G3 阴性自证 · 掏掉回滚 ⇒ 残卡留在库里（G2 判据有牙齿）', fs.existsSync(cardDirOf(L)) && cardCount(L) === 1,
+      'dir=' + fs.existsSync(cardDirOf(L)) + ' cards=' + cardCount(L));
+  }
+  /* G4 · 老师红笔 vs 官方答案（2026-11-05 合并评审 P1-6） */
+  {
+    const mk = (extra) => { const o = mkCards({ taskId: TID2 }); Object.assign(o.result.cards[0], { answerSource: '官方答案', answer: '13', teacherAnswer: '12' }, extra || {}); return o; };
+    const L = freshLib('g4');
+    w(L, path.join('_录题', TID2 + '.json'), mkTask(true));
+    const cf = path.join(L, 'cards.json');
+    fs.writeFileSync(cf, JSON.stringify(mk()), 'utf8');
+    const r = run(['_录题入库.mjs', '入库', TID2, '--file', cf, '--student', '学生甲', '--subject', '数学', '--data', L]);
+    A('G4 ★ 官方答案与老师红笔不一致且未交代 ⇒ 拒绝入库、零写盘', r.code !== 0 && cardCount(L) === 0 && /老师红笔/.test(r.out), 'exit=' + r.code + ' cards=' + cardCount(L));
+    fs.writeFileSync(cf, JSON.stringify(mk({ notes: '与老师红笔不一致：老师写 12，菁优网写 13，独立解法得 13' })), 'utf8');
+    const r2 = run(['_录题入库.mjs', '入库', TID2, '--file', cf, '--student', '学生甲', '--subject', '数学', '--data', L]);
+    A('G4 对照：notes 交代了分歧 ⇒ 放行', cardCount(L) === 1, 'exit=' + r2.code + ' cards=' + cardCount(L));
+    /* ★ 2026-11-05（PR #13 复审 ③）：放行 ≠ 了结 —— 老师红笔落盘、冲突挂牌（组卷准入据此拦） */
+    const ix = JSON.parse(fs.readFileSync(path.join(L, '七年级-学生甲', '数学', '_索引.json'), 'utf8').replace(/^\uFEFF/, ''));
+    const it = ix.items[0] || {};
+    A('G4 ★ teacherAnswer 进了索引', it.teacherAnswer === '12', JSON.stringify(it.teacherAnswer));
+    A('G4 ★ 冲突卡挂 teacherConflict（未裁决）', !!it.teacherConflict && it.teacherConflict.teacher === '12' && !it.teacherConflict.resolvedAt, JSON.stringify(it.teacherConflict));
+    const md = fs.readFileSync(path.join(cardDirOf(L), '错题记录.md'), 'utf8');
+    A('G4 ★ 错题记录.md 写了老师红笔与"须裁决"', /老师红笔：12/.test(md) && /异议裁决/.test(md));
+  }
+  /* G5 · 官方答案省略 teacherAnswer ⇒ 拒（修前漏填即全盲） */
+  {
+    const L = freshLib('g5');
+    w(L, path.join('_录题', TID2 + '.json'), mkTask(true));
+    const o = mkCards({ taskId: TID2 }); Object.assign(o.result.cards[0], { answerSource: '官方答案' }); delete o.result.cards[0].teacherAnswer;
+    const cf = path.join(L, 'cards.json'); fs.writeFileSync(cf, JSON.stringify(o), 'utf8');
+    const r = run(['_录题入库.mjs', '入库', TID2, '--file', cf, '--student', '学生甲', '--subject', '数学', '--data', L]);
+    A('G5 ★ 官方答案却省略 teacherAnswer ⇒ 拒绝、零写盘', r.code !== 0 && cardCount(L) === 0 && /teacherAnswer/.test(r.out), 'exit=' + r.code);
+    Object.assign(o.result.cards[0], { teacherAnswer: '' });
+    fs.writeFileSync(cf, JSON.stringify(o), 'utf8');
+    const r2 = run(['_录题入库.mjs', '入库', TID2, '--file', cf, '--student', '学生甲', '--subject', '数学', '--data', L]);
+    A('G5 对照：teacherAnswer="" 明确声明老师没写 ⇒ 放行', r2.code === 0 && cardCount(L) === 1, 'exit=' + r2.code);
+    /* 幂等摘要含 teacherAnswer：只改老师红笔重提，不得被当成"同一份"跳过 */
+    Object.assign(o.result.cards[0], { teacherAnswer: '12', notes: '与老师红笔不一致：老师写 12，站点 13' });
+    fs.writeFileSync(cf, JSON.stringify(o), 'utf8');
+    const r3 = run(['_录题入库.mjs', '入库', TID2, '--file', cf, '--student', '学生甲', '--subject', '数学', '--data', L]);
+    A('G5 ★ 只改 teacherAnswer 重提 ⇒ 不被幂等跳过', !/幂等/.test(r3.out), r3.out.slice(0, 120));
+  }
+  /* G7 · 二次复审 ③：teacherAnswer 每张卡必填，不分来源；老师定案却与老师红笔不一致 ⇒ 自相矛盾直接拒 */
+  {
+    const L = freshLib('g7');
+    w(L, path.join('_录题', TID2 + '.json'), mkTask(true));
+    const cf = path.join(L, 'cards.json');
+    const o = mkCards({ taskId: TID2 }); delete o.result.cards[0].teacherAnswer;
+    fs.writeFileSync(cf, JSON.stringify(o), 'utf8');
+    const r = run(['_录题入库.mjs', '入库', TID2, '--file', cf, '--student', '学生甲', '--subject', '数学', '--data', L]);
+    A('G7 ★ 独立判卷 漏填 teacherAnswer ⇒ 拒、零写盘', r.code !== 0 && cardCount(L) === 0 && /teacherAnswer/.test(r.out), 'exit=' + r.code);
+    Object.assign(o.result.cards[0], { answerSource: '老师定案', teacherAnswer: '12', notes: '与老师红笔不一致：随便写一句' });
+    fs.writeFileSync(cf, JSON.stringify(o), 'utf8');
+    const r2 = run(['_录题入库.mjs', '入库', TID2, '--file', cf, '--student', '学生甲', '--subject', '数学', '--data', L]);
+    A('G7 ★ 老师定案 却与老师红笔不一致 ⇒ 拒（notes 也救不了）', r2.code !== 0 && cardCount(L) === 0 && /自相矛盾/.test(r2.out), 'exit=' + r2.code);
+    Object.assign(o.result.cards[0], { answerSource: '老师定案', teacherAnswer: '  ', notes: '' });
+    fs.writeFileSync(cf, JSON.stringify(o), 'utf8');
+    const r2b = run(['_录题入库.mjs', '入库', TID2, '--file', cf, '--student', '学生甲', '--subject', '数学', '--data', L]);
+    A('G7 ★ 老师定案 却 teacherAnswer 为空/空白 ⇒ 拒（修前绕过两道检查直进组卷池）', r2b.code !== 0 && cardCount(L) === 0 && /teacherAnswer 为空/.test(r2b.out), 'exit=' + r2b.code);
+    Object.assign(o.result.cards[0], { answerSource: '独立判卷', teacherAnswer: '12', notes: '与老师红笔不一致：老师 12，独立解 13' });
+    fs.writeFileSync(cf, JSON.stringify(o), 'utf8');
+    const r3 = run(['_录题入库.mjs', '入库', TID2, '--file', cf, '--student', '学生甲', '--subject', '数学', '--data', L]);
+    const ix = cardCount(L) ? JSON.parse(fs.readFileSync(path.join(L, '七年级-学生甲', '数学', '_索引.json'), 'utf8').replace(/^\uFEFF/, '')).items[0] : {};
+    A('G7 ★ 独立判卷 与老师不一致（已交代）⇒ 入库但挂 teacherConflict', r3.code === 0 && !!(ix.teacherConflict && ix.teacherConflict.teacher === '12'), 'exit=' + r3.code);
+  }
+  /* G8 · --in 老别名在严格模式下仍可用（二次复审：误杀） */
+  {
+    const L = freshLib('g8');
+    w(L, path.join('_录题', TID2 + '.json'), mkTask(true));
+    const cf = path.join(L, 'cards.json'); fs.writeFileSync(cf, JSON.stringify(mkCards({ taskId: TID2 })), 'utf8');
+    const r = run(['_录题入库.mjs', '入库', TID2, '--in', cf, '--student', '学生甲', '--subject', '数学', '--data', L]);
+    A('G8 ★ --in <文件>（--file 老别名）⇒ 正常入库', r.code === 0 && cardCount(L) === 1, 'exit=' + r.code + ' ' + r.out.slice(0, 80));
+  }
+  /* G6 · 严格模式：写盘工具拼错开关当场拒（PR #13 复审 ①：修前 --dryy 被静默丢弃 ⇒ 真入库） */
+  {
+    const L = freshLib('g6');
+    w(L, path.join('_录题', TID2 + '.json'), mkTask(true));
+    const cf = path.join(L, 'cards.json'); fs.writeFileSync(cf, JSON.stringify(mkCards({ taskId: TID2 })), 'utf8');
+    const r = run(['_录题入库.mjs', '入库', TID2, '--file', cf, '--student', '学生甲', '--subject', '数学', '--data', L, '--dryy']);
+    A('G6 ★ 入库 --dryy ⇒ 报"未知参数"且零写盘', r.code !== 0 && /未知参数 --dryy/.test(r.out) && cardCount(L) === 0 && !fs.existsSync(cardDirOf(L)), 'exit=' + r.code + ' cards=' + cardCount(L));
+    const r2 = run(['_录题入库.mjs', '入库', TID2, '--file', cf, '--student', '学生甲', '--subject', '数学', '--data', L, '--dry=maybe']);
+    A('G6 ★ --dry=maybe（开关带非布尔值）⇒ 拒且零写盘', r2.code !== 0 && cardCount(L) === 0, 'exit=' + r2.code);
+    const r3 = run(['_录题入库.mjs', '入库', TID2, '--file', cf, '--student', '学生甲', '--subject', '数学', '--data', L, '--dry=true']);
+    A('G6 --dry=true ⇒ 预演（零写盘）', r3.code === 0 && /已整体回滚/.test(r3.out) && cardCount(L) === 0, 'exit=' + r3.code);
   }
 
   console.log('\nRESULT=' + (fails ? 'FAIL(' + fails + ')' : 'PASS') + ' 断言=' + total);

@@ -62,12 +62,15 @@ console.log('\n═══ F06 参数解析：--note --force 不再打开 force �
      真给了 --force ⇒ 放行到防重复/别的路径（exit 0）。两条对照就是"force 是否真开了"的行为判据。 */
   const r = run(['组卷', '--student', '测试生', '--ids', 'M0001', '--note', '--force']);
   const forced = run(['组卷', '--student', '测试生', '--ids', 'M0002', '--force']);
-  A('★ `--note --force`：force 被 note 当成值吃掉 ⇒ 指纹门禁照拦（exit 2）', r.code === 2,
+  /* 2026-11-05（PR #13 三次复审）：严格模式下"带值 flag 后紧跟本工具开关"改为当场报缺值（修前吃成值、照拦 exit 2）。
+     判据不变：force 没有被打开（非零退出、没组出卷）。 */
+  A('★ `--note --force`：force 不被打开 ⇒ 严格模式报"缺值"非零退出', r.code !== 0 && /缺值/.test(String(r.err || '') + String(r.out || '')),
     'exit=' + r.code + ' ' + String(r.err || '').split('\n')[0].slice(0, 60));
   A('★ 对照：显式 --force 真的放行（判据不是恒假）', forced.code === 0, 'exit=' + forced.code);
   A('静态：_标记复习.mjs 已 import _参数.mjs（迁移在场）', /import \{ parseArgs/.test(TOOL_SRC));
   /* 变异自证：换回旧解析器 ⇒ --note --force 必须凭空开 force（指纹门禁被绕过） */
-  const oldParser = 'const { action, opt } = parseArgs(argv, { valueFlags: [...COMMON_VALUE_FLAGS] });';
+  /* 2026-11-05：解析器调用改成多行（加了 boolFlags 严格模式），锚点改用正则匹配整段调用 */
+  const oldParser = /const \{ action, opt \} = parseArgs\(argv, \{[\s\S]*?\n\}\);|const \{ action, opt \} = parseArgs\(argv, \{ valueFlags: \[\.\.\.COMMON_VALUE_FLAGS\] \}\);/;
   const legacy = 'const action = argv[0]; const opt = {}; for (let i = 1; i < argv.length; i++) { const t = argv[i]; if (!t.startsWith("--")) continue; const k = t.slice(2); if (i + 1 < argv.length && !argv[i + 1].startsWith("--")) { opt[k] = argv[++i]; } else { opt[k] = true; } }';
   const mutSrc = TOOL_SRC.replace(oldParser, legacy);
   A('变异锚点命中（解析器行可替换）', mutSrc !== TOOL_SRC, mutSrc === TOOL_SRC ? '锚点没命中' : '');
@@ -85,6 +88,32 @@ console.log('\n═══ F06 参数解析：--note --force 不再打开 force �
     }
     A('变异源码已还原', fs.readFileSync(TOOL, 'utf8') === TOOL_SRC);
   }
+}
+
+/* ════════ P2-2：解析器收口（2026-11-05 合并评审）════════ */
+console.log('\n═══ P2-2 参数解析：动作名前的值不丢 / --x=y / 拼错 flag 当场报错 ═══');
+{
+  const { pathToFileURL } = require('url');
+  const P = path.join(REPO, 'src', 'tools', '_参数.mjs');
+  const code = `import(${JSON.stringify(pathToFileURL(P).href)}).then(({ parseArgs: p, COMMON_VALUE_FLAGS: C }) => {
+    const o = {};
+    o.pre = p(['--student', '学生甲', '状态'], { valueFlags: C });
+    o.hijack = p(['--force', '组卷', '--student', 'x'], { valueFlags: C });
+    o.eq = p(['组卷', '--ids=M0001', '--note', '--a=b'], { valueFlags: C });
+    try { p(['组卷', '--dryy'], { valueFlags: C, boolFlags: ['dry'] }); o.strict = 'no-throw'; } catch (e) { o.strict = e.message; }
+    o.loose = p(['组卷', '--dryy'], { valueFlags: C });
+    console.log(JSON.stringify(o));
+  });`;
+  const r = require('child_process').spawnSync(process.execPath, ['--input-type=module', '-e', code], { encoding: 'utf8' });
+  let o = {};
+  try { o = JSON.parse(String(r.stdout).trim()); } catch { }
+  A('★ 动作名前的带值 flag 存进 opt（修前值静默丢失）', o.pre && o.pre.action === '状态' && o.pre.opt.student === '学生甲', JSON.stringify(o.pre));
+  A('★ 动作名前的未知 flag 不再吃掉动作名', o.hijack && o.hijack.action === '组卷' && o.hijack.opt.student === 'x', JSON.stringify(o.hijack));
+  A('★ --ids=M0001 拆成键值；带值 flag 后的 "--a=b" 原样当值', o.eq && o.eq.opt.ids === 'M0001' && o.eq.opt.note === '--a=b', JSON.stringify(o.eq && o.eq.opt));
+  A('★ 严格模式：拼错的 --dryy 当场报错', /未知参数 --dryy/.test(o.strict || ''), String(o.strict).slice(0, 40));
+  A('对照：不传 boolFlags 的工具保持老口径（不报错）', o.loose && o.loose.opt.dryy === true);
+  const rd = run(['组卷', '--student', '测试生', '--ids', 'M0001', '--dryy']);
+  A('★ _标记复习 已进严格模式：组卷 --dryy ⇒ 非零退出、未执行', rd.code !== 0 && /未知参数 --dryy/.test(rd.err || ''), 'exit=' + rd.code);
 }
 
 /* ════════ F02：非法日期拒绝且不写盘 ════════ */
@@ -308,6 +337,109 @@ console.log('\n═══ F08e reviews 上限：超 50 条裁最旧，同批次�
       JSON.stringify(got) === JSON.stringify(expected), '裁掉 ' + (53 - revs.length) + ' 条');
   } else {
     A('★ 行为验证前置：组卷成功', false, 'exit=' + rg.code);
+  }
+}
+
+/* ════════ P1-1：撤归档处理毒日期（2026-11-05 合并评审）════════ */
+console.log('\n═══ P1-1 撤归档：毒 nextDue 重算，毒 reviews[].date 点名不改写 ═══');
+{
+  const libU = makeLib(path.join(tmpRoot, 'libU'));
+  const idxPath = path.join(libU, '测试生', '数学', '_索引.json');
+  const idx = JSON.parse(fs.readFileSync(idxPath, 'utf8'));
+  const it = idx.items[1];   // M0002
+  it.status = '已归档'; it.archivedAt = '2026-10-01'; it.archivedReason = 't';
+  it.nextDue = '2026-13-45';                                   // 历史毒 nextDue
+  it.reviews = [
+    { date: '2026-02-30', paper: 'P20260000-01', result: '错', note: '' },   // 历史毒记录（不存在的日期）
+    { date: '2026-10-01', paper: 'P20260000-02', result: '对', note: '' },
+  ];
+  fs.writeFileSync(idxPath, JSON.stringify(idx, null, 1), 'utf8');
+  const r = E.runToolSync('_标记复习.mjs', ['撤归档', '--student', '测试生', '--ids', 'M0002'], { data: libU });
+  const after = JSON.parse(fs.readFileSync(idxPath, 'utf8')).items[1];
+  A('撤归档成功', r.code === 0 && after.status !== '已归档', 'exit=' + r.code + ' status=' + after.status);
+  A('★ 毒 nextDue 不再原样带回（按最后一条合法记录重算 = 2026-10-08）', after.nextDue === '2026-10-08', 'nextDue=' + after.nextDue);
+  A('★ 毒 reviews[].date 被点名（含批次号），提示人工核对', /非法日期[\s\S]*2026-02-30[\s\S]*P20260000-01/.test(r.out || ''), String(r.out || '').slice(0, 200));
+  A('毒 reviews[].date 未被改写（历史记录不擅改）', after.reviews.some(x => x.date === '2026-02-30'));
+  /* 变异自证：掏掉重算 ⇒ 毒 nextDue 原样留下 */
+  const mutSrc = TOOL_SRC.replace('      if (write) recomputeNextDue(item);\n', '');
+  if (mutSrc !== TOOL_SRC) {
+    const libM = makeLib(path.join(tmpRoot, 'libUm'));
+    const ip = path.join(libM, '测试生', '数学', '_索引.json');
+    fs.writeFileSync(ip, JSON.stringify(idx, null, 1), 'utf8');
+    try {
+      fs.writeFileSync(TOOL, mutSrc, 'utf8');
+      E.runToolSync('_标记复习.mjs', ['撤归档', '--student', '测试生', '--ids', 'M0002'], { data: libM });
+      const m = JSON.parse(fs.readFileSync(ip, 'utf8')).items[1];
+      A('★ 自证 · 掏掉重算 ⇒ 毒 nextDue 原样留下（判据有牙齿）', m.nextDue === '2026-13-45', 'nextDue=' + m.nextDue);
+    } finally {
+      fs.writeFileSync(TOOL, TOOL_SRC, 'utf8');
+    }
+    A('变异源码已还原', fs.readFileSync(TOOL, 'utf8') === TOOL_SRC);
+  } else {
+    A('变异锚点命中（recomputeNextDue 行）', false);
+  }
+}
+
+/* ════════ PR #13 复审：--force=false 语义 + 教师异议准入 ════════ */
+console.log('\n═══ 复审② --force=false 不得被当成真值 ═══');
+{
+  const r = run(['组卷', '--student', '测试生', '--ids', 'M0002', '--force=false']);
+  A('★ 组卷 --force=false ⇒ 门禁照拦（exit 2，与没写 --force 一致）', r.code === 2, 'exit=' + r.code + ' ' + String(r.err || '').split('\n')[0].slice(0, 60));
+  const r2 = run(['组卷', '--student', '测试生', '--ids', 'M0002', '--force=maybe']);
+  A('★ 组卷 --force=maybe ⇒ 拒（开关不收非布尔值）', r2.code !== 0 && /是开关/.test(r2.err || ''), 'exit=' + r2.code);
+}
+console.log('\n═══ 复审③ 教师异议：准入/组卷同判据拦，异议裁决后放行 ═══');
+{
+  const libT = makeLib(path.join(tmpRoot, 'libT'));
+  const ip = path.join(libT, '测试生', '数学', '_索引.json');
+  const ix = JSON.parse(fs.readFileSync(ip, 'utf8'));
+  Object.assign(ix.items[2], { dir: 'M0003-测试', answerSource: '官方答案', answer: '2', teacherAnswer: '3',
+    teacherConflict: { teacher: '3', adopted: '2', source: '官方答案', note: 't', at: '2026-11-05' } });
+  fs.writeFileSync(ip, JSON.stringify(ix, null, 1), 'utf8');
+  /* 卡面：与 _录题入库 buildRecord 产出同构的最小片段 */
+  const mdDir = path.join(libT, '测试生', '数学', 'M0003-测试'); fs.mkdirSync(mdDir, { recursive: true });
+  const mdP = path.join(mdDir, '错题记录.md');
+  const MD0 = '# M0003\n\n## 正确答案\n\n**2**\n\n> 答案来源：官方答案 —— 站点答案\n\n> 老师红笔：3 ⚠ 与采用答案不一致，组卷前须裁决（`_标记复习.mjs 异议裁决`）\n';
+  fs.writeFileSync(mdP, MD0, 'utf8');
+  const rt = (a) => E.runToolSync('_标记复习.mjs', a, { data: libT });
+  const adm = () => { try { return JSON.parse(String(rt(['准入', '--json']).out || '').trim().split('\n').pop()).admit['测试生|M0003']; } catch { return null; } };
+  const a1 = adm();
+  A('★ 准入：教师异议未裁决 ⇒ 不可组卷且原因点名', a1 && a1.ok === false && /教师异议/.test(a1.why), JSON.stringify(a1));
+  const g = rt(['组卷', '--student', '测试生', '--ids', 'M0003', '--no-repeat-days', '0']);
+  A('★ 组卷：教师异议未裁决 ⇒ 答案来源门禁拦（exit 2）', g.code === 2 && /教师异议/.test(g.err || ''), 'exit=' + g.code);
+  const bad = rt(['异议裁决', '--student', '测试生', '--ids', 'M0003', '--as', '老师定案']);
+  A('异议裁决缺 --note ⇒ 拒', bad.code !== 0);
+  /* 卡面缺失 ⇒ 整次裁决拒、索引不动（不许留下"索引已裁、卡面未裁"的分叉） */
+  fs.renameSync(mdP, mdP + '.bak');
+  const miss = rt(['异议裁决', '--student', '测试生', '--ids', 'M0003', '--as', '老师定案', '--note', 'x']);
+  const ixMiss = JSON.parse(fs.readFileSync(ip, 'utf8')).items[2];
+  A('★ 卡面 md 缺失 ⇒ 裁决拒且索引未改', miss.code !== 0 && ixMiss.answer === '2' && !ixMiss.teacherConflict.resolvedAt, 'exit=' + miss.code);
+  fs.renameSync(mdP + '.bak', mdP);
+  const ok = rt(['异议裁决', '--student', '测试生', '--ids', 'M0003', '--as', '老师定案', '--note', '独立解：1+1=2 …按老师']);
+  const mdAfter = fs.readFileSync(mdP, 'utf8');
+  A('★ 裁决同步卡面：答案行改成老师红笔', /## 正确答案\n\n\*\*3\*\*\n/.test(mdAfter), mdAfter.slice(0, 120));
+  A('★ 裁决同步卡面：过期的"须裁决"提示已换成"已裁决"', !/须裁决/.test(mdAfter) && /已裁决（老师定案/.test(mdAfter));
+  A('★ 裁决同步卡面：来源行改成 老师定案（与索引一致），旧"官方答案 —— 站点答案"不再残留',
+    /^> 答案来源：老师定案 —— .*异议裁决\(老师定案\)/m.test(mdAfter) && !/官方答案 —— 站点答案/.test(mdAfter) && (mdAfter.match(/^> 答案来源：/gm) || []).length === 1, mdAfter.split('\n').filter(l => l.startsWith('> 答案来源')).join(' | '));
+  const after = JSON.parse(fs.readFileSync(ip, 'utf8')).items[2];
+  A('★ 异议裁决（老师定案）⇒ answer 改为老师红笔、来源=老师定案、留裁决痕', ok.code === 0 && after.answer === '3' && after.answerSource === '老师定案' && !!after.teacherConflict.resolvedAt,
+    'exit=' + ok.code + ' ' + JSON.stringify({ a: after.answer, s: after.answerSource }));
+  const a2 = adm();
+  A('★ 裁决后准入放行', a2 && a2.ok === true, JSON.stringify(a2));
+  /* 变异自证：准入去掉教师异议判据 ⇒ 未裁决也放行 */
+  const mutSrc = TOOL_SRC.replace('const a = okSrc(item) && !tc;', 'const a = okSrc(item);');
+  A('变异锚点命中（准入的教师异议判据）', mutSrc !== TOOL_SRC);
+  if (mutSrc !== TOOL_SRC) {
+    const libM = makeLib(path.join(tmpRoot, 'libTm'));
+    const ipm = path.join(libM, '测试生', '数学', '_索引.json');
+    fs.writeFileSync(ipm, JSON.stringify(ix, null, 1), 'utf8');
+    try {
+      fs.writeFileSync(TOOL, mutSrc, 'utf8');
+      const r = E.runToolSync('_标记复习.mjs', ['准入', '--json'], { data: libM });
+      let m = null; try { m = JSON.parse(String(r.out || '').trim().split('\n').pop()).admit['测试生|M0003']; } catch { }
+      A('★ 自证 · 掏掉判据 ⇒ 未裁决的教师异议被放行（判据有牙齿）', m && m.ok === true, JSON.stringify(m));
+    } finally { fs.writeFileSync(TOOL, TOOL_SRC, 'utf8'); }
+    A('变异源码已还原', fs.readFileSync(TOOL, 'utf8') === TOOL_SRC);
   }
 }
 

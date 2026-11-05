@@ -54,10 +54,17 @@ const ROOT = libraryRoot();
 const STORE = path.join(ROOT, '_原图');
 const LEDGER = path.join(ROOT, '_原图台账.json');
 const SNAP_DIR = path.join(STORE, '_快照');
-const JSON_OUT = process.argv.includes('--json');
-const DRY = process.argv.includes('--dry');
-
 const [cmd, ...rest] = process.argv.slice(2);
+/* ★ 2026-11-05（PR #13 二次复审 ①）：修前 DRY/JSON 是 `process.argv.includes('--dry')` 精确匹配 ——
+   `--dryy` 拼错、`--dry=true` 都不命中 ⇒ 用户以为预演、实际真写盘（与 _录题入库 修前同款）。
+   现在入口先以**严格模式**整体解析一遍：拼错/未知开关当场报错、零写盘；DRY/JSON 读解析结果。 */
+const ORIG_VALUE_OPTS = ['batch', 'student', 'subject', 'diff', 'from', 'sha', 'derived-from', 'op', 'file', 'note'];
+const ORIG_BOOL_OPTS = ['dry', 'json', 'list', 'scan', 'help', 'h'];
+let GLOBAL_OPT;
+try { GLOBAL_OPT = parseArgs(rest, { valueFlags: [...ORIG_VALUE_OPTS, ...COMMON_VALUE_FLAGS], boolFlags: ORIG_BOOL_OPTS, start: 0 }).opt; }
+catch (e) { console.error('✖ ' + e.message); process.exit(1); }
+const JSON_OUT = GLOBAL_OPT.json === true;
+const DRY = GLOBAL_OPT.dry === true;
 
 /* 持锁：本工具是"读台账 → 改内存 → 写回"的模式，没有锁时与其它写入口并发会丢更新。
    ⚠ 例外：**只读子命令不取锁**。取锁本身虽然只写系统临时目录（`_安全写.mjs` 的 stateDirOf），
@@ -165,8 +172,7 @@ const mb = (n) => (n / 1048576).toFixed(1) + ' MB';
    迁移后：已知带值 flag 无条件消费下一个参数（哪怕长得像 flag）。
    ⚠ 本文件没有动作名参数（argv[0] 就是子命令，已在上面 `const [cmd, …rest]` 拆出），
    解析 rest ⇒ start=0（无动作名槽）；带值表 = 本文件专属 VALUE_OPTS + COMMON_VALUE_FLAGS。 */
-const VALUE_OPTS = new Set(['batch', 'student', 'subject', 'diff', 'from', 'sha', 'derived-from', 'op', 'file', 'note']);
-const parseArgsLocal = (argv) => parseArgs(argv, { valueFlags: [...VALUE_OPTS, ...COMMON_VALUE_FLAGS], start: 0 });
+const parseArgsLocal = (argv) => parseArgs(argv, { valueFlags: [...ORIG_VALUE_OPTS, ...COMMON_VALUE_FLAGS], boolFlags: ORIG_BOOL_OPTS, start: 0 });
 
 /* 清理上次崩溃留下的 .tmp（>5 分钟的）。持锁期间不会有别的入库在写。 */
 function sweepTmp() {

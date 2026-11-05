@@ -60,7 +60,12 @@ const argv = process.argv.slice(2);
    带值 flag 清单 = COMMON_VALUE_FLAGS（student/ids/note/date/at/paper/results/to/title/
    subject/no-repeat-days/leech-at… 都在其中）；force/dry/json/refresh/interleave 是布尔，
    绝不能进带值表（会把下一个 flag 吃掉 —— 见 _参数.mjs 头部注释的 auto/apply 教训）。 */
-const { action, opt } = parseArgs(argv, { valueFlags: [...COMMON_VALUE_FLAGS] });
+/* ★ 2026-11-05（合并评审 P2-2）：本工具管组卷门禁，进严格模式 —— 拼错的 flag（如 --dryy）当场报错，
+   不再静默丢弃后真写盘。布尔开关清单与 opt.* 用法、壳的 mark 映射（CTBShellV2.cs op: mark）逐一核对过。 */
+const { action, opt } = parseArgs(argv, {
+  valueFlags: [...COMMON_VALUE_FLAGS],
+  boolFlags: ['force', 'dry', 'json', 'refresh', 'interleave', 'no-interleave', 'help', 'h'],
+});
 const dstr = x => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;  // 本地日期，勿用 toISOString（UTC+8 会倒退一天）
 const today = () => dstr(new Date());
 /* ★ 2026-11-04（外部复核实测 F02/High1）：日期唯一校验（三条判据缺一不可）——
@@ -172,6 +177,10 @@ function pendingMap(ledger) {
   return m;
 }
 
+/** ★ 2026-11-05（PR #13 复审 ③）：教师异议未裁决 ⇒ 不是合格的第二来源（组卷准入与组卷门禁同一判据，唯一实现在此）。
+ *  teacherConflict 由 `_录题入库.mjs` 在"官方答案与老师红笔不一致、notes 交代了分歧"时挂上；
+ *  只有 `异议裁决` 动作能把它标为已裁决（resolvedAt）。 */
+const teacherConflictOpen = it => !!(it && it.teacherConflict && typeof it.teacherConflict === 'object' && !it.teacherConflict.resolvedAt);
 const revsOf = it => (Array.isArray(it.reviews) ? it.reviews : []).filter(Boolean).sort((a, b) => String(a.date).localeCompare(String(b.date)));
 function passStreak(revs) {
   let p = 0;
@@ -302,8 +311,10 @@ function recomputeNextDue(it) {
 
 /* ★ 2026-11-04（外部复核实测 F08e）：reviews[] 上限。CHANGELOG 2026.11.04.01 声称
    "保留最近 50 条"但代码里从来没有 slice —— 文档与代码不符正是本轮的病根。
-   口径：保留**最近 50 条**（同一批次的记录全留，撤批要按 paper 匹配 —— 只按条数裁
-   可能把同批次的一部分裁掉，撤批时错误次数就回退不干净）；
+   口径：保留**最近 50 条所涉及的批次**，这些批次的记录全留 —— 所以是**软上限**，条数可能略超 50
+   （2026-11-05 合并评审 P2-1 实测：55 条、某批次横跨第 50 条边界 ⇒ 输出 52 条）。
+   为什么不做硬截断：撤批按 paper 匹配，只按条数裁可能把同批次的一部分裁掉，撤批时错误次数就回退不干净。
+   上界：50 + 跨边界那一个批次在本卡上的条数（正常流程每卡每批次 1 条 ⇒ 恰好 50）；
    被裁掉的都是最旧的，对 passStreak / nextDue / errorCount 三条下游判定无影响。 */
 const REVIEWS_KEEP = 50;
 function capReviews(list) {
@@ -312,7 +323,7 @@ function capReviews(list) {
   const papers = [...new Set(arr.slice(-REVIEWS_KEEP).map(r => r.paper))];
   return arr.filter(r => papers.includes(r.paper));
 }
-const REVIEWS_CAP_NOTE = '（reviews 超过 ' + REVIEWS_KEEP + ' 条：已按口径裁掉最旧的记录，同一批次的记录全留）';
+const REVIEWS_CAP_NOTE = '（reviews 超过 ' + REVIEWS_KEEP + ' 条：已裁掉最旧的批次；按批次整留，条数可能略超 ' + REVIEWS_KEEP + '）';
 
 function actGrading(paperId, resultsStr, date, note) {
   /* ★ 2026-11-04（F02 纵深防御）：actGrading 还有别的调用方（同步路径 b.gradedAt || b.date），
@@ -414,7 +425,20 @@ function actUnarchive(student, ids, to, note, write = false) {
       item.unarchiveAt = today();
       item.unarchiveNote = note || '';
     }
-    rows.push(item.id + ' [' + subject + '] 已归档 → ' + back + '（复习记录推导显示为「' + naturalStatus(item) + '」）');
+    /* ★ 2026-11-05（合并评审 P1-1）：撤归档 = 这张卡重新进复习流转，存量毒日期必须在这里处理掉。
+       修前只清归档字段，历史毒 nextDue（如 2026-13-45）原样带回在册 ⇒ 排期/首页/组卷按它算。
+       现在：nextDue 不合法 ⇒ 按剩余复习记录重算（recomputeNextDue 遇到毒 reviews[].date 会清空并响亮提示）；
+       reviews[] 里的毒日期**不改写**（那是历史记录，改了就无从核对），但逐条报出来，让人去核。 */
+    const okDate = d => { try { validDate(d); return true; } catch { return false; } };
+    const warn = [];
+    if (item.nextDue && !okDate(item.nextDue)) {
+      const was = item.nextDue;
+      if (write) recomputeNextDue(item);
+      warn.push('nextDue 非法 ' + JSON.stringify(was) + (write ? ' → 已重算为 ' + JSON.stringify(item.nextDue || '（空）') : '（写盘时会重算）'));
+    }
+    const badRevs = revsOf(item).filter(r => !okDate(r.date));
+    if (badRevs.length) warn.push('复习记录里有 ' + badRevs.length + ' 条非法日期（' + badRevs.map(r => JSON.stringify(r.date)).join('、') + '，批次 ' + [...new Set(badRevs.map(r => r.paper || '?'))].join('、') + '）—— 未改写历史，请人工核对');
+    rows.push(item.id + ' [' + subject + '] 已归档 → ' + back + '（复习记录推导显示为「' + naturalStatus(item) + '」）' + (warn.length ? ' ⚠ ' + warn.join('；') : ''));
     touched++;
   }
   const notFound = ids.filter(id => !rows.some(r => r.startsWith(id + ' ')) && !skipped.some(r => r.startsWith(id + ' ')));
@@ -447,11 +471,14 @@ switch (action) {
       let can = 0; const noSrc = [], noBlind = [];
       for (const { item } of itemsOf(j)) {
         const b = ['已通过', '已修正'].includes(item.blindStatus || '');
-        const a = okSrc(item);
+        const tc = teacherConflictOpen(item);
+        const a = okSrc(item) && !tc;
         const key = j.student + '|' + item.id;
-        const why = (b && a) ? '' : (!b ? ('盲解未过：' + (item.blindStatus || '未盲解')) : ('缺第二来源：' + (item.answerSource || 'answerSource 字段为空')));
+        const why = (b && a) ? '' : (!b ? ('盲解未过：' + (item.blindStatus || '未盲解'))
+          : tc ? ('教师异议待裁决：老师红笔 ' + item.teacherConflict.teacher + ' ≠ 采用 ' + item.teacherConflict.adopted)
+          : ('缺第二来源：' + (item.answerSource || 'answerSource 字段为空')));
         admit[key] = { ok: b && a, why };
-        if (b && a) can++; else if (!a) noSrc.push(item.id + '[' + (item.answerSource || '（缺字段）') + ']'); else noBlind.push(item.id + '[' + (item.blindStatus || '未盲解') + ']');
+        if (b && a) can++; else if (!a) noSrc.push(item.id + '[' + (tc ? '教师异议待裁决' : (item.answerSource || '（缺字段）')) + ']'); else noBlind.push(item.id + '[' + (item.blindStatus || '未盲解') + ']');
       }
       const total = can + noSrc.length + noBlind.length;
       totalAll += total; canAll += can;
@@ -541,9 +568,11 @@ switch (action) {
       if (!s) return false;
       return SRC_PREFIX_OK.some(p => s.startsWith(p)) || SRC_EXACT_OK.includes(s);
     };
-    const noSrc = ids.filter(id => !answerSourceOk(byId[id]));
+    /* ★ 2026-11-05（PR #13 复审 ③）：教师异议未裁决的卡，官方答案不算合格第二来源（与 准入 同判据） */
+    const noSrc = ids.filter(id => !answerSourceOk(byId[id]) || teacherConflictOpen(byId[id]));
     if (noSrc.length && !opt.force) {
-      console.error('✖ 答案来源门禁拦截（answerSource 无独立判卷/官方答案等第二来源）：' + noSrc.map(id => `${id}[${(byId[id].answerSource || '（缺字段）')}]`).join(' '));
+      console.error('✖ 答案来源门禁拦截（answerSource 无独立判卷/官方答案等第二来源，或教师异议待裁决）：' + noSrc.map(id => `${id}[${teacherConflictOpen(byId[id]) ? '教师异议待裁决' : (byId[id].answerSource || '（缺字段）')}]`).join(' '));
+      if (noSrc.some(id => teacherConflictOpen(byId[id]))) console.error('   → 教师异议：node _标记复习.mjs 异议裁决 --student ' + json.student + ' --ids <编号> --as 老师定案|官方答案 --note "<依据>"');
       console.error('   → 按《错题本系统方案》四之九做「全卷独立判卷复核」：转录无记号判卷清稿 → 无上下文子代理独立判卷 → 与红笔对照落 answerSource。');
       console.error('     查看全局：node _标记复习.mjs 准入 --student ' + json.student);
       process.exit(2);
@@ -844,6 +873,58 @@ switch (action) {
     console.log(rows.join('\n'));
     writeJson(file, json);
     refreshAll(loadLedger());
+    break;
+  }
+
+  case '异议裁决': {
+    /* ★ 2026-11-05（PR #13 复审 ③）：裁决"老师红笔 vs 官方答案"的唯一入口。
+       --as 老师定案 ⇒ answer 改成老师红笔、answerSource=老师定案；--as 官方答案 ⇒ 保留采用答案。
+       两种都要 --note 写依据（独立解法的关键步骤），裁决结果留在 teacherConflict 里（resolvedAt/resolvedAs/resolvedNote），不删历史。 */
+    if (!opt.student || !opt.ids) throw new Error('异议裁决需要 --student 与 --ids');
+    if (!['老师定案', '官方答案'].includes(opt.as)) throw new Error('异议裁决需要 --as 老师定案 或 --as 官方答案');
+    if (!opt.note || opt.note === true) throw new Error('异议裁决需要 --note 写明裁决依据（独立解法的关键步骤）');
+    const ids = splitIds(opt.ids);
+    const { file, json } = findIndexFile(opt.student);
+    const done = [], skipped = [];
+    for (const { item } of itemsOf(json)) {
+      if (!ids.includes(item.id)) continue;
+      if (!teacherConflictOpen(item)) { skipped.push(item.id + ' 没有待裁决的教师异议'); continue; }
+      const tc = item.teacherConflict;
+      if (!opt.dry) {
+        if (opt.as === '老师定案') { item.answer = tc.teacher; item.answerSource = '老师定案'; }
+        tc.resolvedAt = today(); tc.resolvedAs = opt.as; tc.resolvedNote = String(opt.note);
+        item.answerSourceNote = (item.answerSourceNote ? item.answerSourceNote + '；' : '') + '异议裁决(' + opt.as + ')：' + opt.note;
+        /* ★ 2026-11-05（PR #13 二次复审 ②）：卡面 错题记录.md 同步 —— 修前只改索引，卡面仍是原采用答案、
+           还挂着"须裁决"的过期提示，索引与卡面对不上。改两处：「## 正确答案」下的答案行、「老师红笔」行的状态。
+           md 找不到或结构对不上 ⇒ 不静默：整次裁决报错回滚（索引也不写），宁可不裁也不留分叉。 */
+        const md = path.join(path.dirname(file), String(item.dir || ''), '错题记录.md');
+        if (!item.dir || !fs.existsSync(md)) throw new Error(item.id + ' 的卡面 错题记录.md 不存在（' + md + '），裁决未写盘：先修卡面再裁决');
+        const lines = fs.readFileSync(md, 'utf8').split(/\r?\n/);
+        const h = lines.findIndex(l => l.trim() === '## 正确答案');
+        const ai = h < 0 ? -1 : lines.findIndex((l, i) => i > h && /^\*\*.*\*\*\s*$/.test(l.trim()));
+        const ti = lines.findIndex(l => l.startsWith('> 老师红笔：'));
+        if (ai < 0 || ti < 0) throw new Error(item.id + ' 的 错题记录.md 里找不到「## 正确答案」答案行或「老师红笔」行，裁决未写盘：卡面结构与入库器产出不符');
+        lines[ai] = '**' + String(item.answer || '（未能确认）') + '**';
+        /* ★ 2026-11-05（PR #13 三次复审）：来源行也要同步 —— 修前只改答案行与老师红笔行，
+           `> 答案来源：官方答案 —— 站点答案` 原样留着，索引与卡面在"答案出自哪里"上分叉。
+           入库时 answerSourceNote 为空不会写来源行 ⇒ 此时在老师红笔行前补一行。 */
+        const srcLine = '> 答案来源：' + item.answerSource + ' —— ' + item.answerSourceNote;
+        const si = lines.findIndex(l => l.startsWith('> 答案来源：'));
+        if (si >= 0) lines[si] = srcLine;
+        else { lines.splice(ti, 0, srcLine, ''); }
+        const ti2 = lines.findIndex(l => l.startsWith('> 老师红笔：'));
+        lines[ti2] = '> 老师红笔：' + tc.teacher + ' ✔ 已裁决（' + opt.as + '，' + tc.resolvedAt + '）：' + String(opt.note).replace(/\s+/g, ' ');
+        tx().writeText(md, lines.join('\n'));
+      }
+      done.push(item.id + ' → ' + opt.as + '（老师 ' + tc.teacher + ' / 原采用 ' + tc.adopted + '）');
+    }
+    const notFound = ids.filter(id => !done.some(r => r.startsWith(id + ' ')) && !skipped.some(r => r.startsWith(id + ' ')));
+    if (notFound.length) throw new Error(json.student + ' 库中不存在编号 ' + notFound.join(',') + '（未写盘）');
+    if (done.length && !opt.dry) { json.updatedAt = today(); writeJson(file, json); }
+    console.log('异议裁决 ' + done.length + ' 题' + (opt.dry ? '（--dry 未写盘）' : ''));
+    done.forEach(x => console.log('   ' + x));
+    skipped.forEach(x => console.log('   ↔ ' + x));
+    if (done.length && !opt.dry) refreshAll(loadLedger());
     break;
   }
 
