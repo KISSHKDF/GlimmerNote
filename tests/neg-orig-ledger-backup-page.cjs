@@ -67,9 +67,17 @@ wj('学生A/数学/_索引.json', {
   items: [{ id: 'M0001', dir: 'M0001-测试', title: '夹具', question: 'q', answer: 'a' }],
 });
 mk(`${CARD_DIR}/原卷截图.jpg`, png(400, 60));
-const recWrite = (obj) => wj(`${CARD_DIR}/_裁图记录.json`, Object.assign({
-  src: LEGACY, normBox: BOX, scale: 2, out: '原卷截图.jpg',
-}, obj));
+/* 造 `_裁图记录.json`：形态照真实卡来 —— 顶层 + `crops[]` 各一条（`out=原卷截图.jpg` 那条才算本题证据）。
+   `topSrcPx` 专造"只有顶层带 srcPx、crop 项不带"的新形态（2026-11-04 起那批就是它）。 */
+const recWrite = (obj = {}) => {
+  const src = obj.src !== undefined ? obj.src : LEGACY;
+  const nbox = obj.normBox !== undefined ? obj.normBox : BOX;
+  const top = { src, normBox: nbox, scale: 2, out: '原卷截图.jpg' };
+  const crop = { src, normBox: nbox, scale: 2, out: '原卷截图.jpg' };
+  if (obj.topSrcPx !== undefined) top.srcPx = obj.topSrcPx;
+  else if (obj.srcPx !== undefined) { top.srcPx = obj.srcPx; crop.srcPx = obj.srcPx; }
+  return wj(`${CARD_DIR}/_裁图记录.json`, Object.assign(top, { crops: [crop] }));
+};
 recWrite({ srcPx: '2024x2940' });
 mk(BACKUP, png(2024, 2940));
 
@@ -114,6 +122,16 @@ mk(BACKUP, png(2024, 2940));
   const e = entry(KEY);
   A('④a 无 srcPx 时仍定位（同相对路径命中）', e.page === CANON, String(e.page));
   A('④b note 如实写"未做像素自证"，不许假装验过', /未做像素自证/.test(e.note || ''), String(e.note).slice(0, 140));
+}
+
+/* ════ ④b srcPx 写在**记录顶层**（2026-11-04 起那批的形态）时也必须自证 ════
+   实测踩过：只看 crop 项的 srcPx ⇒ 顶层带 srcPx 的 26 张卡被误标成"未做像素自证"。 */
+{
+  recWrite({ srcPx: undefined, topSrcPx: '2024x2940' });   // 见下方 recWrite 的 topSrcPx 处理
+  run(['_原卷台账.mjs', '生成']);
+  const e = entry(KEY);
+  A('④c 顶层 srcPx 被采纳（定位成功）', e.page === CANON, String(e.page));
+  A('④d 且 note 写的是尺寸自证，不是"未做像素自证"', /尺寸自证\s*2024x2940/.test(e.note || '') && !/未做像素自证/.test(e.note || ''), String(e.note).slice(0, 160));
 }
 
 /* ════ ⑤ 备份件也不在 ⇒ 不定位 ════ */
