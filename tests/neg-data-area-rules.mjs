@@ -52,7 +52,7 @@ const REGISTERED_DIRS = ['组卷', '_原图', '_影像备份', '_备份-真源',
 const REGISTERED_FILES = [
   '_组卷台账.json', '_配图台账.json', '_原卷台账.json', '_原图台账.json', '_盲解双路.json',
   '_笔形台账.json', '_页码映射.json', '_待确认.json', '_待办欠账-派发.json',
-  '_状态.json', '_复习队列.md', '_待确认清单.md', '_词表.md', '首页.html', '先看这里.txt',
+  '_状态.json', '_复习队列.md', '_待确认清单.md', '_词表.md', '首页.html', '先看这里.txt', '_整改台账.md',
 ];
 const CARD_FILES = ['题干.html', '错题记录.md', '原卷截图.jpg', '_裁图记录.json'];
 /* N5 描述上限（与规范 §二 N5 表同一口径：40 是防退化上限，不是审美） */
@@ -292,6 +292,29 @@ greenCase('N9 例外：`.git\\` 与 `.gitignore`', (lib) => {
   wf(path.join(lib, '.git', 'config'), '[core]\n');
   wf(path.join(lib, '.git', 'objects', 'ab', 'cdef'), 'x\n');
 });
+greenCase('§3.3 新登记的 `_整改台账.md`（人读的整改欠账登记：只登记、不执行、门禁不读它内容）', (lib) => {
+  wf(path.join(lib, '_整改台账.md'), '# 整改台账\n\n## 待裁量\n- （人读，内容自由）\n');
+});
+/* 白名单的语义必须是「**允许存在**」而不是「必须存在」：任何登记文件缺席都不算违规。
+   这条专门钉住"删掉一个登记文件会不会被判红"——否则白名单会被误实现成"必答清单"。 */
+{
+  const lib = freshLib();
+  fs.rmSync(path.join(lib, '_整改台账.md'));
+  const r = gateJson(lib);
+  A('【白名单=允许存在·不是必须存在】合规库**删掉** `_整改台账.md` ⇒ 仍全绿（它不是必答项）',
+    r.code === 0 && r.json.violations.length === 0,
+    'exit=' + r.code + (r.json.violations.length ? ' 首条：' + r.json.violations[0].why : ''));
+}
+/* 反向：换成**未登记**的近名 ⇒ G6 必须判红（防止白名单被写成前缀/包含匹配） */
+{
+  const lib = freshLib();
+  fs.rmSync(path.join(lib, '_整改台账.md'));
+  wf(path.join(lib, '_整改台账.txt'), '# 近名但不是登记的那个\n');
+  const r = gateJson(lib);
+  A('【防前缀/包含匹配】`_整改台账.md` 换成未登记的近名 `_整改台账.txt` ⇒ G6 判红',
+    r.code === 2 && V(r.json, 'G6').some((v) => String(v.path).includes('_整改台账.txt')),
+    'exit=' + r.code + ' ｜ ' + V(r.json, 'G6').map((v) => path.basename(v.path)).join(' '));
+}
 
 /* ══════════════════════════════════════════════════════════════════════════
  * ② 逐条判据的阴性用例（G1..G9）
