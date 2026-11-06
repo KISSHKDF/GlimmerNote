@@ -334,7 +334,10 @@ function ruleBackupPage(c) {
     __pageDiag = `_裁图记录.json 的兜底落点越出库根：${got.path} ⇒ 拒绝`;
     return null;
   }
-  const want = normSrcPx(rec.srcPx);
+  /* ⚠ `srcPx` 有两个历史位置：**crop 项里**（本轮多数）与**记录顶层**（2026-11-04 那批
+     `M0142+` 就是顶层带 srcPx、crop 项不带）⇒ 两处都要看，否则明明有像素依据却被判"未做自证"。
+     实测（2026-11-06 独立复核）：只读 crop 项会让 26 张卡的 note 谎称"未做像素自证"。 */
+  const want = normSrcPx(rec.srcPx) || normSrcPx(r.srcPx);
   const act = imageSize(abs);
   let verify;
   if (want && act) {
