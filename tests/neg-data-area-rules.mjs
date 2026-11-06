@@ -109,6 +109,17 @@ function buildLegal(root) {
   wf(path.join(root, '小甲', '数学', '_备份-真源', '_索引.json.bak-20261106'), '{}\n');
   /* N5 上限的**边界正例**：正好 40 字符的描述必须绿（41 才红） */
   mkCard(path.join(root, '小甲', '数学'), 'M0002-' + '长'.repeat(DESC_MAX));
+  /* N13 共用区（G11）的合法样例：全合规 ⇒ ① 段的"全绿"顺带把 G11 的 C 段也盖住了 */
+  wf(path.join(root, '_收件箱', '2026-11-05-小甲-数学', 'p1.jpg'), 'x\n');
+  wf(path.join(root, '_收件箱', '2026-11-05-小乙-语文-练习', 'p2.jpg'), 'x\n');
+  wf(path.join(root, '_盲解', '小甲-数学-盲解清稿.md'), '# 清稿\n');
+  wf(path.join(root, '_盲解', '小甲-数学-盲解清稿-第2路.md'), '# 清稿\n');
+  wf(path.join(root, '_录题', 't-20261105-120000-abcdef.json'), '{}\n');
+  fs.mkdirSync(path.join(root, '_撤卡留档', '2026-10-08'), { recursive: true });
+  fs.mkdirSync(path.join(root, '_撤卡留档', 'C0007-变化类型两格-2026-10-16-学生全对误建'), { recursive: true });
+  wf(path.join(root, '组卷', '2026-10-25-小甲-答案册-1637.pdf'), 'x\n');
+  wf(path.join(root, '_笔形', 'README.md'), '# 说明\n');                       // 放行且不进分母
+  wf(path.join(root, '_笔形', '小甲', 'A', '2026-10-09-0009.jpg'), 'x\n');      // 标签自由命名不判
   return root;
 }
 /** 全新一份合法库（临时目录，登记进退出清扫表） */
@@ -176,8 +187,8 @@ A('①b 合法库 violations 为空数组', !!g0.json && Array.isArray(g0.json.v
 A('①c 合法库不是"空真"（真判了对象：学生 2 / 卡 2 / 索引 2）',
   !!g0.json && g0.json.stats.studentDirs === 2 && g0.json.stats.cardDirs === 2 && g0.json.stats.indexFiles === 2 && g0.json.stats.rootEntries > 0,
   JSON.stringify((g0.json || {}).stats || null));
-A('①d 九条判据都有"已判数量"且 G1..G9 均被真跑过（防空真）',
-  !!g0.json && ['G1', 'G2', 'G3', 'G4', 'G5', 'G6', 'G7', 'G8', 'G9'].every((id) => {
+A('①d 全部判据都有"已判数量"（防空真，含 G11）',
+  !!g0.json && ['G1', 'G2', 'G3', 'G4', 'G5', 'G6', 'G7', 'G8', 'G9', 'G11'].every((id) => {
     const r = (g0.json.rules || []).find((x) => x.id === id);
     return r && r.evaluated > 0;
   }),
@@ -244,7 +255,8 @@ greenCase('`*.bak` 与快照清单在 `_原图\\_快照\\` 内部（§3.4 豁免
 });
 greenCase('§3.2 新登记的 `_笔形\\` + `_笔形台账.json`', (lib) => {
   wf(path.join(lib, '_笔形', '小乙.md'), '# 笔迹样本\n');
-  wf(path.join(lib, '_笔形', '小甲', 'sample1.jpg'), 'x\n');
+  /* N13 形态是 `<小名>\\<标签>\\<YYYY-MM-DD>-<4位序号>.<ext>`：样本必须住在**标签目录**里、且名带日期与序号 */
+  wf(path.join(lib, '_笔形', '小甲', 'A', '2026-11-06-0001.jpg'), 'x\n');
 });
 greenCase('§3.3 新登记的 `首页.html`（派生看板）', (lib) => {
   wf(path.join(lib, '首页.html'), '<!doctype html><p>x</p>\n');
@@ -512,8 +524,146 @@ negCase('G9', '库级台账下沉进学科目录', (lib) => {
   exercised.add('G9');
 }
 
-/* 覆盖自证：G1..G9 **一条都不能少**（少一条 = 判据没被阴性对照守） */
-A('②z 阴性用例覆盖 G1..G9 全部九条判据', ['G1', 'G2', 'G3', 'G4', 'G5', 'G6', 'G7', 'G8', 'G9'].every((id) => exercised.has(id)),
+/* ══════════════════════════════════════════════════════════════════════════
+ * ②.5 G11 跨学生同构（P9 + N13）—— 必答项是**聚合**（A 段），共用命名按学生分别算（C 段）
+ * ══════════════════════════════════════════════════════════════════════════ */
+console.log('\n── ②.5 G11 跨学生同构：A 段（必答项 · 聚合）+ C 段（N13 共用区命名，逐个区）──');
+
+/* A 段：必答项不成立 ⇒ G11 红（它是 G1/G4/G5/G8 的聚合，不重扫一遍） */
+negCase('G11', 'A段·目录名 ≠ `student` 字段（必答项 1）', (lib) => {
+  fs.renameSync(path.join(lib, '小甲'), path.join(lib, '小甲乙'));
+}, '必答项');
+negCase('G11', 'A段·学科目录不在 `subjects` 键里（必答项 3）', (lib) => {
+  fs.mkdirSync(path.join(lib, '小甲', '物理'));
+}, '必答项');
+negCase('G11', 'A段·学科目录里出现 N11 之外的条目（必答项 4）', (lib) => {
+  fs.mkdirSync(path.join(lib, '小甲', '数学', '随手放的目录'));
+}, '必答项');
+negCase('G11', 'A段·一个学生两份 `_索引.json`（必答项 2）', (lib) => {
+  wj(path.join(lib, '小甲', '数学', '_索引.json'), { student: '小甲', items: [] });
+}, '必答项');
+
+/* C 段：每个共用区各至少一条（N13 那张表逐行） */
+negCase('G11', 'C段·`_收件箱\\` 小名与学科之间**缺分隔符**（真实违规形态 `…-小甲物理-…`）', (lib) => {
+  fs.mkdirSync(path.join(lib, '_收件箱', '2026-11-01-小甲物理-机械能与内能'));
+}, '缺分隔符');
+negCase('G11', 'C段·`_收件箱\\` 小名不在册', (lib) => {
+  fs.mkdirSync(path.join(lib, '_收件箱', '2026-11-05-查无此人-数学'));
+}, '在册');
+negCase('G11', 'C段·`_收件箱\\` 日期写成 `YYYYMMDD`', (lib) => {
+  fs.mkdirSync(path.join(lib, '_收件箱', '20261105-小甲-数学'));
+}, 'YYYY-MM-DD');
+negCase('G11', 'C段·`_收件箱\\` 学科段不在闭集内', (lib) => {
+  fs.mkdirSync(path.join(lib, '_收件箱', '2026-11-05-小甲-科学'));
+}, '学科段');
+negCase('G11', 'C段·`_盲解\\` 清稿名不合 `<小名>-<学科>-盲解清稿[-第2路|-重盲解].md`', (lib) => {
+  wf(path.join(lib, '_盲解', '小甲-数学-清稿.md'), '# x\n');
+}, '盲解清稿');
+negCase('G11', 'C段·`_录题\\` 任务号不合 `t-YYYYMMDD-HHmmss-<6位hex>.json`', (lib) => {
+  wf(path.join(lib, '_录题', 't-2026-11-05-120000-abcdef.json'), '{}\n');
+}, '任务号');
+negCase('G11', 'C段·`_撤卡留档\\` 批次式日期写成 `YYYYMMDD`', (lib) => {
+  fs.mkdirSync(path.join(lib, '_撤卡留档', '20261008'));
+}, 'YYYY-MM-DD');
+negCase('G11', 'C段·`_撤卡留档\\` 单卡式日期写成 `YYYYMMDD`', (lib) => {
+  fs.mkdirSync(path.join(lib, '_撤卡留档', 'C0007-变化类型两格-20261016-学生全对误建'));
+}, 'YYYY-MM-DD');
+negCase('G11', 'C段·`组卷\\` 类型段不在 `重做卷|答案册` 里', (lib) => {
+  wf(path.join(lib, '组卷', '2026-10-25-小甲-练习卷-1637.pdf'), 'x\n');
+}, '重做卷');
+negCase('G11', 'C段·`_笔形\\` 样本日期写成 `YYYYMMDD`', (lib) => {
+  wf(path.join(lib, '_笔形', '小甲', 'A', '20261009-0009.jpg'), 'x\n');
+}, 'YYYY-MM-DD');
+negCase('G11', 'C段·`_笔形\\` 样本序号不是 4 位', (lib) => {
+  wf(path.join(lib, '_笔形', '小甲', 'A', '2026-10-09-09.jpg'), 'x\n');
+}, '4位序号');
+negCase('G11', 'C段·`_笔形\\` 顶层出现既不是 `<小名>\\` 也不是 `*.md` 的条目', (lib) => {
+  wf(path.join(lib, '_笔形', '随手.txt'), 'x\n');
+}, '顶层');
+negCase('G11', 'C段·`_笔形\\<小名>\\` 下出现文件（只允许 `<标签>\\` 目录）', (lib) => {
+  wf(path.join(lib, '_笔形', '小甲', '散件.jpg'), 'x\n');
+}, '标签');
+
+/* ── 防假阳（G11 最容易写错的两条，各钉一条）──────────────────────────────
+   ① B 段：**内容差异不判红** —— 两个学生的学科集合/可选顶各不相同，必须全绿；
+   ② C 段：合规率**按学生分别**算、各自 100%，且"归属不明"的条目不许被静默跳过。 */
+console.log('\n── ②.6 G11 防假阳：内容差异不判红 + 合规率按学生分别算 ──');
+{
+  const lib = freshLib();
+  /* 小甲：四科 + 原卷（跨学科）+ 数学待办证据 + 数学报告件 + 英语原卷；小乙：只有语文一科、什么都不多。 */
+  const p = path.join(lib, '小甲', '_索引.json');
+  const j = JSON.parse(fs.readFileSync(p, 'utf8'));
+  j.subjects['物理'] = { items: [] };
+  j.subjects['英语'] = { items: [] };
+  wj(p, j);
+  fs.mkdirSync(path.join(lib, '小甲', '物理'));
+  fs.mkdirSync(path.join(lib, '小甲', '英语'));
+  wf(path.join(lib, '小甲', '原卷', '2026-11-06-跨学科', 'p1.jpg'), 'x\n');
+  wf(path.join(lib, '小甲', '数学', '待办证据', 'ev.png'), 'x\n');
+  wf(path.join(lib, '小甲', '数学', '2026-11-06-批改报告.md'), '# r\n');
+  const r = gateJson(lib);
+  A('【防假阳】G11-B：两个学生的学科集合/可选顶**各不相同**（小甲 4 科+原卷+待办证据+报告件；小乙 1 科）⇒ 全绿',
+    r.code === 0 && r.json.violations.length === 0, 'exit=' + r.code + (r.json.violations.length ? ' 首条：' + r.json.violations[0].why : ''));
+  A('【防假阳】G11-B：该库里两个学生的"必答项"各自成立（不因对方少了什么而红）',
+    r.json.g11.mandatory.length === 2 && r.json.g11.mandatory.every((m) => m.ok), JSON.stringify(r.json.g11.mandatory));
+}
+{
+  /* ① 人多的一方不许掩盖另一方：小甲 10 条合规，小乙 1 条 ⇒ 两边各自 100%（全绿） */
+  const lib = freshLib();
+  for (let i = 1; i <= 10; i++) fs.mkdirSync(path.join(lib, '_收件箱', '2026-11-0' + (i % 9 + 1) + '-小甲-数学-第' + i + '批'));
+  fs.mkdirSync(path.join(lib, '_收件箱', '2026-11-05-小乙-语文'));
+  const r = gateJson(lib);
+  const rate = (n) => (r.json.g11.perStudent.find((s) => s.student === n) || {}).rate;
+  A('【防假阳】G11-C：小甲 10 条合规 + 小乙 1 条 ⇒ 两边**各自** 100%（合规率按学生分别算）',
+    r.code === 0 && rate('小甲') === '100%' && rate('小乙') === '100%', 'exit=' + r.code + ' 小甲=' + rate('小甲') + ' 小乙=' + rate('小乙'));
+}
+{
+  /* ② 反向：小乙的那 1 条违规 ⇒ 必须红，而且**小甲仍是 100%**（证明不是用整体率掩盖） */
+  const lib = freshLib();
+  for (let i = 1; i <= 10; i++) fs.mkdirSync(path.join(lib, '_收件箱', '2026-11-0' + (i % 9 + 1) + '-小甲-数学-第' + i + '批'));
+  fs.mkdirSync(path.join(lib, '_收件箱', '2026-11-05-小乙-科学'));      // 学科段不在闭集
+  const r = gateJson(lib);
+  const rate = (n) => (r.json.g11.perStudent.find((s) => s.student === n) || {}).rate;
+  A('【防假阳/抗掩盖】G11-C：人多的小甲全合规、小乙 1 条违规 ⇒ **仍判红**（不许被整体合规率掩盖）',
+    r.code === 2 && rate('小甲') === '100%' && rate('小乙') !== '100%',
+    'exit=' + r.code + ' 小甲=' + rate('小甲') + ' 小乙=' + rate('小乙'));
+  A('【防假阳/抗掩盖】G11-C：违规在 --json 里点名到小乙那个条目（按学生可归因）',
+    V(r.json, 'G11').some((v) => String(v.path).includes('小乙')), V(r.json, 'G11').map((v) => v.why).join(' ｜ ').slice(0, 200));
+}
+{
+  /* ③ 归属：粘连名（`…-小甲物理-…`）必须**记在小甲账上**（不是"无归属 ⇒ 丢掉"）；
+       真正认不出小名的（`查无此人`）必须判红并单列 —— 两种都不许静默跳过。
+       这两条正是"人多的一方掩盖另一方"的两个入口：丢掉违规条目、或把它算进别人的合规分母。 */
+  const libA = freshLib();
+  fs.mkdirSync(path.join(libA, '_收件箱', '2026-11-01-小甲物理-机械能与内能'));   // 粘连：小名成了"小甲物理"
+  const rA = gateJson(libA);
+  const rateA = (n) => (rA.json.g11.perStudent.find((s) => s.student === n) || {}).rate;
+  A('【防假阳/抗掩盖】G11-C：粘连名（缺分隔符）判红，且**记在小甲账上**（小甲 < 100%，不许当无归属丢掉）',
+    rA.code === 2 && rateA('小甲') !== '100%' && rA.json.g11.unattributed.length === 0,
+    'exit=' + rA.code + ' 小甲=' + rateA('小甲') + ' unattributed=' + JSON.stringify(rA.json.g11.unattributed));
+
+  const libB = freshLib();
+  fs.mkdirSync(path.join(libB, '_收件箱', '2026-11-05-查无此人-数学'));          // 小名根本不在册
+  const rB = gateJson(libB);
+  const rateB = (n) => (rB.json.g11.perStudent.find((s) => s.student === n) || {}).rate;
+  A('【防假阳/抗掩盖】G11-C：小名不在册的条目判红、单列在 `g11.unattributed`（不静默跳过）',
+    rB.code === 2 && rB.json.g11.unattributed.length === 1 && String(rB.json.g11.unattributed[0].path).includes('查无此人'),
+    'unattributed=' + JSON.stringify(rB.json.g11.unattributed).slice(0, 160));
+  A('【防假阳/抗掩盖】G11-C：它**不进**任何学生的分母（两个在册学生仍各自 100%，但整体并不因此变绿）',
+    rateB('小甲') === '100%' && rateB('小乙') === '100%' && rB.code === 2, 'exit=' + rB.code + ' 小甲=' + rateB('小甲') + ' 小乙=' + rateB('小乙'));
+}
+{
+  /* ④ `_录题\` 的时间戳任务号是 N13 日期硬规矩的**唯一例外** ⇒ 多条 `YYYYMMDD` 任务号必须全绿 */
+  const lib = freshLib();
+  for (let i = 0; i < 8; i++) wf(path.join(lib, '_录题', 't-2026110' + (i % 9) + '-1916' + String(i).padStart(2, '0') + '-' + (i.toString(16).padStart(6, '0')) + '.json'), '{}\n');
+  const r = gateJson(lib);
+  A('【防假阳】G11-C：`_录题\\` 的 `t-YYYYMMDD-…` 时间戳任务号是日期硬规矩的唯一例外 ⇒ 全绿',
+    r.code === 0 && r.json.g11.global.bad === 0 && r.json.g11.global.total > 0,
+    'exit=' + r.code + ' 库级=' + JSON.stringify(r.json.g11.global));
+}
+
+/* 覆盖自证：G1..G9 + G11 **一条都不能少**（少一条 = 判据没被阴性对照守） */
+A('②z 阴性用例覆盖 G1..G9 + G11 全部十条判据', ['G1', 'G2', 'G3', 'G4', 'G5', 'G6', 'G7', 'G8', 'G9', 'G11'].every((id) => exercised.has(id)),
   [...exercised].sort().join(' '));
 
 /* ══════════════════════════════════════════════════════════════════════════

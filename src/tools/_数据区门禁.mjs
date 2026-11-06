@@ -59,6 +59,7 @@ const RULES = [
   { id: 'G7', rule: 'C3.4②③', title: '库内任何位置不留 `*.bak-*` `*.bak` `*.old` `*.orig` `*.tmp-*` `_probe\\` `_tmp*\\` `_快照\\`；`tiles\\`/`_crops\\` 只在卡目录/原卷目录内部合法' },
   { id: 'G8', rule: 'F1', title: '一个学生恰好一份 _索引.json（禁止按学科拆成多份）' },
   { id: 'G9', rule: 'N6', title: '库级台账住在库根，不得下沉进学生目录' },
+  { id: 'G11', rule: 'P9+N13', title: '跨学生同构：每个学生的必答项都成立（聚合 G1/G4/G5/G8，不重复实现）；共用区命名（`_收件箱`/`_盲解`/`_录题`/`_撤卡留档`/`组卷`/`_笔形`）按**每个学生分别**算合规率且各自 100%' },
 ];
 
 /* §3.1 无前缀顶层（用户能看见的实体）+ §3.2 `_` 前缀程序保留区（枚举在册） */
@@ -174,6 +175,118 @@ function tileAllowedAt(root, dir) {
   return CARD_RE.test(seg[seg.length - 1]);            // 卡目录内部（父目录是卡目录）
 }
 
+/* ══════════════════════════════════════════════════════════════════════════
+ * G11 共用区命名（N13）—— **跨学生共用**的那几个区，同一个目录里放两个孩子的件，
+ * 所以命名必须"一眼分得清、且写法完全一致"（P9）。判据是**名字形态**，纯函数。
+ *
+ * ⚠ 最容易写错的一条（写在这里免得下轮又踩）：**判红只能是"某个位置出现了闭集外的条目"**，
+ *   不许是"两个学生缺了同一种目录"。学生甲有物理、学生乙没有；学生甲物理有 `原卷\`、学生乙数学没有 ——
+ *   那是**内容差异**，不是规则差异（规范 §一 P9 与 §六 G11 都写明了）。本文件里没有任何
+ *   "两个学生的树必须一样"的比较逻辑，那是刻意的。
+ * ══════════════════════════════════════════════════════════════════════════ */
+const DATE_YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
+const COMPACT_DATE_RE = /(?<!\d)\d{8}(?!\d)/;          // YYYYMMDD：N13 硬规矩判红（_录题 任务号除外）
+const COMPACT_HINT = '；日期写成 `YYYYMMDD`，N13 硬规矩是**一律 `YYYY-MM-DD`**（唯一例外：`_录题\` 的时间戳型任务号）';
+
+/** 在 `-` 分段的串里认出"在册小名"：先试整段，再试 `<小名>-` 前缀（长名优先，避免前缀歧义）。 */
+function matchStudent(rest, students) {
+  for (const n of students) {
+    if (rest === n) return { name: n, tail: '' };
+    if (rest.startsWith(n + '-')) return { name: n, tail: rest.slice(n.length + 1) };
+  }
+  // 没带分隔符的粘连（`<小名><学科>-…`）：把"小名 + 学科词"整体当前缀再试一次 —— 这类要按"缺分隔符"报，不许当解析不出去丢掉
+  for (const n of students) {
+    if (rest.startsWith(n)) return { name: n, tail: rest.slice(n.length), glued: true };
+  }
+  return null;
+}
+
+/** `_收件箱\` 批次目录：`<YYYY-MM-DD>-<小名>-<学科>[-<描述>]`（N13 第 2 条：描述可省，分隔符不可省） */
+function checkInboxName(name, students) {
+  const m = /^(\d{4}-\d{2}-\d{2})-(.+)$/.exec(name);
+  if (!m) return { why: '不合 `<YYYY-MM-DD>-<小名>-<学科>[-<描述>]`（N13）' + (COMPACT_DATE_RE.test(name) ? COMPACT_HINT : '') };
+  const hit = matchStudent(m[2], students);
+  if (!hit) return { why: '小名不属于任何**在册学生目录**（N13：`<小名>` 必须是真实存在的学生目录名）' };
+  if (hit.glued) return { why: '小名「' + hit.name + '」与学科之间**缺分隔符**（N13 第 2 条：少了分隔符即违规，小名成了「' + m[2].split('-')[0] + '」）', student: hit.name };
+  if (!hit.tail) return { why: '缺 `<学科>`（N13：`<学科>` 不可省）', student: hit.name };
+  const segs = hit.tail.split('-');
+  if (!SUBJECTS.includes(segs[0])) return { why: '学科段「' + segs[0] + '」不在学科闭集内（N13）', student: hit.name };
+  if (segs.some((s) => s === '')) return { why: '分段里出现空段（`--` 或结尾 `-`）—— 描述可省，但空段不是"省"（N13）', student: hit.name };
+  return { ok: true, student: hit.name };
+}
+
+/** `_盲解\`：`<小名>-<学科>-盲解清稿[-第2路｜-重盲解].md` */
+function checkBlindName(name, students) {
+  const m = /^([^-]+)-([^-]+)-盲解清稿(-第2路|-重盲解)?\.md$/.exec(name);
+  if (!m) return { why: '不合 `<小名>-<学科>-盲解清稿[-第2路|-重盲解].md`（N13）' };
+  if (!students.includes(m[1])) return { why: '小名「' + m[1] + '」不在册（N13）' };
+  if (!SUBJECTS.includes(m[2])) return { why: '学科段「' + m[2] + '」不在学科闭集内（N13）', student: m[1] };
+  return { ok: true, student: m[1] };
+}
+
+/** `_录题\`：`t-YYYYMMDD-HHmmss-<6位hex>.json` —— **N13 日期硬规矩的唯一例外**（时间戳型 ID） */
+function checkTaskName(name) {
+  if (/^t-\d{8}-\d{6}-[0-9a-f]{6}\.json$/i.test(name)) return { ok: true };
+  return { why: '不合 `t-YYYYMMDD-HHmmss-<6位hex>.json`（N13；任务号是时间戳型 ID，是日期硬规矩的唯一例外）' };
+}
+
+/** `_撤卡留档\`：批次式 `<YYYY-MM-DD>[-<描述>]` 或 单卡式 `<卡号>-<描述>-<YYYY-MM-DD>-<原因>` */
+function checkWithdrawName(name) {
+  if (/^\d{4}-\d{2}-\d{2}(-.*)?$/.test(name)) return { ok: true };        // 批次式（描述可省）
+  const segs = name.split('-');
+  const cardOk = /^[A-Z]\d{4}$/.test(segs[0]);                            // 单卡式：卡号开头
+  for (let i = 2; i + 3 <= segs.length - 1; i++) {
+    if (/^\d{4}$/.test(segs[i]) && /^\d{2}$/.test(segs[i + 1]) && /^\d{2}$/.test(segs[i + 2]) && segs[i + 3] !== '' && cardOk) return { ok: true };
+  }
+  return { why: '不合批次式 `<YYYY-MM-DD>[-<描述>]` 或单卡式 `<卡号>-<描述>-<YYYY-MM-DD>-<原因>`（N13）' + (COMPACT_DATE_RE.test(name) ? COMPACT_HINT : '') };
+}
+
+/** `组卷\`：`<YYYY-MM-DD>-<小名>-<重做卷｜答案册>-<HHmm>.pdf` */
+function checkPaperName(name, students) {
+  const m = /^(\d{4}-\d{2}-\d{2})-(.+)-(重做卷|答案册)-(\d{4})\.pdf$/.exec(name);
+  if (!m) return { why: '不合 `<YYYY-MM-DD>-<小名>-<重做卷|答案册>-<HHmm>.pdf`（N13）' + (COMPACT_DATE_RE.test(name) ? COMPACT_HINT : '') };
+  if (!students.includes(m[2])) return { why: '小名「' + m[2] + '」不在册（N13）' };
+  return { ok: true, student: m[2] };
+}
+
+/** `_笔形\` 样本件：`<YYYY-MM-DD>-<4位序号>.<ext>` */
+function checkSampleName(name) {
+  if (/^\d{4}-\d{2}-\d{2}-\d{4}\.[^.]+$/.test(name)) return { ok: true };
+  return { why: '不合 `<YYYY-MM-DD>-<4位序号>.<ext>`（N13）' + (COMPACT_DATE_RE.test(name) ? COMPACT_HINT : '') };
+}
+
+/** 走一遍六个共用区，返回逐条判定（`student` 为 null = 库级、无学生归属）。 */
+function sharedAreaChecks(root, students) {
+  const sorted = students.slice().sort((a, b) => b.length - a.length);   // 长名优先，避免前缀歧义
+  const out = [];
+  const add = (area, p, r) => out.push({ area, path: p, name: path.basename(p), ok: !!r.ok, why: r.why || '', student: r.student || null });
+  const kids = (d) => listEntries(d) || [];
+
+  for (const e of kids(path.join(root, '_收件箱'))) add('_收件箱', path.join(root, '_收件箱', e.name), checkInboxName(e.name, sorted));
+  for (const e of kids(path.join(root, '_盲解'))) add('_盲解', path.join(root, '_盲解', e.name), checkBlindName(e.name, sorted));
+  for (const e of kids(path.join(root, '_录题'))) add('_录题', path.join(root, '_录题', e.name), checkTaskName(e.name));
+  for (const e of kids(path.join(root, '_撤卡留档'))) add('_撤卡留档', path.join(root, '_撤卡留档', e.name), checkWithdrawName(e.name));
+  for (const e of kids(path.join(root, '组卷'))) add('组卷', path.join(root, '组卷', e.name), checkPaperName(e.name, sorted));
+
+  /* `_笔形\`：`<小名>\<标签>\<YYYY-MM-DD>-<4位序号>.<ext>`；`_笔形\*.md`（README/各人说明）放行；
+     标签自由命名**不判**。放行的 `.md` 不进分母（"放行"= 不判，不是"合规样本"）。 */
+  const pen = path.join(root, '_笔形');
+  for (const e of kids(pen)) {
+    const p = path.join(pen, e.name);
+    if (!e.isDir && /\.md$/i.test(e.name)) continue;                       // 放行且不计入分母
+    if (!e.isDir) { add('_笔形', p, { why: '`_笔形\\` 顶层只允许 `<小名>\\` 目录与 `*.md`（README/各人说明）（N13）' }); continue; }
+    if (!sorted.includes(e.name)) { add('_笔形', p, { why: '小名「' + e.name + '」不在册（N13：`_笔形\\<小名>\\`）' }); continue; }
+    for (const t of kids(p)) {
+      const tp = path.join(p, t.name);
+      if (!t.isDir) { add('_笔形', tp, { why: '`_笔形\\<小名>\\` 下只允许 `<标签>\\` 目录（N13）', student: e.name }); continue; }
+      for (const s of kids(tp)) {
+        add('_笔形', path.join(tp, s.name), Object.assign(checkSampleName(s.name), { student: e.name }));
+      }
+    }
+  }
+  return out;
+}
+
 /* §七 违规与处置的**机器可照做**形态（每条违规都带修法，仓库纪律：先根因再修法） */
 const FIX = {
   G1: '改名到 student 字段值，并同步改写台账里以该目录为前缀的**路径字段**（只改路径，不改溯源叙述）；顺序不能反——门禁按字段判目录名（规范 §七）。',
@@ -185,6 +298,7 @@ const FIX = {
   G7: '过程件一律落 `%LOCALAPPDATA%\\拾光小册\\proc\\`（`_过程目录.mjs`）；备份件只有两个合法去处：`_备份-真源\\`（库内，**任何层级**都行，N12）或库外。删掉库内这些残渣，或**搬**进 `_备份-真源\\`（搬而不是删，字节守恒对账才不被搅浑）；`tiles\\` / `_crops\\` 要移进卡目录 / 原卷目录（§3.4 ②③、W2/W3）。豁免只有三处：`_备份-真源\\`（任何层级）内部、`_影像备份\\` 内部、`_原图\\_快照\\`。',
   G8: '合并成学生级一份 `_索引.json`；合并前后**逐学科 items 条数必须相等**，并重跑四道卡门禁（规范 §七）。',
   G9: '移回库根（台账是跨学生的登记册，下沉就变成"每个学生一本"，跨学生查询立刻失效），并改引用它的工具（规范 §七）。',
+  G11: '必答项 ⇒ 按对应的 G1/G4/G5/G8 修（改名到 `student`、合并多份索引、补/摘 `subjects` 键、卡目录按 N5 改）；共用区命名 ⇒ 按 N13 那张表重命名，**日期一律 `YYYY-MM-DD`**（唯一例外是 `_录题\\` 的 `t-YYYYMMDD-…` 任务号），`<小名>` 必须是在册学生目录名、且与 `<学科>` 之间必须有分隔符（P9：规则只有一套，对每个孩子逐字相同）。',
 };
 
 /* 能力边界（诚实写明 —— 同 `docs\路径规范.md` §四 的立文理由：边界不写出来，
@@ -202,6 +316,9 @@ const BOUNDARIES = [
   'G7 的扫描面 = **库内任何位置**（§3.4 ②），豁免是穷举的三处：`_备份-真源\\`（任何层级）内部、`_影像备份\\` 内部、`_原图\\_快照\\`；`.git\\` 按 N9 不算数据条目。',
   '§3.4 ② 的残渣名字表是**穷举**的（`*.bak-*`/`*.bak`/`*.old`/`*.orig`/`*.tmp-*`/`_probe\\`/`_tmp*\\`/`_快照\\`）；`_快照\\` 唯一的合法位置是 `_原图\\_快照\\`，别处一律判红。要新增形态：改规范 + 改这里 + 加阴性对照。',
   '`fixtures\\` 下由 `make-fixture-lib.mjs` 造的合成库**故意**是畸形形态（规范 §六「作用域」）⇒ 不受本门禁约束，本门禁也不得接进 `tests\\run.mjs`。',
+  'G11 的 A 段（必答项）是 **G1/G4/G5/G8 的聚合**，不重扫一遍（规范明写"重叠就复用"）；B 段（可选顶）**不判"有没有"** —— 本文件里没有任何"两个学生的树必须一样"的比较逻辑，那是刻意的（P9：内容差异 ≠ 规则差异）。',
+  'G11 的 C 段按**每个学生分别**算合规率（各自必须 100%）：能归属的进该学生分母（含"小名与学科粘在一起"的 —— 它归**该学生**账上，不是无归属）；`_录题\\`/`_撤卡留档\\`（本来就没有学生归属）单列库级桶；小名根本不在册的条目**一律判红并单列**，绝不当"无法判定"跳过。',
+  'N13 的 `_笔形\\*.md`（README/各人说明）是**放行且不进分母**的；`_笔形\\` 的标签段自由命名**不判**。',
 ];
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -432,7 +549,73 @@ function audit(root) {
     }
   }
 
-  return { violations, evaluated, stats };
+  /* ══════════════════════════════════════════════════════════════════════════
+   * G11：跨学生同构（规范 §六 G11 + §二 N13 + §一 P9）
+   *
+   * A 段 必答项（少一个即红）= **G1/G4/G5/G8 的跨学生聚合**：规范明写"重叠就复用，别写两遍"，
+   *      所以这里**不重扫一遍**，而是把已收集的违规按学生归堆 —— 任何学生缺任何一项必答项即红。
+   * B 段 可选顶（`原卷\`/`待办证据\`/`*.md`/`_`·`.` 开头）：**不判"有没有"**，只由 A 段的闭集判据管"合不合规"。
+   *      ⚠ 本函数里**没有**任何"两个学生的树必须长得一样"的比较（P9 的反面口径），这是刻意的：
+   *        学生甲有物理、学生乙没有 = 内容差异，不是规则差异。
+   * C 段 共用命名（N13）：**对每个学生分别算合规率、各自必须 100%**（整体合规率会被人多的一方掩盖）；
+   *      无学生归属的库级共用区（`_录题\`、`_撤卡留档\` 批次式）另算一桶，同样必须 100%。
+   * ══════════════════════════════════════════════════════════════════════════ */
+  const g11 = { mandatory: [], perStudent: [], global: { total: 0, bad: 0 }, unattributed: [] };
+  {
+    /* ── A 段：必答项（聚合，不重复实现）── */
+    const MAND = [
+      { rules: ['G1', 'G8'], what: '目录名 = `student` 字段，且 `<小名>\\_索引.json` **恰好一份**、形态为 `subjects{}`' },
+      { rules: ['G4'], what: '学生层条目 ∈ 闭集（N11 末段），且**学科目录集合 === `subjects` 键集合**' },
+      { rules: ['G5'], what: '学科层条目 ∈ N11 闭集（卡目录形态 / 前缀 / 描述 / 重号）' },
+    ];
+    for (const sd of studentEnts) {
+      evaluated.G11++;
+      const sDir = path.join(root, sd.name);
+      const failed = [];
+      for (const it of MAND) {
+        const hit = violations.filter((v) => it.rules.includes(v.rule) && (v.path === sDir || v.path.startsWith(sDir + path.sep)));
+        if (!hit.length) continue;
+        const rules = [...new Set(hit.map((v) => v.rule))].join('/');
+        failed.push({ rules, what: it.what, n: hit.length });
+        put('G11', sDir, '必答项不成立（P9 跨学生同构）：' + it.what + ' —— 见 ' + rules + ' 的 ' + hit.length + ' 条违规（本条是**聚合**，判据只有一份）');
+      }
+      g11.mandatory.push({ student: sd.name, ok: failed.length === 0, failed });
+    }
+
+    /* ── C 段：共用区命名（N13）── */
+    const GLOBAL_AREAS = ['_录题', '_撤卡留档'];        // 这两处的条目**本来就没有**学生归属（任务号 / 批次）
+    const shared = sharedAreaChecks(root, studentEnts.map((e) => e.name));
+    for (const s of shared) {
+      evaluated.G11++;
+      if (!s.ok) put('G11', s.path, '共用区 `' + s.area + '\\` 命名不合 N13：' + s.why);
+      if (s.student) continue;                          // 能归属到某个学生的，进它的分母
+      if (GLOBAL_AREAS.includes(s.area)) {              // 库级共用区：另算一桶
+        g11.global.total++;
+        if (!s.ok) g11.global.bad++;
+        continue;
+      }
+      /* 本该能归属（`_收件箱`/`_盲解`/`组卷`/`_笔形`）却没归属 ⇒ 名字本身就不合规（小名不在册 / 缺分隔符）。
+         **不许当"无法判定"跳过**：它们已经判红，这里显式列出来免得被读成"没判"。 */
+      g11.unattributed.push({ path: path.relative(root, s.path), why: s.why });
+    }
+    for (const e of studentEnts) {
+      const mine = shared.filter((s) => s.student === e.name);
+      const bad = mine.filter((s) => !s.ok).length;
+      g11.perStudent.push({
+        student: e.name,
+        total: mine.length,
+        bad,
+        rate: mine.length ? Math.round(((mine.length - bad) / mine.length) * 100) + '%' : '—',
+        ok: bad === 0,
+      });
+    }
+    g11.global.rate = g11.global.total ? Math.round(((g11.global.total - g11.global.bad) / g11.global.total) * 100) + '%' : '—';
+    /* 归属不明的条目**不是**"无法判定"：它们要么小名不在册、要么名字粘住了分隔符 —— 一律已判红，
+       这里只是把它们显式列出来，免得被读成"没判"。按学生分别算合规率时它们不进任何学生的分母。 */
+    g11.unattributed = g11.unattributed.slice(0, 20);
+  }
+
+  return { violations, evaluated, stats, g11 };
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -474,6 +657,9 @@ function usage() {
     '判据表（每条都能指回规范里的规则）：',
     ...RULES.map((r) => '  ' + r.id.padEnd(3) + ' [' + r.rule.padEnd(13) + '] ' + r.title),
     '  G10 [N10          ] 原卷落点（page 必须住 <小名>\\ 之下）→ **见 `_原卷台账.mjs 门禁`**，本工具不重复实现（P1）',
+    '  G11 [P9+N13       ] 跨学生同构：必答项（聚合 G1/G4/G5/G8）+ 共用区命名按**每个学生分别** 100%；',
+    '                         ⚠ G11 **不要求"两个学生的树长得一样"**：学科集合、有没有 `原卷\\`/`待办证据\\`/报告件',
+    '                           本来就因人因科而异（内容差异 ≠ 规则差异，P9）。判红只能是"某处出现了闭集外的条目"。',
     '',
     '规范里与本门禁逐条对上的容许清单（改任一条 = 改规范 + 改本文件 + 改阴性对照，三件一起做）：',
     '  · N2  小名词表（年级/学段词 · 学科词 · 时间词 · 日期形态 · 空白 · 分隔符 · 非法字符）—— **字面集真源是规范 §二 N2 的表格**；',
@@ -482,6 +668,11 @@ function usage() {
     '  · N11 学科目录闭集：卡目录 / `原卷\\` / `待办证据\\`·`_待确认证据-<YYYYMMDD>\\` / `*.md` / `_`·`.` 开头；',
     '  · N11 末段 `<小名>\\` 层闭集（与之对称）：`_索引.json` / N4 学科目录 / `原卷\\` / `_`·`.` 开头 —— **不放 `*.md`**；',
     '  · N12 `_备份-真源\\` **任何层级**都合法（备份写在被备份件旁边）；',
+    '  · N13 共用区命名：`_收件箱\\<YYYY-MM-DD>-<小名>-<学科>[-<描述>]` · `_盲解\\<小名>-<学科>-盲解清稿[-第2路|-重盲解].md` ·',
+    '          `_录题\\t-YYYYMMDD-HHmmss-<6位hex>.json`（**日期硬规矩的唯一例外**）· `_撤卡留档\\<YYYY-MM-DD>[-<描述>]` 或',
+    '          `<卡号>-<描述>-<YYYY-MM-DD>-<原因>` · `组卷\\<YYYY-MM-DD>-<小名>-<重做卷|答案册>-<HHmm>.pdf` ·',
+    '          `_笔形\\<小名>\\<标签>\\<YYYY-MM-DD>-<4位序号>.<ext>`（标签自由命名不判；`_笔形\\*.md` 放行）；',
+    '          日期**一律 `YYYY-MM-DD`**（`YYYYMMDD` 判红），`<小名>` 必须是在册学生目录名且与 `<学科>` 之间有分隔符。',
     '  · §3.4 豁免（穷举）：`_备份-真源\\`（任何层级）内部、`_影像备份\\` 内部、`_原图\\_快照\\`。',
     '',
     '作用域：管**用户的真库**与迁移验收；`fixtures\\` 的合成库是故意畸形形态，不受本门禁约束，',
@@ -522,7 +713,7 @@ catch (e) {
   console.error('[数据区门禁] 巡检无法进行：' + e.message);
   process.exit(3);
 }
-const { violations, evaluated, stats } = out;
+const { violations, evaluated, stats, g11 } = out;
 
 /* 空真纪律（同 `_体检.mjs` 的"空真检查"）：一道门禁"没发现违反"有两种原因 ——
    真检查了没问题，与**根本没有被检查的对象**。后者报"通过"是虚假的安心感，故显式说出来。 */
@@ -536,6 +727,7 @@ if (JSON_OUT) {
     rules: RULES.map((r) => ({ ...r, evaluated: evaluated[r.id], violations: violations.filter((v) => v.rule === r.id).length })),
     violations,
     stats,
+    g11,
     vacuous,
     notImplementedHere: [{ id: 'G10', rule: 'N10', note: '原卷落点 → 见 `_原卷台账.mjs 门禁` 的"库外 page"检查（本工具不重复实现）' }],
     boundaries: BOUNDARIES,
@@ -544,7 +736,7 @@ if (JSON_OUT) {
   process.exit(violations.length ? 2 : 0);
 }
 
-console.log('数据区门禁（docs\\数据区规范.md §六 G1..G9）');
+console.log('数据区门禁（docs\\数据区规范.md §六 G1..G9 + G11 跨学生同构）');
 console.log('  ' + describeRoots());
 console.log('  库根 = ' + root);
 console.log('  已判：库根顶层条目 ' + stats.rootEntries + ' ｜ 学生目录 ' + stats.studentDirs +
@@ -564,6 +756,21 @@ for (const r of RULES) {
 console.log('');
 console.log('【G10】原卷落点（规则 N10）—— 见 `_原卷台账.mjs 门禁` 的"库外 page"检查（本工具不重复实现，P1）');
 console.log('');
+/* G11 的**抗掩盖**证据：合规率必须**按学生分别**印出来（整体率会被人多的一方掩盖）。
+   这一块不参与判红（判红在【G11】那一段），它只是把"每个学生各自多少"摆到人眼前。 */
+console.log('【G11·共用区命名合规率】按**每个学生分别**算，各自必须 100%（不许用整体合规率：人多的一方会掩盖另一方的问题）');
+if (!g11.perStudent.length) console.log('  · （没有学生目录 —— 无从算合规率）');
+for (const s of g11.perStudent) {
+  console.log('  · ' + s.student.padEnd(8) + (s.total - s.bad) + '/' + s.total + ' = ' + s.rate + (s.total ? '' : '（该学生在共用区没有条目）') + (s.ok ? '' : '  ✖'));
+}
+console.log('  · 库级（无学生归属：`_录题\\` / `_撤卡留档\\` 批次式）' + (g11.global.total - g11.global.bad) + '/' + g11.global.total + ' = ' + g11.global.rate);
+console.log('  · 必答项（聚合 G1/G4/G5/G8）：' + g11.mandatory.filter((m) => m.ok).length + '/' + g11.mandatory.length + ' 个学生同构' +
+  (g11.mandatory.some((m) => !m.ok) ? '　✖ ' + g11.mandatory.filter((m) => !m.ok).map((m) => m.student).join('、') : ''));
+if (g11.unattributed.length) {
+  console.log('  · ⚠ 归属不明的共用区条目 ' + g11.unattributed.length + ' 条（小名不在册 / 缺分隔符）—— **已判红**，不许当"无法判定"跳过：');
+  for (const u of g11.unattributed.slice(0, 6)) console.log('      ' + u.path + '　← ' + u.why);
+}
+console.log('');
 console.log('能力边界（诚实写明）：');
 for (const b of BOUNDARIES) console.log('  · ' + b);
 console.log('');
@@ -574,5 +781,5 @@ if (vacuous) {
 }
 console.log(violations.length
   ? '✖ 违规 ' + violations.length + ' 处（' + RULES.map((r) => r.id + ' ' + violations.filter((v) => v.rule === r.id).length).filter((s) => !/ 0$/.test(s)).join('、') + '）'
-  : '✔ 全绿：G1..G9 均无违规');
+  : '✔ 全绿：' + RULES.map((r) => r.id).join(' / ') + ' 均无违规');
 process.exit(violations.length ? 2 : 0);
