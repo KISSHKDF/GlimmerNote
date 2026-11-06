@@ -586,6 +586,13 @@ const unitTests = [
      + 真台账覆盖度（≥85%）。被判的判据脚本在**仓外**（agent 侧 dsh-ops\，不进本仓、不随包发布），
      缺它时本用例可见 SKIP 并给出 CTB_OPS_DIR 用法 —— 只挂 quick/full，不进 fixture/CI 白名单。 */
   ['neg-pending-reply-cases.cjs'],
+  /* ★ 2026-11-06：原卷台账「迁移丢掉的溯源」两个新入口的护栏（都是零依赖：自建 %TEMP% 夹具）。
+     ① page 侧影像备份兜底 + **尺寸自证**（尺寸不符必须拒绝，不许张冠李戴）；
+     ② `导入历史 --from`（逐条自证 / 全键命中 / 框以裁图记录为准 / --dry 不写 / 幂等 / 坏输入 fail-closed）。
+     ⚠ 暂挂 unitTests（quick/full）：HERMETIC 白名单的规矩是"必须先在干净克隆上实测"，
+     本机这两条已在 %TEMP% 夹具上实测通过，干净克隆复核后再提升（见 commit 说明）。 */
+  ['neg-orig-ledger-backup-page.cjs'],
+  ['neg-orig-ledger-hist-import.cjs'],
   ['neg-v1-admit-consumption.cjs'],   // ★ v1 JS 必须真的引用 ADMIT/HEALTH（注入了没人读 = 等于没注入）
   ['verify-stem-13.cjs'],             // 13 张补出的题干.html 与盲解所据文本等价
   ['verify-stem-shape.cjs'],          // 全库题干形状（片段/无 BOM/无整篇文档）

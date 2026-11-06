@@ -23,6 +23,7 @@
  *   node _原卷台账.mjs 覆盖 [--verbose]         # 覆盖率报告（按学生/学科/规则）
  *   node _原卷台账.mjs 定位单 [--per N]         # 给未定位的卡生成「带网格候选页 + 任务单」
  *   node _原卷台账.mjs 回填 --key "学生A|P0001" --page "…" [--box x,y,w,h] [--note "…"] [--by 视觉定位]
+ *   node _原卷台账.mjs 导入历史 --from <老台账.json>[,<又一份>] [--dry] [--force]   # 迁移修复（逐条自证）
  *   node _原卷台账.mjs 门禁                     # 未定位>0 / 路径失效 / box 越界 → exit 1
  *
  * 铁律：--dry 既不写真源也不写缓存（预览件落过程目录，见 `_过程目录.mjs`；用文件哈希自证，教训 L-312）；
@@ -35,7 +36,7 @@ import { execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { readJsonStrict, writeJsonAtomic, acquireLibLock } from './_安全写.mjs';
 import { procPath } from './_过程目录.mjs';
-import { displaySize, jpegOrientation } from './_图尺寸.mjs';
+import { displaySize, jpegOrientation, imageSize } from './_图尺寸.mjs';
 import { libraryRoot, toolPath } from './_库根.mjs';
 import { resolver as origResolver } from './_原图寻址.mjs';
 /* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。 */
@@ -249,6 +250,111 @@ function ruleSidecar(c) {
   return {
     page: rel, box, by: 'sidecar',
     note: `_裁图记录.json：cropPx=${JSON.stringify(rec.cropPx)} srcPx=${rec.srcPx || '?'} scale=${rec.scale}${box ? '' : '（无归一化框' + (rec.rotate ? '，旋转过' : '') + '）'}`,
+  };
+}
+
+/* ══════════ ★ 2026-11-06：page 侧的「原路径失效」兜底（与门禁同一口径）══════════
+ * 背景（实测，2026-11-06）：迁移（2026-11-01 库根换目录）之后，一批卡的
+ * `_裁图记录.json` 里 `src` 是**迁移前的老绝对路径**（`<盘>:\…\错题本\…`）或指向
+ * 已被清理的 `_收件箱\…`。旧 `ruleSidecar` 用 `relOf()` 得到 `../../错题本/…`
+ * ⇒ 命中 `startsWith('..')` 被拒 ⇒ 这些卡全部落成「无任何清单线索」。
+ * 但**字节还在**：`_影像备份\原件\<同相对路径>` 里逐张都在（实测 126/126）。
+ *
+ * 本层与 `_原图寻址.mjs` 给 import 加的三层兜底**同源同序**：
+ *   原路径 → 保全库（按内容 sha）→ 影像备份（同路径 + 内容/尺寸核对）。
+ * page 侧多一条纪律：**必须自证**。证据 = `_裁图记录.json` 的 `srcPx`
+ * （当初裁图时那一页的真实像素），与备份件实际像素比对；不符就不给这条路 ——
+ * 宁可说"定位不了"，也不许把"路径被复用成另一个文件"的页递出去（张冠李戴）。
+ * 本层**不改写任何文件、不把副本复制回库**：page 保留**规范相对路径**，
+ * 字节交给 resolver 兜底（门禁与界面都走同一条 resolve）。 */
+
+/* 老库根前缀（迁移前）：`<盘>:\<任一段>\错题本\` —— 命中就剥掉，得到库内相对路径。
+   为什么不用 `relOf()`：它对库外绝对路径返回 `../../…`，那正是被拒的形态。 */
+const LEGACY_LIB_PREFIX = /^[A-Za-z]:[\\/][^\\/]+[\\/]错题本[\\/]/i;
+function toLibRel(p) {
+  let s = String(p || '').replace(/\\/g, '/');
+  const m = s.match(LEGACY_LIB_PREFIX);
+  if (m) s = s.slice(m[0].length);
+  return norm(s);
+}
+
+/* `srcPx` 兼容两种历史形态：字符串 "2024x2940"（老记录）与对象 {w,h}（2026-11-04 起）。
+   ⚠ 实测踩过：只按字符串解析会把对象 stringify 成 "[object Object]"，进而误报"尺寸不一致"
+   （本轮先把 26 张判成不一致，纠正后才知是解析问题）。 */
+function normSrcPx(v) {
+  if (!v) return null;
+  if (typeof v === 'string') {
+    const m = v.trim().match(/^(\d+)\s*[x×]\s*(\d+)$/);
+    return m ? { w: +m[1], h: +m[2] } : null;
+  }
+  if (typeof v === 'object' && Number.isFinite(+v.w) && Number.isFinite(+v.h)) return { w: +v.w, h: +v.h };
+  return null;
+}
+
+/** 规范的"取字节"入口：在盘就用原路径；不在盘才问 resolver（保全库 → 影像备份）。
+ *  只读、零副作用；找不到返回 null（调用方必须显式失败，不许静默返回空）。 */
+let __pageResolver = null;
+const pageResolver = () => (__pageResolver || (__pageResolver = origResolver()));
+function resolvePageBytes(rel) {
+  if (exists(rel)) return { path: rel, via: 'direct' };
+  try {
+    const r = pageResolver().resolve(rel);
+    if (r && r.path) return r;
+  } catch { /* resolver 读不到名册时按"找不到"处理，由调用方报错 */ }
+  return null;
+}
+
+/** R1b 卡目录 `_裁图记录.json` + 影像备份兜底（老绝对路径 / 已被清理的收件箱）。
+ *  与 R1 的区别只有两点：**路径先归一化**（剥老库根），**再用尺寸自证**。 */
+/* 规则链上的「为什么没定位」提示（只影响 note 文案，不影响判据）：
+   本仓的老要求 —— 判不出来也要让排查的人看得见原因（"看不出这里其实有线索"是缺陷）。
+   ⚠ 用变量而不是"返回一个待定位对象"：返回对象会**截断规则链**，让后面的
+   task.json / 建卡清单 失去机会（它们可能还定位得了）。 */
+let __pageDiag = null;
+function ruleBackupPage(c) {
+  const f = path.join(toAbs(c.cardDir), '_裁图记录.json');
+  if (!fs.existsSync(f)) return null;
+  let r; try { r = readJson(f); } catch { return null; }
+  const recs = [...(Array.isArray(r.crops) ? r.crops : []), r].filter(x => x && x.src);
+  const rec = recs.find(x => /原卷截图/.test(String(x.out || ''))) || (recs.length === 1 ? recs[0] : null);
+  if (!rec) return null;
+  const rel = toLibRel(rec.src);
+  if (!rel || rel.startsWith('..') || rel.startsWith('_work')) {
+    __pageDiag = `_裁图记录.json.src=${rec.src} 归一化后不在库内（${rel || '空'}）⇒ 拒绝`;
+    return null;
+  }
+  const got = resolvePageBytes(rel);
+  if (!got) {
+    __pageDiag = `_裁图记录.json.src=${rec.src} 原路径已失效，且保全库/影像备份都没有同相对路径副本：${rel}`;
+    return null;
+  }
+  if (got.via === 'direct') return null;               /* 在盘的情况归 R1 管，本层只处理"路径失效" */
+  const abs = toAbs(got.path);
+  if (!isInsideRoot(path.resolve(abs))) {
+    __pageDiag = `_裁图记录.json 的兜底落点越出库根：${got.path} ⇒ 拒绝`;
+    return null;
+  }
+  const want = normSrcPx(rec.srcPx);
+  const act = imageSize(abs);
+  let verify;
+  if (want && act) {
+    if (act.w !== want.w || act.h !== want.h) {
+      __pageDiag = `_裁图记录.json.src=${rec.src} 找到同相对路径副本（${got.path}），但**尺寸不符**：记录 ${want.w}x${want.h}，实际 ${act.w}x${act.h} ⇒ 拒绝给出（宁可判未定位，也不许张冠李戴）`;
+      return null;
+    }
+    verify = `尺寸自证 ${act.w}x${act.h}`;
+  } else {
+    /* 没记尺寸就没法做像素级自证 —— 但兜底落点是**同相对路径**命中（resolver 已按内容或同路径确认）。
+       如实标注"未能像素自证"，不假装验过。 */
+    verify = '（记录无 srcPx 或读不到尺寸：仅同相对路径命中，未做像素自证）';
+  }
+  const box = boxOk(rec.normBox) ? rec.normBox.map(Number) : null;
+  return {
+    /* page 记**规范相对路径**（不记兜底路径）：路径是"这张卡属于哪一页"的身份，
+       字节在哪由 resolver 决定（门禁与界面 `生成状态.mjs` 都调同一个 resolve）。
+       记兜底路径会让"迁移一次换一次路径"，反而丢掉原本身份。 */
+    page: rel, box, by: '影像备份·尺寸自证',
+    note: `_裁图记录.json.src=${rec.src} 原路径已失效（字节在${got.via === 'store' ? '保全库' : '影像备份'}）；${verify}${box ? '' : '（无归一化框' + (rec.rotate ? '，旋转过' : '') + '）'}`,
   };
 }
 
@@ -534,11 +640,16 @@ function sizesOf(rels, { persist = false, resolve = null } = {}) {
 function aspectAudit(cards, { persist = false } = {}) {
   const rels = [];
   for (const e of Object.values(cards)) { if (e.page) rels.push(e.page); if (e.cardDir) rels.push(e.cardDir + '/原卷截图.jpg'); }
-  /* 解析顺序：盘上原路径 → 保全库按内容找回（同一份字节，尺寸当然一样）。 */
+  /* 解析顺序：盘上原路径 → 保全库按内容找回 → 影像备份同路径（同一份字节，尺寸当然一样）。
+     ★ 2026-11-06 修：改前这里调的是 `ORIG_RESOLVER.resolve(...)`，而 `ORIG_RESOLVER` 只在
+     `gate()` 里定义 ⇒ 本函数里它是 **ReferenceError**，被外层 catch 吞掉 ⇒ 兜底从来没生效过
+     （实测：原路径失效的页在长宽比体检里全被记成"文件找不到"）。现在复用唯一实现
+     `resolvePageBytes()`（懒建 resolver，原路径 → 保全库 → 影像备份）。 */
   const resolve = (rel) => {
     const a = toAbs(rel);
     if (fs.existsSync(a)) return a;
-    try { const hit = ORIG_RESOLVER.resolve(rel); return (hit && hit.path) ? hit.path : null; } catch { return null; }
+    const hit = resolvePageBytes(rel);
+    return hit ? toAbs(hit.path) : null;
   };
   const px = sizesOf(rels, { persist, resolve });
   const bad = [];
@@ -567,7 +678,15 @@ function auditLine({ bad, measured, skipped }) {
 /* ---------- 导入原件：sha256 相同才算，绝不靠猜名字 ---------- */
 function resolveImport(pageRel, shaCache) {
   if (!pageRel) return null;
-  const h = shaCached(pageRel, shaCache);
+  /* ★ 2026-11-06：改前这里直接 `shaCached(pageRel)` —— 隐含假设"page 一定在盘"。
+     该假设在"原路径失效、字节由兜底解析"之后不再成立（实测：非在盘 page 直接 ENOENT 崩）。
+     现在先取字节（原路径 → 保全库 → 影像备份），取不到就如实返回 null，
+     不抛异常、也不拿别的文件顶替。 */
+  let got;
+  try { got = resolvePageBytes(pageRel); } catch { got = null; }
+  if (!got) return null;
+  let h;
+  try { h = shaCached(got.path, shaCache); } catch { return null; }
   for (const f of inboxImages()) if (shaCached(f, shaCache) === h) return f;
   return null;
 }
@@ -612,10 +731,23 @@ function build({ dry, force }) {
     n++;
     const prev = old[c.key];
     if (prev && /手工|视觉定位/.test(prev.by || '') && !force) { out[c.key] = prev; continue; }
-    let r = ruleSidecar(c) || ruleTaskJson(c) || ruleBuildList(c, shaCache) || reconcilePage(c);
-    if (!r) r = { page: null, box: null, by: '待定位', need: true, note: '无任何清单线索，需按批次人工登记' };
+    __pageDiag = null;
+    let r = ruleSidecar(c) || ruleBackupPage(c) || ruleTaskJson(c) || ruleBuildList(c, shaCache) || reconcilePage(c);
+    if (!r) r = { page: null, box: null, by: '待定位', need: true, note: __pageDiag || '无任何清单线索，需按批次人工登记' };
     if (r.page && !r.box) r.box = (prev && boxOk(prev.box)) ? prev.box : null;
-    if (r.page && !exists(r.page)) { r = { page: null, box: null, by: '待定位', need: true, note: '规则给出的页文件不在盘：' + r.page }; }
+    if (r.page && !exists(r.page)) {
+      /* ★ 2026-11-06：原路径不在盘 ≠ 整页丢了。与门禁**同一口径**（`_原图寻址` 三层兜底：
+         原路径 → 保全库按内容 → 影像备份同相对路径）。能找回就**保留规范路径**
+         （不改写成兜底路径、不把副本复制回库），只把依据写进 note；找不回才落"待定位"。
+         改前这里无条件置 null ⇒ 2026-11-01 迁移之后，凡是"收件箱被清 / 原卷目录为空"的批次，
+         即使字节就在影像备份里也被判成"页文件不在盘"。 */
+      const via = resolvePageBytes(r.page);
+      if (via) {
+        r = { ...r, note: `${r.note || ''} ｜ 原路径不在盘，已按${via.via === 'store' ? '内容从保全库' : '同相对路径从影像备份'}兜底（字节可查）`.trim() };
+      } else {
+        r = { page: null, box: null, by: '待定位', need: true, note: '规则给出的页文件不在盘，且保全库/影像备份都找不回：' + r.page };
+      }
+    }
     out[c.key] = {
       key: c.key, student: c.student, subject: c.subject, cardDir: c.cardDir, source: c.source,
       page: r.page || null, box: r.box || null, by: r.by, need: !!r.need, note: r.note || '',
@@ -706,10 +838,36 @@ function locateSheet({ per }) {
   for (const [gk, g] of Object.entries(groups)) {
     const b = BATCHES.find(x => x.id === gk);
     let pages = b ? pageFiles(b) : [];
+    const dirGuess = g.cards[0].cardDir.split('/').slice(0, 1)[0];
     if (!pages.length) {
-      const dirGuess = g.cards[0].cardDir.split('/').slice(0, 1)[0];
       pages = [];
       for (const f of listDir(dirGuess + '/原卷')) if (/\.(jpg|jpeg|png)$/i.test(f)) pages.push({ rel: dirGuess + '/原卷/' + f, tag: f });
+    }
+    if (!pages.length) {
+      /* ★ 2026-11-06：`<组>/原卷\` 为空时（2026-11-01 迁移后很常见），候选页其实躺在
+         **影像备份**里。两条来源：① 镜像的 `<组>/原卷/**`；② `_影像备份\原件\_收件箱\<批次>\**`
+         里目录名含该学生（或该学科）的批次。没有这一步，这几组永远生不出候选网格 ⇒
+         "无任何清单线索"永远无解（实测：七年级的数学/语文、九年级的化学/数学/语文，`原卷\` 都是 0 张）。 */
+      const bkRel = '_影像备份/原件';
+      const scanPics = (rel, out, depth) => {
+        let ents = [];
+        try { ents = fs.readdirSync(toAbs(rel), { withFileTypes: true }); } catch { return; }
+        for (const e of ents) {
+          const child = rel + '/' + e.name;
+          if (e.isDirectory()) { if (depth > 0) scanPics(child, out, depth - 1); }
+          else if (/\.(jpg|jpeg|png)$/i.test(e.name)) out.push({ rel: child, tag: e.name });
+        }
+      };
+      const pool = [];
+      scanPics(`${bkRel}/${dirGuess}/原卷`, pool, 2);
+      const subj = String(g.cards[0].subject || '');
+      for (const batch of listDir(`${bkRel}/_收件箱`)) {
+        if (!(batch.includes(g.student) || (subj && batch.includes(subj)))) continue;
+        scanPics(`${bkRel}/_收件箱/${batch}`, pool, 1);
+      }
+      const seenRel = new Set();
+      pages = pool.filter(p => (seenRel.has(p.rel) ? false : (seenRel.add(p.rel), true)));
+      if (pages.length) console.log(`  （${gk}：库内 原卷\\ 为空 ⇒ 候选页改从影像备份取，命中 ${pages.length} 张）`);
     }
     const grid = [];
     for (const p of pages) {
@@ -1077,6 +1235,123 @@ function trial(o) {
   console.log('  全部规则未命中');
 }
 
+/* ---------- 导入历史台账（迁移修复：把老库台账里的 page/box 收回来）----------
+ * 2026-11-06 立。为什么需要：2026-11-01 库根换目录（换盘）之后，当前库有一批卡只剩裁图、
+ * 台账 `page` 为空；而**老库台账还在**（例：`<老库根>\_原卷台账.json`
+ * 及其 `_备份-真源\*` / `_备份-*` 系列），它记着这些卡当初的整页与归一化框。
+ * 这些证据不该因为"文件搬了家"作废 —— 但它也**不许当成无条件真值**，故有三条硬约束：
+ *
+ *   ① **逐条自证**：历史 page 归一化成库内相对路径后，必须在盘、或能被三层兜底找回
+ *      （原路径 → 保全库按内容 → 影像备份同相对路径）。找不回 ⇒ 跳过并报原因，
+ *      **绝不写一个"看起来有页"的空条目**。
+ *   ② **不许跨学生串页**：只认 `学生|卡号` **全键**命中（卡号跨学生会撞号，见 L-334/L-339）；
+ *      库里没有这张卡就直接跳过，不做裸卡号回退。
+ *   ③ **框以卡自己的裁图记录为准**：卡目录 `_裁图记录.json` 的 `normBox` 是"当初真的按它裁的"。
+ *      与历史框冲突时取裁图记录，并**计数 + 报样例**（不静默二选一）。
+ *
+ * 幂等：已有 page 的条目默认跳过（`--force` 才覆盖）。
+ * `--dry` 不写真源：用**写前写后的文件 sha** 自证没写（L-312 的老要求）。
+ *
+ * 用法：
+ *   node _原卷台账.mjs 导入历史 --from <老台账.json>[,<又一份>] [--dry] [--force] */
+function importHistory(o) {
+  const from = String(o.from || '').split(',').map(s => s.trim()).filter(Boolean);
+  if (!from.length) { console.error('用法：导入历史 --from <老台账.json>[,<又一份>] [--dry] [--force]'); process.exit(2); }
+  const dry = !!o.dry, force = !!o.force;
+  if (!fs.existsSync(LEDGER)) { console.error('缺 _原卷台账.json（先跑 生成）'); process.exit(1); }
+  const before = sha256(LEDGER);
+  const doc = readJson(LEDGER);
+  if (!doc.cards || typeof doc.cards !== 'object' || Array.isArray(doc.cards)) { console.error('台账形状不对（cards 必须是对象）'); process.exit(4); }
+
+  /* 多份历史来源按命令行先后合并：**先到的先占**。理由：不做"哪份更新更权威"的假设，
+     顺序由调用方显式决定（把最新的放在第一个）。 */
+  const hist = new Map();
+  const srcStats = [];
+  for (const f of from) {
+    if (!fs.existsSync(f)) { console.error('找不到历史台账：' + f); process.exit(2); }
+    let d;
+    try { d = JSON.parse(fs.readFileSync(f, 'utf8').replace(/^\uFEFF/, '')); }
+    catch (e) { console.error('解析失败 ' + f + '：' + e.message); process.exit(4); }
+    const cards = d.cards;
+    if (!cards || typeof cards !== 'object' || Array.isArray(cards)) { console.error('历史台账形状不对（cards 必须是对象）：' + f); process.exit(4); }
+    let n = 0, took = 0;
+    for (const [k, e] of Object.entries(cards)) {
+      if (!e || !e.page) continue;
+      n++;
+      if (hist.has(k)) continue;
+      hist.set(k, { page: String(e.page), box: Array.isArray(e.box) ? e.box.map(Number) : null, by: e.by || '', file: path.basename(f) });
+      took++;
+    }
+    srcStats.push(`${path.basename(f)}：有 page ${n} 条，其中 ${took} 条被采纳（更早来源已占用的不覆盖）`);
+  }
+
+  const known = new Map(loadCards().map(c => [c.key, c]));
+  const shaCache = fs.existsSync(SHA_CACHE) ? readJson(SHA_CACHE) : {};
+  let imported = 0, skippedHasPage = 0, skippedLost = 0, skippedNoCard = 0, skippedNotFound = 0;
+  const conflicts = [], notFound = [], samples = [];
+  for (const [k, h] of hist) {
+    const c = known.get(k);
+    if (!c) { skippedNoCard++; continue; }                      /* ② 全键命中 */
+    const cur = doc.cards[k];
+    if (cur && cur.lost) { skippedLost++; continue; }
+    if (cur && cur.page && !force) { skippedHasPage++; continue; }
+    const rel = toLibRel(h.page);
+    if (!rel || rel.startsWith('..')) { skippedNotFound++; notFound.push(`${k}：历史路径越出库根（${h.page}）`); continue; }
+    const got = resolvePageBytes(rel);
+    if (!got) { skippedNotFound++; notFound.push(`${k}：页文件不在盘且兜底找不回（${rel}）`); continue; }
+
+    /* ③ 框：先看卡目录的裁图记录，再退回历史框 */
+    let box = boxOk(h.box) ? h.box.map(Number) : null;
+    let boxFrom = box ? `历史台账(${h.file})` : null;
+    let recBox = null;
+    try {
+      const rec = readJson(path.join(toAbs(c.cardDir), '_裁图记录.json'));
+      const recs = [...(Array.isArray(rec.crops) ? rec.crops : []), rec].filter(x => x && x.src);
+      const one = recs.find(x => /原卷截图/.test(String(x.out || ''))) || (recs.length === 1 ? recs[0] : null);
+      if (one && boxOk(one.normBox)) recBox = one.normBox.map(Number);
+    } catch { /* 没有裁图记录就只用历史框 */ }
+    let conflicted = false;
+    if (recBox) {
+      const same = box && box.length === 4 && box.every((v, i) => Math.abs(v - recBox[i]) < 0.002);
+      if (!box) { box = recBox; boxFrom = '卡目录 _裁图记录.normBox（历史无框）'; }
+      else if (!same) {
+        conflicted = true;
+        conflicts.push(`${k}：历史=${box.map(v => v.toFixed(4)).join(',')} 裁图记录=${recBox.map(v => v.toFixed(4)).join(',')} ⇒ 取裁图记录`);
+        box = recBox; boxFrom = '卡目录 _裁图记录.normBox（与历史框冲突，取裁图记录）';
+      } else { boxFrom = '历史台账与卡目录 _裁图记录一致'; }
+    }
+
+    const prev = cur || {};
+    doc.cards[k] = {
+      key: k, student: c.student, subject: c.subject, cardDir: c.cardDir, source: c.source,
+      page: rel, box, by: '手工·历史台账迁移', need: false,
+      note: `导入历史台账（${h.file}，原 by=${h.by || '?'}）｜ 字节：${got.via === 'direct' ? '在盘' : got.via === 'store' ? '保全库(按内容)' : '影像备份(同相对路径)'}｜ 框：${boxFrom || '无'}`,
+      import: resolveImport(rel, shaCache) || prev.import || null,
+      ...unknownOf(prev),                    /* P1-1：既有 sha256/lost/regions… 一个都不许丢 */
+    };
+    imported++;
+    if (samples.length < 8) samples.push(`${k} → ${rel}${box ? ' box=' + box.map(v => v.toFixed(3)).join(',') : '（无框）'}`);
+  }
+
+  if (!dry) {
+    doc.generatedAt = new Date().toISOString();
+    writeJsonAtomic(LEDGER, doc, { backup: true, indent: 1 });
+  }
+  const after = sha256(LEDGER);
+  console.log('导入历史：历史来源 ' + from.length + ' 份，候选条目 ' + hist.size + ' 条');
+  srcStats.forEach(s => console.log('  · ' + s));
+  console.log(`  实际导入 ${imported} 张 ｜ 跳过：已有 page ${skippedHasPage}、素材灭失 ${skippedLost}、库内无此卡 ${skippedNoCard}、找不到整页 ${skippedNotFound}`);
+  if (conflicts.length) { console.log(`  ⚠ 框冲突 ${conflicts.length} 条（一律取卡目录裁图记录，不静默二选一）：`); conflicts.slice(0, 10).forEach(x => console.log('     ' + x)); }
+  if (notFound.length) { console.log(`  ⚠ 未采纳明细 ${notFound.length} 条（前 10）：`); notFound.slice(0, 10).forEach(x => console.log('     ' + x)); }
+  if (samples.length) { console.log('  样例：'); samples.forEach(s => console.log('     ' + s)); }
+  if (dry) {
+    console.log(`DRY：未写盘。台账 sha 前=${before.slice(0, 12)} 后=${after.slice(0, 12)} 未变=${before === after}`);
+    if (before !== after) { console.error('✖ DRY 竟然改动了台账 —— 这是缺陷，必须修'); process.exit(1); }
+  } else {
+    console.log('已写入 ' + LEDGER + '（含备份）');
+  }
+}
+
 /* ---------- 入口 ---------- */
 const argv = process.argv.slice(2);
 /* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。
@@ -1088,7 +1363,7 @@ const { action: _cmd, opt } = parseArgs(argv, {
   valueFlags: [
     ...COMMON_VALUE_FLAGS,
     // 本工具专属的带值 flag（**布尔开关不要列进来**：dry/force/verbose/px-cache 是开关）
-    'key', 'page', 'dir', 'per',
+    'key', 'page', 'dir', 'per', 'from',
   ],
   /* ★ 2026-11-05（PR #13 复审 ①）：写盘工具一律严格模式 —— 拼错的开关（如 --dryy）当场报错，绝不静默丢弃后真写盘。
      清单 = 本文件用到的布尔开关（机扫 opt.x / val('x') 后人工核对），新增开关必须同步加进来，否则会被拒。 */
@@ -1102,8 +1377,9 @@ try {
   else if (cmd === '覆盖') { if (!fs.existsSync(LEDGER)) { console.log('还没有台账，先跑 生成'); process.exit(1); } report(readJson(LEDGER).cards); }
   else if (cmd === '定位单') { locateSheet({ per: opt.per === undefined ? 10 : +opt.per }); }
   else if (cmd === '回填') backfill(opt);
+  else if (cmd === '导入历史') importHistory(opt);
   else if (cmd === '试算') trial(opt);
   else if (cmd === '合并') mergeLocated();
   else if (cmd === '门禁') gate(!!opt['px-cache']);
-  else { console.log('未知命令：' + cmd + '（可用 生成|采集|覆盖|定位单|回填|门禁）'); process.exit(2); }
+  else { console.log('未知命令：' + cmd + '（可用 生成|采集|覆盖|定位单|回填|导入历史|门禁）'); process.exit(2); }
 } catch (e) { console.error('失败：' + e.message); process.exit(1); }

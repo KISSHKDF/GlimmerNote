@@ -1,0 +1,143 @@
+#!/usr/bin/env node
+/**
+ * 原卷台账 · page 侧「原路径失效」兜底 + **尺寸自证**（2026-11-06 新增能力）阴性对照。
+ *
+ * 为什么必须有它：这一层解决的是"迁移（库根换目录）/清理收件箱之后，卡还能不能回到整页"。
+ * 它一旦静默失效或**放松**，后果是两种都很坏的形态：
+ *   ① 悄悄不定位 ⇒ 一批卡永远显示"未定位"，用户不知道字节其实还在影像备份里；
+ *   ② 随便递一条路 ⇒ 把"路径被复用成另一个文件"的页当成这张卡的整页（**张冠李戴**，
+ *      卡面显示成另一张卷子，比"定位不了"危害大得多）。
+ * 所以自证判据（`_裁图记录.json` 的 `srcPx` 与备份件实际像素比对）必须**能红**。
+ *
+ * 覆盖六条：
+ *   ① 老绝对路径 + 备份件存在 ⇒ 定位成规范相对路径，框取裁图记录，note 写明尺寸自证
+ *   ② **阴性自证**：备份件尺寸与 srcPx 不符 ⇒ 必须**不定位**（不许递出字节不符的页）
+ *   ③ `srcPx` 为对象 `{w,h}`（2026-11-04 起的新形态）必须被接受（旧解析会 stringify 成
+ *      "[object Object]" 并误判"尺寸不一致"）
+ *   ④ 记录里没有 `srcPx` ⇒ 仍可定位，但 note 必须**如实**写"未做像素自证"，不许假装验过
+ *   ⑤ 备份件也不在 ⇒ 不定位（落"待定位"，原因可见）
+ *   ⑥ 兜底路径必须在库内：库根之外的兜底路径不许写进台账
+ *
+ * 退出码 0=六条全部成立；1=有判据守不住。
+ */
+const fs = require('fs');
+const path = require('path');
+const { execFileSync } = require('child_process');
+const E = require('./_测试环境.cjs');
+
+let fails = 0;
+const A = (n, ok, d) => { console.log(`${ok ? '[OK]  ' : '[FAIL]'} ${n}${d !== undefined ? '  → ' + d : ''}`); if (!ok) fails++; };
+
+const LIB = E.allocTempDir('gn-ledger-backup-');
+const run = (args) => {
+  try {
+    const out = execFileSync(process.execPath, [E.tool(args[0]), ...args.slice(1)], {
+      encoding: 'utf8', maxBuffer: 64e6, stdio: ['ignore', 'pipe', 'pipe'],
+      env: Object.assign({}, process.env, { CTB_DATA: LIB }),
+    });
+    return { code: 0, out: String(out) };
+  } catch (e) {
+    return { code: e.status == null ? -1 : e.status, out: String(e.stdout || '') + String(e.stderr || '') };
+  }
+};
+/* 造一张"尺寸可读"的图：`_图尺寸.mjs` 的 PNG 判据 = 8 字节签名 + 偏移 12 处 'IHDR' + w/h */
+const png = (w, h) => {
+  const b = Buffer.alloc(64, 0);
+  b.write('\x89PNG\r\n\x1a\n', 0, 'binary');
+  b.writeUInt32BE(13, 8);
+  b.write('IHDR', 12, 'ascii');
+  b.writeUInt32BE(w, 16);
+  b.writeUInt32BE(h, 20);
+  return b;
+};
+const mk = (rel, buf) => { const p = path.join(LIB, rel); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, buf); return p; };
+const wj = (rel, obj) => { const p = path.join(LIB, rel); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, JSON.stringify(obj, null, 1), 'utf8'); return p; };
+const ledger = () => JSON.parse(fs.readFileSync(path.join(LIB, '_原卷台账.json'), 'utf8').replace(/^\uFEFF/, ''));
+const entry = (k) => ledger().cards[k] || {};
+
+const KEY = '学生A|M0001';
+const CARD_DIR = '学生A/数学/M0001-测试';
+const CANON = '学生A/数学/原卷/批次1/p01.jpg';           /* 规范相对路径（库里**不存在**） */
+const BACKUP = '_影像备份/原件/' + CANON;                  /* 字节真正在的地方 */
+const LEGACY = 'D:\\某老库\\错题本\\' + CANON.replace(/\//g, '\\');   /* 迁移前的老绝对路径 */
+const BOX = [0.1, 0.25, 0.8, 0.05];
+
+wj('学生A/数学/_索引.json', {
+  student: '学生A', grade: '七年级', subject: '数学',
+  items: [{ id: 'M0001', dir: 'M0001-测试', title: '夹具', question: 'q', answer: 'a' }],
+});
+mk(`${CARD_DIR}/原卷截图.jpg`, png(400, 60));
+const recWrite = (obj) => wj(`${CARD_DIR}/_裁图记录.json`, Object.assign({
+  src: LEGACY, normBox: BOX, scale: 2, out: '原卷截图.jpg',
+}, obj));
+recWrite({ srcPx: '2024x2940' });
+mk(BACKUP, png(2024, 2940));
+
+/* ════ ① 老绝对路径 + 备份件在 ⇒ 定位，且自证 ════ */
+{
+  const r = run(['_原卷台账.mjs', '生成']);
+  A('①a 生成退出 0', r.code === 0, 'exit=' + r.code);
+  const e = entry(KEY);
+  A('①b page = 规范相对路径（不是兜底路径）', e.page === CANON, String(e.page));
+  A('①c box 取裁图记录的 normBox', Array.isArray(e.box) && e.box.length === 4 && e.box.every((v, i) => Math.abs(v - BOX[i]) < 1e-9), JSON.stringify(e.box));
+  A('①d by = 影像备份·尺寸自证', e.by === '影像备份·尺寸自证', String(e.by));
+  A('①e note 写明尺寸自证的具体像素', /尺寸自证\s*2024x2940/.test(e.note || ''), String(e.note).slice(0, 120));
+  A('①f 库内确实没有这条规范路径（证明走的是兜底，不是撞对了）', !fs.existsSync(path.join(LIB, CANON)));
+  const g = run(['_原卷台账.mjs', '门禁']);
+  A('①g 门禁里这张卡不报"未定位"', !/✗\s*学生A\|M0001\s*未定位/.test(g.out), (g.out.match(/.*学生A\|M0001.*/) || [''])[0].slice(0, 100));
+}
+
+/* ════ ② 阴性自证：备份件尺寸不符 ⇒ 必须不定位，且**说明为什么** ════ */
+{
+  mk(BACKUP, png(999, 111));                     /* 同一路径，另一个文件（正是"路径被复用"的现场） */
+  const r = run(['_原卷台账.mjs', '生成']);
+  const e = entry(KEY);
+  A('②a 尺寸不符时 page 必须为 null（宁可不定位）', e.page === null, String(e.page));
+  A('②b 原因可见：明说"尺寸不符"并给出两边像素', /尺寸不符/.test(e.note || '') && /999x111/.test(e.note || ''), String(e.note).slice(0, 160));
+  A('②c 生成仍然退出 0（"定位不了"不是崩溃）', r.code === 0, 'exit=' + r.code);
+}
+
+/* ════ ③ srcPx 为对象 {w,h}（新形态）必须被接受 ════ */
+{
+  mk(BACKUP, png(2024, 2940));
+  recWrite({ srcPx: { w: 2024, h: 2940 } });
+  run(['_原卷台账.mjs', '生成']);
+  const e = entry(KEY);
+  A('③a 对象型 srcPx 被正确解析（page 定位成功）', e.page === CANON, String(e.page));
+  A('③b 且仍然做了尺寸自证', /尺寸自证\s*2024x2940/.test(e.note || ''), String(e.note).slice(0, 120));
+}
+
+/* ════ ④ 没有 srcPx ⇒ 可定位，但必须如实标注"未做像素自证" ════ */
+{
+  recWrite({ srcPx: undefined });
+  run(['_原卷台账.mjs', '生成']);
+  const e = entry(KEY);
+  A('④a 无 srcPx 时仍定位（同相对路径命中）', e.page === CANON, String(e.page));
+  A('④b note 如实写"未做像素自证"，不许假装验过', /未做像素自证/.test(e.note || ''), String(e.note).slice(0, 140));
+}
+
+/* ════ ⑤ 备份件也不在 ⇒ 不定位 ════ */
+{
+  recWrite({ srcPx: '2024x2940' });
+  fs.unlinkSync(path.join(LIB, BACKUP));
+  run(['_原卷台账.mjs', '生成']);
+  const e = entry(KEY);
+  A('⑤a 备份件也没有 ⇒ page 为 null', e.page === null, String(e.page));
+  A('⑤b 原因可见：明说"原路径已失效"且"没有同相对路径副本"', /原路径已失效/.test(e.note || '') && /没有同相对路径副本/.test(e.note || ''), String(e.note).slice(0, 160));
+}
+
+/* ════ ⑥ 兜底路径必须在库内（库根之外的兜底件不许写进台账）════ */
+{
+  const OUTSIDE = E.allocTempDir('gn-ledger-outside-');
+  fs.writeFileSync(path.join(OUTSIDE, 'p01.jpg'), png(2024, 2940));
+  /* 用 `..` 上跳相对路径去指库外（历史事故形态：exists() 会把它解析回库外真文件） */
+  const evil = path.relative(LIB, path.join(OUTSIDE, 'p01.jpg')).replace(/\\/g, '/');
+  recWrite({ src: evil, srcPx: '2024x2940' });
+  mk(BACKUP, png(2024, 2940));                    /* 备份里那份仍在：判据必须优先拒掉库外 */
+  run(['_原卷台账.mjs', '生成']);
+  const e = entry(KEY);
+  A('⑥a 库外上跳路径不许进 page', e.page === null, String(e.page));
+}
+
+console.log(`\nRESULT=${fails ? 'FAIL(' + fails + ')' : 'PASS'}`);
+process.exit(fails ? 1 : 0);
