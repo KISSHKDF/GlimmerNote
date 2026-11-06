@@ -581,6 +581,11 @@ const unitTests = [
   ['neg-server-junction.cjs'],        // ★ H-08-B：重解析点包含性（29 断言）
   ['neg-v2-smoke.cjs'],                // ★ v2 纯函数回归（2026-10-12 补 process.exit，此前"红了也不红"）
   ['neg-pending-answer-visible.cjs'],  // ★ 2026-11-05：待办「回话可见 + 欠账可执行」（用户报障"没人看、没人懂"；29 断言 + 负向对照）
+  /* ★ 2026-11-06（收口）：待办「回话分情况」判据 —— 用户每条回话归到哪一类、推出什么判定/处置。
+     正例/负例（不该被认成这类的不许被认出来）/枚举合法性/不越权（撤卡·建卡必须留给人）
+     + 真台账覆盖度（≥85%）。被判的判据脚本在**仓外**（agent 侧 dsh-ops\，不进本仓、不随包发布），
+     缺它时本用例可见 SKIP 并给出 CTB_OPS_DIR 用法 —— 只挂 quick/full，不进 fixture/CI 白名单。 */
+  ['neg-pending-reply-cases.cjs'],
   ['neg-v1-admit-consumption.cjs'],   // ★ v1 JS 必须真的引用 ADMIT/HEALTH（注入了没人读 = 等于没注入）
   ['verify-stem-13.cjs'],             // 13 张补出的题干.html 与盲解所据文本等价
   ['verify-stem-shape.cjs'],          // 全库题干形状（片段/无 BOM/无整篇文档）
