@@ -16,7 +16,7 @@
  *         --q "问题一句话" [--detail "证据/影响"] [--source "来源"] [--date 2026-10-06]
  *         [--qref "第12(2)题 · 「P 在 C 左侧」分支"] [--box "x,y,w,h"]
  *   定位  --id T004 [--qref "第18(4)题"] [--box "x,y,w,h"]   回原卷定位：这条问的是哪一题 + 证据图上的高亮框（源图像素）
- *   定位  --id T004 --origpage "九年级/物理/原卷/整页.jpg" --origbox "x,y,w,h"   无卡待办的原图链路：登记这道题所在的**整页** + 0~1 归一化红框（两者必须成对给）
+ *   定位  --id T004 --origpage "<小名>/原卷/<批次>/整页.jpg" --origbox "x,y,w,h"   无卡待办的原图链路：登记这道题所在的**整页** + 0~1 归一化红框（两者必须成对给）
  *   定位  --auto [--force] [--dry]             批量补题号：缺 qRef 的按 cardId 机械推导（--force 连已登记的重算，--dry 只预览）
  *   定位                                     不带参数 = 打印定位覆盖率（缺题号 / 有题号缺框 / 缺证据图）
  *   答    --id T003 --answer "孩子答：..." [--note "补充"]
@@ -547,13 +547,13 @@ function guardEvidence(ev, where) {
   if (bad) {
     console.error(`✖ 证据图路径含通配符「${bad[0]}」，这不是一个真实路径：${s}`);
     console.error('  通配符永远加载失败（用户看到破图 + 点不动的「打开原图」）。请给卡目录全名，例如：');
-    console.error('  node _待确认.mjs 定位 --id Txxx --evidence "九年级/物理/P0034-力臂漏作垂线段/原卷截图.jpg"');
+    console.error('  node _待确认.mjs 定位 --id Txxx --evidence "<小名>/物理/P0034-力臂漏作垂线段/原卷截图.jpg"');
     process.exit(2);
   }
   if (!fs.existsSync(evAbs(s))) {
     console.error(`✖ ${where}：证据图文件不存在 → ${s}`);
     console.error(`   （查的是 ${evAbs(s)}；待办指向不存在的文件＝界面上一个破图）`);
-    console.error(`   查真实卡目录：dir "${path.join(ROOT, '九年级', '<学科>', '<卡号>-*')}"`);
+    console.error(`   查真实卡目录：dir "${path.join(ROOT, '<小名>', '<学科>', '<卡号>-*')}"`);
     if (where === '定位') process.exit(2);   // 定位 = 修图路径，必须指到真实文件
   }
   return s;
@@ -923,7 +923,7 @@ if (action === '清单') {
     // 这里不阻断（批量录入脚本可能一次加多条、随后统一补图），但必须把缺图喊到脸上。
     console.error('');
     console.error('⚠️  ⚠️  ⚠️  新条目没有证据图 —— 首页待办工作台这条会是空白，看的人不知道在问什么！');
-    console.error('     立刻补：node _待确认.mjs 定位 --id ' + it.id + ' --evidence "九年级/<学科>/<卡目录>/原卷截图.jpg" --box "x,y,w,h"');
+    console.error('     立刻补：node _待确认.mjs 定位 --id ' + it.id + ' --evidence "<小名>/<学科>/<卡号-描述>/原卷截图.jpg" --box "x,y,w,h"');
     console.error('     查全库缺口：node _待确认.mjs 证据');
     console.error('');
   }
@@ -1030,7 +1030,7 @@ if (action === '清单') {
       const newBx = nbGiven ? nb : oldBx;
       if ((newPg && !newBx) || (!newPg && newBx)) {
         console.error('✖ 整页与红框必须成对（现算得：页=' + (newPg || '无') + ' 框=' + (newBx ? newBx.join(',') : '无') + '）');
-        console.error('   登记完整一对：node _待确认.mjs 定位 --id ' + it.id + ' --origpage "九年级/<学科>/原卷/整页.jpg" --origbox "x,y,w,h"');
+        console.error('   登记完整一对：node _待确认.mjs 定位 --id ' + it.id + ' --origpage "<小名>/原卷/<批次>/整页.jpg" --origbox "x,y,w,h"');
         console.error('   成对清空：     node _待确认.mjs 定位 --id ' + it.id + ' --origpage "" --origbox ""');
         process.exit(2);
       }
@@ -1471,7 +1471,7 @@ if (action === '清单') {
       for (const p of r.problems) console.log(`       · ${p}`);
     }
     if (!bad.length) console.log('   ✅ 每条待办的证据图都指向它问的那一页。');
-    else console.log('   修法：node _待确认.mjs 定位 --id Txxx --evidence "九年级/<学科>/待办证据/Txxx.jpg" --box "x,y,w,h" --origpage "九年级/<学科>/原卷/<整页>.jpg" --origbox "x,y,w,h"');
+    else console.log('   修法：node _待确认.mjs 定位 --id Txxx --evidence "<小名>/<学科>/<卡号-描述>/待办证据/Txxx.jpg" --box "x,y,w,h" --origpage "<小名>/原卷/<批次>/<整页>.jpg" --origbox "x,y,w,h"');
   }
   process.exit(bad.length ? 1 : 0);
 } else if (action === '证据') {
@@ -1518,12 +1518,12 @@ if (action === '清单') {
     if (missing.length) {
       console.log(`证据门禁不通过：${missing.length} 条未确认没有证据图 —— 首页这些条是空白。`);
       for (const it of missing) console.log(`   缺图 ${it.id}  ${fmt(it)}  ${it.question}`);
-      console.log('   （补：node _待确认.mjs 定位 --id Txxx --evidence "九年级/<学科>/<卡目录>/原卷截图.jpg" --box "x,y,w,h"）');
+      console.log('   （补：node _待确认.mjs 定位 --id Txxx --evidence "<小名>/<学科>/<卡号-描述>/原卷截图.jpg" --box "x,y,w,h"）');
     }
     if (wild.length) {
       console.log(`证据门禁不通过：${wild.length} 条的证据图路径是通配符 —— 永远加载不到，界面上只剩破图。`);
       for (const it of wild) console.log(`   通配 ${it.id}  → ${it.evidence}`);
-      console.log('   （换成真实卡目录全名：node _待确认.mjs 定位 --id Txxx --evidence "九年级/<学科>/<卡号>-<slug>/原卷截图.jpg"）');
+      console.log('   （换成真实卡目录全名：node _待确认.mjs 定位 --id Txxx --evidence "<小名>/<学科>/<卡号>-<描述>/原卷截图.jpg"）');
     }
     if (broken.length) {
       console.log(`证据门禁不通过：${broken.length} 条的证据图路径已失效（文件不在）。`);
@@ -1672,9 +1672,9 @@ if (action === '清单') {
     if (noQref.length) console.log(`  ⚠ 未登记题号 ${noQref.length}：${noQref.map(it => it.id).join(', ')}  ← 补：node _待确认.mjs 定位 --auto`);
     if (noBox.length) console.log(`  ○ 有题号缺红框 ${noBox.length}：${noBox.map(it => it.id).join(', ')}（不阻断，但灯箱无法自动对准）`);
     if (truncated.length) console.log(`  ⚠ 问题文本疑似截断 ${truncated.length}：${truncated.map(it => it.id).join(', ')}  ← 补：node _待确认.mjs 改问题 --id Txxx --q "完整文本"`);
-    if (evBad.length) console.log(`  ⚠ 证据图不可用 ${evBad.length}：${evBad.map(it => it.id).join(', ')}  ← 补：node _待确认.mjs 定位 --id Txxx --evidence "九年级/<学科>/<卡号>-<slug>/原卷截图.jpg"`);
-    if (origBad.length) console.log(`  ⚠ 整页原图已失效 ${origBad.length}：${origBad.map(it => it.id).join(', ')}  ← 修：node _待确认.mjs 定位 --id Txxx --origpage "九年级/<学科>/原卷/xxx.jpg" --origbox "x,y,w,h"`);
-    if (origOff.length) console.log(`  ○ 原图未接通 ${origOff.length}：${origOff.map(it => it.id).join(', ')}（无卡且未登记整页 → 灯箱 ⇄/🗂 只能开到裁图）  ← 补：node _待确认.mjs 定位 --id Txxx --origpage "九年级/<学科>/原卷/整页.jpg" --origbox "x,y,w,h"（0~1 归一化框）`);
+    if (evBad.length) console.log(`  ⚠ 证据图不可用 ${evBad.length}：${evBad.map(it => it.id).join(', ')}  ← 补：node _待确认.mjs 定位 --id Txxx --evidence "<小名>/<学科>/<卡号>-<描述>/原卷截图.jpg"`);
+    if (origBad.length) console.log(`  ⚠ 整页原图已失效 ${origBad.length}：${origBad.map(it => it.id).join(', ')}  ← 修：node _待确认.mjs 定位 --id Txxx --origpage "<小名>/原卷/<批次>/xxx.jpg" --origbox "x,y,w,h"`);
+    if (origOff.length) console.log(`  ○ 原图未接通 ${origOff.length}：${origOff.map(it => it.id).join(', ')}（无卡且未登记整页 → 灯箱 ⇄/🗂 只能开到裁图）  ← 补：node _待确认.mjs 定位 --id Txxx --origpage "<小名>/原卷/<批次>/整页.jpg" --origbox "x,y,w,h"（0~1 归一化框）`);
     if (align.bad.length) console.log(`  ⚠ 图与问题对不上 ${align.bad.length}/${align.open}：${align.bad.map(r => r.id).join(', ')}  ← 详情：node _待确认.mjs 对位`);
     if (noVerdict.length) console.log(`  ⚠ 已办结但未做判定 ${noVerdict.length}/${doneAll.length}：${noVerdict.map(it => it.id).join(', ')}  ← 补：node _待确认.mjs 判定 --id Txxx --verdict "错|对|部分对|无法判定" --note "依据"`);
     if (noDisp.length) console.log(`  ⚠ 已办结但未登记后续动作 ${noDisp.length}/${doneAll.length}：${noDisp.map(it => it.id).join(', ')}  ← 补：node _待确认.mjs 处置 --id Txxx --as "无需处置|已补建卡|已撤卡|已核销|待人工" --note "..."`);

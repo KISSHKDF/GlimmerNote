@@ -84,9 +84,9 @@ function loadTask(id) {
 }
 
 /* ───────────────── 学生·学科落点 ─────────────────
- * 索引有两种形态（`生成状态.mjs:156-158` 是既有判据）：
- *   ① 单学科：{student, grade, subject:'数学', items:[]}      文件在 库\<年级>-<学生>\数学\_索引.json
- *   ② 多学科：{student, grade, subjects:{ 数学:{items:[]} }}  文件在 库\九年级\_索引.json
+ * 索引有两种形态（`生成状态.mjs:156-158` 是既有判据；形态②是旧库遗留，工具链仍要读得动）：
+ *   ① 单学科：{student, grade, subject:'数学', items:[]}      文件在 <库根>\<小名>\<学科>\_索引.json
+ *   ② 多学科：{student, grade, subjects:{ 数学:{items:[]} }}  文件在 <库根>\<小名>\_索引.json
  * 落点查找：先按「学生+学科」精确找索引文件，再决定卡目录挂在哪。 */
 function indexFiles(dir, acc = []) {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
