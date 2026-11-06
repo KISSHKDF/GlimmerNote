@@ -222,6 +222,12 @@
 
   /* ---------- 待办 ---------- */
   M.pendingItems = () => (M.state && M.state.pending && M.state.pending.items) || [];
+  /* ★ 2026-11-05（用户报障「没人看、没人懂」）：**已办结条目此前不在 `items` 里** ⇒
+     「显示已办结」勾选框读同一个数组，勾上也是空的 —— 用户的回话落了库，界面上却像没发生过。
+     现在 `门禁 --json` 额外输出 `doneItems`（已办结条目，含 answer/verdict/disposition），
+     这里合并成一张表。未办结工作面仍只取 `items`（`pendingOpen` 口径不变）。 */
+  M.pendingDone = () => (M.state && M.state.pending && M.state.pending.doneItems) || [];
+  M.pendingAll = () => M.pendingItems().concat(M.pendingDone());
   M.pendingOpen = () => M.pendingItems().filter(i => i.status !== '已确认' && i.status !== '已作废');
   M.pendingByAsk = function () {
     const g = {}; for (const a of M.ASK_ORDER) g[a] = [];

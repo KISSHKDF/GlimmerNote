@@ -6,7 +6,13 @@
   let askFilter = '全部', kindFilter = '全部', showDone = false;
   let viewList = [];      // 当前筛选+排序后的展示列表（灯箱画廊与列表同序）
 
-  V.sub = () => { const n = M.pendingOpen().length; return '未办结 ' + n + ' 条' + (showDone ? '（含已办结展示）' : ''); };
+  /* ★ 2026-11-05：顶栏也要报欠账 —— 只看「未办结 N 条」会让人以为一切正常，
+     而真相是「回了但没人执行」的条目堆在另一个看不见的抽屉里。 */
+  V.sub = () => {
+    const n = M.pendingOpen().length;
+    const owes = (M.pendingDone ? M.pendingDone() : []).filter(p => p.status !== '已作废' && p.closed !== true).length;
+    return '未办结 ' + n + ' 条' + (owes ? '（欠账 ' + owes + ' 条待执行）' : '') + (showDone ? '（含已办结展示）' : '');
+  };
 
   V.render = function (el) {
     const open = M.pendingOpen();
@@ -31,6 +37,10 @@
       '</div>' +
 
       ((noQref.size || noBox.size) ? '<div class="pp-note" style="margin-bottom:12px">⚠ 数据完备性：缺题号 ' + noQref.size + ' 条、缺红框 ' + noBox.size + ' 条（题号与证据图是必有字段；可让 agent 跑 <code>定位 --auto</code> 补齐）</div>' : '') +
+      /* ★ 2026-11-05（用户报障「没人看、没人懂」）：把「回了但没人执行」的欠账**摆到台面上**。
+         此前这条信息只存在于门禁的 stdout 里，界面上完全看不见 ⇒ 用户以为回话没被记下，
+         或以为记下了就等于办完了。现在它是一条常驻横幅，条数与 id 都写清楚。 */
+      owesBanner() +
       /* 2026-10-21：编号重号必须在工作台显式报红。重号时「确认办结」会打到另一条（多为已作废那条），
          表现是"点了没反应/办完还在"，而界面还给绿灯——这条横幅就是让那种静默失效无处藏。 */
       ((sp.dupId && sp.dupId.length) ? '<div class="pp-note bad" style="margin-bottom:12px">⛔ 台账编号重号 ' + sp.dupId.map(d => U.esc(d.id) + '×' + d.count).join('、') + '：同一编号有多条，办结可能落到另一条上（办完不消失）。请让 agent 给拆出来的新条目重新取号。</div>' : '') +
@@ -62,9 +72,10 @@
     if (kindFilter !== '全部') items = items.filter(i => i.kind === kindFilter);
     if (showDone) {
       /* F-37：已办结此前按「挂起天数」混排进未办结里，且 `slice(-40)` 依赖台账尾部顺序（列表不稳定）。
-         现在：未办结在前、已办结在后按 resolvedAt 倒序，两段各自稳定。 */
-      const done = M.pendingItems().filter(i => i.status === '已确认' || i.status === '已作废')
-        .slice().sort((a, b) => String(b.resolvedAt || '').localeCompare(String(a.resolvedAt || ''))).slice(0, 40);
+         现在：未办结在前、已办结在后按 resolvedAt 倒序，两段各自稳定。
+         ★ 2026-11-05：已办结条目改从 `M.pendingDone()` 取（状态包的 `doneItems`）——
+         此前它们压根不在 `items` 里，「显示已办结」勾了也是空的（用户报障「没人看、没人懂」）。 */
+      const done = M.pendingDone().slice().sort((a, b) => String(b.resolvedAt || '').localeCompare(String(a.resolvedAt || ''))).slice(0, 40);
       const staleness = x => U.diffDays(x.raisedAt || '2026-01-01', U.today());
       const openSorted = items.slice().sort((a, b) => (staleness(b) || 0) - (staleness(a) || 0));
       const doneSorted = done.slice().sort((a, b) => String(b.resolvedAt || '').localeCompare(String(a.resolvedAt || '')));
@@ -79,7 +90,11 @@
     const stale = U.diffDays(p.raisedAt || U.today(), U.today());
     const done = p.status && p.status !== '未确认';
     const redBar = noQref.has(p.id) ? '<span class="tag bad" title="门禁口径：缺题号">缺题号</span>' : '';
-    return '<div class="pd-item" id="pd-' + U.esc(p.id) + '">' +
+    /* ★ 2026-11-05（用户报障「没人看、没人懂」）：已办结条目要**明确说清你的回话有没有被执行**。
+       `closed=false` = 你回答了，但没人补判定/处置（欠账）—— 这正是此前"问了白问"的真相，
+       界面必须把它显式喊出来，不许再让"办结"看起来像"办完"。 */
+    const owes = done && p.closed === false;
+    return '<div class="pd-item' + (owes ? ' owes' : '') + '" id="pd-' + U.esc(p.id) + '">' +
       '<div class="pd-top"><span class="tag ' + (done ? 'gray' : stale == null || stale >= 3 ? 'bad' : 'warn') + '">' + U.esc(p.id) + '</span>' +
       '<span class="tag gray">' + U.esc(p.kind || '') + '</span>' +
       '<span class="tag info">' + (M.ASK_IC[p.askWho] || '') + ' 问' + U.esc(p.askWho || '') + '</span>' +
@@ -91,7 +106,7 @@
       '<div class="pd-q">' + U.esc(p.question || '') + '</div>' +
       (p.detail ? '<div class="pd-x">' + U.esc(p.detail) + '</div>' : '') +
       (p.source ? '<div class="small muted" style="margin-top:6px">来源：' + U.esc(p.source) + (p.evidenceNote ? ' · ' + U.esc(p.evidenceNote) : '') + '</div>' : '') +
-      (done ? '<div class="ans" style="margin-top:8px"><b>结论：</b>' + U.esc(p.answer || '') + (p.note ? '（' + U.esc(p.note) + '）' : '') + '</div>' : '') +
+      (done ? doneBlock(p, owes) : '') +
       evBlock(p) +
       pairBlock(p) +
       reviewBlock(p) +
@@ -104,6 +119,55 @@
         (p.cardId && /\w/.test(p.cardId) ? '<button class="btn sm ghost" data-card="' + U.esc(p.student) + '|' + U.esc(p.cardId) + '">🔍 去关联卡</button>' : '') +
         '<span class="localflag small" data-flag="' + U.esc(p.id) + '"></span></div>') +
       '</div>';
+  }
+
+  /* ---------- 「回了但没人执行」欠账横幅（2026-11-05）----------
+     判据：已办结（status≠未确认）但 `closed !== true`（判定或处置缺一）⇒ 欠账。
+     数据源：状态包的 `doneItems`（`门禁 --json` 新增）。 */
+  function owesList() {
+    return M.pendingDone().filter(p => p.status !== '已作废' && p.closed !== true);
+  }
+  function owesBanner() {
+    const list = owesList();
+    if (!list.length) return '';
+    const ids = list.map(p => p.id);
+    const show = ids.slice(0, 12).join('、');
+    return '<div class="pp-note bad owes-banner" style="margin-bottom:12px">' +
+      '⛔ <b>有 ' + list.length + ' 条待办：你回答过了，但没人把它执行完</b>' +
+      '（判定「对/错/无法判定」与处置「建卡/撤卡/核销」缺一或全缺）。' +
+      '<br>这些回答已经原样存在台账里，没有丢；但<b>结论落了库 ≠ 回话生效</b>。' +
+      '<br>受影响：' + U.esc(show) + (ids.length > 12 ? ' 等' : '') +
+      '<br>修法：让 agent 接手补这两步（说一句「把待办欠账清掉」即可）；' +
+      '或勾选「显示已办结」逐条看你的原话与执行状态。' +
+      '</div>';
+  }
+
+  /* ---------- 已办结条目：你的回话 + 它有没有被执行（2026-11-05）---------- */
+  function doneBlock(p, owes) {
+    let h = '<div class="ans" style="margin-top:8px"><b>你的回答：</b>' + U.esc(p.answer || '（空）');
+    if (p.resolvedAt) h += '　<span class="small muted">· ' + U.esc(p.resolvedAt) + '</span>';
+    h += '</div>';
+    if (owes) {
+      /* 欠账：回话落了库，但判定/处置没人补 ⇒ 明说，不许让"办结"看着像"办完"。 */
+      h += '<div class="pd-owes">⚠ <b>这条还没被执行</b>：你的回答已存进台账，但' +
+        '「判定」（把回答翻成 对/错/无法判定）与「处置」（该建卡还是该撤卡）还没人做。' +
+        '<br>需要 agent 接手补这两步 —— 说一声「把待办欠账清掉」即可。' +
+        (p.verdict ? '（判定已有，缺处置）' : (p.disposition ? '（处置已有，缺判定）' : '（两步都缺）')) +
+        '</div>';
+      return h;
+    }
+    const vd = p.verdict ? U.esc(p.verdict) : '';
+    const dp = p.disposition ? U.esc(p.disposition) : '';
+    if (vd || dp) {
+      h += '<div class="ans" style="margin-top:6px"><b>已按你的口径执行：</b>' +
+        (vd ? '判定 <b>' + vd + '</b>' : '') +
+        (vd && dp ? '　→　' : '') +
+        (dp ? '处置 <b>' + dp + '</b>' : '') +
+        '</div>';
+      if (p.verdictNote) h += '<div class="small muted" style="margin-top:4px">判定依据：' + U.esc(p.verdictNote) + '</div>';
+      if (p.dispositionNote) h += '<div class="small muted" style="margin-top:4px">处置说明：' + U.esc(p.dispositionNote) + '</div>';
+    }
+    return h;
   }
 
   /* ---------- 证据图：坏了要喊出来，不许静默破图（v2.5，2026-10-10） ----------
