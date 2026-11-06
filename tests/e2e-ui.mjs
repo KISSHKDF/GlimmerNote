@@ -343,7 +343,7 @@ const S = (name, why) => { skipped++; P('[SKIP]' + name + '  → ' + why); };
      全库 346 条 import 与 origPage 逐字节相同，零信息量）。这里改成**防漂移**断言：
      ① 灯箱工具条不得再存在 #lbImp 节点、文案不得再出现「原件」二字；
      ② M.origOf 不得再吐 origImport 字段（界面与数据层解耦）；
-     ③ 数据层 origImport 仍在（影像备份的分母不许被顺手删掉）。
+     ③ 数据层 origImport 仍在（它是「原图从哪来」的登记字段，不许被顺手删掉；`_影像备份` 分母已按 P10 退休）。
      旧断言「原件显隐与数据一致」绑的就是这个已下线的概念，一并撤掉。 */
   const LB2 = JSON.parse(await cdp.evalJs(`(async function(){
     var xs=CTB.model.cards.filter(function(x){var c=x.card;return c.origPage&&c.img;});

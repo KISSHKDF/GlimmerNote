@@ -174,45 +174,16 @@ function lookupStore(sha, expectBytes, verifyContent) {
 }
 
 /**
- * **影像备份**里的同路径副本（2026-11-05 新增的第三层兜底）。
+ * ★ 2026-11-06：**"影像备份同路径副本"这一层已整体摘除**（用户定案 P10「一个字节一个家」，
+ *   `_影像备份\` 退休）。原来的三层兜底（原路径 → 保全库 → 影像备份）现在只剩两层。
  *
- * 为什么要有它（实测踩到的坑）：
- *   用户按「凡是确认重复的就删掉」清理收件箱里的重复照片。判定是"已处理过、不该再录一遍"
- *   ⇒ **这些照片是 52 张卡的溯源依据**（台账的 page/import 全指向它们）⇒ 删掉就断链。
- *   而当时只有两条找回路径：
- *     · 保全库 `_原图\`（内容寻址）—— 这批照片**没进**（0/14）⇒ 兜不住；
- *     · 影像备份 `_影像备份\原件\<同路径>`（**按目录结构平铺**，不按 sha）⇒ 明明有，
- *       但原图寻址**根本不查它** ⇒ 52 张卡全部报「导入原件失效」。
- *   所以补这一层：保全库找不到时，按**同路径**去影像备份找。
- *
- * ⚠ 为什么这一层排在最后：影像备份是**同盘副本**，它的价值是"防误删"，
- *   不是"防盘坏" —— 真要靠它当唯一副本，盘坏了就一起没了。
- *   保全库（内容寻址）才是跨盘的那一份。所以顺序是：原路径 → 保全库 → 影像备份。
- *
- * @param {string} rel   库根相对路径（posix）
- * @param {string|null} sha  已知的 sha256（十六进制，可空）
- * @returns {{path:string, sha?:string}|null}
+ * 摘除前先做了**实测证明**（不是"看着像死代码"就删）：把 `_原图台账.json` 里全部 1,192 条
+ * 引用路径各跑一遍 `explainPath()`，现状引擎的 status 分布是 `direct 918 / store 274`，
+ * **`backup` 条数 = 0**；再把这一层变异成"永远返回 null"跑同一套 ⇒ 分布**逐字相同**。
+ * 也就是说这一层早已不再承担任何一次解析 —— 它存在的理由是 2026-11-05 那批"收件箱照片被清掉、
+ * 52 张卡全报导入原件失效"，而那批照片**现在已经进了 `_原图\`**（274 条走 store），
+ * 兜底层成了纯死代码。判据留档见 `tests\neg-p10-image-homes.cjs`。
  */
-function lookupBackup(rel, sha) {
-  try {
-    const relPosix = String(rel).replace(/\\/g, '/').replace(/^\/+/, '');
-    if (!relPosix) return null;
-    const relBack = '_影像备份/原件/' + relPosix;
-    const abs = path.join(root(), relBack);
-    const st = fs.statSync(abs);
-    if (!st.isFile()) return null;
-    /* ⚠ 内容核对：台账门禁调用 resolve 时**不带 expectBytes**（那是热路径，
-       零 IO 是性能底线），所以字节数核对在这条路上根本不执行 ——
-       只比路径就可能把「路径被复用成另一个文件」的件递出去（张冠李戴）。
-       所以这里**自己算 sha 比对**：只在真的走到兜底层时才读一次文件，
-       平常的 direct 路径零字节读取不受影响。 */
-    if (sha) {
-      const want = String(sha).toUpperCase();
-      if (sha256File(abs) !== want) return null;   /* 内容对不上 ⇒ 不给这条路径 */
-    }
-    return { path: relBack, sha: sha ? String(sha).toUpperCase() : undefined };
-  } catch { return null; }
-}
 
 /**
  * 一次解析的**可归因**结论（`resolveByPath` / `resolver().resolve` 共用同一个判据，
@@ -221,7 +192,6 @@ function lookupBackup(rel, sha) {
  *   status：
  *     'direct'       原路径在盘且（给了 expectBytes 时）字节数相符 —— 常态，**不读一个字节**
  *     'store'        原路径不可用（不存在 / 字节数不符）⇒ 已按内容从保全库找回
- *     'backup'       原路径与保全库都没有 ⇒ 已从影像备份的同路径副本找回
  *     'empty'        没给路径
  *     'ambiguous'    该路径在台账里对应**多个** sha ⇒ 拒绝猜（旧实现静默取第一个）
  *     'size-mismatch' 原路径还在但字节数不符，且按内容也找不回（两侧字节数都写进 reason）
@@ -246,18 +216,14 @@ function explain(rel, opts = {}) {
   /* ② 原路径不可用 ⇒ 用反查表找 sha，再从保全库按内容找回 */
   const shas = pathShas(rel);
   if (!shas.length) {
-    /* ★ 2026-11-05：保全库查不到 sha 线索时，**先看影像备份的同路径副本**。
-       实测：用户清理收件箱重复照片后，52 张卡的 page 全部"导入原件失效" ——
-       台账有路径线索，但保全库没有这批照片（没进过 _原图），而影像备份里有同路径副本。
-       没有这一层 ⇒ 一次正常的清理就把 52 张卡的溯源打断。 */
-    const bk = lookupBackup(rel, null);
-    if (bk) return { status: 'backup', code: 'backup', path: bk.path, via: 'backup' };
+    /* ★ 2026-11-06（P10）：原来这里还有一层"去 `_影像备份\` 按同路径找副本"，已随镜像退休摘除。
+       实测依据：全部 1,192 条引用的 status 分布里 `backup` 条数 = 0（见本文件上方那段注释）。 */
     return {
       status: 'no-sha', code: 'no-sha',
       reason: (statOk
         ? '原路径在盘但字节数 ' + sizeOnDisk + ' ≠ 期望 ' + expect + '；'
         : '原路径不在盘；') + '台账反查表里没有这个路径的任何 sha 线索 ⇒ 没有按内容找回的抓手' +
-        '（影像备份里也没有同路径副本）',
+        '（保全库 `_原图\\` 里也没有它 —— 该路径从未入库过）',
     };
   }
   if (shas.length > 1) {
@@ -271,11 +237,7 @@ function explain(rel, opts = {}) {
   const sha = shas[0];
   const usable = lookupStore(sha, expect, verifyContent);
   if (usable) return { status: 'store', code: 'store', path: usable, via: 'store', sha };
-  /* ★ 2026-11-05：保全库也没有 ⇒ 再看影像备份的同路径副本（**核对内容 sha**，不只看字节数）。 */
-  const bk = lookupBackup(rel, sha);
-  if (bk) {
-    return { status: 'backup', code: 'backup', path: bk.path, via: 'backup', sha: bk.sha || sha };
-  }
+  /* ★ 2026-11-06（P10）：原来这里还有"再看 `_影像备份\` 的同路径副本"这一层，已随镜像退休摘除。 */
   const sizeMismatch = statOk && expect != null;
   return {
     status: sizeMismatch ? 'size-mismatch' : 'store-missing',
@@ -285,7 +247,7 @@ function explain(rel, opts = {}) {
       ? '原路径在盘但字节数 ' + sizeOnDisk + ' ≠ 期望 ' + expect + '；'
       : '原路径不在盘；') +
       '按内容找回 ' + sha.slice(0, 12) + '… 也失败（保全库里没有这个 sha 的可用对象' +
-      (expect != null ? '，或它的字节数 ≠ ' + expect : '') + '），影像备份里也没有同路径副本 ⇒ 真的断了，**不给字节不符的路径**',
+      (expect != null ? '，或它的字节数 ≠ ' + expect : '') + '）⇒ 真的断了，**不给字节不符的路径**',
   };
 }
 
@@ -304,8 +266,8 @@ function explain(rel, opts = {}) {
  */
 export function resolveByPath(rel, opts = {}) {
   const ex = explain(rel, opts);
-  if (ex.status === 'direct' || ex.status === 'store' || ex.status === 'backup') {
-    /* direct 不带 sha（旧形态就是这样，调用方可能逐字段比对）：只有 store/backup 兜底才有确定的 sha */
+  if (ex.status === 'direct' || ex.status === 'store') {
+    /* direct 不带 sha（旧形态就是这样，调用方可能逐字段比对）：只有 store 兜底才有确定的 sha */
     return ex.sha ? { path: ex.path, via: ex.via, sha: ex.sha } : { path: ex.path, via: ex.via };
   }
   if (ex.status !== 'empty') warnOnce(ex.status + '|' + normRel(rel), normRel(rel) + '：' + ex.reason);
@@ -344,7 +306,7 @@ export function resolver() {
     /** 路径 → 可用路径；命中保全库时返回 via='store'（direct 不带 sha，与单条版同形） */
     resolve(rel, expectBytes) {
       const ex = explain(rel, { expectBytes, verifyContent: expectBytes != null });
-      if (ex.status === 'direct' || ex.status === 'store' || ex.status === 'backup') {
+      if (ex.status === 'direct' || ex.status === 'store') {
         return ex.sha ? { path: ex.path, via: ex.via, sha: ex.sha } : { path: ex.path, via: ex.via };
       }
       if (ex.status !== 'empty') warnOnce(ex.status + '|' + normRel(rel), normRel(rel) + '：' + ex.reason);

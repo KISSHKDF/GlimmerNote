@@ -48,7 +48,7 @@ const A = (n, ok, d) => {
  * 合成库（合法基线）
  * ══════════════════════════════════════════════════════════════════════════ */
 /* 登记表是**规范 §3.1/3.2/3.3 的转写**；转写错一处，这里的合法库就会自己判红（自证） */
-const REGISTERED_DIRS = ['组卷', '_原图', '_影像备份', '_备份-真源', '_收件箱', '_录题', '_盲解', '_撤卡留档', '_笔形', '_工具'];
+const REGISTERED_DIRS = ['组卷', '_原图', '_备份-真源', '_收件箱', '_录题', '_盲解', '_撤卡留档', '_笔形', '_工具'];   // _影像备份 已按 P10 删除 ⇒ 不在白名单（出现即红）
 const REGISTERED_FILES = [
   '_组卷台账.json', '_配图台账.json', '_原卷台账.json', '_原图台账.json', '_盲解双路.json',
   '_笔形台账.json', '_页码映射.json', '_待确认.json', '_待办欠账-派发.json',
@@ -83,13 +83,12 @@ function buildLegal(root) {
   fs.mkdirSync(root, { recursive: true });
   for (const d of REGISTERED_DIRS) fs.mkdirSync(path.join(root, d), { recursive: true });
   for (const f of REGISTERED_FILES) wf(path.join(root, f), /\.(json)$/.test(f) ? '{}\n' : (f === '首页.html' ? '<!doctype html>\n' : '# 合成库占位\n'));
-  wf(path.join(root, '.gitignore'), '_原图/\n_影像备份/\n');
+  wf(path.join(root, '.gitignore'), '_原图/\n');   // ★ P10：_影像备份\ 已删除，不再进 .gitignore
   /* §3.2 新登记的影像真源：`_笔形\` 里就是样本文件（`_笔形台账.json` 的 items[*].sample 指向它） */
   wf(path.join(root, '_笔形', '小甲.md'), '# 笔迹样本（合成占位）\n');
   /* §3.4 ② 的三处豁免：里面的 `.bak` 是**规则允许**的历史留存，不许判红 */
   wf(path.join(root, '_备份-真源', '_组卷台账-20261106-010101001.json'), '{}\n');
   wf(path.join(root, '_备份-真源', '随便什么.bak'), 'x\n');
-  wf(path.join(root, '_影像备份', '原件', '小甲', '数学', 'M0001', '原卷截图.jpg.bak'), 'x\n');
   wf(path.join(root, '_原图', '_快照', '20261031-213815.list'), 'deadbeef.jpg\n');
   wf(path.join(root, '_原图', 'ab', 'ab' + 'c'.repeat(62) + '.jpg'), 'x\n');
   mkStudent(root, '小甲', { 数学: ['M0001-煮面条最少时间未作答'], 语文: [] });
@@ -246,9 +245,25 @@ greenCase('`_crops\\` 在原卷目录内部', (lib) => {
 greenCase('`*.bak` 在 `_备份-真源\\` 内部（§3.4 豁免①）', (lib) => {
   wf(path.join(lib, '_备份-真源', '_待确认-20261106-040650912.json.bak'), '{}\n');
 });
-greenCase('`*.bak` 在 `_影像备份\\` 内部（§3.4 豁免②：内容变化时就地留 <同名>.bak）', (lib) => {
+/* ── P10：`_影像备份\` 已删除，**不许回来**（2026-11-06 由"豁免②"翻成阴性）──
+   它不在 §3.2 白名单里 ⇒ 重新出现就是"库根顶层未登记条目"（G6），且它内部**不再有豁免**
+   ⇒ 里面任何 `.bak`/`_tmp` 之类残渣同时吃 G7。两条一起钉住（判据不许变成恒真）。 */
+{
+  const lib = freshLib();
+  fs.mkdirSync(path.join(lib, '_影像备份'));
+  const r = gateJson(lib);
+  A('【P10·镜像不许回来】库根重新出现 `_影像备份\\` ⇒ G6 判红（未登记条目）',
+    r.code === 2 && V(r.json, 'G6').some((v) => String(v.path).includes('_影像备份')),
+    'exit=' + r.code + ' ｜ ' + V(r.json, 'G6').map((v) => v.why).join(' ｜ ').slice(0, 140));
+}
+{
+  const lib = freshLib();
   wf(path.join(lib, '_影像备份', '原件', '小甲', '数学', 'M0001', '题干.html.bak'), 'x\n');
-});
+  const r = gateJson(lib);
+  A('【P10·镜像不许回来】它**内部不再豁免** ⇒ 里面的 `*.bak` 同时吃 G7（不只是 G6）',
+    r.code === 2 && V(r.json, 'G7').some((v) => String(v.path).includes('_影像备份')),
+    'exit=' + r.code + ' ｜ G7：' + V(r.json, 'G7').map((v) => v.why).join(' ｜ ').slice(0, 140));
+}
 greenCase('`*.bak` 与快照清单在 `_原图\\_快照\\` 内部（§3.4 豁免③）', (lib) => {
   wf(path.join(lib, '_原图', '_快照', '20261106-120000.list.bak'), 'x\n');
   wf(path.join(lib, '_原图', '_快照', '20261106-120000.list'), 'x\n');
