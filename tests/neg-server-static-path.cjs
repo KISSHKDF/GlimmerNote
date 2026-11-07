@@ -19,6 +19,8 @@
  *      只放行 `_原图`/`_收件箱` 两条取图目录 + `_组卷台账.json` 一个根台账。
  *      所以本段"必须 200"的样本改用 R2 放行的文件，`_索引.json` 这类内部件改成**必须 403**；
  *      包含性判据本身的断言（① 纯路径自证、② 越界/同前缀兄弟目录 403）一字未动。
+ *      ★ 2026-11-06：三处写死的 `九年级` 改成 `pickStudent()` **现挑**。那个目录名本身就是本轮修的缺陷
+ *      （目录名 ≠ `student` 字段）——写死它的代价是库一改名，"预期 403"变成 404，红的是测试自己的假设。
  *
  * 只发 GET，不写任何文件（也不需要在盘上真的造一个兄弟目录：判据在 `fs.readFile` **之前**，
  *   所以"403 而不是 404"本身就是判据生效的证据）。
@@ -32,6 +34,28 @@ const { A, end } = counter();
 const PORT = 7193;
 const WIN = path.win32;
 const SIBLING = path.join(path.dirname(ROOT), path.basename(ROOT) + '-ntest');   // 库根的同前缀兄弟目录
+
+const fs = require('fs');
+const E = require('./_测试环境.cjs');
+/** 从当前库里**现挑一个学生目录**（其下直接有 `_索引.json`；旧形态则看 `<学生>\<学科>\_索引.json`）。
+ *  ★ 2026-11-06：原先三处写死了 `九年级`。那个目录名本身就是本轮修的缺陷（目录名 ≠ `student` 字段）；
+ *    写死真库目录名的代价是——库一改名，「预期 403」就变成 404，红的是**测试自己的假设**，
+ *    而不是被检代码（实测就是这么红的）。口径同 `tests\_测试环境.cjs::findIndexes`：不写死真实学生目录名（B-09）。 */
+const pickStudent = () => {
+  const LIB = require('./_测试环境.cjs').LIB;
+  let fallback = null, tops;
+  try { tops = fs.readdirSync(LIB, { withFileTypes: true }); } catch { return null; }
+  for (const n of tops) {
+    if (!n.isDirectory() || /^[_.]/.test(n.name)) continue;
+    if (fs.existsSync(path.join(LIB, n.name, '_索引.json'))) return n.name;
+    let subs; try { subs = fs.readdirSync(path.join(LIB, n.name), { withFileTypes: true }); } catch { continue; }
+    for (const s of subs) {
+      if (s.isDirectory() && fs.existsSync(path.join(LIB, n.name, s.name, '_索引.json'))) { fallback = fallback || n.name; }
+    }
+  }
+  return fallback;
+};
+const STUDENT = pickStudent();
 
 /* 判据同构版：旧（裸 StartsWith）vs 新（带尾分隔符 + 大小写不敏感） */
 const oldJudge = abs => abs.startsWith(ROOT);
@@ -50,7 +74,9 @@ const asJoined = rel => path.normalize(path.join(ROOT, rel));   // 服务端等�
     A('穿越后归一化结果落在**库根之外**的同前缀兄弟目录', abs === path.join(SIBLING, 'secret.txt'), abs);
     A('自证：裸 startsWith(ROOT) 会**放行**它（本断言的牙齿）', oldJudge(abs) === true, '旧判据=' + oldJudge(abs));
     A('新判据（ROOT + sep）拒绝它', newJudge(abs) === false, '新判据=' + newJudge(abs));
-    A('根内路径两者都放行（新判据没把正常路径也拒掉）', oldJudge(asJoined('/九年级/_索引.json')) === true && newJudge(asJoined('/九年级/_索引.json')) === true);
+    /* 根内样本：学生目录（现挑）优先；空库时退回根台账 `_组卷台账.json`（R2 放行的根内文件）。 */
+    const innerRel = STUDENT ? '/' + STUDENT + '/_索引.json' : '/_组卷台账.json';
+    A('根内路径两者都放行（新判据没把正常路径也拒掉）', oldJudge(asJoined(innerRel)) === true && newJudge(asJoined(innerRel)) === true, innerRel);
     A('恰好等于 ROOT 本身仍算根内', newJudge(ROOT) === true);
     A('同前缀但多一层（错题本-X\\…）被拒', newJudge(asJoined('/../' + path.basename(ROOT) + '-X/a.txt')) === false);
     A('大小写不同的根内路径放行（Windows 文件系统不区分大小写）', newJudge(ROOT.toUpperCase() + path.sep + 'a.txt') === true);
@@ -98,8 +124,6 @@ const asJoined = rel => path.normalize(path.join(ROOT, rel));   // 服务端等�
          对着运行区库（纯数据）跑就必然 404 —— 那是"测试假设错"，不是"过度拦截"。
          本段要证的语义是「包含性判据不能把**根内真实存在**的路径也拦掉」，所以从当前库里现挑文件；
          挑不到的用例显式 SKIP（跳过必须可见），不假装通过。 */
-      const fs = require('fs'), path = require('path');
-      const E = require('./_测试环境.cjs');
       const exists = (rel) => { try { return fs.statSync(path.join(E.LIB, rel)).isFile(); } catch { return false; } };
 
       /* ① 下划线开头的根内文件：从库里现挑一个。
@@ -132,8 +156,12 @@ const asJoined = rel => path.normalize(path.join(ROOT, rel));   // 服务端等�
       const inside = [];
       if (underFile) inside.push(['/' + encodeURIComponent(underFile), 200, '根内下划线开头的文件（R2 放行的根台账）']);
       else console.log('  [SKIP] 根内下划线开头的文件 —— 库里一个都没有');
-      inside.push(['/九年级/_索引.json', 403, '根内下划线台账：R2 第 ③ 道判据明令 403（内部件不下发）']);
-      inside.push(['/九年级/' + encodeURIComponent('_索引.json'), 403, '中文目录段 + 下划线台账（同上）']);
+      if (STUDENT) {
+        inside.push(['/' + STUDENT + '/_索引.json', 403, '根内下划线台账：R2 第 ③ 道判据明令 403（内部件不下发）']);
+        inside.push(['/' + STUDENT + '/' + encodeURIComponent('_索引.json'), 403, '中文目录段 + 下划线台账（同上）']);
+      } else {
+        console.log('  [SKIP] 学生目录里的下划线台账 403 —— 库里没有学生目录（空库）；跳过必须可见，不假装通过');
+      }
       if (zhDash) inside.push(['/' + zhDash.split('/').map(encodeURIComponent).join('/'), 200, '根内中文文件名 + 连字符']);
       else console.log('  [SKIP] 根内中文文件名 + 连字符 —— 库里找不到这类文件');
       if (exists('首页.html')) inside.push(['/' + encodeURIComponent('首页.html'), 200, '根内中文文件名（首页）']);

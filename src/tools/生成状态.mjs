@@ -153,9 +153,9 @@ function resolveOrigWithVia(rel) {
 
 function cardsOf(idx, idxDir, subjectName) {
   /* 两种索引形态：
-     ① 多学科：{student, grade, subjects:{ 数学:{items:[]}, … }}   文件在  库\九年级\_索引.json
-     ② 单学科：{student, grade, subject:'数学', items:[] }         文件在  库\七年级-学生B\数学\_索引.json
-     卡目录位置：① 库\九年级\<学科>\<dir>\   ② 库\七年级-学生B\数学\<dir>\ */
+     ① 多学科：{student, grade, subjects:{ 数学:{items:[]}, … }}   文件在  <库根>\<小名>\_索引.json
+     ② 单学科：{student, grade, subject:'数学', items:[] }         文件在  <库根>\<小名>\<学科>\_索引.json
+     卡目录位置两者一致：<库根>\<小名>\<学科>\<dir>\（目录名不是身份，见 docs\数据区规范.md N1） */
   const multi = idx.subjects && typeof idx.subjects === 'object' && !Array.isArray(idx.subjects);
   const subj = subjectName || idx.subject;
   const items = multi ? ((idx.subjects[subj] || {}).items || []) : (idx.items || []);

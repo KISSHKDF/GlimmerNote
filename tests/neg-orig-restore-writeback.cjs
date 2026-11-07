@@ -176,9 +176,12 @@ const run = (args) => {
     }],
   }, null, 1), 'utf8');
 
-  /* ═══ 三、备份 → 破坏 → 恢复 ═══ */
-  const BACKUP = path.join(LIB, '_影像备份', '原图');
-  fs.mkdirSync(path.dirname(BACKUP), { recursive: true });
+  /* ═══ 三、库外副本 → 破坏 → 恢复 ═══
+     ★ 2026-11-06（P10）：原来这份副本放在 `_影像备份\原图\`（同盘镜像，已按 P10 退休）。
+     现在放**库外**（`path.dirname(LIB)` 下的独立目录）—— 那才是 P10 说的"防盘坏"的那一份，
+     也正是 `_原图.mjs 恢复 --from` 认的形态。 */
+  const BACKUP = path.join(path.dirname(LIB), 'writeback-库外副本', '_原图');
+  fs.mkdirSync(BACKUP, { recursive: true });
   fs.cpSync(storeDir, BACKUP, { recursive: true });
   fs.rmSync(storeDir, { recursive: true, force: true });
   A('⑤前置：库内 `_原图\\` 已整棵删除（模拟字节丢失）', !fs.existsSync(storeDir));

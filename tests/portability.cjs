@@ -13,7 +13,7 @@ console.log('═══ ① 运行时代码里是否还有硬编码路径 ══�
    否则自己就成了全仓唯一含内部代号的文件，repo-hygiene 的 0 命中判据立不起来）。 */
 const HY = require('./repo-hygiene.cjs');
 const files = [];
-const SKIP = new Set(['.git', 'wv2-profile', 'wv2-sdk', 'Default', 'EBWebView', '_probe', '_影像备份', '_archive', 'tests', 'docs', '_桌面', '_工作留档']);
+const SKIP = new Set(['.git', 'wv2-profile', 'wv2-sdk', 'Default', 'EBWebView', '_probe', '_archive', 'tests', 'docs', '_桌面', '_工作留档']);
 /* _工作留档（2026-10-16 归档目录）：一次性修复与批次脚本的历史留档，与 _work- 前缀、_备份- 前缀目录同类，
    不是产品运行时代码——portability 只审运行时，归档里的路径字面量不影响程序可搬移性。 */
 (function w(d) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { if (SKIP.has(e.name)) continue; if (/^(_work-|_备份-)/.test(e.name)) continue; const f = path.join(d, e.name); e.isDirectory() ? w(f) : files.push(f); } })(ROOT);

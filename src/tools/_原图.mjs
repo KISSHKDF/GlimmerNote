@@ -38,7 +38,9 @@
  * ══ 快照为什么只存清单、不存字节（以及它**不**能替代什么）══
  * 能这么做的唯一理由是**不变量①**：对象永不被改写 ⇒ "某时刻的库" == "那一刻的 sha 清单"。
  * **但它不能替代字节备份。** 清单只能证明"丢了什么"，不能把字节变回来。
- * 所以本工具的前提是：库里的字节另有 `_影像备份\` 本机副本（见 `_影像备份.mjs`）。
+ * 所以本工具的前提是（P10 口径）：**保全家 `_原图\` 就是"那一份备份"** ——
+ *   库外再放一份 `_原图\` 的副本（`核对 --from` / `恢复 --from` 认它）才是"防盘坏"的那一份；
+ *   `_影像备份\`（按路径镜像）已于 2026-11-06 按 P10 退休，不再是本工具的前提。
  * **清单是护栏，不是备份。**
  * 而且库写锁只约束"愿意配合的程序"，挡不住资源管理器删除、磁盘位损坏、绕开工具的脚本 ——
  * 所以 `快照 --diff` 的意义正是：事后能**精确定位**是哪几个对象没了。
@@ -265,7 +267,11 @@ function ingestOne(src, meta) {
  *        顺手删掉的东西。
  *  排除：
  *    · `_crops\`、`tiles\` —— 由原图 + 裁切参数派生（本项目自己文档化的可重生成产物）
- *    · `_影像备份\` —— 备份自身；`_probe\` —— 探针；`_原图\` —— 库自己；`.git\`、`_快照\`
+ *    · `_probe\` —— 探针；`_原图\` —— 库自己；`.git\`、`_快照\`
+ *    · `_影像备份\` —— **已按 P10 删除**（2026-11-06）。这一条**只在过渡期有意义**：
+ *      目录还在的那段时间里必须排除它，否则镜像副本会被当成"来源路径"写进 `sources`，
+ *      等于给同一个字节记了第二个家（那正是 P10 要治的）。目录删掉之后它是无害的空配置；
+ *      哪天有人把镜像重建回来，这一条会再次生效 —— 但那时 `_数据区门禁` 的 G6 会先判红（"出现即红"）。
  *
  *  ⚠ 刻意**不**排除 `组卷\*.pdf`：那是给人看的成品，不能仅凭"在组卷目录里"就宣布可重算。
  *  ⚠ 刻意**不**排除卡片目录里的 `原卷截图*.jpg`：实测它其实是"整页 + 红框"裁出来的那一块，
@@ -363,6 +369,51 @@ function cmdIngest(argv) {
 }
 
 /* ══════════════ 校验 ══════════════ */
+/* ══════════════ P10 判据 · 原图必须有两个家 ══════════════ */
+/**
+ * 用户 2026-11-06 定案 P10「一个字节一个家」的第一条机器判据（规范 §3.5）：
+ *   **原图恰好两个家** —— 工作家（活路径）+ 保全家（`_原图\`，内容寻址）。
+ *
+ * 判据方向**只有一个**：活路径 → 保全库。
+ *   活路径里有一张原图 ⇒ 保全库里必须有同 sha 对象；缺 = 红（"原图没保住"）。
+ * 反方向**不判**：活路径被删而保全库还在 ⇒ 那是 P10 要保住的形态（`_原图\` 就是那一份备份），
+ *   不是违规 —— 2026-11-05 那 52 张卡就是这么保住的。
+ *
+ * 工作家 = §3.5 第 1、2 行：`<小名>\原卷\**`、`<小名>\<学科>\原卷\**`、`_收件箱\**`（只算影像）。
+ * ⚠ 这一步要**逐字节算 sha**（只 stat 证明不了"字节在保全库里"），真库约七百张、秒级；
+ *   它是人工/发版前跑的体检命令，不在热路径上。
+ */
+const LIVE_ORIG_IMG_RE = /\.(jpe?g|png|webp|gif|bmp|tiff?)$/i;
+function studentDirs() {
+  let es = [];
+  try { es = fs.readdirSync(ROOT, { withFileTypes: true }); } catch { return []; }
+  return es.filter((e) => e.isDirectory() && !e.name.startsWith('_') && !e.name.startsWith('.') && e.name !== '组卷')
+    .map((e) => e.name);
+}
+function scanLiveOriginals() {
+  const out = [];
+  /* ⚠ 必须排除 `_crops\` / `tiles\`：§3.5 第 9 行把它们定义为"可重建派生"（允许任意份数），
+     它们**不是原图** —— 首版漏了这条，真库实测把 `<小名>\原卷\_crops\*.png` 225 张报成"没保住"（假阳）。 */
+  const SKIP = new Set(['_crops', 'tiles']);
+  const collect = (dir) => {
+    let es = []; try { es = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of es) {
+      if (e.name.startsWith('.')) continue;
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) { if (!SKIP.has(e.name)) collect(p); continue; }
+      if (LIVE_ORIG_IMG_RE.test(e.name)) out.push(p);
+    }
+  };
+  for (const s of studentDirs()) {
+    const sDir = path.join(ROOT, s);
+    collect(path.join(sDir, '原卷'));                                   // §3.5 第 1 行（跨学科合卷）
+    let es = []; try { es = fs.readdirSync(sDir, { withFileTypes: true }); } catch { es = []; }
+    for (const e of es) if (e.isDirectory() && !e.name.startsWith('_') && !e.name.startsWith('.')) collect(path.join(sDir, e.name, '原卷'));   // 第 1 行（学科）
+  }
+  collect(path.join(ROOT, '_收件箱'));                                   // §3.5 第 2 行（导入原件）
+  return out;
+}
+
 function cmdVerify() {
   const doc = loadLedger();
   const keys = Object.keys(doc.objects);
@@ -410,8 +461,44 @@ function cmdVerify() {
       for (const o of orphans.slice(0, 10)) say('      ' + o);
       if (orphans.length > 10) say('      … 另有 ' + (orphans.length - 10) + ' 个');
     }
+    say('  边界：本命令只回答"库内对象字节对不对"（§3.5 第 3 行）。P10 的另两条判据是 `两个家`（原图两个家）与 `单份`（非原图影像单家）。');
   }
-  if (bad.length) { console.error('✖ 有 ' + bad.length + ' 个对象校验失败 —— 请对照 `_影像备份\\` 备份核查。'); process.exit(1); }
+  if (bad.length) { console.error('✖ 有 ' + bad.length + ' 个对象校验失败 —— 先从库外 `_原图\\` 副本按 sha 找回（`恢复 --from`），再跑 `入库`。'); process.exit(1); }
+  return 0;
+}
+
+/**
+ * P10 判据 A：**原图必须有两个家**（活路径 → 保全库）。
+ * 为什么做成独立子命令而不是塞进 `校验`：
+ *   `校验` 的语义是"**库内**对象字节对不对"（§3.5 第 3 行），是发版/迁移的基线命令；
+ *   这条判据查的是**活路径与保全库的关系**，会把"还有导入原件没入库"这类**存量欠账**一起报出来。
+ *   把存量欠账混进基线命令的退出码，会让"摘掉一层死代码"这种改动看起来像"改了校验口径"。
+ *   分开之后各说各的事，两条都能红、都有阴性对照（`tests\neg-p10-image-homes.cjs`）。
+ */
+function cmdTwoHomes() {
+  const doc = loadLedger();
+  const live = scanLiveOriginals();
+  const unbacked = [];
+  for (const f of live) {
+    const sha = sha256File(f);
+    if (!doc.objects[sha]) unbacked.push({ rel: path.relative(ROOT, f).split(path.sep).join('/'), sha });
+  }
+  const res = { ok: unbacked.length === 0, readOnly: true, liveOriginals: live.length, unbacked };
+  if (JSON_OUT) {
+    process.stdout.write(JSON.stringify(res, null, 1) + '\n');
+  } else {
+    say('【原图保全库 · 两个家】P10：原图恰好两个家（工作家 = 活路径，保全家 = `_原图\\`）');
+    say('  活路径原图（`原卷\\` / `_收件箱\\`，已排除 `_crops\\`·`tiles\\` 这两个可重建派生）：' + live.length + ' 张');
+    say('  其中**保全家没有同 sha 对象**的：' + unbacked.length + ' 张');
+    for (const u of unbacked.slice(0, 20)) say('  ✖ 没保住：' + u.rel + '（sha ' + u.sha.slice(0, 16) + '…）');
+    if (unbacked.length > 20) say('  … 另有 ' + (unbacked.length - 20) + ' 张');
+  }
+  if (unbacked.length) {
+    console.error('✖ P10 违反：有 ' + unbacked.length + ' 张原图只有**一个家**（活路径在工作、保全库里没有同 sha 对象）⇒ 原图没保住。' +
+      ' 怎么办：`node src\\tools\\_原图.mjs 入库 --scan`（按 §3.5 第 3 行把它们收进保全家）。');
+    return 1;
+  }
+  say('  ✅ 每一张原图都有两个家。');
   return 0;
 }
 
@@ -502,7 +589,7 @@ function cmdSnapshot(argv) {
       console.error('✖ ★ 有 ' + gone.length + ' 个对象从库里**非正常消失**（只增不改变量被破坏）：');
       for (const s of gone.slice(0, 20)) console.error('    ' + s + '  ' + (old.get(s).rel || ''));
       if (gone.length > 20) console.error('    … 另有 ' + (gone.length - 20) + ' 个');
-      console.error('  怎么办：从 `_影像备份\\` 按 sha 找回，再跑 `入库`。');
+      console.error('  怎么办：从**库外 `_原图\\` 副本**按 sha 找回（`核对 --from` 验、`恢复 --from` 写回）。');
     }
     if (gone.length || resized.length) process.exit(1);
     say('  ✅ 快照里的对象一个都没少、字节数没变。');
@@ -520,15 +607,16 @@ function cmdSnapshot(argv) {
   })];
   fs.writeFileSync(path.join(SNAP_DIR, name), lines.join('\n') + '\n', 'utf8');
   say('【原图保全库 · 快照】已写 ' + name + '（' + keys.length + ' 个对象）');
-  say('  ⚠ 清单只证明"有哪些对象"，**不能替代字节备份**：真正的副本靠 `_影像备份\\`。');
+  say('  ⚠ 清单只证明"有哪些对象"，**不能替代字节备份**：真正的那一份在**库外**（`_原图\\` 的副本，见 P10）。');
   return 0;
 }
 
 /* ══════════════ 核对（备份 ↔ 库 ↔ 台账 三方对账，**只读**） ══════════════ */
 /**
  * 为什么要有它（施工方案 §6「批次 0」交付物 9 的一条真欠账）：
- *   `_影像备份.mjs --verify` 只回答"备份与源一致吗"，`校验` 只回答"库内字节对不对"。
- *   两者都不回答那个真正决定"出事能不能救回来"的问题：
+ *   `校验` 只回答"库内字节对不对"（外加 P10「原图必须有两个家」）。
+ *   它不回答那个真正决定"出事能不能救回来"的问题：
+ *   **这份（库外的）备份里，是不是每一个登记对象都有、且逐字节等于台账记着的那一份？**
  *   **这份备份里，是不是每一个登记对象都有、且逐字节等于台账记着的那一份？**
  *   于是"有备份"与"能恢复"之间又隔着一层没验证过的假设 —— 与 2026-10-12 建
  *   `tests\restore-drill.cjs` 时发现的那个缺口同型（当时只有"备份目录里有文件"，没有"能还原回去"）。
@@ -538,8 +626,9 @@ function cmdSnapshot(argv) {
  *   ② 库内 `_原图\<桶>\<sha>.<ext>`
  *   ③ 备份根
  * 备份根的形态**不做假设**：递归扫，**文件名是 64 位 sha 的文件**才算库对象。
- *   （`_影像备份\` 的实际布局是 <根>\原件\_原图\<桶>\<sha>.<ext>；直接给一份 `_原图\` 的副本也认。
- *    卡目录切片叫 `题图.jpg` 之类，天然不会被误收。）
+ *   （给一份**库外**的 `_原图\` 副本即可；卡目录切片叫 `题图.jpg` 之类，天然不会被误收。）
+ *   ⚠ 2026-11-06（P10）：`_影像备份\` 已退休，它原来那套 `<根>\原件\_原图\<桶>\<sha>.<ext>`
+ *     布局仍能被本命令识别 —— 但那只是"还能读"，不是"还该有"。
  *
  * 差异分类（每条都指名到 sha + `[库]/[备份]` + 原因）：
  *   缺文件 / 字节不符 / 大小不符 / 多出
@@ -549,8 +638,9 @@ function cmdSnapshot(argv) {
  * 库内孤儿**不判红**（与 `校验` 同口径：中断残留可识别、不自动删），只作为可见提示列出。
  *
  * 退出码（与同级命令同风格）：0 三方一致 ／ 1 有差异或缺失 ／ 2 用法错。
- * 覆盖边界（不许含糊）：只核 `_原图\` 的**库对象**。卡目录切片、原卷整页等其余备份内容
- * 归 `_影像备份.mjs --verify`；"核对全绿"**不等于**"备份全好"。
+ * 覆盖边界（不许含糊）：只核 `_原图\` 的**库对象**（备份根 = **库外**的 `_原图\` 副本）。
+ *   其余影像（卡目录切片、待办证据、笔形样本、组卷成品）按 P10 **没有备份**，
+ *   它们的"规矩"是**单份**（`单份` 子命令）——"核对全绿"**不等于**"全库都合规"。
  */
 /** 备份根里"这是一个库对象"的判据：文件名就是 64 位 sha（扩展名保留原格式）。 */
 const OBJ_NAME_RE = /^([0-9a-f]{64})\.([a-z0-9]{1,8})$/i;
@@ -600,7 +690,7 @@ function cmdCrosscheck(argv) {
   const { opt: opts } = parseArgsLocal(argv);
   const from = typeof opts.from === 'string' ? opts.from : null;
   if (!from) {
-    console.error('✖ 核对需要 `--from <备份根>`（形如 `_影像备份\\` 的目录树，或一份 `_原图\\` 的副本）。');
+    console.error('✖ 核对需要 `--from <备份根>`（**库外**一份 `_原图\\` 的副本；P10 说保全家就是那一份备份）。');
     console.error('  用法：node _原图.mjs 核对 --from <备份根> [--json]');
     return 2;
   }
@@ -669,11 +759,11 @@ function cmdCrosscheck(argv) {
 
   if (diffs.length) {
     console.error('✖ 有 ' + diffs.length + ' 处差异 —— **这份备份不能证明能把库原样恢复**。' +
-      '按上面的 [库]/[备份] 定位：库内缺 ⇒ 从备份按 sha 拷回；备份缺/不符 ⇒ 立刻重跑 `_影像备份.mjs`。');
+      '按上面的 [库]/[备份] 定位：库内缺 ⇒ 从**库外副本**按 sha 拷回；备份缺/不符 ⇒ 换一份更完整的库外副本（`_影像备份\\` 已按 P10 退休，不再作为找回来源）。');
     return 1;
   }
   say('  ✅ 台账 / 库内 / 备份三方逐字节一致（' + mb(okBytes) + '）。');
-  say('  ⚠ 边界：只覆盖 `_原图\\` 的库对象；卡目录切片等其余备份内容归 `_影像备份.mjs --verify`。');
+  say('  ⚠ 边界：只覆盖 `_原图\\` 的库对象；其余影像按 P10 **没有备份**，它们的规矩是单份（`单份` 子命令）。');
   return 0;
 }
 
@@ -693,7 +783,7 @@ function cmdRestore(argv) {
   const { opt: opts } = parseArgsLocal(argv);
   const from = typeof opts.from === 'string' ? opts.from : null;
   if (!from) {
-    console.error('✖ 恢复需要 `--from <备份根>`（形如 `_影像备份\\` 的目录树，或一份 `_原图\\` 的副本）。');
+    console.error('✖ 恢复需要 `--from <备份根>`（**库外**一份 `_原图\\` 的副本）。');
     console.error('  用法：node _原图.mjs 恢复 --from <备份根> [--sha <前2位|完整>] [--dry] [--json]');
     return 2;
   }
@@ -894,10 +984,139 @@ function cmdDerive(argv) {
   return 0;
 }
 
+/* ══════════════ P10 判据 · 单份（非原图影像只能有一个家） ══════════════ */
+/**
+ * 用户 2026-11-06 定案 P10「一个字节一个家」的第二条机器判据（规范 §3.5）：
+ *   **非原图影像只允许一个家** —— §3.5 第 4–8 行那几类（卡片裁图 / 待办证据 / 笔形样本 /
+ *   撤卡留档 / 组卷成品），同一个 sha256 不得出现在**两个路径**上；出现 = 红
+ *   （那就是 P10 说的冗余："除了原图，其它东西不要再有冗余了"）。
+ *
+ * 刻意**不算**在内的（各有各的判据，别在这里重复判）：
+ *   · 第 1、2、3 行（原图工作家 `原卷\`·`_收件箱\`、保全家 `_原图\`）—— P10 **允许**原图两个家，
+ *     那条判据在 `校验`（活路径 → 保全库）；
+ *   · 第 9 行 `tiles\` / `_crops\` —— 可重建派生，允许任意份数；
+ *   · `_备份-真源\`（文本真源快照，N12/§3.4）、`_影像备份\`（已按 P10 退休）。
+ *
+ * 性能：先按字节数分组，只在**同大小**的组内算 sha256（唯一份数的文件一个字节都不用读）。
+ * 退出码：0 = 每份影像只有一个家；1 = 有同 sha 出现在两个路径；2 = 用法错。
+ */
+const SINGLE_HOME_RE = /\.(jpe?g|png|webp|gif|bmp|tiff?|pdf)$/i;
+/* ── §3.5「单份」的两条**写死的例外**（2026-11-06，用户裁量后写进规范）──
+   E1：同一题的**卡片四件套那张图**（`原卷截图*`）与 `待办证据\`/`_待确认证据-*` 里的图逐字节相同 ⇒ 两份都留。
+       理由：无卡待办只能靠待办证据显示；卡的消费方（灯箱/组卷/打印）只认卡目录里那一份。删哪份都断一条链。
+   E2：**卡目录里的图**（四件套内部）之间逐字节相同 ⇒ 两份都留。
+       理由：F2 要求每卡自带四件套；重裁会改字节 ⇒ blindFingerprint 失效、要重跑双路盲解，代价远大于省一份图。
+   ⚠ 例外**只覆盖这两类**：`待办证据\T100.jpg` 与 `T101.jpg` 这种"同一科多个待办共用一张证据图"
+     **不是例外**（真冗余）—— 规范 §3.5 明写：两个待办应当**指向同一个路径**，而不是复制成两份。 */
+const isInCardDir = (rel) => {
+  const seg = String(rel).split('/');
+  return seg.length >= 4 && /^[A-Z]\d{4}-/.test(seg[2]);
+};
+const isCardFourPieceShot = (rel) => isInCardDir(rel) && /^原卷截图/i.test(path.basename(String(rel)));
+const isInEvidenceDir = (rel) => {
+  const seg = String(rel).split('/');
+  const i = seg.findIndex((s) => s === '待办证据' || /^_待确认证据-\d{8}$/.test(s));
+  return i >= 0 && i === seg.length - 2;                      // 直接住在证据目录里的那张图
+};
+function singleHomeExempt(paths) {
+  /* **逐对**判（不是整组一刀切）：组里每一对都得落在 E1 或 E2 里才算豁免。
+     为什么必须逐对：`{卡图, 卡图, 待办证据}` 里每一对都合法（卡-卡=E2、卡-证据=E1）⇒ 豁免；
+     但 `{卡图, 卡图, 证据, 证据}` 里那一对 **证据-证据** 既不属 E2 也不属 E1 ⇒ **不豁免**
+     （规范 §3.5 明写"同一科多个待办共用一张证据图"是真冗余：应当指向同一个路径）。 */
+  const pairOk = (a, b) => (isInCardDir(a) && isInCardDir(b))
+    || (isCardFourPieceShot(a) && isInEvidenceDir(b))
+    || (isCardFourPieceShot(b) && isInEvidenceDir(a));
+  for (let i = 0; i < paths.length; i++) {
+    for (let k = i + 1; k < paths.length; k++) if (!pairOk(paths[i], paths[k])) return null;
+  }
+  if (paths.every(isInCardDir)) return { ex: 'E2', why: '卡目录里的图（F2：每卡自带四件套）之间逐字节相同' };
+  return { ex: 'E1', why: '卡片 `原卷截图*` 与 `待办证据\\` 里的图逐字节相同（两份各有消费方）' };
+}
+function cmdSingleHome() {
+  const cand = [];
+  const roots = [...studentDirs().map((s) => path.join(ROOT, s)), path.join(ROOT, '_笔形'), path.join(ROOT, '_撤卡留档'), path.join(ROOT, '组卷')];
+  for (const t of roots) {
+    for (const f of walkFiles(t)) {
+      if (!SINGLE_HOME_RE.test(f)) continue;                                   // 只看影像 / 成品 PDF
+      const rel = path.relative(ROOT, f).split(path.sep).join('/');
+      const seg = rel.split('/');
+      if (seg.some((s) => s === 'tiles' || s === '_crops')) continue;          // 第 9 行：可重建，允许任意份数
+      if (seg.some((s) => s === '原卷')) continue;                             // 第 1 行：原图工作家（两个家，见 `校验`）
+      if (seg[0] === '_备份-真源' || seg[0] === '_原图' || seg[0] === '_影像备份') continue;
+      let size = 0; try { size = fs.statSync(f).size; } catch { continue; }
+      if (!size) continue;                                                      // 空文件不参与（没有"字节"可谈）
+      cand.push({ rel, abs: f, size });
+    }
+  }
+
+  const bySize = new Map();
+  for (const c of cand) { if (!bySize.has(c.size)) bySize.set(c.size, []); bySize.get(c.size).push(c); }
+  const dup = [], exempted = [];
+  for (const [size, group] of bySize) {
+    if (group.length < 2) continue;                                            // 唯份数 ⇒ 不可能有第二个家
+    const bySha = new Map();
+    for (const c of group) {
+      const sha = sha256File(c.abs);
+      if (!bySha.has(sha)) bySha.set(sha, []);
+      bySha.get(sha).push(c.rel);
+    }
+    for (const [sha, rels] of bySha) {
+      if (rels.length < 2) continue;
+      const sorted = rels.slice().sort();
+      const ex = singleHomeExempt(sorted);                                     // §3.5 的 E1/E2
+      if (ex) { exempted.push({ sha, bytes: size, ex: ex.ex, why: ex.why, paths: sorted }); continue; }
+      dup.push({ sha, bytes: size, paths: sorted });
+    }
+  }
+  dup.sort((a, b) => b.bytes - a.bytes);
+  exempted.sort((a, b) => b.bytes - a.bytes);
+
+  const res = {
+    ok: dup.length === 0, readOnly: true,
+    scanned: cand.length, distinctSizes: bySize.size,
+    duplicateGroups: dup.length, duplicateFiles: dup.reduce((n, d) => n + d.paths.length, 0),
+    duplicates: dup,
+    exemptGroups: exempted.length, exemptFiles: exempted.reduce((n, d) => n + d.paths.length, 0),
+    exempted,
+  };
+  if (JSON_OUT) {
+    process.stdout.write(JSON.stringify(res, null, 1) + '\n');
+  } else {
+    say('【原图保全库 · 单份】P10：非原图影像只允许一个家（§3.5 第 4–8 行）');
+    say('  扫描 ' + cand.length + ' 份影像（卡目录 / 待办证据 / 笔形样本 / 撤卡留档 / 组卷；' +
+      '已排除 `原卷\\`·`_原图\\`·`tiles\\`·`_crops\\`·`_备份-真源\\`）');
+    say('  同 sha 出现在 ≥2 个路径：**违规 ' + dup.length + ' 组**（' + res.duplicateFiles + ' 个文件）｜' +
+      '§3.5 例外豁免 ' + exempted.length + ' 组（' + res.exemptFiles + ' 个文件）');
+    for (const d of dup.slice(0, 20)) {
+      say('  ✖ ' + d.sha.slice(0, 16) + '…（' + mb(d.bytes) + '）× ' + d.paths.length + ' 份：');
+      for (const p of d.paths) say('      ' + p);
+    }
+    if (dup.length > 20) say('  … 另有 ' + (dup.length - 20) + ' 组');
+    /* 豁免必须**可见**（不许静默放行）：逐条印出来，写清走的是 E1 还是 E2。 */
+    for (const e of exempted.slice(0, 20)) {
+      say('  ○ 豁免 ' + e.ex + '：' + e.sha.slice(0, 16) + '…（' + mb(e.bytes) + '）× ' + e.paths.length + ' 份 —— ' + e.why);
+      for (const p of e.paths) say('      ' + p);
+    }
+    if (exempted.length > 20) say('  … 另有 ' + (exempted.length - 20) + ' 组豁免（见 --json 全文）');
+  }
+  if (dup.length) {
+    console.error('✖ P10 违反：有 ' + dup.length + ' 组影像**有两个家**（非原图影像只允许一个家）。' +
+      ' 怎么办：按 §七 处置 —— 留一份（程序真正读的那一份），其余移走或删；' +
+      ' 若它其实是**原图**（整页扫描/导入原件），那它该走 `原图\\` 保全家，见 §3.5 第 1–3 行。' +
+      ' ⚠ §3.5 的两条例外（E1 卡片四件套图 ↔ 待办证据图；E2 卡目录内部的图）已自动豁免，' +
+      ' 本清单**不含**它们；"同一科多个待办共用一张证据图"**不在**例外里（应当指向同一路径）。');
+    return 1;
+  }
+  say('  ✅ 每一份非原图影像都只有一个家' + (exempted.length ? '（另有 ' + exempted.length + ' 组按 §3.5 的 E1/E2 豁免，已逐条印在上面）' : '') + '。');
+  return 0;
+}
+
 /* ══════════════ 入口 ══════════════ */
 switch (cmd) {
   case '入库': process.exit(cmdIngest(rest));
   case '校验': process.exit(cmdVerify());
+  case '两个家': process.exit(cmdTwoHomes());
+  case '单份': process.exit(cmdSingleHome());
   case '核对': process.exit(cmdCrosscheck(rest));
   case '恢复': process.exit(cmdRestore(rest));
   case '派生': process.exit(cmdDerive(rest));
@@ -906,7 +1125,9 @@ switch (cmd) {
   default:
     console.error('用法：');
     console.error('  node _原图.mjs 入库 <文件或目录...> [--batch 名] [--student X] [--subject Y] [--dry]');
-    console.error('  node _原图.mjs 校验 [--json]');
+    console.error('  node _原图.mjs 校验 [--json]   # §3.5 第 3 行：库内对象逐字节核对（基线命令）');
+    console.error('  node _原图.mjs 两个家 [--json] # P10 判据 A：原图恰好两个家（活路径 → 保全库；缺 = 红）');
+    console.error('  node _原图.mjs 单份 [--json]   # P10 判据 B：非原图影像只能有一个家（同 sha 两个路径即红，§3.5 第 4–8 行）');
     console.error('  node _原图.mjs 核对 --from <备份根> [--json]   # 只读：备份 ↔ 库 ↔ 台账 三方逐字节对账');
     console.error('  node _原图.mjs 恢复 --from <备份根> [--sha <前2位|完整>] [--dry] [--json]   # 写回：把备份里的对象拷回库（幂等、不覆盖、逐字节复核）');
     console.error('  node _原图.mjs 派生 --derived-from <sha> --op rotate|enhance|compress --file <盘上文件> [--note 说明] [--dry] [--json]   # 派生件另存（原件不可变）');

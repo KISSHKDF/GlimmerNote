@@ -48,16 +48,41 @@ for (const d of fs.readdirSync(ROOT)) {
   }
 }
 
-/* ---------- 2. 在册卡（**两套索引**） + 已撤卡留档 ---------- */
-/* 2026-10-09 实证：库里是**两套并列真源** —— `九年级/_索引.json`（student=学生A，学科数学/物理/化学/英语/语文）
-   与 `七年级-学生B/数学/_索引.json`（student=学生B，subject=数学）。两边的卡号都从 M0001 起编，
+/* ---------- 2. 在册卡（**扫库根得出**） + 已撤卡留档 ---------- */
+/* 2026-10-09 实证：库里是**两套并列真源** —— 一套学生级索引（student=学生A，`subjects{}` 里五个学科）
+   与另一位学生拆成的学科级索引（student=学生B，每学科一份）。两边的卡号都从 M0001 起编，
    **卡号同名但不同题**（例：学生A M0026=新函数性质漏答；学生B M0026=数轴距离漏负号）。
    只读一套会把「学生B M0026 已建卡」误判成「没建」——本工具初版就踩了（T010 假 RED）。
-   故必须按 (student, 卡号) 配对；索引顶层 `student` 字段就是配对键。 */
-const INDEXES = [
-  { file: path.join(ROOT, '九年级', '_索引.json'), base: path.join(ROOT, '九年级') },
-  { file: path.join(ROOT, '七年级-学生B', '数学', '_索引.json'), base: path.join(ROOT, '七年级-学生B', '数学') },
-];
+   故必须按 (student, 卡号) 配对；索引顶层 `student` 字段就是配对键。
+
+   ★ 2026-11-06：原先这里**写死了两个库内路径**（旧目录名 + 旧形态）。真库改名 / 换学生之后它们
+   不报错、只是**一个索引都扫不到** ⇒ 稽核对着半个空库出结论，假 RED（「应补建卡」）与假 GREEN
+   都无人察觉（真库实证：另一位学生的 13 条「应补建卡」全是这么来的）。
+   目录名从来不是身份（`docs\数据区规范.md` N1：目录名 = `student` 字段，字段才是真源），
+   故改为**扫库根得出**，与 `生成状态.mjs::findIndexes` 同口径：跳过 `_`/`.` 开头的目录，最多两层
+   （`<库根>\<小名>\_索引.json` 与 `<库根>\<小名>\<学科>\_索引.json`）。
+   ⚠ 扫不到任何索引 = 结论不可信，不许当"全绿"：下面 scanWarn 与输出里的口径降级会点名。 */
+const INDEXES = [];
+const scanWarn = [];        // 扫库根时的降级（目录读不动）——与"卡降级"同罪：必须可见，不许静默少扫
+(function scanIndexes() {
+  let top = [];
+  try { top = fs.readdirSync(ROOT, { withFileTypes: true }); }
+  catch (err) { scanWarn.push({ where: ROOT, why: String((err && err.message) || err) }); return; }
+  for (const e of top) {
+    if (!e.isDirectory() || /^[_.]/.test(e.name)) continue;   // `_` 前缀 = 程序保留区；`.` 前缀 = 版本控制等
+    const stuDir = path.join(ROOT, e.name);
+    const cands = [stuDir];                                    // 第一层：学生级索引（正典形态）
+    try {
+      for (const x of fs.readdirSync(stuDir, { withFileTypes: true })) {
+        if (x.isDirectory() && !/^[_.]/.test(x.name)) cands.push(path.join(stuDir, x.name));   // 第二层：学科级索引（旧形态）
+      }
+    } catch (err) { scanWarn.push({ where: stuDir, why: String((err && err.message) || err) }); }
+    for (const cand of cands) {
+      const f = path.join(cand, '_索引.json');
+      if (fs.existsSync(f)) INDEXES.push({ file: f, base: cand });
+    }
+  }
+})();
 const allCards = [];
 for (const spec of INDEXES) {
   if (!fs.existsSync(spec.file)) continue;
@@ -82,12 +107,12 @@ const qnoOf = s => { const m = String(s || '').match(/第(\d+)题/); return m ? 
 const cardScan = new Map();     // '学生|卡号' -> { scan, qno }
 /* ★ 2026-10-29（R2 审计 D-06）：降级必须可见。
    改前 `catch (e) {}` 把「`_task.json` 存在但读坏/解析失败」与「卡目录里根本没有 _task.json」
-   合并成同一条路径，然后静默走下面那行 source 页码猜测 —— 而本文件 77-81 行的注释**自己写明**
+   合并成同一条路径，然后静默走下面那行 source 页码猜测 —— 而本文件 102-106 行的注释**自己写明**
    "用 source 猜会同时匹配到两张卡，直接错配"。于是稽核结论（撤卡/补建卡）可能错配，
    而输出里查不出"本次有几张卡降级了"。现在逐张记进 degraded[]，两种输出都报出来。 */
 const degraded = [];
 for (const c of allCards) {
-  /* 卡片目录的真实位置是 <索引基目录>/<学科>/<dir>（如 九年级/物理/P0046-…），
+  /* 卡片目录的真实位置是 <索引基目录>/<学科>/<dir>（如 <库根>/<小名>/物理/P0046-…），
      不是 <索引基目录>/<dir>。漏掉学科这一层 → _task.json 找不到 → 退回用 source 猜页码 →
      把 P0057（扫描 p54）猜成 p42，于是 T059（p42-13）被错配到它、判成「应撤卡」。
      故两个位置都试，找不到才退回 source（退回口径见下）。 */
@@ -254,16 +279,27 @@ for (const it of items) {
 
 /* ---------- 7. 输出 ---------- */
 const by = s => rows.filter(r => r.state === s);
-if (JSON_OUT) { console.log(JSON.stringify({ rows, degraded, summary: { total: rows.length, green: by('GREEN').length, red: by('RED').length, blocked: by('BLOCKED').length, open: by('OPEN').length, void: by('VOID').length, degraded: degraded.length } }, null, 1)); process.exit(by('RED').length ? 1 : 0); }
+if (JSON_OUT) { console.log(JSON.stringify({ rows, degraded, indexes: INDEXES.map(s => path.relative(ROOT, s.file).replace(/\\/g, '/')), scanWarn, summary: { total: rows.length, green: by('GREEN').length, red: by('RED').length, blocked: by('BLOCKED').length, open: by('OPEN').length, void: by('VOID').length, degraded: degraded.length, scanned: INDEXES.length, scanWarn: scanWarn.length } }, null, 1)); process.exit(by('RED').length ? 1 : 0); }
 
 const g = by('GREEN'), rd = by('RED'), op = by('OPEN'), vd = by('VOID'), bl = by('BLOCKED');
+/* 扫描口径先自证（2026-11-06）：索引是**扫出来的**，所以"扫到几份"必须可见。
+   原先写死路径时，扫不到不报错、结论静默失真（真库实证 13 条假 RED）——空真不得当通过。 */
+if (scanWarn.length) {
+  console.log(`ⓘ 扫库根时有 ${scanWarn.length} 个目录读不动，已跳过 —— 本次「在册与否」结论可能不完整：`);
+  for (const w of scanWarn) console.log(`   ${w.where}  ${w.why}`);
+  console.log('');
+}
+if (!INDEXES.length) {
+  console.log(`ⓘ 库根（${ROOT}）下一份 _索引.json 都没扫到 —— 没有学生册可供比对，`);
+  console.log('  本次所有「应补建卡 / 应撤卡」结论都是**空真**，不得当作通过（查库根是否指对了库）。\n');
+}
 /* 降级先说（R2 D-06）：不让"结论不可信"被埋在最后一行汇总里 */
 if (degraded.length) {
   console.log(`ⓘ ${degraded.length} 张卡的 _task.json 读不出（文件坏了/被占用），已退回 source 页码口径 ——`);
   console.log(`  这些卡的「撤卡 / 补建卡」结论**不可信**（本文件注释已写明该口径会错配）：`);
   console.log('   ' + degraded.map(d => d.key).join('  ') + '\n');
 }
-console.log(`待办闭环稽核：${rows.length} 条  ｜  闭环 ${g.length} / 未闭环 ${rd.length} / 待外部 ${bl.length} / 待结论 ${op.length} / 已作废 ${vd.length}` + (degraded.length ? ` / 口径降级 ${degraded.length}` : '') + '\n');
+console.log(`待办闭环稽核：${rows.length} 条  ｜  闭环 ${g.length} / 未闭环 ${rd.length} / 待外部 ${bl.length} / 待结论 ${op.length} / 已作废 ${vd.length}  ｜  索引 ${INDEXES.length} 份` + (degraded.length ? ` / 口径降级 ${degraded.length}` : '') + '\n');
 if (bl.length) { console.log(`── 待外部条件（${bl.length}）`); for (const r of bl) console.log(`  ${r.id}  ${r.student}/${r.subject} ${r.cardId}  ${r.why}`); console.log(''); }
 if (rd.length) {
   console.log(`── 未闭环（${rd.length}）`);

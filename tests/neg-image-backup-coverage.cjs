@@ -1,191 +1,86 @@
 #!/usr/bin/env node
 /**
- * 拾光小册 · 影像备份的分母口径与覆盖率判据（2026-10-31 建）
+ * 「`_影像备份\` 已退休」的机械证明（2026-11-06 改写；**本文件原为 `_影像备份.mjs` 的分母/覆盖率用例**）
  *
- * 事故背景（本轮实测，2026-10-31 全库扫描）：库内影像 1298 个，旧的收集口径
- *   「文件名切片正则 ∪ 台账 page 反查 ∪ 原件目录正则」漏掉 271 个 —— 它们**静默不备份**。
- *   其中 93 个不在任何可重建集合里（`待办证据\`、`_笔形\`、`_撤卡留档\`、卡片 `题干.jpg`），
- *   按 sha256 逐字节比对，80 个 / 19.4 MB 连本机备份里都**没有同内容副本**。
- *   而工具的覆盖率一直是 100.0% —— 因为**分母是它自己挑的**。这就是"分母不能由工具自己挑"。
+ * ══ 为什么改写 ══
+ *   用户 2026-11-06 定案 **P10「一个字节一个家」**（规范 §一）：
+ *     原图恰好两个家（活路径工作家 + `_原图\` 保全家）；**其它一切影像只许一个家、无备份**。
+ *     `_影像备份\`（按路径镜像）既是原图的第 3 个家、又是其它影像的备份 ⇒ 冗余，退休（§3.2/§3.5 第 10 行）。
+ *   于是**原来那些判据失去了对象**：分母口径、覆盖率、`--verify` 一致性、
+ *   "全覆盖不乱红"……全是"镜像该不该全"的问题。**把它们的对象删掉之后，
+ *   正确的做法不是让用例变成永远 SKIP 的空壳，而是把它改写成守"退休这件事本身"**：
+ *   工具必须**显式拒绝执行**、必须**不创建** `_影像备份\`、源码里必须**没有任何重建镜像的实现**。
+ *   （判据替换的依据："每删一条镜像判据，就要补一条新判据顶上" —— 那两条新判据
+ *     "原图必须有两个家""非原图影像只能有一个家"在 `tests\neg-orig-backup-fallback.cjs`。）
  *
- * 本用例守四条（每条都对应一处真缺陷，缺一条都不算修好）：
- *   ① **分母 = 全库扫描 − 显式声明的可重建集合**：不在任何"文件名字典"里的影像
- *      （`待办证据\`、`_笔形\`）必须进分母；显式可重建的（`_crops\`/`tiles\`/`组卷\`）不进；
- *      新目录 `_原图\` **默认进分母**，而且**按内容全收、不看扩展名** ——
- *      库里的 `_来源映射.csv` / `_答案页映射.csv` / 某题 `.md` 是**人工判读产物**
- *      （页码偏移规则、原文件名↔归档名↔sha 对应、遮挡复原依据），不能从任何原图推出；
- *      唯一不进分母的是 `*.tmp`（写一半的半成品）与 `_快照\`（库自身可再生的内部快照）。
- *   ② **阴性对照：覆盖率会掉**。把分母里任意一份的备份删掉，覆盖率必须严格 <100%
- *      且等于 (N-1)/N、缺失清单能点出是哪一份、退出码非 0 —— 防"恒 100%"。
- *   ③ `--status` 与 `--verify` **同口径判红**（改前 `--status` 永远 exit 0，
- *      按退出码判断的计划任务把"没备份好"记成成功）；全覆盖时不乱红（全模式 exit 0）。
- *   ④ 分母为 0 / 空库两种极端都必须有确定结论（防"可重建声明过宽"静默退化）。
- *
- * （2026-11-01：离机镜像功能整体移除——用户决策不做异盘镜像。原第④节镜像用例
- *   （推送 / sha1 判据 / 陈旧件只报告 / 同卷拒绝，12 条）与"未配镜像判红"1 条随之删除，
- *   断言 40 → 27；分母与覆盖率判据不受影响。历史记录见 CHANGELOG。）
- *
- * 夹具全部自建在 %TEMP%（不依赖真实用户数据、不碰真库）。
+ * 用法：node tests\neg-image-backup-coverage.cjs
+ * 退出码：0=全绿；1=有断言失败
  */
+'use strict';
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const E = require('./_测试环境.cjs');
 
-let worst = 0, passed = 0;
-function A(name, ok, detail) {
-  if (ok) { passed++; console.log('[OK]   ' + name + (detail ? '  → ' + detail : '')); }
-  else { worst++; console.log('[FAIL] ' + name + (detail ? '  → ' + detail : '')); }
-}
-
-console.log('测试环境：' + E.describe());
+const ROOT = path.resolve(__dirname, '..');
 const TOOL = E.tool('_影像备份.mjs');
+let pass = 0, fail = 0;
+const A = (name, ok, detail) => {
+  console.log(`${ok ? '[OK]  ' : '[FAIL]'} ${name}${detail ? '  → ' + detail : ''}`);
+  ok ? pass++ : fail++;
+};
 
-/* ── 夹具：自己造库，绝不碰真库 ─────────────────────────────────────────── */
-const base = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-imgbak-'));
-function put(dirAbs, rel, content) {
-  const abs = path.join(dirAbs, ...rel.split('/'));
-  fs.mkdirSync(path.dirname(abs), { recursive: true });
-  fs.writeFileSync(abs, content === undefined ? 'IMG:' + rel : content);
-  return abs;
-}
-function mkLib(name) {
-  const d = path.join(base, name);
-  fs.mkdirSync(d, { recursive: true });
-  return d;
-}
+const TMP = E.allocTempDir('gn-testlib-');       // 登记进退出清扫表（被杀也有兜底）
+const LIB = path.join(TMP, 'lib');
 
-/* ★ 2026-10-31 补：`_原图\` 库里的**非影像对象**（人工判读产物）也必须进分母。
-   真库里是 3 个 `_来源映射.csv` + 1 个 `_答案页映射.csv` + 1 个 `…独立重做用.md`，
-   旧口径只看影像扩展名 ⇒ 这 5 个既不在分母也从未备份，只在 D 盘机械盘上（外部评审点名的口子）。 */
-const STORE_NONIMG = ['_原图/cd/00112233aabbccdd.csv', '_原图/ef/ffeeddccbbaa9988.md'];
-
-/* 必须在分母里的（"不可证明可重建" —— 前两条是旧口径完全碰不到的那一类） */
-const MUST = [
-  '待办证据/T186.jpg',                                // 旧口径：不在任何规则内
-  '_笔形/学生甲/D/2026-10-01-0003.jpg',                // 旧口径：同上（文件名字典也碰不到）
-  '九年级/学生甲/数学/C0001-选择题/题干.jpg',
-  '九年级/学生甲/数学/C0001-选择题/题图.jpg',           // 落「切片」桶
-  '九年级/原卷/学生甲-20261001-p01.jpg',               // 旧口径能命中（原件目录规则）
-  '_撤卡留档/20261008/P0001-旧卡/原卷截图.jpg',
-  '_原图/ab/ab12cd34ef56.jpg',                        // 新目录：内容寻址库，必须跟着备份
-  ...STORE_NONIMG,                                    // 原图库里的非影像对象（.csv / .md）
-];
-/* 原图库里**不算对象**的两类（唯一排除项）：写一半的半成品 + 库自身可再生的内部快照 */
-const STORE_EXCLUDED = [
-  '_原图/aa/半截写入.tmp',
-  '_原图/bb/_快照/20261031-213815.list',
-];
-/* 显式声明的可重建集合（有原件就能重做）—— 不进分母 */
-const REBUILD = [
-  '九年级/原卷/_crops/a1.png',                        // 路径中段，只判首段会漏（2026-10-12 的坑）
-  '九年级/原卷/tiles/p1-L.jpg',
-  '组卷/2026-10-01-学生甲-重做卷.pdf',
-];
-
-const lib = mkLib('库-主');
-put(lib, '_原卷台账.json', '{"cards":{}}');
-for (const r of MUST) put(lib, r);
-for (const r of REBUILD) put(lib, r);
-for (const r of STORE_EXCLUDED) put(lib, r);                  // 只用来证明"不进分母"
-put(lib, '待办证据/T186.md', '# 非影像，不进分母');          // 非影像扩展名（原图库**之外**）
-
-/* ── 跑工具的唯一入口（永远显式 CTB_DATA）──────────────────────────────── */
-function run(mode, libDir) {
-  const env = Object.assign({}, process.env, { CTB_DATA: libDir });
-  const r = spawnSync(process.execPath, [TOOL].concat(mode ? [mode] : []), {
-    encoding: 'utf8', env, cwd: E.REPO, maxBuffer: 64 * 1024 * 1024,
+function run(args) {
+  const r = spawnSync(process.execPath, [TOOL, ...args], {
+    cwd: ROOT, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024,
+    env: Object.assign({}, process.env, { CTB_DATA: LIB }),
   });
-  return { code: r.status == null ? -1 : r.status, out: String(r.stdout || ''), err: String(r.stderr || '') };
+  return { code: r.status == null ? -1 : r.status, out: String(r.stdout || '') + String(r.stderr || '') };
 }
-/** 从输出里取「应备份 / 已备份 / 缺失（pct）」四个数（这三个数必须齐，缺一个就解析失败） */
-function covOf(out) {
-  const m = /应备份 (\d+) \/ 已备份 (\d+) \/ 缺失 (\d+)（([\d.]+)%）/.exec(out);
-  return m ? { need: +m[1], have: +m[2], miss: +m[3], pct: m[4] } : null;
+
+/* 一个最小库（只为证明"跑它不会在库里建出镜像目录"） */
+fs.mkdirSync(path.join(LIB, '学生A', '数学', 'M0001-测试'), { recursive: true });
+fs.writeFileSync(path.join(LIB, '学生A', '数学', 'M0001-测试', '原卷截图.jpg'), Buffer.alloc(32, 7));
+
+console.log('临时库：' + LIB + '\n');
+
+console.log('══ ① 工具显式拒绝执行（不是"找不到模块"也不是静默 exit 0）══');
+{
+  const r = run([]);
+  A('①a 退出码 = 2（拒绝执行；沿用 --mirror 移除分支的既有风格）', r.code === 2, 'exit=' + r.code);
+  A('①b 说明里写清"为什么退休"（P10 / 一个字节一个家）', /P10|一个字节一个家/.test(r.out), r.out.split('\n').filter(Boolean)[1] || '');
+  A('①c 说明里给出"现在该怎么备份"（指向 `_原图.mjs`）', /_原图\.mjs/.test(r.out), '');
+  A('①d 说明里点名规范出处（docs\\数据区规范.md）', /数据区规范\.md/.test(r.out), '');
 }
-const isSlice = rel => /^(题图|裁图|crop)/i.test(path.basename(rel));
-const backupPath = (libDir, rel) => path.join(libDir, '_影像备份', isSlice(rel) ? '切片' : '原件', ...rel.split('/'));
 
-/* ════════ ① 分母 = 全库扫描 − 显式可重建 ════════ */
-console.log('\n══ ① 分母不能由工具自己挑：全库扫描 − 显式可重建 ══');
-const st0 = run('--status', lib);
-const cov0 = covOf(st0.out);
-A('--status 能跑通并给出「应备份/已备份/缺失/百分比」四个数', cov0 !== null, JSON.stringify(cov0));
-A('分母 = 全库扫描对象 − 显式可重建（' + MUST.length + ' 个）', cov0 && cov0.need === MUST.length,
-  '应备份 ' + (cov0 && cov0.need) + '，期望 ' + MUST.length);
-A('全库扫描个数 = 分母 + 可重建（' + (MUST.length + REBUILD.length) + '）',
-  st0.out.indexOf('全库扫描 ' + (MUST.length + REBUILD.length) + ' 个') >= 0);
-A('可重建集合被排除，且**在输出里可见**（能被审计"工具瞒着排掉了多少"）',
-  st0.out.indexOf('显式声明可重建 ' + REBUILD.length + ' 个') >= 0 &&
-  st0.out.indexOf('_crops 1') >= 0 && st0.out.indexOf('tiles 1') >= 0 && st0.out.indexOf('组卷 1') >= 0);
-A('★ 旧口径完全碰不到的影像照样进分母：待办证据/T186.jpg 出现在缺失清单',
-  st0.out.indexOf('待办证据/T186.jpg') >= 0);
-A('★ 旧口径碰不到的第二类：_笔形/学生甲/D/2026-10-01-0003.jpg 出现在缺失清单',
-  st0.out.indexOf('_笔形/学生甲/D/2026-10-01-0003.jpg') >= 0);
-A('★ 新目录 _原图/ 默认进分母（内容寻址库不会漏备份）',
-  st0.out.indexOf('_原图/ab/ab12cd34ef56.jpg') >= 0);
-A('★★ 原图库里的**非影像对象**（.csv/.md）也进分母 —— 人工判读产物不能从任何原图推出',
-  STORE_NONIMG.every(r => st0.out.indexOf(r) >= 0), STORE_NONIMG.join(' | '));
-A('原图库的两类排除项不进分母：*.tmp 半成品 与 _快照/ 内部快照（清单里都不许出现）',
-  STORE_EXCLUDED.every(r => st0.out.indexOf(r) < 0) &&
-  st0.out.indexOf('半截写入.tmp') < 0 && st0.out.indexOf('_快照') < 0,
-  STORE_EXCLUDED.join(' | '));
-A('可重建件一个都没进清单（_crops / tiles / 组卷）',
-  st0.out.indexOf('_crops/a1.png') < 0 && st0.out.indexOf('tiles/p1-L.jpg') < 0 &&
-  st0.out.indexOf('重做卷.pdf') < 0);
-A('非影像扩展名（.md）不进分母', st0.out.indexOf('T186.md') < 0);
-A('分母数与「原件 + 切片」两个桶之和自洽',
-  st0.out.indexOf('应备份 原件 ' + (MUST.length - MUST.filter(isSlice).length) + ' 个 / 切片 ' + MUST.filter(isSlice).length + ' 个') >= 0);
-A('全未备份 ⇒ exit 2（覆盖率 <50% = 判定口径退化，必须能自动红）', st0.code === 2, 'exit=' + st0.code);
-A('缺失数 = 分母（一份都不能少报）', cov0 && cov0.miss === cov0.need);
+console.log('\n══ ② 任何参数都一样拒绝（没有藏一条"还能跑"的路径）══');
+{
+  for (const args of [[], ['--status'], ['--verify'], ['--mirror'], ['--dry']]) {
+    A('② `' + (args.join(' ') || '(无参数)') + '` ⇒ exit 2', run(args).code === 2, '');
+  }
+}
 
-/* ════════ ② 备份齐全 ⇒ 100% + 全模式 exit 0 ════════ */
-console.log('\n══ ② 备份齐全时覆盖率 100%、全模式 exit 0 ══');
-const d1 = run('', lib);                     // 默认模式：增量写本机副本
-A('默认模式把分母内每一份都写进 _影像备份（逐份核对，不数总数）',
-  MUST.every(r => fs.existsSync(backupPath(lib, r))), MUST.length + ' 份');
-A('全覆盖时默认模式 exit 0', d1.code === 0, 'exit=' + d1.code);
-const st1 = run('--status', lib);
-const cov1 = covOf(st1.out);
-A('全覆盖：已备份 = 应备份', cov1 && cov1.have === cov1.need && cov1.miss === 0, JSON.stringify(cov1));
-A('全覆盖时 --status exit 0（修好"永远红"的另一面：不乱红）', st1.code === 0, 'exit=' + st1.code);
-A('全覆盖时 --verify exit 0 且逐字节一致', run('--verify', lib).code === 0);
+console.log('\n══ ③ 跑它绝不创建 `_影像备份\\` ══');
+{
+  A('③a 跑过五种参数之后，库里仍没有 `_影像备份\\`', !fs.existsSync(path.join(LIB, '_影像备份')),
+    path.join(LIB, '_影像备份'));
+  A('③b 库里除夹具外没多出任何条目', fs.readdirSync(LIB).join(',') === '学生A', fs.readdirSync(LIB).join(','));
+}
 
-/* ════════ ③ 阴性对照：漏掉一份 ⇒ 覆盖率必须掉 ════════ */
-console.log('\n══ ③ 阴性对照：漏掉一个应备份文件，覆盖率必须严格掉下去 ══');
-const victim = '待办证据/T186.jpg';
-fs.rmSync(backupPath(lib, victim));
-const st2 = run('--status', lib);
-const cov2 = covOf(st2.out);
-const want = (MUST.length - 1) / MUST.length * 100;
-A('★ 覆盖率严格 <100%（不是恒 100%）', cov2 && Number(cov2.pct) < 100, cov2 && cov2.pct + '%');
-A('★ 掉到 (N-1)/N 的具体值（' + want.toFixed(1) + '%）', cov2 && Math.abs(Number(cov2.pct) - want) < 0.06,
-  cov2 && cov2.pct + '%');
-A('★ 缺失清单能点出是哪一份', st2.out.indexOf('缺失 1') >= 0 && st2.out.indexOf('待办证据/T186.jpg') >= 0);
-A('★ --status 此时 exit 1（改前恒 0：自动化会把"没备份好"当成功）', st2.code === 1, 'exit=' + st2.code);
-A('★ --verify 同口径也判红（两套口径已合并成一个判据）', run('--verify', lib).code === 1);
-run('', lib);                                // 复原本机备份（保持夹具自洽）
+console.log('\n══ ④ 源码里没有任何"重建镜像"的实现 ══');
+{
+  const src = fs.readFileSync(TOOL, 'utf8');
+  const banned = ['mkdirSync', 'copyFileSync', 'writeFileSync', 'ensureDirs', 'copyOne', 'writeJsonAtomic', 'REBUILDABLE_RE', 'coverageVerdict'];
+  const hit = banned.filter((b) => src.includes(b));
+  A('④a 没有任何写盘/建目录/复制/覆盖率实现', hit.length === 0, hit.join(' ') || ('源码 ' + src.split('\n').length + ' 行'));
+  A('④b 没有 import 任何库内模块（连读库的能力都不给它）', !/from\s+'\.\//.test(src), '');
+  const chk = spawnSync(process.execPath, ['--check', TOOL], { encoding: 'utf8' });
+  A('④c 语法自检通过', chk.status === 0, String(chk.stderr || '').split('\n')[0] || '');
+}
 
-/* ════════ ④ 分母为 0 / 空库：两种极端都必须有确定结论 ════════ */
-console.log('\n══ ④ 分母为 0 与空库（"分母被改回去"必须红）══');
-const libAll = mkLib('库-全可重建');
-put(libAll, '九年级/原卷/_crops/a1.png');
-put(libAll, '九年级/原卷/tiles/p1-L.jpg');
-put(libAll, '组卷/x.pdf');
-const stA = run('--status', libAll);
-A('分母为 0 但库里有影像 ⇒ exit 2（可重建集合声明过宽 = 会把该保的全排除）', stA.code === 2, 'exit=' + stA.code);
-A('输出能自查：全库扫描 3 个 / 应备份 0 个', stA.out.indexOf('全库扫描 3 个') >= 0 &&
-  stA.out.indexOf('应备份 原件 0 个 / 切片 0 个') >= 0);
-
-const libEmpty = mkLib('库-空');
-const stE = run('--status', libEmpty);
-A('空库（库里一个影像都没有）不判红：exit 0（别把"没东西可备"当口径退化）', stE.code === 0, 'exit=' + stE.code);
-A('空库覆盖率按 0/0 报，不谎报"已备份 0/0 有百分比问题"', /应备份 0 \/ 已备份 0 \/ 缺失 0（100\.0%）/.test(stE.out));
-
-/* ── 收尾 ─────────────────────────────────────────────────────────────── */
-console.log('\n──────────────────────────────');
-console.log(worst === 0 ? 'RESULT=PASS 断言=' + passed
-  : 'RESULT=FAIL 断言=' + passed + ' 失败=' + worst);
-try { fs.rmSync(base, { recursive: true, force: true }); } catch { }
-process.exit(worst === 0 ? 0 : 1);
+console.log(`\nRESULT=${fail ? 'FAIL(' + fail + ')' : 'PASS'}  断言=${pass + fail}  通过=${pass}  失败=${fail}`);
+process.exit(fail ? 1 : 0);

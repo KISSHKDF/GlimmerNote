@@ -193,16 +193,24 @@ A('1.2 重跑入库幂等（对象数不变、输出"新增 0"）',
   ing2.code === 0 && Object.keys(JSON.parse(fs.readFileSync(LEDGER, 'utf8')).objects).length === 7 && /新增 0/.test(ing2.out),
   'exit=' + ing2.code + ' ｜ ' + (ing2.out.match(/新增 \d+/) || [''])[0]);
 
-/* ══════════ 二、独立备份 ══════════ */
-H('二、独立备份：_影像备份.mjs（真工具，不是本用例自己拷）');
-const bk = run('_影像备份.mjs', [], LIB);
-A('2.1 独立备份 exit 0（分母内全部已备份）', bk.code === 0,
-  'exit=' + bk.code + ' ｜ ' + (bk.out.match(/覆盖率：[^\n]*/) || [''])[0]);
-const BAK = path.join(LIB, '_影像备份');
+/* ══════════ 二、"库外那一份"备用副本 ══════════
+   ★ 2026-11-06（P10）：原来这一步跑 `_影像备份.mjs`（同盘镜像）。镜像已按 P10 退休 ⇒
+   改成 P10 认可的形态：**库外**放一份 `_原图\` 的副本（"防盘坏"的那一份必须在库外；
+   同样的字节在同一块盘上再放一份不叫备份）。`_原图.mjs 核对/恢复 --from` 认这种形态。 */
+H('二、库外副本：把 `_原图\` 拷到库外（P10：保全家就是那一份备份，库外那份才防盘坏）');
+const BAK = path.join(path.dirname(LIB), '库外副本', path.basename(LIB) + '-_原图');   // 库外（不在 LIB 里）
+(function copyTree2(src, dst) {
+  fs.mkdirSync(dst, { recursive: true });
+  for (const e of fs.readdirSync(src, { withFileTypes: true })) {
+    const s = path.join(src, e.name), d = path.join(dst, e.name);
+    if (e.isDirectory()) copyTree2(s, d); else fs.copyFileSync(s, d);
+  }
+})(path.join(LIB, '_原图'), BAK);
 const bakObjs = objectsOf(BAK);
-A('2.2 备份里有 7 个库对象（文件名 = sha）', bakObjs.length === 7, bakObjs.length + ' 个');
-const bakSha6 = path.join(BAK, '原件', '_原图', sha256(EXIF6).slice(0, 2).toLowerCase(), sha256(EXIF6) + '.jpg');
-A('2.3 备份副本与源逐字节一致（含 EXIF 那份）',
+A('2.1 库外副本建好（库外 = ' + BAK + '）', fs.existsSync(BAK), BAK);
+A('2.2 副本里有 7 个库对象（文件名 = sha）', bakObjs.length === 7, bakObjs.length + ' 个');
+const bakSha6 = path.join(BAK, sha256(EXIF6).slice(0, 2).toLowerCase(), sha256(EXIF6) + '.jpg');
+A('2.3 副本与源逐字节一致（含 EXIF 那份）',
   fs.existsSync(bakSha6) && shaOfFile(bakSha6) === sha256(EXIF6));
 
 /* ══════════ 三、新目录恢复 ══════════ */
@@ -216,7 +224,7 @@ let restored = 0;
     if (e.isDirectory()) copyTree(s, d);
     else { fs.copyFileSync(s, d); restored++; }
   }
-})(path.join(BAK, '原件', '_原图'), path.join(LIB2, '_原图'));
+})(BAK, path.join(LIB2, '_原图'));
 /* 台账不是影像备份覆盖的对象（`_影像备份.mjs` 只收影像与 `_原图\` 库对象，根台账 JSON 不在其中）。
    它的恢复点是 git / `_备份-真源\`——演练里直接取原件台账，并把这条边界**打印出来**而不是静默假设。 */
 fs.copyFileSync(LEDGER, path.join(LIB2, '_原图台账.json'));
@@ -224,7 +232,7 @@ console.log('  [i] 恢复来源：字节 ← 备份 `' + path.relative(LIB, BAK)
   '台账 ← 原件 `_原图台账.json`（根台账 JSON 不在影像备份的分母里，其恢复点是 git / `_备份-真源\\`）');
 
 const restoreObjs = objectsOf(path.join(LIB2, '_原图'));
-A('3.1 恢复出 7 个对象文件', restoreObjs.length === 7 && restored === 7, restoreObjs.length + ' 个（复制 ' + restored + ' 个）');
+A('3.1 从库外副本恢复出 7 个对象文件', restoreObjs.length === 7 && restored === 7, restoreObjs.length + ' 个（复制 ' + restored + ' 个）');
 const bySha = new Map();
 for (const p of restoreObjs) bySha.set(/^([0-9a-f]{64})\./i.exec(path.basename(p))[1].toUpperCase(), p);
 A('3.2 每个恢复件的内容 sha == 它的文件名（逐字节）',
@@ -285,7 +293,7 @@ const len1 = flipOneByte(t1);
 A('① 前提：改坏后长度没变（只比 size 的判据必然漏判）', fs.statSync(t1).size === len1 && shaOfFile(t1) !== sha256(EXIF6));
 red('① 恢复目标坏了 1 字节', run('_原图.mjs', ['核对', '--from', BAK, '--json'], LIB2), '库', '字节不符', sha256(EXIF6),
   run('_原图.mjs', ['核对', '--from', BAK], LIB2));
-fs.copyFileSync(path.join(BAK, '原件', '_原图', sha256(EXIF6).slice(0, 2).toLowerCase(), sha256(EXIF6) + '.jpg'), t1);
+fs.copyFileSync(path.join(BAK, sha256(EXIF6).slice(0, 2).toLowerCase(), sha256(EXIF6) + '.jpg'), t1);
 A('① 还原后内容 sha 复原', shaOfFile(t1) === sha256(EXIF6));
 green('①');
 
@@ -307,10 +315,10 @@ green('②');
 const t3 = bySha.get(sha256(PAGE9));
 fs.unlinkSync(t3);
 red('③a 删掉恢复后的对象', run('_原图.mjs', ['核对', '--from', BAK, '--json'], LIB2), '库', '缺文件', sha256(PAGE9));
-fs.copyFileSync(path.join(BAK, '原件', '_原图', sha256(PAGE9).slice(0, 2).toLowerCase(), sha256(PAGE9) + '.jpg'), t3);
+fs.copyFileSync(path.join(BAK, sha256(PAGE9).slice(0, 2).toLowerCase(), sha256(PAGE9) + '.jpg'), t3);
 green('③a');
 
-const t3b = path.join(BAK, '原件', '_原图', sha256(PAGE9).slice(0, 2).toLowerCase(), sha256(PAGE9) + '.jpg');
+const t3b = path.join(BAK, sha256(PAGE9).slice(0, 2).toLowerCase(), sha256(PAGE9) + '.jpg');
 fs.unlinkSync(t3b);
 red('③b 删掉备份里的对象', run('_原图.mjs', ['核对', '--from', BAK, '--json'], LIB2), '备份', '缺文件', sha256(PAGE9));
 fs.copyFileSync(t3, t3b);
@@ -332,16 +340,18 @@ fs.copyFileSync(LEDGER, l2);
 green('④');
 
 /* ⑤ 多出：备份里塞一个台账不认的 64-hex 对象 */
-const strayDir = path.join(BAK, '原件', '_原图', 'ab');
+const strayDir = path.join(BAK, 'ab');
 fs.mkdirSync(strayDir, { recursive: true });
 const straySha = sha256(Buffer.from('备份里多出来的、台账不认的东西', 'utf8'));
 const stray = path.join(strayDir, straySha + '.jpg');
 fs.writeFileSync(stray, Buffer.from('备份里多出来的、台账不认的东西', 'utf8'));
-/* 对照（证明这条判据不是重复劳动）：现有工具的**分母是库内扫描**，备份里多出来的东西
-   根本不在分母里 ⇒ `_影像备份.mjs --verify` 必然报绿。这就是 `核对 --from` 新增的那一份覆盖。 */
-const blind = run('_影像备份.mjs', ['--verify'], LIB);
-A('⑤ 对照：`_影像备份.mjs --verify` 看不见备份里多出的对象（exit 0）⇒ 这正是 `核对` 新增的覆盖',
-  blind.code === 0, 'exit=' + blind.code + ' ｜ ' + (blind.out.match(/校验：一致 \d+ \/ 异常 \d+/) || [''])[0]);
+/* 对照（证明这条判据不是重复劳动）：`_原图.mjs 校验` 的分母是**库内** `_原图\` + 台账，
+   库外副本里多出来的东西根本不在它的分母里 ⇒ 它必然报绿。这就是 `核对 --from` 新增的那一份覆盖。
+   （★ 2026-11-06 P10：这里的对照组原先是 `_影像备份.mjs --verify`，该工具已退休，
+     换成同样"分母不含备份根"的活跃判据 `校验`，对照的语义不变。） */
+const blind = run('_原图.mjs', ['校验'], LIB2);
+A('⑤ 对照：`_原图.mjs 校验` 看不见**库外副本**里多出的对象（exit 0）⇒ 这正是 `核对` 新增的覆盖',
+  blind.code === 0, 'exit=' + blind.code + ' ｜ ' + (blind.out.match(/逐字节核对：[^\n]*/) || [''])[0]);
 red('⑤ 备份里多出对象', run('_原图.mjs', ['核对', '--from', BAK, '--json'], LIB2), '备份', '多出', straySha);
 fs.unlinkSync(stray);
 green('⑤');

@@ -258,12 +258,14 @@ function ruleSidecar(c) {
  * `_裁图记录.json` 里 `src` 是**迁移前的老绝对路径**（`<盘>:\…\错题本\…`）或指向
  * 已被清理的 `_收件箱\…`。旧 `ruleSidecar` 用 `relOf()` 得到 `../../错题本/…`
  * ⇒ 命中 `startsWith('..')` 被拒 ⇒ 这些卡全部落成「无任何清单线索」。
- * 但**字节还在**：`_影像备份\原件\<同相对路径>` 里逐张都在（实测 126/126）。
+ * 但**字节还在**：保全库 `_原图\` 里有同 sha 对象（2026-11-06 复测：全部 1,192 条引用里
+ * 274 条走这条兜底，0 条找不到）。
  *
- * 本层与 `_原图寻址.mjs` 给 import 加的三层兜底**同源同序**：
- *   原路径 → 保全库（按内容 sha）→ 影像备份（同路径 + 内容/尺寸核对）。
+ * 本层与 `_原图寻址.mjs` 的兜底**同源同序**：原路径 → 保全库（按内容 sha）。
+ * ⚠ 2026-11-06（P10）：原先还有"`_影像备份\` 同路径副本"那一段，已随镜像退休整体摘除
+ *   （实测该段命中 0 次，纯死代码；判据留档见 `tests\neg-p10-image-homes.cjs`）。
  * page 侧多一条纪律：**必须自证**。证据 = `_裁图记录.json` 的 `srcPx`
- * （当初裁图时那一页的真实像素），与备份件实际像素比对；不符就不给这条路 ——
+ * （当初裁图时那一页的真实像素），与保全库对象实际像素比对；不符就不给这条路 ——
  * 宁可说"定位不了"，也不许把"路径被复用成另一个文件"的页递出去（张冠李戴）。
  * 本层**不改写任何文件、不把副本复制回库**：page 保留**规范相对路径**，
  * 字节交给 resolver 兜底（门禁与界面都走同一条 resolve）。 */
@@ -291,8 +293,9 @@ function normSrcPx(v) {
   return null;
 }
 
-/** 规范的"取字节"入口：在盘就用原路径；不在盘才问 resolver（保全库 → 影像备份）。
- *  只读、零副作用；找不到返回 null（调用方必须显式失败，不许静默返回空）。 */
+/** 规范的"取字节"入口：在盘就用原路径；不在盘才问 resolver（保全库 `_原图\`）。
+ *  只读、零副作用；找不到返回 null（调用方必须显式失败，不许静默返回空）。
+ *  ⚠ 2026-11-06（P10）：`_影像备份\` 那层兜底已退休，兜底只剩保全库一条。 */
 let __pageResolver = null;
 const pageResolver = () => (__pageResolver || (__pageResolver = origResolver()));
 function resolvePageBytes(rel) {
@@ -304,7 +307,7 @@ function resolvePageBytes(rel) {
   return null;
 }
 
-/** R1b 卡目录 `_裁图记录.json` + 影像备份兜底（老绝对路径 / 已被清理的收件箱）。
+/** R1b 卡目录 `_裁图记录.json` + 保全库兜底（老绝对路径 / 已被清理的收件箱）。
  *  与 R1 的区别只有两点：**路径先归一化**（剥老库根），**再用尺寸自证**。 */
 /* 规则链上的「为什么没定位」提示（只影响 note 文案，不影响判据）：
    本仓的老要求 —— 判不出来也要让排查的人看得见原因（"看不出这里其实有线索"是缺陷）。
@@ -325,7 +328,7 @@ function ruleBackupPage(c) {
   }
   const got = resolvePageBytes(rel);
   if (!got) {
-    __pageDiag = `_裁图记录.json.src=${rec.src} 原路径已失效，且保全库/影像备份都没有同相对路径副本：${rel}`;
+    __pageDiag = '_裁图记录.json.src=' + rec.src + ' 原路径已失效，且保全库 _原图\\ 里没有同 sha 对象：' + rel;
     return null;
   }
   if (got.via === 'direct') return null;               /* 在盘的情况归 R1 管，本层只处理"路径失效" */
@@ -356,8 +359,8 @@ function ruleBackupPage(c) {
     /* page 记**规范相对路径**（不记兜底路径）：路径是"这张卡属于哪一页"的身份，
        字节在哪由 resolver 决定（门禁与界面 `生成状态.mjs` 都调同一个 resolve）。
        记兜底路径会让"迁移一次换一次路径"，反而丢掉原本身份。 */
-    page: rel, box, by: '影像备份·尺寸自证',
-    note: `_裁图记录.json.src=${rec.src} 原路径已失效（字节在${got.via === 'store' ? '保全库' : '影像备份'}）；${verify}${box ? '' : '（无归一化框' + (rec.rotate ? '，旋转过' : '') + '）'}`,
+    page: rel, box, by: '保全库·尺寸自证',
+    note: '_裁图记录.json.src=' + rec.src + ' 原路径已失效（字节在保全库 _原图\\ 里）；' + verify + (box ? '' : '（无归一化框' + (rec.rotate ? '，旋转过' : '') + '）'),
   };
 }
 
@@ -643,11 +646,11 @@ function sizesOf(rels, { persist = false, resolve = null } = {}) {
 function aspectAudit(cards, { persist = false } = {}) {
   const rels = [];
   for (const e of Object.values(cards)) { if (e.page) rels.push(e.page); if (e.cardDir) rels.push(e.cardDir + '/原卷截图.jpg'); }
-  /* 解析顺序：盘上原路径 → 保全库按内容找回 → 影像备份同路径（同一份字节，尺寸当然一样）。
+  /* 解析顺序：盘上原路径 → 保全库按内容找回（2026-11-06 P10：影像备份那层已退休）。
      ★ 2026-11-06 修：改前这里调的是 `ORIG_RESOLVER.resolve(...)`，而 `ORIG_RESOLVER` 只在
      `gate()` 里定义 ⇒ 本函数里它是 **ReferenceError**，被外层 catch 吞掉 ⇒ 兜底从来没生效过
      （实测：原路径失效的页在长宽比体检里全被记成"文件找不到"）。现在复用唯一实现
-     `resolvePageBytes()`（懒建 resolver，原路径 → 保全库 → 影像备份）。 */
+     `resolvePageBytes()`（懒建 resolver，原路径 → 保全库）。 */
   const resolve = (rel) => {
     const a = toAbs(rel);
     if (fs.existsSync(a)) return a;
@@ -683,7 +686,7 @@ function resolveImport(pageRel, shaCache) {
   if (!pageRel) return null;
   /* ★ 2026-11-06：改前这里直接 `shaCached(pageRel)` —— 隐含假设"page 一定在盘"。
      该假设在"原路径失效、字节由兜底解析"之后不再成立（实测：非在盘 page 直接 ENOENT 崩）。
-     现在先取字节（原路径 → 保全库 → 影像备份），取不到就如实返回 null，
+      now 先取字节（原路径 → 保全库），取不到就如实返回 null，
      不抛异常、也不拿别的文件顶替。 */
   let got;
   try { got = resolvePageBytes(pageRel); } catch { got = null; }
@@ -739,16 +742,16 @@ function build({ dry, force }) {
     if (!r) r = { page: null, box: null, by: '待定位', need: true, note: __pageDiag || '无任何清单线索，需按批次人工登记' };
     if (r.page && !r.box) r.box = (prev && boxOk(prev.box)) ? prev.box : null;
     if (r.page && !exists(r.page)) {
-      /* ★ 2026-11-06：原路径不在盘 ≠ 整页丢了。与门禁**同一口径**（`_原图寻址` 三层兜底：
-         原路径 → 保全库按内容 → 影像备份同相对路径）。能找回就**保留规范路径**
+      /* ★ 2026-11-06：原路径不在盘 ≠ 整页丢了。与门禁**同一口径**（`_原图寻址` 两层兜底：
+         原路径 → 保全库按内容；`_影像备份\` 那层已按 P10 退休）。能找回就**保留规范路径**
          （不改写成兜底路径、不把副本复制回库），只把依据写进 note；找不回才落"待定位"。
          改前这里无条件置 null ⇒ 2026-11-01 迁移之后，凡是"收件箱被清 / 原卷目录为空"的批次，
-         即使字节就在影像备份里也被判成"页文件不在盘"。 */
+         即使字节就在保全库里也被判成"页文件不在盘"。 */
       const via = resolvePageBytes(r.page);
       if (via) {
-        r = { ...r, note: `${r.note || ''} ｜ 原路径不在盘，已按${via.via === 'store' ? '内容从保全库' : '同相对路径从影像备份'}兜底（字节可查）`.trim() };
+        r = { ...r, note: `${r.note || ''} ｜ 原路径不在盘，已按内容从保全库兜底（字节可查）`.trim() };
       } else {
-        r = { page: null, box: null, by: '待定位', need: true, note: '规则给出的页文件不在盘，且保全库/影像备份都找不回：' + r.page };
+        r = { page: null, box: null, by: '待定位', need: true, note: '规则给出的页文件不在盘，且保全库 `_原图\\` 里也找不回：' + r.page };
       }
     }
     out[c.key] = {
@@ -848,10 +851,12 @@ function locateSheet({ per }) {
     }
     if (!pages.length) {
       /* ★ 2026-11-06：`<组>/原卷\` 为空时（2026-11-01 迁移后很常见），候选页其实躺在
-         **影像备份**里。两条来源：① 镜像的 `<组>/原卷/**`；② `_影像备份\原件\_收件箱\<批次>\**`
-         里目录名含该学生（或该学科）的批次。没有这一步，这几组永远生不出候选网格 ⇒
-         "无任何清单线索"永远无解（实测：七年级的数学/语文、九年级的化学/数学/语文，`原卷\` 都是 0 张）。 */
-      const bkRel = '_影像备份/原件';
+         **`_收件箱\` 里**（原图的工作家 —— 用户投递的原件就住那儿）。
+         ⚠ 2026-11-06（P10）：改前这里扫的是 `_影像备份\原件\` 下的**镜像副本**
+         （镜像已退休）。P10 说得很清楚：原图的工作家就是活路径（`_收件箱\` / `<小名>\原卷\`），
+         保全家 `_原图\` 是内容寻址的字节仓库（文件名是 sha，给不出"卷面名"的候选网格）。
+         所以候选页只能从**活路径**取：本轮把 `_收件箱\` 那一支从镜像前缀改成库内真路径
+         （`bkRel/<dirGuess>/原卷` 那一支本就是上面 847 行已经扫过的同一条活路径，删掉重复）。 */
       const scanPics = (rel, out, depth) => {
         let ents = [];
         try { ents = fs.readdirSync(toAbs(rel), { withFileTypes: true }); } catch { return; }
@@ -862,15 +867,14 @@ function locateSheet({ per }) {
         }
       };
       const pool = [];
-      scanPics(`${bkRel}/${dirGuess}/原卷`, pool, 2);
       const subj = String(g.cards[0].subject || '');
-      for (const batch of listDir(`${bkRel}/_收件箱`)) {
+      for (const batch of listDir('_收件箱')) {
         if (!(batch.includes(g.student) || (subj && batch.includes(subj)))) continue;
-        scanPics(`${bkRel}/_收件箱/${batch}`, pool, 1);
+        scanPics(`_收件箱/${batch}`, pool, 1);
       }
       const seenRel = new Set();
       pages = pool.filter(p => (seenRel.has(p.rel) ? false : (seenRel.add(p.rel), true)));
-      if (pages.length) console.log(`  （${gk}：库内 原卷\\ 为空 ⇒ 候选页改从影像备份取，命中 ${pages.length} 张）`);
+      if (pages.length) console.log(`  （${gk}：库内 原卷\\ 为空 ⇒ 候选页改从 _收件箱\\ 取，命中 ${pages.length} 张）`);
     }
     const grid = [];
     for (const p of pages) {
@@ -1060,9 +1064,9 @@ function gate(allowPxWrite = false) {
   const ORIG_RESOLVER = origResolver();
   let nViaStore = 0;
   const viaStoreSamples = [];
-  /* ★ 2026-11-05：影像备份兜底（保全库没有、但备份里有同路径副本） */
-  let nViaBackup = 0;
-  const viaBackupSamples = [];
+  /* ★ 2026-11-06（P10）：`_影像备份\` 同路径副本那条兜底已随镜像退休摘除
+     （原 `nViaBackup` / `viaBackupSamples` 一并删掉 —— 留一个恒为 0 的计数器+一行报表
+       只会让人以为"这条兜底还在、只是没命中"）。 */
   /* ⚠ 2026-10-15 修（I · 门禁检出盲区）：`未定位` 原先直接打印 `errs.length`，
      而 errs 里混了「未定位」「不在盘」「box 非法」「指向自身」等多种错因——
      数字名不副实；本次再往 errs 加「越出库根」会让这个数更失真。
@@ -1121,16 +1125,9 @@ function gate(allowPxWrite = false) {
       if (store && store.via === 'store') {
         nViaStore++;
         if (viaStoreSamples.length < 20) viaStoreSamples.push(`${c.key} 整页原路径已失效，已按内容从保全库找回：${store.path}`);
-      } else if (store && store.via === 'backup') {
-        /* ★ 2026-11-05：保全库没有、但**影像备份里有同路径副本** ⇒ 也不是断链。
-           实测：用户按「确认重复的就删掉」清理收件箱（那些照片是 52 张卡的溯源依据），
-           这批照片没进过保全库，但影像备份里有逐字节相同的副本 ⇒ 靠这一层兜住，
-           不让一次正常清理把 52 张卡的溯源打断。 */
-        nViaBackup++;
-        if (viaBackupSamples.length < 20) viaBackupSamples.push(`${c.key} 整页原路径已失效，已从影像备份的同路径副本找回：${store.path}`);
       } else {
         errs.push(`${c.key} 整页不在盘：${e.page}` +
-          (store ? '' : '（且保全库与影像备份里都没有副本 ⇒ 真的断了）'));
+          (store ? '' : '（且保全库 `_原图\\` 里也没有同 sha 副本 ⇒ 真的断了）'));
       }
     }
     if (e.box && !boxOk(e.box)) errs.push(`${c.key} box 非法：${JSON.stringify(e.box)}`);
@@ -1144,9 +1141,6 @@ function gate(allowPxWrite = false) {
         if (store && store.via === 'store') {
           nViaStore++;
           if (viaStoreSamples.length < 20) viaStoreSamples.push(`${c.key} 导入原件原路径已失效，已按内容从保全库找回：${store.path}`);
-        } else if (store && store.via === 'backup') {
-          nViaBackup++;
-          if (viaBackupSamples.length < 20) viaBackupSamples.push(`${c.key} 导入原件原路径已失效，已从影像备份的同路径副本找回：${store.path}`);
         } else {
           warns.push(`${c.key} 导入原件失效：${e.import}`);
         }
@@ -1170,8 +1164,7 @@ function gate(allowPxWrite = false) {
   for (const b of audit.bad) warns.push(`${b.key} 长宽比可疑 r=${b.r}（${b.page}）`);
   console.log('  ' + auditLine(audit));
   console.log(`门禁：卡 ${cards.length} ｜ 未定位 ${nUnlocated} ｜ 有整页无红框 ${noBox} ｜ 告警 ${warns.length}` +
-    (nViaStore ? ` ｜ **已从保全库按内容兜底 ${nViaStore} 条**（原路径失效但字节还在，不是断链）` : '') +
-    (nViaBackup ? ` ｜ **已从影像备份兜底 ${nViaBackup} 条**（原路径失效，备份里有同路径副本，不是断链）` : ''));
+    (nViaStore ? ` ｜ **已从保全库按内容兜底 ${nViaStore} 条**（原路径失效但字节还在，不是断链）` : ''));
   for (const w of warns) console.log('  ⚠ ' + w);
   /* ★ 2026-10-31：兜底明细也要打印（不静默）。
      用户看到"整页不在盘"会以为数据丢了；实际是路径失效、字节在保全库。
@@ -1180,11 +1173,6 @@ function gate(allowPxWrite = false) {
     console.log(`  ── 原路径失效但已按内容从保全库找回（${nViaStore} 条，**不是断链**）──`);
     for (const s of viaStoreSamples) console.log('  ✓ ' + s);
     if (nViaStore > viaStoreSamples.length) console.log(`    … 另有 ${nViaStore - viaStoreSamples.length} 条`);
-  }
-  if (nViaBackup) {
-    console.log(`  ── 原路径失效但已从影像备份的同路径副本找回（${nViaBackup} 条，**不是断链**）──`);
-    for (const s of viaBackupSamples) console.log('  ✓ ' + s);
-    if (nViaBackup > viaBackupSamples.length) console.log(`    … 另有 ${nViaBackup - viaBackupSamples.length} 条`);
   }
   /* ⚠ 2026-10-15 修（I · 输出截断遮蔽高严重级错误）：
      原先 `errs.slice(0, 40)` + "另有 N 条" —— 在**已有一批低严重级错误**
@@ -1244,8 +1232,8 @@ function trial(o) {
  * 及其 `_备份-真源\*` / `_备份-*` 系列），它记着这些卡当初的整页与归一化框。
  * 这些证据不该因为"文件搬了家"作废 —— 但它也**不许当成无条件真值**，故有三条硬约束：
  *
- *   ① **逐条自证**：历史 page 归一化成库内相对路径后，必须在盘、或能被三层兜底找回
- *      （原路径 → 保全库按内容 → 影像备份同相对路径）。找不回 ⇒ 跳过并报原因，
+ *   ① **逐条自证**：历史 page 归一化成库内相对路径后，必须在盘、或能被两层兜底找回
+ *      （原路径 → 保全库按内容；`_影像备份\` 已按 P10 退休）。找不回 ⇒ 跳过并报原因，
  *      **绝不写一个"看起来有页"的空条目**。
  *   ② **不许跨学生串页**：只认 `学生|卡号` **全键**命中（卡号跨学生会撞号，见 L-334/L-339）；
  *      库里没有这张卡就直接跳过，不做裸卡号回退。
@@ -1328,7 +1316,7 @@ function importHistory(o) {
     doc.cards[k] = {
       key: k, student: c.student, subject: c.subject, cardDir: c.cardDir, source: c.source,
       page: rel, box, by: '手工·历史台账迁移', need: false,
-      note: `导入历史台账（${h.file}，原 by=${h.by || '?'}）｜ 字节：${got.via === 'direct' ? '在盘' : got.via === 'store' ? '保全库(按内容)' : '影像备份(同相对路径)'}｜ 框：${boxFrom || '无'}`,
+      note: `导入历史台账（${h.file}，原 by=${h.by || '?'}）｜ 字节：${got.via === 'direct' ? '在盘' : '保全库(按内容)'}｜ 框：${boxFrom || '无'}`,
       import: resolveImport(rel, shaCache) || prev.import || null,
       ...unknownOf(prev),                    /* P1-1：既有 sha256/lost/regions… 一个都不许丢 */
     };

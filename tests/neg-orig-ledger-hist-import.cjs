@@ -44,10 +44,21 @@ const ledSha = () => crypto.createHash('sha256').update(fs.readFileSync(path.joi
 const card = (k) => ledger().cards[k] || {};
 
 /* ── 夹具 ── */
-const CANON = '学生A/数学/原卷/批次2/p02.jpg';                  /* 规范路径：库里没有，备份里有 */
+const CANON = '学生A/数学/原卷/批次2/p02.jpg';                  /* 规范路径：库里没有，保全家 `_原图\` 里有 */
 const LEGACY = 'D:' + path.sep + '某老库' + path.sep + '错题本' + path.sep + CANON.split('/').join(path.sep);
 const B_REC = [0.5, 0.5, 0.2, 0.1];                             /* 卡目录裁图记录的框（权威） */
 const B_HIST = [0.1, 0.2, 0.3, 0.4];                            /* 历史台账的框（与上面冲突） */
+const PAGE_BYTES = png(2024, 2940);
+
+/* ★ 2026-11-06（P10）：字节放**保全家** `_原图\`（`_影像备份\` 已退休）。
+   用真工具入库（唯一实现：对象 + `_原图台账.json` 的 sources 一并就位），再把活路径删掉
+   —— 那就是"规范路径不在盘、字节还在"的真实现场。 */
+function putInStore() {
+  mk(LIB, CANON, PAGE_BYTES);
+  const r = run(['_原图.mjs', '入库', CANON]);
+  if (r.code !== 0) throw new Error('夹具：入库失败 ' + r.out.slice(0, 200));
+  fs.unlinkSync(path.join(LIB, CANON));
+}
 
 wj(LIB, '学生A/数学/_索引.json', {
   student: '学生A', grade: '七年级', subject: '数学',
@@ -62,7 +73,7 @@ wj(LIB, '学生A/数学/M0001-测试/_裁图记录.json', {
   srcPx: '2024x2940', normBox: B_REC, scale: 2, out: '原卷截图.jpg',
 });
 mk(LIB, '学生A/数学/M0002-测试/原卷截图.jpg', png(300, 80));
-mk(LIB, '_影像备份/原件/' + CANON, png(2024, 2940));            /* 历史 page 的字节在影像备份里 */
+putInStore();                                                    /* 历史 page 的字节在保全家 `_原图\` 里 */
 
 const HIST = path.join(TMP, 'hist.json');
 wj(TMP, 'hist.json', {
@@ -100,7 +111,7 @@ A('①a 基线：两张卡都还没定位', card('学生A|M0001').page === null 
   A('②e need = false（已经定位，不再挂"待定位"）', e.need === false, String(e.need));
   A('②f 框冲突时取卡目录裁图记录', Array.isArray(e.box) && e.box.every((v, i) => Math.abs(v - B_REC[i]) < 1e-9), JSON.stringify(e.box));
   A('②g 冲突被**报出来**（不静默二选一）', /框冲突 1 条/.test(r.out), (r.out.match(/.*框冲突.*/) || [''])[0].slice(0, 140));
-  A('②h 字节落点写进 note（影像备份）', /影像备份/.test(e.note || ''), String(e.note).slice(0, 140));
+  A('②h 字节落点写进 note（保全家 _原图\）', /保全库/.test(e.note || ''), String(e.note).slice(0, 140));
 }
 
 /* ════ ③ 找不到整页的历史条目：不许导入，且原因可见 ════ */
@@ -118,11 +129,11 @@ A('①a 基线：两张卡都还没定位', card('学生A|M0001').page === null 
     JSON.stringify(ledger().cards['学生B|M0001'] || null));
 }
 
-/* ════ ⑤ 门禁接受它（规范路径不在盘，但字节在影像备份里 ⇒ 不是断链） ════ */
+/* ════ ⑤ 门禁接受它（规范路径不在盘，但字节在保全家 _原图\ 里 ⇒ 不是断链） ════ */
 {
   const g = run(['_原卷台账.mjs', '门禁']);
   A('⑤a 我这张卡没被判成错误', !/✗\s*学生A\|M0001/.test(g.out), (g.out.match(/.*学生A\|M0001.*/) || [''])[0].slice(0, 120));
-  A('⑤b 门禁把它算作"已从影像备份兜底"', /已从影像备份兜底\s*1\s*条/.test(g.out), (g.out.match(/门禁：.*/) || [''])[0].slice(0, 140));
+  A('⑤b 门禁把它算作"已从保全库按内容兜底"', /已从保全库按内容兜底\s*1\s*条/.test(g.out), (g.out.match(/门禁：.*/) || [''])[0].slice(0, 140));
 }
 
 /* ════ ⑥ 输入健壮性：坏输入必须显式失败（不许静默成功） ════ */
