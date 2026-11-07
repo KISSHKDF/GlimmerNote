@@ -734,13 +734,17 @@ function applyInkAttribution(entry, attribution, answerText) {
   const it = hit.item;
   const before = { as: it.answerSource, ink: it.inkAttribution };
   it.inkAttribution = attribution;
-  /* 红字不是老师写的 ⇒ 不许再声称「老师定案」（那是拿红字当权威答案）。
-     改成「独立判卷」：答案本身另有出处（否则这张卡本来就该是「未能确认」）。 */
-  const redIsTeacher = attribution === '老师';
-  if (!redIsTeacher && String(it.answerSource || '').startsWith('老师定案')) {
+  /* ★ 2026-11-07（第二次收紧）：**「老师定案」这个来源已废除** —— 红字只作参考，不作定案标准，
+     即使确认是老师写的也一样。所以只要卡上还是这个标签，**一律降级**，
+     不看归属是不是「老师」。
+     改成「独立判卷」的前提是这张卡的答案另有出处（否则它本来就该是「未能确认」，
+     由双路盲解或官方答案页补上）。 */
+  const wasRetired = String(it.answerSource || '').startsWith('老师定案');
+  if (wasRetired) {
     it.answerSource = '独立判卷';
     it.answerSourceNote = (it.answerSourceNote ? it.answerSourceNote + '；' : '') +
-      '红字归属改为「' + attribution + '」（' + entry.id + ' 回话：' + String(answerText || '').slice(0, 120) + '）⇒ 不再按老师定案，改按独立判卷';
+      '红字归属：' + attribution + '（' + entry.id + ' 回话：' + String(answerText || '').slice(0, 120) + '）' +
+      ' ⇒「老师定案」已废除（红字只作参考，不作定案标准），改按独立判卷';
   } else if (it.answerSourceNote !== undefined) {
     it.answerSourceNote = (it.answerSourceNote ? it.answerSourceNote + '；' : '') +
       '红字归属：' + attribution + '（' + entry.id + ' 回话：' + String(answerText || '').slice(0, 120) + '）';

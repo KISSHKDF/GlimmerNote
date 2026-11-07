@@ -388,7 +388,7 @@ console.log('\n═══ 复审② --force=false 不得被当成真值 ═══
   const r2 = run(['组卷', '--student', '测试生', '--ids', 'M0002', '--force=maybe']);
   A('★ 组卷 --force=maybe ⇒ 拒（开关不收非布尔值）', r2.code !== 0 && /是开关/.test(r2.err || ''), 'exit=' + r2.code);
 }
-console.log('\n═══ 复审③ 教师异议：准入/组卷同判据拦，异议裁决后放行 ═══');
+console.log('\n═══ 复审③ 红字异议：准入/组卷同判据拦，异议裁决后放行 ═══');
 {
   const libT = makeLib(path.join(tmpRoot, 'libT'));
   const ip = path.join(libT, '测试生', '数学', '_索引.json');
@@ -399,29 +399,39 @@ console.log('\n═══ 复审③ 教师异议：准入/组卷同判据拦，�
   /* 卡面：与 _录题入库 buildRecord 产出同构的最小片段（2026-11-07 起红字行是中性表述 + 标出归属） */
   const mdDir = path.join(libT, '测试生', '数学', 'M0003-测试'); fs.mkdirSync(mdDir, { recursive: true });
   const mdP = path.join(mdDir, '错题记录.md');
-  const MD0 = '# M0003\n\n## 正确答案\n\n**2**\n\n> 答案来源：官方答案 —— 站点答案\n\n> 红字（老师批的）：3 ⚠ 与采用答案不一致，组卷前须裁决（`_标记复习.mjs 异议裁决`）\n';
+  const MD0 = '# M0003\n\n## 正确答案\n\n**2**\n\n> 答案来源：官方答案 —— 站点答案\n\n> 红字（老师写的）：3 ⚠ 与采用答案不一致，组卷前须裁决（`_标记复习.mjs 异议裁决`）\n';
   fs.writeFileSync(mdP, MD0, 'utf8');
   const rt = (a) => E.runToolSync('_标记复习.mjs', a, { data: libT });
   const adm = () => { try { return JSON.parse(String(rt(['准入', '--json']).out || '').trim().split('\n').pop()).admit['测试生|M0003']; } catch { return null; } };
   const a1 = adm();
-  A('★ 准入：教师异议未裁决 ⇒ 不可组卷且原因点名', a1 && a1.ok === false && /教师异议/.test(a1.why), JSON.stringify(a1));
+  A('★ 准入：红字异议未裁决 ⇒ 不可组卷且原因点名', a1 && a1.ok === false && /教师异议/.test(a1.why), JSON.stringify(a1));
   const g = rt(['组卷', '--student', '测试生', '--ids', 'M0003', '--no-repeat-days', '0']);
-  A('★ 组卷：教师异议未裁决 ⇒ 答案来源门禁拦（exit 2）', g.code === 2 && /教师异议/.test(g.err || ''), 'exit=' + g.code);
-  const bad = rt(['异议裁决', '--student', '测试生', '--ids', 'M0003', '--as', '老师定案']);
+  A('★ 组卷：红字异议未裁决 ⇒ 答案来源门禁拦（exit 2）', g.code === 2 && /教师异议/.test(g.err || ''), 'exit=' + g.code);
+  /* ★ 2026-11-07（第二次收紧）：**「老师定案」这个裁决口径被废除** ——
+     红字只作参考，不作定案标准（即使确认是老师写的）。旧口径必须**响亮拒绝**并说明原因，
+     留着它就是留着一个后门。 */
+  const retired = rt(['异议裁决', '--student', '测试生', '--ids', 'M0003', '--as', '老师定案', '--note', 'x']);
+  A('★★ 异议裁决 --as 老师定案 ⇒ 拒（该口径已废除：红字不作定案标准）', retired.code !== 0 && /老师定案/.test(retired.err || '') && /红字/.test(retired.err || ''),
+    'exit=' + retired.code + ' err=' + String(retired.err || '').slice(0, 160));
+  const ixRetired = JSON.parse(fs.readFileSync(ip, 'utf8')).items[2];
+  A('★★ 拒绝后索引与卡面都没动', ixRetired.answer === '2' && ixRetired.answerSource === '官方答案' && !ixRetired.teacherConflict.resolvedAt,
+    JSON.stringify({ a: ixRetired.answer, s: ixRetired.answerSource }));
+  const bad = rt(['异议裁决', '--student', '测试生', '--ids', 'M0003', '--as', '官方答案']);
   A('异议裁决缺 --note ⇒ 拒', bad.code !== 0);
   /* 卡面缺失 ⇒ 整次裁决拒、索引不动（不许留下"索引已裁、卡面未裁"的分叉） */
   fs.renameSync(mdP, mdP + '.bak');
-  const miss = rt(['异议裁决', '--student', '测试生', '--ids', 'M0003', '--as', '老师定案', '--note', 'x']);
+  const miss = rt(['异议裁决', '--student', '测试生', '--ids', 'M0003', '--as', '官方答案', '--note', 'x']);
   const ixMiss = JSON.parse(fs.readFileSync(ip, 'utf8')).items[2];
   A('★ 卡面 md 缺失 ⇒ 裁决拒且索引未改', miss.code !== 0 && ixMiss.answer === '2' && !ixMiss.teacherConflict.resolvedAt, 'exit=' + miss.code);
   fs.renameSync(mdP + '.bak', mdP);
-  const ok = rt(['异议裁决', '--student', '测试生', '--ids', 'M0003', '--as', '老师定案', '--note', '独立解：1+1=2 …按老师']);
+  const ok = rt(['异议裁决', '--student', '测试生', '--ids', 'M0003', '--as', '官方答案', '--note', '独立解：1+1=2，官方答案页一致']);
   const mdAfter = fs.readFileSync(mdP, 'utf8');
-  A('★ 裁决同步卡面：答案行改成老师红笔', /## 正确答案\n\n\*\*3\*\*\n/.test(mdAfter), mdAfter.slice(0, 120));
-  A('★ 裁决同步卡面：过期的"须裁决"提示已换成"已裁决"', !/须裁决/.test(mdAfter) && /已裁决（老师定案/.test(mdAfter));  A('★ 裁决同步卡面：来源行改成 老师定案（与索引一致），旧"官方答案 —— 站点答案"不再残留',
-    /^> 答案来源：老师定案 —— .*异议裁决\(老师定案\)/m.test(mdAfter) && !/官方答案 —— 站点答案/.test(mdAfter) && (mdAfter.match(/^> 答案来源：/gm) || []).length === 1, mdAfter.split('\n').filter(l => l.startsWith('> 答案来源')).join(' | '));
+  A('★ 裁决同步卡面：答案行保留采用答案（官方答案口径不改答案）', /## 正确答案\n\n\*\*2\*\*\n/.test(mdAfter), mdAfter.slice(0, 120));
+  A('★ 裁决同步卡面：过期的"须裁决"提示已换成"已裁决"', !/须裁决/.test(mdAfter) && /已裁决（官方答案/.test(mdAfter));
+  A('★ 裁决同步卡面：来源行保留 官方答案（与索引一致）',
+    /^> 答案来源：官方答案 —— .*异议裁决\(官方答案\)/m.test(mdAfter) && (mdAfter.match(/^> 答案来源：/gm) || []).length === 1, mdAfter.split('\n').filter(l => l.startsWith('> 答案来源')).join(' | '));
   const after = JSON.parse(fs.readFileSync(ip, 'utf8')).items[2];
-  A('★ 异议裁决（老师定案）⇒ answer 改为老师红笔、来源=老师定案、留裁决痕', ok.code === 0 && after.answer === '3' && after.answerSource === '老师定案' && !!after.teacherConflict.resolvedAt,
+  A('★ 异议裁决（官方答案）⇒ 答案不变、来源=官方答案、留裁决痕', ok.code === 0 && after.answer === '2' && after.answerSource === '官方答案' && !!after.teacherConflict.resolvedAt,
     'exit=' + ok.code + ' ' + JSON.stringify({ a: after.answer, s: after.answerSource }));
   const a2 = adm();
   A('★ 裁决后准入放行', a2 && a2.ok === true, JSON.stringify(a2));

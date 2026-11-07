@@ -65,15 +65,13 @@ const teacherConflictOf = c => typeof c.teacherAnswer === 'string' && c.teacherA
  * 修前：契约把"红字"与"老师的"焊成一个概念（schema 写"老师用红笔写出的正确答案"、
  *   卡面落盘写死 "> 老师红笔："），全库**没有任何字段记录红字是谁写的** ——
  *   归属在入库那一刻就被丢弃，机器再无据可查。
- * 修后：`inkAttribution` 必填（两种情形：① 有红色批注 ② answerSource=老师定案），
- *   写「老师定案」就必须归属是「老师」；归属不明（未确认）或归属是孩子/家长/同学时，
- *   **不许**声称"老师定案"。 */
+ * 修后（第二次收紧）：`inkAttribution` 必填（有红色批注时），作用是**如实记录红字是谁写的**
+ *   （供人核对、供追责），**不参与答案权威性判定** ——
+ *   即使确认是老师写的，红字也不作定案标准。`老师定案` 这个 answerSource 取值**已废除**。 */
 const INK_ATTRIBUTIONS = ['老师', '孩子', '家长', '同学', '未确认'];
 /** 有红色批注吗（teacherAnswer 非空） */
 const hasRedInk = c => typeof c.teacherAnswer === 'string' && c.teacherAnswer.trim() !== '';
-/** 归属是不是「老师」 */
-const inkIsTeacher = c => String((c && c.inkAttribution) || '').trim() === '老师';
-/** 归属「未确认」⇒ 红字不可作权威来源 */
+/** 归属「未确认」⇒ 连"红字是谁写的"都不可查 */
 const inkUnclear = c => String((c && c.inkAttribution) || '').trim() === '未确认';
 
 const dstr = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -225,14 +223,15 @@ function buildRecord(id, c, meta) {
     L.push('> 答案来源：' + c.answerSource + ' —— ' + c.answerSourceNote);
     L.push('');
   }
-  /* ★ 2026-11-05（PR #13 复审 ③）：老师红笔写出的答案随卡落盘（修前只在入库那一刻比对，之后就丢了）。
-     ★ 2026-11-07（红字归属）：**红字不一定是老师写的** ⇒ 卡面不再断言"老师红笔"，
-     改成中性表述「红色批注」并**把归属写出来**（老师/孩子/家长/同学/未确认）。
-     修前这行写死 "> 老师红笔：" = 机器替AI背书"这是老师批的"，而归属从未被记录过。 */
+  /* ★ 2026-11-05（PR #13 复审 ③）：红色批注内容随卡落盘（修前只在入库那一刻比对，之后就丢了）。
+     ★ 2026-11-07（红字归属·第二次收紧）：**红字只作普通参考，不能作定案标准** ——
+     卡面不再断言"老师红笔"，改成中性表述「红字（谁写的）」，并**明写"仅作参考"**。
+     修前这行写死 "> 老师红笔：" = 机器替AI背书"这是老师批的、这就是正确答案"。 */
   if (typeof c.teacherAnswer === 'string') {
     const ink = String(c.inkAttribution || '').trim();
-    const inkTxt = ink === '老师' ? '红字（老师批的）' : ink === '未确认' ? '红字（**归属未确认**）' : ink ? ('红字（' + ink + '写的）') : '红字';
+    const inkTxt = ink === '老师' ? '红字（老师写的）' : ink === '未确认' ? '红字（**归属未确认**）' : ink ? ('红字（' + ink + '写的）') : '红字';
     L.push('> ' + inkTxt + '：' + (c.teacherAnswer ? c.teacherAnswer : '（没有红色批注）') +
+      '　※ **仅作参考，不作定案标准**（卷面红字绝大部分不是老师批的）' +
       (meta.teacherConflict ? ' ⚠ 与采用答案不一致，组卷前须裁决（`_标记复习.mjs 异议裁决`）' : ''));
     L.push('');
   }
@@ -725,8 +724,22 @@ function cmdLand() {
     for (const k of need) {
       if (c[k] === undefined || c[k] === null || c[k] === '') problems.push(id + ' 缺必填字段「' + k + '」');
     }
-    if (c.answerSource && !['独立判卷', '老师定案', '官方答案', '红笔订正+官方答案页核对', '未能确认'].includes(c.answerSource)) {
-      problems.push(id + ' 的 answerSource 取值不在契约内：' + c.answerSource);
+    /* ★ 2026-11-07（红字归属·第二次收紧，用户裁定）：**卷面红字绝大部分不是老师批的**
+       （孩子自己批改/订正、同学互批、家长帮批）⇒ 红字**只能作普通参考，不能作定案标准**。
+       ⇒ 「老师定案」这个 answerSource 取值**被废除**：它等于"把红字当定案标准"。
+          即使确认是老师写的也不行 —— 老师也可能照着错题本抄、也可能批漏、也可能只写了个提示。
+       ⇒ 红字只能进 `teacherAnswer`（中性记录原文 + 归属），**永不单独确立答案**。
+          有红字且与采用答案不一致 ⇒ 挂 teacherConflict，组卷前人工裁决；
+          裁决只有两个方向：`--as 官方答案`（保留采用答案）/ `--as 红字参考`（只记参考，不改答案）。
+       ⇒ 契约取值表相应收缩为：独立判卷 / 官方答案 / 红笔订正+官方答案页核对 / 未能确认。 */
+    if (c.answerSource && !['独立判卷', '官方答案', '红笔订正+官方答案页核对', '未能确认'].includes(c.answerSource)) {
+      const isRetired = /^老师定案/.test(String(c.answerSource));
+      problems.push(id + ' 的 answerSource 取值不在契约内：' + c.answerSource +
+        (isRetired
+          ? ' —— 「老师定案」已废除：**红字只作参考，不能作定案标准**（卷面红字绝大部分不是老师批的；' +
+            '即使是老师写的，也可能照抄错题本或批漏）。改用：独立判卷 / 官方答案 / 未能确认；' +
+            '红字与答案不一致时写进 notes，入库后走「异议裁决」'
+          : ''));
     }
     /* ★ 2026-11-07（先搜公开题库，用户裁定）：录题第一步应先上网与成熟错题库比对
        （菁优网等），实在找不到再自己一点一点录 —— 这条规则**以前只写在提示词与人工 checklist 里**，
@@ -743,41 +756,31 @@ function cmdLand() {
           '"官方答案"必须能指着某个地方复核。查了却没命中就写「未能确认」，没查就如实写"未联网检索，来源：独立判卷"，**不许假装查过**');
       }
     }
-    /* ★ 2026-11-07（红字归属，用户裁定）：红字不一定是老师写的，必须说清是谁写的。
+    /* ★ 2026-11-07（红字归属）：红字不一定是老师写的，必须说清是谁写的。
        ① inkAttribution 取值非法 ⇒ 拒（写错枚举值等于没说清）。
-       ② 有红色批注（teacherAnswer 非空）却没声明归属 ⇒ 拒：省略 = 归属不明 = 红字不可作权威答案。
-       ③ answerSource=老师定案 但归属不是「老师」 ⇒ 自相矛盾，直接拒。
-       ④ answerSource=老师定案 但 teacherAnswer 为空 ⇒ 自相矛盾（没有红字原文就不能"按老师定案"）。 */
+       ② 有红色批注（teacherAnswer 非空）却没声明归属 ⇒ 拒：省略 = 归属不明 = 连"是谁写的"都不可查。
+       ③ 红字与采用答案不一致 ⇒ notes 必须交代分歧，否则拒（不许悄悄覆盖）。 */
     if (c.inkAttribution !== undefined && !INK_ATTRIBUTIONS.includes(String(c.inkAttribution))) {
       problems.push(id + ' 的 inkAttribution 取值不在契约内：' + JSON.stringify(c.inkAttribution) + '（只能是 ' + INK_ATTRIBUTIONS.join(' / ') + '）');
     }
     if (hasRedInk(c) && c.inkAttribution === undefined) {
-      problems.push(id + ' 照片上有红色批注却没声明 inkAttribution（红字是谁写的？）—— 红字可能是孩子自己订正的、家长订改的、同学互批的，归属不明就不能当权威答案。补 inkAttribution（老师/孩子/家长/同学/未确认）');
+      problems.push(id + ' 照片上有红色批注却没声明 inkAttribution（红字是谁写的？）—— 红字可能是孩子自己订正的、家长订改的、同学互批的。补 inkAttribution（老师/孩子/家长/同学/未确认）；红字只作参考，永不单独确立答案');
     }
-    if (/^老师定案/.test(String(c.answerSource || '')) && !inkIsTeacher(c)) {
-      problems.push(id + ' 的 answerSource=老师定案，但 inkAttribution=' + JSON.stringify(c.inkAttribution === undefined ? '(未声明)' : c.inkAttribution) +
-        ' —— 自相矛盾：红字不是老师写的就不能"按老师定案"。红字是孩子/家长/同学写的 ⇒ 改 独立判卷 / 官方答案 / 未能确认；归属判不出 ⇒ 未能确认');
-    }
-    /* ★ 2026-11-05（合并评审 P1-6 → PR #13 复审 ③ → 二次复审 ③ 收紧）：老师红笔不得被悄悄覆盖。
-       口径：老师是"打架的一方"，由独立解法仲裁 —— **不是**"老师永远优先"。
-       ① **每张卡**都必须声明 teacherAnswer（老师没写出正确答案就填空串）—— 修前只查"官方答案"来源，
-          独立判卷 / 老师定案 漏填就全盲。
+    /* ★ 2026-11-07（红字归属·第二次收紧）：**红色批注不得被悄悄覆盖，也不得单独确立答案**。
+       ① **每张卡**都必须声明 teacherAnswer（照片上红色批注的原文，没有就填空串）——
+          省略等于让"红字被覆盖"这条检查失明。
        ② 已填且与采用答案不一致：
-          · answerSource=老师定案 ⇒ 自相矛盾，直接拒（"按老师定案"却和老师写的不一样）；
-          · 其它来源：notes 没交代 ⇒ 拒；交代了 ⇒ 入库但挂 teacherConflict，组卷准入挡在池外，
-            直到 `_标记复习.mjs 异议裁决` 人工裁决。 */
+          · notes 没交代分歧 ⇒ 拒（不许悄悄覆盖）。
+          · 交代了 ⇒ 入库但挂 teacherConflict，组卷准入挡在池外，
+            直到 `_标记复习.mjs 异议裁决` 人工裁决（裁决只有 --as 官方答案 / --as 红字参考
+            两个方向；「老师定案」口径已废除）。 */
     if (typeof c.teacherAnswer !== 'string') {
-      problems.push(id + ' 没有声明 teacherAnswer —— 照片上老师写了正确答案就原样填，没写就填空串 ""（每张卡必填：省略等于让"老师红笔被覆盖"这条检查失明）');
-    } else if (/^老师定案/.test(String(c.answerSource || '')) && c.teacherAnswer.trim() === '') {
-      /* ★ 2026-11-05（PR #13 三次复审）：老师红笔为空却写"老师定案" —— 修前空串被 teacherConflictOf 视为"不冲突"，
-         两道检查都绕过、直接进组卷池，卡面还会同时出现"老师没写出正确答案"与"来源：老师定案"。 */
-      problems.push(id + ' 的 answerSource=老师定案，但 teacherAnswer 为空（老师没写出正确答案）—— 自相矛盾：没有老师答案就不能"按老师定案"，改成 独立判卷 / 官方答案 / 未能确认');
+      problems.push(id + ' 没有声明 teacherAnswer —— 照片上红色批注的内容就原样填，没写就填空串 ""（每张卡必填：省略等于让"红字被覆盖"这条检查失明）');
     } else if (teacherConflictOf(c)) {
-      if (/^老师定案/.test(String(c.answerSource || ''))) {
-        problems.push(id + ' 的 answerSource=老师定案，但答案（' + c.answer + '）与老师红笔（' + c.teacherAnswer + '）不一致 —— 自相矛盾，按老师就填老师的答案，不按老师就别写老师定案');
-      } else if (!/老师红笔不一致|与老师.*不一致/.test(String(c.notes || '') + String(c.answerSourceNote || ''))) {
-        problems.push(id + ' 的 answerSource=' + c.answerSource + '，但答案（' + c.answer + '）与老师红笔（' + c.teacherAnswer + '）不一致且未交代分歧 —— ' +
-          '老师批改不能被悄悄覆盖：独立解法裁决后改成 老师定案 / 未能确认，或在 notes 写明"与老师红笔不一致：…"（入库后仍须 异议裁决 才能组卷）');
+      if (!/红笔不一致|红字不一致|与红.*不一致|与老师.*不一致/.test(String(c.notes || '') + String(c.answerSourceNote || ''))) {
+        problems.push(id + ' 的 answerSource=' + c.answerSource + '，但答案（' + c.answer + '）与红色批注（' + c.teacherAnswer + '）不一致且未交代分歧 —— ' +
+          '红字批注不能被悄悄覆盖：在 notes 写明"与红字批注不一致：…"（入库后仍须 异议裁决 才能组卷）。' +
+          '注意：**红字只作参考，不能作定案标准** —— 即使确认是老师写的也一样');
       }
     }
     if (c.causeCode && !/^[KLS][1-7]$/.test(String(c.causeCode))) problems.push(id + ' 的 causeCode 非法：' + c.causeCode);
