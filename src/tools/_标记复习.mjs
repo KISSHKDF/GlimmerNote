@@ -702,6 +702,35 @@ switch (action) {
     } else {
       console.log('⚠ --force 同时绕过作答契约门禁（答案册可能缺答案）');
     }
+    /* ── 题干门禁（2026-11-07 建）：题面**读不懂**的题不得进组卷池 ──
+       用户原话（指着 E0017 的单题预览）：「你转换出来的题干莫名其妙，谁能看得懂？
+       这样的题干也能通过双盲解答？也能进库？」
+       根因两件叠加：① 转义层套了两次 ⇒ 印出来是字面的 "<u>a</u>" 垃圾；
+       ② 大题指令没带进来 ⇒ 题号成孤儿号（3、5），读者不知道要做什么。
+       盲解**拦不住**这件事：它的指纹恰恰算在乱码题面上（实测 fp=c397862e942c），
+       两路"一致"反而把乱码固化成"已通过"的凭据。
+       判据同 `_题干门禁.mjs`（唯一裁判），这里只做组卷口硬拦截。 */
+    if (!opt.force) {
+      let gate = null;
+      try {
+        const r = spawnSync(process.execPath, [toolPath('_题干门禁.mjs'), '门禁', '--json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+        if (r.stdout) gate = JSON.parse(String(r.stdout).trim());
+      } catch { gate = null; }
+      if (!gate || typeof gate.cards !== 'object') {
+        console.error('✖ 题干门禁结果不可用（_题干门禁.mjs 门禁 --json 没给出 cards 字典）。');
+        console.error('  这道门禁负责拦"题面读不懂"的题；取不到就不放行（静默降级正是 2026-10-10 修过的坑）。');
+        process.exit(2);
+      }
+      const bad = ids.filter(id => { const v = gate.cards[json.student + '|' + id]; return v && v.ok === false; });
+      if (bad.length) {
+        console.error('✖ 题干门禁拦截：' + bad.map(id => json.student + '|' + id).join(' '));
+        console.error('   → 这些题的题面读不懂（实体化标签 / 字面标签 / 标记不配对 / 孤儿题号却没带大题指令）。');
+        console.error('     看详情：node _题干门禁.mjs 扫描；修完题干再组卷。确需绕过加 --force（不推荐，卷面会印出读不懂的题）。');
+        process.exit(2);
+      }
+    } else {
+      console.log('⚠ --force 同时绕过题干门禁（卷面可能印出读不懂的题）');
+    }
     /* ── 交错组卷（v2.6 引入，v2.7 改为**显式选择**，2026-10-15）：相邻两题不同「同族考点」──
         依据：Rohrer et al. 2020 预注册整群 RCT（54 个七年级班，1 个月后无预告测验）
         交错组 61% vs 分块组 38%，d=0.83，WWC 最高证据等级（ERIC EJ1237752）。

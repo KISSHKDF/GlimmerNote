@@ -184,16 +184,84 @@ function imageAbs(task) {
 /* ───────────────── 题干 HTML ─────────────────
  * 题干.html 必须是 `<div class="stem">…</div>`（既有卡的形态，见 `生成状态.mjs:173` 与
  * `_作答门禁.mjs` 的 stem 解析）。AI 给的是纯文本 `questionText`，这里做**最小**包装：
- * 段落按换行切，空位用 `<span class="blank">` 标出（横线题需要它才能算空位数）。 */
+ * 段落按换行切，空位用 `<span class="blank">` 标出（横线题需要它才能算空位数）。
+ *
+ * ★ 2026-11-07（E0017 事故）：**转义层套了两次**。
+ *   AI 回传的 `questionText` 里已含真标签（`<u>a</u>` 表示"画线部分"），
+ *   这里再 `escapeHtml()` 转一遍 ⇒ 落盘成 `&lt;u&gt;a&lt;/u&gt;` ⇒
+ *   浏览器解码后**印出字面的 "<u>a</u>" 垃圾文本**（E0017 全库唯一一张，实体 8 处）。
+ *   证据：同一张卡的**索引 `question` 字段里是真标签**、题干.html 里是实体化标签
+ *   —— 同一处标记两种编码 ⇒ 不是录入笔误，是转义层被套了两次。
+ *
+ *   修法（**白名单式**，不是"全转义"也不是"全放行"）：
+ *   ① 只放行**受控的内联标记**（画线 `<u>`、着重号 `<span class="rd">`、
+ *      上下标、分数、公式），其余一律转义；
+ *   ② **实体化标签残留**（`&lt;u&gt;` 这种）⇒ 判定为"上游已经转义过一次了"，
+ *      直接**报错拒收**，绝不静默落盘（静默落盘 = 印出来才发现，是本次事故的形态）。
+ *   ③ 契约要求 `questionText` 是**纯文本**；要标画线就按 ① 的白名单写标签，
+ *      不要自己先转义一遍（契约见 recipes 目录下的 ingest-single / ingest-page 提示词）。
+ */
 function buildStemHtml(text, hasBlank) {
-  const paras = String(text || '').split(/\n+/).map(s => s.trim()).filter(Boolean);
-  const body = paras.length ? paras.map(p => '<p class="stem-lead">' + escapeHtml(p) + '</p>').join('\n  ')
+  const raw = String(text || '');
+  checkEntityTags(raw);
+  const paras = raw.split(/\n+/).map(s => s.trim()).filter(Boolean);
+  const body = paras.length ? paras.map(p => '<p class="stem-lead">' + escapeHtmlAllowMarkup(p) + '</p>').join('\n  ')
     : '<p class="stem-lead">（题干为空）</p>';
   const inner = hasBlank ? body.replace(/_{3,}|＿{2,}/g, '<span class="blank" style="min-width:7em"></span>') : body;
   return '<div class="stem">\n  ' + inner + '\n</div>\n';
 }
+/** 题干里**允许**原样保留的内联标记（受控白名单）。
+ *  这些是题型语义的一部分（画线/着重号/上下标/公式），丢了题就做不了；
+ *  不在白名单里的一切（含 <script>）照旧转义。 */
+function escapeHtmlAllowMarkup(s) {
+  /* 逐段切分：标签与文本交替。标签过白名单才原样留，其余（含属性里带 < 的）一律转义。
+     ⚠ 用**占位符**实现（摘出→转义→放回）："先转义、再按名字还原"会把 <script> 一起还原出来。 */
+  const INLINE_TAGS_OK = new Set(['u', 'b', 'i', 'strong', 'em', 's', 'sub', 'sup', 'span', 'fr', 'nu', 'de']);
+  const INLINE_CLASSES_OK = new Set(['rd', 'rd-above', 'fr', 'nu', 'de']);
+  const slots = [];
+  const masked = String(s).replace(/<[^<>]*>/g, m => {
+    const inner = m.replace(/^</, '').replace(/>$/, '').replace(/^\//, '');
+    const name = ((inner.match(/^([a-zA-Z][a-zA-Z0-9]*)/) || ['', ''])[1] || '').toLowerCase();
+    if (!INLINE_TAGS_OK.has(name)) return m;
+    const cls = (inner.match(/class\s*=\s*"([^"]*)"/i) || ['', ''])[1];
+    if (cls && !cls.split(/\s+/).filter(Boolean).every(c => INLINE_CLASSES_OK.has(c))) return m;
+    /* 除 class 外不许有别的属性（on* / style / src 一律拒）——属性串 = 去掉标签名与 class 后的残渣 */
+    const attrs = inner.replace(/^[a-zA-Z][a-zA-Z0-9]*/, '').replace(/class\s*=\s*"[^"]*"/gi, '').trim();
+    if (attrs) return m;
+    slots.push(m);
+    return '\u0000' + (slots.length - 1) + '\u0000';
+  });
+  let out = escapeHtml(masked);
+  out = out.replace(/\u0000(\d+)\u0000/g, (m, i) => slots[Number(i)] || '');
+  return out;
+}
 function escapeHtml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+/** 实体化标签 ⇒ 拒收（E0017 事故的判据，独立成函数以便入库前置检查直接调用）。
+ *  判据只认「**实体化的标签**」：`&lt;u&gt;` / 闭合的 u / `&lt;span …&gt;`。
+ *  数学不等号 `&lt;` / `&gt;`（后面跟数字/中文/空格）**不**算 —— 全库 52 处都是合法不等号。
+ *  ⚠ 注释里**不可**直接写闭合标签的实体（其中的斜杠会提前结束本注释）。 */
+export function assertNoEntityTags(text) {
+  const s = String(text || '');
+  /* 判据只认「**实体化的标签**」：`&lt;u&gt;` / `&lt;/u&gt;` / `&lt;span …&gt;`。
+     数学不等号 `&lt;` / `&gt;`（后面跟数字/中文/空格）**不**算 —— 全库 52 处都是合法不等号。
+     ⚠ **双重转义**（`&amp;lt;u&amp;gt;`）也要拦：那是"转义了两次"，落盘后浏览器解码一层仍是实体、
+       再解码一层才是标签 ⇒ 印出来还是垃圾。 */
+  const hit = s.match(/&(?:amp;)*lt;\/?[a-zA-Z][a-zA-Z0-9]*(\s[^&]*?)?\/?&(?:amp;)*gt;/g) || [];
+  if (!hit.length) return null;
+  const kinds = [...new Set(hit.map(x => x.replace(/&(?:amp;)*lt;\/?/, '').replace(/&(?:amp;)*gt;/, '').trim()))].slice(0, 6);
+  return '题干里出现**实体化的标签**（' + kinds.join(' / ') + '）——这是转义层被套了两次：' +
+    '浏览器解码后会把 "<u>a</u>" 当**字面文本**印在题面上（E0017 事故）。' +
+    '`questionText` 请写**纯文本 + 受控标记**：画线部分用真标签 <u>字</u>（不要自己先转义成 &lt;u&gt;），' +
+    '数学符号 < 与 > 直接写。';
+}
+/** 实体化标签 ⇒ **抛错拒收**（入库前置检查与 buildStemHtml 都走它）。
+ *  返回 null 表示通过；返回字符串表示有问题（给前置检查用，不抛）。 */
+export function checkEntityTags(text) {
+  const msg = assertNoEntityTags(text);
+  if (msg) throw new Error(msg);
+  return null;
 }
 
 /* ───────────────── 错题记录.md ───────────────── */
@@ -462,6 +530,11 @@ function cmdFix() {
   console.log('  原 question：' + String(hit.item.question || '').slice(0, 60));
   console.log('  新 question：' + String(c.questionText || '').slice(0, 60));
 
+  /* ★ 2026-11-07（E0017 事故）：改卡入口同样要拒**实体化的标签** —— 写盘前拦，
+     不让"转义层套两次"的题干再落一次盘。 */
+  const entityProblem = assertNoEntityTags(c.questionText);
+  if (entityProblem) return fail('改卡中止：' + entityProblem, 1);
+
   /* ③ 找到原图：优先用回传的 sourceImageSha256 去台账/收件箱找；找不到就只改文本不动裁图 */
   let srcImg = null;
   const sha = String(c.sourceImageSha256 || '').toLowerCase();
@@ -724,6 +797,12 @@ function cmdLand() {
     for (const k of need) {
       if (c[k] === undefined || c[k] === null || c[k] === '') problems.push(id + ' 缺必填字段「' + k + '」');
     }
+    /* ★ 2026-11-07（E0017 事故）：题干里出现**实体化的标签** ⇒ 当场拒收，不写盘。
+       起因：AI 回传的 questionText 已含真标签 `<u>a</u>`，入库器再转义一遍 ⇒
+       落盘成 `&lt;u&gt;a&lt;/u&gt;` ⇒ 印出来是字面的 "<u>a</u>" 垃圾（E0017 全库唯一一张）。
+       前置检查拦 ⇒ 错在入库那一刻就看得见，而不是印出来才发现。 */
+    const entityProblem = assertNoEntityTags(c.questionText);
+    if (entityProblem) problems.push(id + ' 的 ' + entityProblem);
     /* ★ 2026-11-07（红字归属·第二次收紧，用户裁定）：**卷面红字绝大部分不是老师批的**
        （孩子自己批改/订正、同学互批、家长帮批）⇒ 红字**只能作普通参考，不能作定案标准**。
        ⇒ 「老师定案」这个 answerSource 取值**被废除**：它等于"把红字当定案标准"。
