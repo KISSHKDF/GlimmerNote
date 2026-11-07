@@ -181,6 +181,69 @@ function pendingMap(ledger) {
  *  teacherConflict 由 `_录题入库.mjs` 在"官方答案与老师红笔不一致、notes 交代了分歧"时挂上；
  *  只有 `异议裁决` 动作能把它标为已裁决（resolvedAt）。 */
 const teacherConflictOpen = it => !!(it && it.teacherConflict && typeof it.teacherConflict === 'object' && !it.teacherConflict.resolvedAt);
+
+/* ★ 2026-11-07（红字归属，用户裁定）：**卷面上的红字不一定是老师批的** ——
+ *  可能是孩子自己订正的、家长订改的、同学互批的。红字**单独不能当权威答案**。
+ *
+ *  修前：`SRC_PREFIX_OK` 把「老师定案」和「独立判卷」「官方答案」并列，当成"非红笔第二来源" ——
+ *  那正是这个误解的代码形态：老师定案**就是**红笔来源。
+ *
+ *  修后（口径）：
+ *    · `独立判卷` / `官方答案` ⇒ 红笔之外的第二来源，合格。
+ *    · `红笔订正+官方答案页核对` ⇒ 红笔 + 官方答案页双源，合格。
+ *    · `老师定案` ⇒ **红字来源**，单靠自己不合格。要成立须满足其一：
+ *        ① 红字确系老师所写（`inkAttribution === '老师'`）且原文落库（`teacherAnswer` 非空）；
+ *        ② 这张卡的答案另有独立来源（双路盲解已验证）—— 此时答案本身站得住，
+ *           「老师定案」这个标签不严谨，但不该误伤一张答案已被独立验证过的卡。
+ *    · `inkAttribution` 缺失 ⇒ **旧卡**：字段是本次才引入的，老卡没有。
+ *      不误伤（它们的答案绝大多数已被盲解独立验证过），但如实报告"归属未记录"。
+ *
+ *  唯一实现（准入与组卷共用一份，避免两处口径漂移）。 */
+const SRC_PREFIX_OK = ['独立判卷', '官方答案'];
+const SRC_EXACT_OK = ['红笔订正+官方答案页核对'];
+const blindVerified = it => ['已通过', '已修正'].includes(String((it && it.blindStatus) || ''));
+const inkAttrOf = it => String((it && it.inkAttribution) || '').trim();
+const inkIsTeacher = it => inkAttrOf(it) === '老师';
+const inkHasText = it => typeof (it && it).teacherAnswer === 'string' && String(it.teacherAnswer).trim() !== '';
+/** 答案归一化后比较（去空白、全半角归一）——与 `_录题入库.mjs` 同口径 */
+const normAns = v => String(v || '').normalize('NFKC').replace(/\s+/g, '');
+/** 红字归属未记录（老卡）或明确不是老师写的 ⇒ 红字不能单独充当来源 */
+const inkNotTeacher = it => inkAttrOf(it) !== '老师';
+/** 这张卡的答案是不是"红字"本身（answer 与红字原文一致 ⇒ 答案只可能来自红字） */
+const answerIsRedInk = it => inkHasText(it) && normAns(it.teacherAnswer) === normAns(it.answer);
+/** 答案来源门禁：有没有合格的红笔之外（或已确认归属）的第二来源
+ *  口径（2026-11-07 红字归属，用户裁定）：
+ *    · 「独立判卷」/「官方答案」 ⇒ 红笔之外的来源，合格。
+ *    · 「红笔订正+官方答案页核对」 ⇒ 红笔 + 官方答案页双源，合格。
+ *    · 「老师定案」= **红字来源**。要成立须其一：
+ *        ① 红字确系老师所写（inkAttribution=老师 且 teacherAnswer 非空）—— 老师是权威口径；
+ *        ② 这张卡的答案已被**双路盲解独立验证**（blindStatus 已通过/已修正）
+ *           —— 此时答案本身另有独立出处，红字归属不明**不影响答案正确性**，
+ *              不误伤（卡面会如实写"红字（归属未确认）"，不再替未核实的断言背书）。
+ *    · 归属不明 + 无独立验证 ⇒ 红字单独充当来源 ⇒ **拦**。 */
+function answerSourceOk(it) {
+  const s = String((it && it.answerSource) || '').trim();
+  if (!s) return false;
+  if (SRC_PREFIX_OK.some(p => s.startsWith(p))) return true;
+  if (SRC_EXACT_OK.includes(s)) return true;
+  if (s.startsWith('老师定案')) {
+    if (inkIsTeacher(it) && inkHasText(it)) return true;
+    if (blindVerified(it)) return true;
+    return false;
+  }
+  return false;
+}
+/** 为什么不合格（给人看的理由；合格返回空串） */
+function answerSourceWhy(it) {
+  const s = String((it && it.answerSource) || '').trim();
+  if (!s) return '缺第二来源：answerSource 字段为空';
+  if (answerSourceOk(it)) return '';
+  if (s.startsWith('老师定案')) {
+    if (answerIsRedInk(it)) return '答案即红字原文，红字归属未确认是老师（不得单独作权威答案）';
+    return '答案来源=老师定案，但红字归属未确认是老师（归属：' + (inkAttrOf(it) || '未记录') + '），且答案未独立验证';
+  }
+  return '缺第二来源：' + s;
+}
 const revsOf = it => (Array.isArray(it.reviews) ? it.reviews : []).filter(Boolean).sort((a, b) => String(a.date).localeCompare(String(b.date)));
 function passStreak(revs) {
   let p = 0;
@@ -457,12 +520,6 @@ switch (action) {
        `--json` 输出 { "学生|编号": {ok,why} } —— **本文件是准入判定的唯一实现**，
        `_生成首页.ps1` 把它注入 _状态.json.admit，v2 界面据此决定"这张卡能不能进篮子"，
        从而杜绝"界面上选得动、工具一提交就拒"的口径漂移（2026-10-10 实测踩到）。 */
-    const SRC_PREFIX_OK = ['独立判卷', '老师定案', '官方答案'];
-    const SRC_EXACT_OK = ['红笔订正+官方答案页核对'];
-    const okSrc = it => {
-      const s = String((it && it.answerSource) || '').trim();
-      return !!s && (SRC_PREFIX_OK.some(p => s.startsWith(p)) || SRC_EXACT_OK.includes(s));
-    };
     const admit = {};
     let totalAll = 0, canAll = 0;
     for (const f of indexFiles(ROOT)) {
@@ -470,13 +527,13 @@ switch (action) {
       if (opt.student && j.student !== opt.student) continue;
       let can = 0; const noSrc = [], noBlind = [];
       for (const { item } of itemsOf(j)) {
-        const b = ['已通过', '已修正'].includes(item.blindStatus || '');
+        const b = blindVerified(item);
         const tc = teacherConflictOpen(item);
-        const a = okSrc(item) && !tc;
+        const a = answerSourceOk(item) && !tc;
         const key = j.student + '|' + item.id;
         const why = (b && a) ? '' : (!b ? ('盲解未过：' + (item.blindStatus || '未盲解'))
-          : tc ? ('教师异议待裁决：老师红笔 ' + item.teacherConflict.teacher + ' ≠ 采用 ' + item.teacherConflict.adopted)
-          : ('缺第二来源：' + (item.answerSource || 'answerSource 字段为空')));
+          : tc ? ('教师异议待裁决：红字 ' + item.teacherConflict.teacher + ' ≠ 采用 ' + item.teacherConflict.adopted)
+          : answerSourceWhy(item));
         admit[key] = { ok: b && a, why };
         if (b && a) can++; else if (!a) noSrc.push(item.id + '[' + (tc ? '教师异议待裁决' : (item.answerSource || '（缺字段）')) + ']'); else noBlind.push(item.id + '[' + (item.blindStatus || '未盲解') + ']');
       }
@@ -488,7 +545,9 @@ switch (action) {
       if (noSrc.length) console.log(`   ✖ 缺第二来源（${noSrc.length}）：${noSrc.slice(0, 12).join(' ')}${noSrc.length > 12 ? ' …' : ''}`);
     }
     if (opt.json) { console.log(JSON.stringify({ ok: true, can: canAll, total: totalAll, admit })); break; }
-    console.log('\n口径：可组卷＝盲解已通过 且 answerSource 有非红笔第二来源（独立判卷/老师定案/官方答案/官方答案页）；');
+    console.log('\n口径：可组卷＝盲解已通过 且 答案有**红笔之外**的可靠第二来源（独立判卷 / 官方答案 / 官方答案页核对）；');
+    console.log('      「老师定案」是**红字来源**，单靠自己不合格：须红字确系老师所写（inkAttribution=老师 且原文落库），');
+    console.log('      或这张卡的答案已被双路盲解独立验证过。归属不明（老卡无 inkAttribution）不误伤，但如实报出。');
     console.log('      「（缺字段）」是数据欠账——按铁律不放行，补法见《方案》四之九。');
     break;
   }
@@ -557,22 +616,21 @@ switch (action) {
        多出来的拦截不是因为"没有第二来源"，而是因为**措辞没对上白名单**。
        这比漏拦更坏：它把"改字符串"变成过门禁的捷径（正是门禁最该防的）。
        新判据按**语义**判：必须有非红笔的第二来源。
-         · 前缀命中「独立判卷 / 老师定案 / 官方答案」→ 过（后缀写清依据、留痕更细，不扣分）
+         · 前缀命中「独立判卷 / 官方答案」→ 过（后缀写清依据、留痕更细，不扣分）
          · 精确「红笔订正+官方答案页核对」→ 过（红笔 + 官方答案页双源）
+         · 「老师定案」是**红字来源** ⇒ 见上方 answerSourceOk 的口径（2026-11-07 红字归属）
          · 其余（含「仅红笔」与空值）→ 拦
        空值仍拦：字段缺失＝没人记录第二来源＝按铁律不放行（这是**数据欠账**，不是措辞问题）。 */
-    const SRC_PREFIX_OK = ['独立判卷', '老师定案', '官方答案'];
-    const SRC_EXACT_OK = ['红笔订正+官方答案页核对'];
-    const answerSourceOk = it => {
-      const s = String((it && it.answerSource) || '').trim();
-      if (!s) return false;
-      return SRC_PREFIX_OK.some(p => s.startsWith(p)) || SRC_EXACT_OK.includes(s);
-    };
+    /* ★ 2026-11-07（红字归属）：判据与 `准入` 共用**同一份实现**（上方 answerSourceOk）——
+       修前两处各抄一份白名单，改一处忘一处就是口径漂移（"界面选得动、工具一提交就拒"的老坑）。 */
     /* ★ 2026-11-05（PR #13 复审 ③）：教师异议未裁决的卡，官方答案不算合格第二来源（与 准入 同判据） */
     const noSrc = ids.filter(id => !answerSourceOk(byId[id]) || teacherConflictOpen(byId[id]));
     if (noSrc.length && !opt.force) {
-      console.error('✖ 答案来源门禁拦截（answerSource 无独立判卷/官方答案等第二来源，或教师异议待裁决）：' + noSrc.map(id => `${id}[${teacherConflictOpen(byId[id]) ? '教师异议待裁决' : (byId[id].answerSource || '（缺字段）')}]`).join(' '));
+      console.error('✖ 答案来源门禁拦截（答案没有红笔之外的可靠第二来源，或红字异议待裁决）：' +
+        noSrc.map(id => `${id}[${teacherConflictOpen(byId[id]) ? '教师异议待裁决' : (answerSourceWhy(byId[id]) || (byId[id].answerSource || '（缺字段）'))}]`).join(' '));
       if (noSrc.some(id => teacherConflictOpen(byId[id]))) console.error('   → 教师异议：node _标记复习.mjs 异议裁决 --student ' + json.student + ' --ids <编号> --as 老师定案|官方答案 --note "<依据>"');
+      console.error('   → 「老师定案」是**红字来源**：红字不一定是老师写的（可能是孩子自批/家长/同学），');
+      console.error('     要它成立须红字确系老师所写（inkAttribution=老师 且 teacherAnswer 非空），或这张卡的答案已被双路盲解独立验证。');
       console.error('   → 按《错题本系统方案》四之九做「全卷独立判卷复核」：转录无记号判卷清稿 → 无上下文子代理独立判卷 → 与红笔对照落 answerSource。');
       console.error('     查看全局：node _标记复习.mjs 准入 --student ' + json.student);
       process.exit(2);
@@ -891,7 +949,17 @@ switch (action) {
       if (!teacherConflictOpen(item)) { skipped.push(item.id + ' 没有待裁决的教师异议'); continue; }
       const tc = item.teacherConflict;
       if (!opt.dry) {
-        if (opt.as === '老师定案') { item.answer = tc.teacher; item.answerSource = '老师定案'; }
+        if (opt.as === '老师定案') {
+          item.answer = tc.teacher; item.answerSource = '老师定案';
+          /* ★ 2026-11-07（红字归属）：人工裁决「老师定案」**本身就是一次归属判定** ——
+             人说"按老师写的为准"，即认定这红字是老师写的。不写归属 ⇒ 卡面会仍显示
+             "归属未确认"，而门禁又认为它是老师定案 ⇒ 索引与卡面对不上（同一个老坑）。
+             这里把归属一并写死为「老师」，并留裁决痕。 */
+          item.inkAttribution = '老师';
+        } else if (opt.as === '官方答案') {
+          /* 采纳官方答案 ⇒ 红字归属**仍然不明**（不等于"红字是老师写的"），不许顺手写成「老师」。 */
+          item.inkAttribution = inkAttrOf(item) || '未确认';
+        }
         tc.resolvedAt = today(); tc.resolvedAs = opt.as; tc.resolvedNote = String(opt.note);
         item.answerSourceNote = (item.answerSourceNote ? item.answerSourceNote + '；' : '') + '异议裁决(' + opt.as + ')：' + opt.note;
         /* ★ 2026-11-05（PR #13 二次复审 ②）：卡面 错题记录.md 同步 —— 修前只改索引，卡面仍是原采用答案、
@@ -902,7 +970,8 @@ switch (action) {
         const lines = fs.readFileSync(md, 'utf8').split(/\r?\n/);
         const h = lines.findIndex(l => l.trim() === '## 正确答案');
         const ai = h < 0 ? -1 : lines.findIndex((l, i) => i > h && /^\*\*.*\*\*\s*$/.test(l.trim()));
-        const ti = lines.findIndex(l => l.startsWith('> 老师红笔：'));
+        /* ★ 2026-11-07：红字行前缀兼容新旧两种（旧卡写死「> 老师红笔：」，新卡写「> 红字（…）：」）。 */
+        const ti = lines.findIndex(l => l.startsWith('> 老师红笔：') || l.startsWith('> 红字'));
         if (ai < 0 || ti < 0) throw new Error(item.id + ' 的 错题记录.md 里找不到「## 正确答案」答案行或「老师红笔」行，裁决未写盘：卡面结构与入库器产出不符');
         lines[ai] = '**' + String(item.answer || '（未能确认）') + '**';
         /* ★ 2026-11-05（PR #13 三次复审）：来源行也要同步 —— 修前只改答案行与老师红笔行，
@@ -912,8 +981,13 @@ switch (action) {
         const si = lines.findIndex(l => l.startsWith('> 答案来源：'));
         if (si >= 0) lines[si] = srcLine;
         else { lines.splice(ti, 0, srcLine, ''); }
-        const ti2 = lines.findIndex(l => l.startsWith('> 老师红笔：'));
-        lines[ti2] = '> 老师红笔：' + tc.teacher + ' ✔ 已裁决（' + opt.as + '，' + tc.resolvedAt + '）：' + String(opt.note).replace(/\s+/g, ' ');
+        const ti2 = lines.findIndex(l => l.startsWith('> 老师红笔：') || l.startsWith('> 红字'));
+        /* ★ 2026-11-07（红字归属）：卡面红字行写成**中性表述 + 标出归属**，
+           不再写死「老师红笔」——红字不一定是老师写的（可能是孩子自批/家长/同学）。 */
+        const inkTxt = item.inkAttribution === '老师' ? '红字（老师批的）'
+          : item.inkAttribution === '未确认' ? '红字（**归属未确认**）'
+            : item.inkAttribution ? ('红字（' + item.inkAttribution + '写的）') : '红字';
+        lines[ti2] = '> ' + inkTxt + '：' + tc.teacher + ' ✔ 已裁决（' + opt.as + '，' + tc.resolvedAt + '）：' + String(opt.note).replace(/\s+/g, ' ');
         tx().writeText(md, lines.join('\n'));
       }
       done.push(item.id + ' → ' + opt.as + '（老师 ' + tc.teacher + ' / 原采用 ' + tc.adopted + '）');

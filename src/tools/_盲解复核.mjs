@@ -118,11 +118,31 @@ const blindVerified = it => VERIFIED.includes(it.blindStatus) && !!it.blindFinge
  *   ③ 只写与准入判据同前缀的词。红笔不是来源（base.md 第 13 条），绝不臆造
  *      「老师批改」这类会被门禁拒、又无法指着证据复核的值。
  */
-const AS_PREFIX_OK = ['独立判卷', '老师定案', '官方答案'];
+const AS_PREFIX_OK = ['独立判卷', '官方答案'];
 const AS_EXACT_OK = ['红笔订正+官方答案页核对'];
+/* ★ 2026-11-07（红字归属，用户裁定）：**红字不一定是老师批的** ——
+ *  可能是孩子自己订正的、家长订改的、同学互批的。红字单独不能当权威答案。
+ *  修前：AS_PREFIX_OK 含「老师定案」——那**就是**红字来源，等于把红字当第二来源放行。
+ *  修后：「老师定案」是红字来源，要成立须 ① inkAttribution=老师 且 teacherAnswer 非空，
+ *        或 ② 这张卡的答案已被双路盲解独立验证（答案本身站得住，标签不严谨但不误伤）。
+ *  与 `_标记复习.mjs` 的 answerSourceOk 同口径（两处各抄一份必然漂移 —— 见 L-530 族）。
+ *  ⚠ 旧卡没有 inkAttribution 字段（本次才引入）⇒ 不因缺字段误伤，但如实报出"归属未记录"。 */
+const normAns = v => String(v || '').normalize('NFKC').replace(/\s+/g, '');
+const inkAttrOf = it => String((it && it.inkAttribution) || '').trim();
+const inkHasText = it => typeof (it && it).teacherAnswer === 'string' && String(it.teacherAnswer).trim() !== '';
+const answerIsRedInk = it => inkHasText(it) && normAns(it.teacherAnswer) === normAns(it.answer);
 function answerSourceOk(it) {
   const s = String((it && it.answerSource) || '').trim();
-  return !!s && (AS_PREFIX_OK.some(p => s.startsWith(p)) || AS_EXACT_OK.includes(s));
+  if (!s) return false;
+  if (AS_PREFIX_OK.some(p => s.startsWith(p))) return true;
+  if (AS_EXACT_OK.includes(s)) return true;
+  if (s.startsWith('老师定案')) {
+    if (inkAttrOf(it) === '老师' && inkHasText(it)) return true;
+    /* 答案已被双路盲解独立验证 ⇒ 答案本身站得住，不因标签不严谨而误伤 */
+    if (VERIFIED.includes(String((it && it.blindStatus) || ''))) return true;
+    return false;
+  }
+  return false;
 }
 function fillAnswerSource(it, rec, { dry = false } = {}) {
   if (!it || !rec) return null;

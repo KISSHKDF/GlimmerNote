@@ -53,12 +53,29 @@ if (explicitData) process.env.CTB_DATA = path.resolve(explicitData);
 let _root = null;
 const ROOT = () => (_root || (_root = libraryRoot()));
 
-const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
+const sha256 = s => crypto.createHash('sha256').update(s).digest('hex');
 /** 文件是否存在且是普通文件（改卡动作找原图时用） */
 const isFile = p => { try { return fs.statSync(p).isFile(); } catch { return false; } };
-/** 老师红笔与采用答案是否冲突（去空白、全半角归一后比；老师没写 ⇒ 不算冲突） */
+/** 红色批注与采用答案是否冲突（去空白、全半角归一后比；没写 ⇒ 不算冲突） */
 const normAns = v => String(v || '').normalize('NFKC').replace(/\s+/g, '');
 const teacherConflictOf = c => typeof c.teacherAnswer === 'string' && c.teacherAnswer.trim() !== '' && normAns(c.teacherAnswer) !== normAns(c.answer);
+
+/* ★ 2026-11-07（红字归属，用户裁定）：**卷面上的红字不一定是老师批的** ——
+ * 可能是孩子自己订正的、家长订改的、同学互批的。红字**单独不能当权威答案**。
+ * 修前：契约把"红字"与"老师的"焊成一个概念（schema 写"老师用红笔写出的正确答案"、
+ *   卡面落盘写死 "> 老师红笔："），全库**没有任何字段记录红字是谁写的** ——
+ *   归属在入库那一刻就被丢弃，机器再无据可查。
+ * 修后：`inkAttribution` 必填（两种情形：① 有红色批注 ② answerSource=老师定案），
+ *   写「老师定案」就必须归属是「老师」；归属不明（未确认）或归属是孩子/家长/同学时，
+ *   **不许**声称"老师定案"。 */
+const INK_ATTRIBUTIONS = ['老师', '孩子', '家长', '同学', '未确认'];
+/** 有红色批注吗（teacherAnswer 非空） */
+const hasRedInk = c => typeof c.teacherAnswer === 'string' && c.teacherAnswer.trim() !== '';
+/** 归属是不是「老师」 */
+const inkIsTeacher = c => String((c && c.inkAttribution) || '').trim() === '老师';
+/** 归属「未确认」⇒ 红字不可作权威来源 */
+const inkUnclear = c => String((c && c.inkAttribution) || '').trim() === '未确认';
+
 const dstr = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const today = () => dstr();
 
@@ -208,9 +225,14 @@ function buildRecord(id, c, meta) {
     L.push('> 答案来源：' + c.answerSource + ' —— ' + c.answerSourceNote);
     L.push('');
   }
-  /* ★ 2026-11-05（PR #13 复审 ③）：老师红笔写出的答案随卡落盘（修前只在入库那一刻比对，之后就丢了） */
+  /* ★ 2026-11-05（PR #13 复审 ③）：老师红笔写出的答案随卡落盘（修前只在入库那一刻比对，之后就丢了）。
+     ★ 2026-11-07（红字归属）：**红字不一定是老师写的** ⇒ 卡面不再断言"老师红笔"，
+     改成中性表述「红色批注」并**把归属写出来**（老师/孩子/家长/同学/未确认）。
+     修前这行写死 "> 老师红笔：" = 机器替AI背书"这是老师批的"，而归属从未被记录过。 */
   if (typeof c.teacherAnswer === 'string') {
-    L.push('> 老师红笔：' + (c.teacherAnswer ? c.teacherAnswer : '（老师没写出正确答案）') +
+    const ink = String(c.inkAttribution || '').trim();
+    const inkTxt = ink === '老师' ? '红字（老师批的）' : ink === '未确认' ? '红字（**归属未确认**）' : ink ? ('红字（' + ink + '写的）') : '红字';
+    L.push('> ' + inkTxt + '：' + (c.teacherAnswer ? c.teacherAnswer : '（没有红色批注）') +
       (meta.teacherConflict ? ' ⚠ 与采用答案不一致，组卷前须裁决（`_标记复习.mjs 异议裁决`）' : ''));
     L.push('');
   }
@@ -549,6 +571,10 @@ function cmdFix() {
     if (c.answerSource !== undefined) it.answerSource = c.answerSource || '未能确认';
     if (c.answerSourceNote !== undefined) it.answerSourceNote = c.answerSourceNote || '';
     it.teacherAnswer = typeof c.teacherAnswer === 'string' ? c.teacherAnswer : (it.teacherAnswer || '');
+    /* ★ 2026-11-07（红字归属）：改卡时归属一并更新；没给归属但有红字 ⇒ 回落「未确认」，
+       不许默默沿用旧归属（红字内容变了，归属可能也变了）。 */
+    it.inkAttribution = typeof c.inkAttribution === 'string' ? c.inkAttribution
+      : (typeof c.teacherAnswer === 'string' && c.teacherAnswer.trim() !== '' ? '未确认' : (it.inkAttribution || ''));
     it.teacherConflict = teacherConflictOf(c) ? { teacher: c.teacherAnswer, adopted: c.answer || '', source: c.answerSource, note: String(c.notes || '').slice(0, 300), at: today() } : null;
     if (cropped) it.hasImage = true;
     else if (cropBlank) it.hasImage = false;
@@ -702,6 +728,36 @@ function cmdLand() {
     if (c.answerSource && !['独立判卷', '老师定案', '官方答案', '红笔订正+官方答案页核对', '未能确认'].includes(c.answerSource)) {
       problems.push(id + ' 的 answerSource 取值不在契约内：' + c.answerSource);
     }
+    /* ★ 2026-11-07（先搜公开题库，用户裁定）：录题第一步应先上网与成熟错题库比对
+       （菁优网等），实在找不到再自己一点一点录 —— 这条规则**以前只写在提示词与人工 checklist 里**，
+       程序一处不查 ⇒ "假装查过"（没检索却写官方答案）没有任何拦截，是来源造假里最常见的一种。
+       现在补上机械判据：answerSource 是「官方答案」或「红笔订正+官方答案页核对」时，
+       answerSourceNote **必须**指出具体出处（站点名 / 答案页页码 / 文件名）。
+       判据刻意宽松：认出的是"有没有指向一个可复核的地方"，不是"格式对不对"。 */
+    const isOfficial = /^(官方答案|红笔订正\+官方答案页核对)/.test(String(c.answerSource || ''));
+    if (isOfficial) {
+      const note = String(c.answerSourceNote || '');
+      const hasSource = /菁优|jyeoo|21世纪|21cnjy|教习网|51jiaoxi|作业帮|zuoyebang|青果|精英家教|题库|网站|站点|答案\s*\.?\s*pdf|答案页|答案\s*PDF|第\s*\d+\s*页|真题|同题页|讲义|同步|教辅|练习册|卷/i.test(note);
+      if (!hasSource) {
+        problems.push(id + ' 的 answerSource=' + c.answerSource + '，但 answerSourceNote 里没有出处（站点名 / 答案页页码 / 文件名）—— ' +
+          '"官方答案"必须能指着某个地方复核。查了却没命中就写「未能确认」，没查就如实写"未联网检索，来源：独立判卷"，**不许假装查过**');
+      }
+    }
+    /* ★ 2026-11-07（红字归属，用户裁定）：红字不一定是老师写的，必须说清是谁写的。
+       ① inkAttribution 取值非法 ⇒ 拒（写错枚举值等于没说清）。
+       ② 有红色批注（teacherAnswer 非空）却没声明归属 ⇒ 拒：省略 = 归属不明 = 红字不可作权威答案。
+       ③ answerSource=老师定案 但归属不是「老师」 ⇒ 自相矛盾，直接拒。
+       ④ answerSource=老师定案 但 teacherAnswer 为空 ⇒ 自相矛盾（没有红字原文就不能"按老师定案"）。 */
+    if (c.inkAttribution !== undefined && !INK_ATTRIBUTIONS.includes(String(c.inkAttribution))) {
+      problems.push(id + ' 的 inkAttribution 取值不在契约内：' + JSON.stringify(c.inkAttribution) + '（只能是 ' + INK_ATTRIBUTIONS.join(' / ') + '）');
+    }
+    if (hasRedInk(c) && c.inkAttribution === undefined) {
+      problems.push(id + ' 照片上有红色批注却没声明 inkAttribution（红字是谁写的？）—— 红字可能是孩子自己订正的、家长订改的、同学互批的，归属不明就不能当权威答案。补 inkAttribution（老师/孩子/家长/同学/未确认）');
+    }
+    if (/^老师定案/.test(String(c.answerSource || '')) && !inkIsTeacher(c)) {
+      problems.push(id + ' 的 answerSource=老师定案，但 inkAttribution=' + JSON.stringify(c.inkAttribution === undefined ? '(未声明)' : c.inkAttribution) +
+        ' —— 自相矛盾：红字不是老师写的就不能"按老师定案"。红字是孩子/家长/同学写的 ⇒ 改 独立判卷 / 官方答案 / 未能确认；归属判不出 ⇒ 未能确认');
+    }
     /* ★ 2026-11-05（合并评审 P1-6 → PR #13 复审 ③ → 二次复审 ③ 收紧）：老师红笔不得被悄悄覆盖。
        口径：老师是"打架的一方"，由独立解法仲裁 —— **不是**"老师永远优先"。
        ① **每张卡**都必须声明 teacherAnswer（老师没写出正确答案就填空串）—— 修前只查"官方答案"来源，
@@ -768,6 +824,7 @@ function cmdLand() {
     sourceImageSha256: c.sourceImageSha256, notes: c.notes, bbox: c.bbox,
     answerMode: c.answerMode, answerSlots: c.answerSlots,
     teacherAnswer: c.teacherAnswer,   // ★ 2026-11-05（PR #13 复审 ③）：改了老师红笔重提，必须被当成新内容，不许幂等跳过
+    inkAttribution: c.inkAttribution,   // ★ 2026-11-07（红字归属）：改了归属重提，同样是新内容
   }))));
   if (task.landedDigest && task.landedDigest === digest && Array.isArray(task.landedCardIds) && task.landedCardIds.length) {
     console.log('✔ 已入库过（幂等跳过）——任务 ' + taskId + ' 的这批内容已经进库：' + task.landedCardIds.join('、'));
@@ -897,6 +954,9 @@ function cmdLand() {
           answerSourceNote: c.answerSourceNote || '',
           /* ★ 2026-11-05（PR #13 复审 ③）：老师红笔进索引；冲突挂 teacherConflict，组卷准入据此拦（见 _标记复习 准入） */
           teacherAnswer: typeof c.teacherAnswer === 'string' ? c.teacherAnswer : '',
+          /* ★ 2026-11-07（红字归属）：红字是谁写的 —— 修前**全库无此字段**，归属在入库那刻丢失。
+             组卷准入据此拦「归属未确认」的卡（见 _标记复习 准入）。 */
+          inkAttribution: typeof c.inkAttribution === 'string' ? c.inkAttribution : (c.teacherAnswer && String(c.teacherAnswer).trim() !== '' ? '未确认' : ''),
           teacherConflict: teacherConflictOf(c) ? { teacher: c.teacherAnswer, adopted: c.answer || '', source: c.answerSource, note: String(c.notes || '').slice(0, 300), at: today() } : null,
           answerNote: c.answerNote || '',
         };

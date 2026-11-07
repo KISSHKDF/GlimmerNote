@@ -393,13 +393,13 @@ console.log('\n═══ 复审③ 教师异议：准入/组卷同判据拦，�
   const libT = makeLib(path.join(tmpRoot, 'libT'));
   const ip = path.join(libT, '测试生', '数学', '_索引.json');
   const ix = JSON.parse(fs.readFileSync(ip, 'utf8'));
-  Object.assign(ix.items[2], { dir: 'M0003-测试', answerSource: '官方答案', answer: '2', teacherAnswer: '3',
+  Object.assign(ix.items[2], { dir: 'M0003-测试', answerSource: '官方答案', answer: '2', teacherAnswer: '3', inkAttribution: '老师',
     teacherConflict: { teacher: '3', adopted: '2', source: '官方答案', note: 't', at: '2026-11-05' } });
   fs.writeFileSync(ip, JSON.stringify(ix, null, 1), 'utf8');
-  /* 卡面：与 _录题入库 buildRecord 产出同构的最小片段 */
+  /* 卡面：与 _录题入库 buildRecord 产出同构的最小片段（2026-11-07 起红字行是中性表述 + 标出归属） */
   const mdDir = path.join(libT, '测试生', '数学', 'M0003-测试'); fs.mkdirSync(mdDir, { recursive: true });
   const mdP = path.join(mdDir, '错题记录.md');
-  const MD0 = '# M0003\n\n## 正确答案\n\n**2**\n\n> 答案来源：官方答案 —— 站点答案\n\n> 老师红笔：3 ⚠ 与采用答案不一致，组卷前须裁决（`_标记复习.mjs 异议裁决`）\n';
+  const MD0 = '# M0003\n\n## 正确答案\n\n**2**\n\n> 答案来源：官方答案 —— 站点答案\n\n> 红字（老师批的）：3 ⚠ 与采用答案不一致，组卷前须裁决（`_标记复习.mjs 异议裁决`）\n';
   fs.writeFileSync(mdP, MD0, 'utf8');
   const rt = (a) => E.runToolSync('_标记复习.mjs', a, { data: libT });
   const adm = () => { try { return JSON.parse(String(rt(['准入', '--json']).out || '').trim().split('\n').pop()).admit['测试生|M0003']; } catch { return null; } };
@@ -418,8 +418,7 @@ console.log('\n═══ 复审③ 教师异议：准入/组卷同判据拦，�
   const ok = rt(['异议裁决', '--student', '测试生', '--ids', 'M0003', '--as', '老师定案', '--note', '独立解：1+1=2 …按老师']);
   const mdAfter = fs.readFileSync(mdP, 'utf8');
   A('★ 裁决同步卡面：答案行改成老师红笔', /## 正确答案\n\n\*\*3\*\*\n/.test(mdAfter), mdAfter.slice(0, 120));
-  A('★ 裁决同步卡面：过期的"须裁决"提示已换成"已裁决"', !/须裁决/.test(mdAfter) && /已裁决（老师定案/.test(mdAfter));
-  A('★ 裁决同步卡面：来源行改成 老师定案（与索引一致），旧"官方答案 —— 站点答案"不再残留',
+  A('★ 裁决同步卡面：过期的"须裁决"提示已换成"已裁决"', !/须裁决/.test(mdAfter) && /已裁决（老师定案/.test(mdAfter));  A('★ 裁决同步卡面：来源行改成 老师定案（与索引一致），旧"官方答案 —— 站点答案"不再残留',
     /^> 答案来源：老师定案 —— .*异议裁决\(老师定案\)/m.test(mdAfter) && !/官方答案 —— 站点答案/.test(mdAfter) && (mdAfter.match(/^> 答案来源：/gm) || []).length === 1, mdAfter.split('\n').filter(l => l.startsWith('> 答案来源')).join(' | '));
   const after = JSON.parse(fs.readFileSync(ip, 'utf8')).items[2];
   A('★ 异议裁决（老师定案）⇒ answer 改为老师红笔、来源=老师定案、留裁决痕', ok.code === 0 && after.answer === '3' && after.answerSource === '老师定案' && !!after.teacherConflict.resolvedAt,
@@ -427,7 +426,10 @@ console.log('\n═══ 复审③ 教师异议：准入/组卷同判据拦，�
   const a2 = adm();
   A('★ 裁决后准入放行', a2 && a2.ok === true, JSON.stringify(a2));
   /* 变异自证：准入去掉教师异议判据 ⇒ 未裁决也放行 */
-  const mutSrc = TOOL_SRC.replace('const a = okSrc(item) && !tc;', 'const a = okSrc(item);');
+  /* ★ 2026-11-07：准入的来源判据已改为共用实现 answerSourceOk（红字归属），
+     原来的 `okSrc(item) && !tc` 锚点不存在了 ⇒ 变异锚点跟着改，
+     变异语义不变（去掉 `!tc` ⇒ 未裁决的教师异议被放行）。 */
+  const mutSrc = TOOL_SRC.replace('const a = answerSourceOk(item) && !tc;', 'const a = answerSourceOk(item);');
   A('变异锚点命中（准入的教师异议判据）', mutSrc !== TOOL_SRC);
   if (mutSrc !== TOOL_SRC) {
     const libM = makeLib(path.join(tmpRoot, 'libTm'));

@@ -668,6 +668,110 @@ function locateCardDir(cardId) {
   }
   return { hits };
 }
+/* ---------- 红字归属回填（2026-11-07，用户裁定） ----------
+ * 起因（实测）：台账里 5 条「笔迹归属」全部已确认，答案 4/5 是「孩子自己订正的 / 自己改的」，
+ *   但 `答` 动作**只写 `_待确认.json`**（改 status 与 answer），
+ *   **不碰 `_索引.json`、不碰 `错题记录.md`** ⇒ 问出来的真相**回不到卡上**：
+ *   Y0002 至今仍写 answerSource=独立判卷+红笔一致、notes 仍挂着那条待办；
+ *   某物理学科 30 张仍是「老师定案」——正是孩子自己改的那一整本。
+ *   台账问一万次也白问：这不是"数据欠账"，是**回路断了**。
+ *
+ * 修法：`答` 命中 kind=笔迹归属 时，把结论**回填到卡上**：
+ *   · 索引：写 `inkAttribution`（孩子/家长/同学/老师/未确认）；红字不是老师写的 ⇒
+ *     `answerSource` 不许再写「老师定案」，改为「独立判卷」并在 note 记明分歧。
+ *   · 卡面（错题记录.md）：红字那一行改成中性表述并标出归属（与入库器产出的格式对齐）。
+ *
+ * 边界：**只回填归属，不代人工改答案**。答案是什么是另一回事（可能另有独立判卷来源）；
+ *   本回填只负责把"红字是谁写的"这个事实落到卡上，让门禁能据此判断。
+ *   回填失败（找不到卡/卡面结构对不上）⇒ **响亮报错**，不静默跳过（静默跳过＝白问）。 */
+const INK_ATTRIBUTIONS = ['老师', '孩子', '家长', '同学', '未确认'];
+/** 从台账条目的回答里判出红字归属；判不出返回 ''（= 未确认，不猜） */
+function inkAttributionOfAnswer(answerText) {
+  const s = String(answerText || '');
+  if (!s.trim()) return '';
+  if (/老师|教师|批改人/.test(s)) return '老师';
+  if (/家长|父母|爸爸|妈妈/.test(s)) return '家长';
+  if (/同学|同桌|互相|互批/.test(s)) return '孩子';       // 同学互批 ⇒ 归属不是老师，归到"非老师"
+  if (/自己|本人|我/.test(s)) return '孩子';
+  return '';
+}
+/** 找到某张卡在索引里的位置（多学科/单学科两种索引形态都要认） */
+function findCardInIndexes(student, cardId) {
+  const out = [];
+  const walk = (dir) => {
+    let ents = [];
+    try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      if (e.isFile() && e.name === '_索引.json') {
+        const f = path.join(dir, e.name);
+        let j = null;
+        try { j = readJsonStrict(f); } catch { continue; }
+        if (j && String(j.student || '') === String(student)) {
+          const scan = (items, subj) => {
+            for (const it of (items || [])) {
+              if (it && String(it.id) === String(cardId)) out.push({ file: f, json: j, item: it, subject: subj });
+            }
+          };
+          if (j.subjects && typeof j.subjects === 'object') {
+            for (const p of Object.keys(j.subjects)) scan(j.subjects[p].items, p);
+          } else scan(j.items, j.subject);
+        }
+        continue;
+      }
+      if (e.isDirectory() && !e.name.startsWith('_') && !e.name.startsWith('.')) walk(path.join(dir, e.name));
+    }
+  };
+  walk(ROOT);
+  return out;
+}
+/** 把红字归属结论回填到卡（索引 + 卡面）；返回 {ok, note} */
+function applyInkAttribution(entry, attribution, answerText) {
+  if (!INK_ATTRIBUTIONS.includes(attribution)) return { ok: false, note: '归属取值非法：' + attribution };
+  const hits = findCardInIndexes(entry.student, entry.cardId);
+  if (!hits.length) return { ok: false, note: '库里找不到卡 ' + entry.student + '/' + entry.cardId + '（未回填）' };
+  if (hits.length > 1) return { ok: false, note: '卡号 ' + entry.cardId + ' 在库里命中 ' + hits.length + ' 个索引（未回填）' };
+  const hit = hits[0];
+  const it = hit.item;
+  const before = { as: it.answerSource, ink: it.inkAttribution };
+  it.inkAttribution = attribution;
+  /* 红字不是老师写的 ⇒ 不许再声称「老师定案」（那是拿红字当权威答案）。
+     改成「独立判卷」：答案本身另有出处（否则这张卡本来就该是「未能确认」）。 */
+  const redIsTeacher = attribution === '老师';
+  if (!redIsTeacher && String(it.answerSource || '').startsWith('老师定案')) {
+    it.answerSource = '独立判卷';
+    it.answerSourceNote = (it.answerSourceNote ? it.answerSourceNote + '；' : '') +
+      '红字归属改为「' + attribution + '」（' + entry.id + ' 回话：' + String(answerText || '').slice(0, 120) + '）⇒ 不再按老师定案，改按独立判卷';
+  } else if (it.answerSourceNote !== undefined) {
+    it.answerSourceNote = (it.answerSourceNote ? it.answerSourceNote + '；' : '') +
+      '红字归属：' + attribution + '（' + entry.id + ' 回话：' + String(answerText || '').slice(0, 120) + '）';
+  }
+  hit.json.updatedAt = today();
+  writeJsonAtomic(hit.file, hit.json, { backup: true, newline: true });
+  /* 卡面：红字那一行改成中性表述 + 标出归属（与入库器 `_录题入库.mjs` 的产出格式对齐） */
+  let mdNote = '';
+  try {
+    const dir = it.dir ? path.join(path.dirname(hit.file), String(it.dir)) : '';
+    const md = dir ? path.join(dir, '错题记录.md') : '';
+    if (md && fs.existsSync(md)) {
+      const lines = fs.readFileSync(md, 'utf8').split(/\r?\n/);
+      const ti = lines.findIndex(l => l.startsWith('> 老师红笔：') || l.startsWith('> 红字'));
+      if (ti >= 0) {
+        const rest = lines[ti].replace(/^> (老师红笔|红字[^：]*：)/, '');
+        const body = rest.replace(/^[^：]*：/, '').replace(/\s*⚠.*$/, '');
+        const inkTxt = attribution === '老师' ? '红字（老师批的）' : attribution === '未确认' ? '红字（**归属未确认**）' : ('红字（' + attribution + '写的）');
+        lines[ti] = '> ' + inkTxt + '：' + body;
+        writeTextAtomic(md, lines.join('\n'));
+        mdNote = '卡面已同步';
+      } else {
+        mdNote = '卡面没有红字行（未同步正文）';
+      }
+    } else mdNote = '卡面文件不存在（未同步正文）';
+  } catch (e) {
+    mdNote = '卡面同步失败：' + String(e && e.message || e).slice(0, 120);
+  }
+  return { ok: true, note: '归属=' + attribution + '｜来源 ' + String(before.as) + '→' + String(it.answerSource) + '｜' + mdNote };
+}
+
 function currentOf(kind, target) {
   if (kind === '卡') {
     const { hits } = locateCardDir(target);
@@ -1400,6 +1504,31 @@ if (action === '清单') {
   it.resolvedAt = opt.date || today();
   save(j);
   console.log(`${it.id} → ${it.status}：${it.answer}`);
+  /* ★ 2026-11-07（红字归属，用户裁定）：kind=笔迹归属 的回话**必须落到卡上**。
+     修前：`答` 只改台账，卡面与索引原封不动 ⇒ 问出来的真相回不去卡
+     （实测：Y0002 至今仍写「独立判卷+红笔一致」、某物理学科 30 张仍「老师定案」，
+       而台账里早已确认「孩子自己改的」）。台账问一万次也白问 —— 回路断了。
+     现在：答完自动回填 `inkAttribution`；红字不是老师写的 ⇒ 撤销「老师定案」标签。
+     回填失败**响亮报错**（exit 3），不静默跳过 —— 静默跳过＝白问，家长还以为生效了。 */
+  if (action === '答' && String(it.kind || '') === '笔迹归属') {
+    const attribution = inkAttributionOfAnswer(it.answer);
+    if (!attribution) {
+      console.error('⚠ 笔迹归属回填：认不出红字是谁写的 ⇒ 记为「未确认」');
+      console.error('   回话原文：' + String(it.answer || '').slice(0, 160));
+      console.error('   （「未确认」不是失败：红字归属不明时卡不该拿红字当权威答案，程序会把它挡在组卷池外。）');
+      const r0 = applyInkAttribution(it, '未确认', it.answer);
+      if (r0.ok) console.log('   ✔ 回填：' + r0.note); else console.error('   ✖ 回填失败：' + r0.note);
+    } else {
+      const r = applyInkAttribution(it, attribution, it.answer);
+      if (!r.ok) {
+        console.error('✖ 笔迹归属回填失败：' + r.note);
+        console.error('   台账已记（' + it.id + '），但**卡面没改** —— 红字归属仍不可查。');
+        console.error('   修法：确认卡号 ' + it.student + '/' + it.cardId + ' 在库中存在后重跑 `答`（或手工改该卡的 inkAttribution）。');
+        process.exit(3);
+      }
+      console.log('   ✔ 回填：' + r.note);
+    }
+  }
   render();
 } else if (action === '撤回') {
   const j = load();
