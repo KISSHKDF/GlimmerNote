@@ -57,13 +57,20 @@ if (!new RegExp("num\\(opt\\['no-repeat-days'\\]\\) \\|\\| " + REPEAT_WINDOW_DAY
    pristine HEAD（1ccd1d35）上跑同样红（已实测）。现在改成"挑未到期题最多的批次"，
    测试意图一字不变：依然只测"未到期时必须拦"。 */
 const dueCache = {};
+/* ★ 2026-11-07（修 BUG：索引结构迁移后未同步）：真实库的索引是 **subjects 分组结构**
+   （`{subjects:{数学:{items:[…]},…}}`），旧写法只读扁平的 `j.items` ⇒ 一张卡都改不到
+   （实测 setNextDue 改到 0/6，前置失败后整段断言连锁红）。现在两种结构都认。 */
+function eachIndexItem(j, fn) {
+  if (Array.isArray(j.items)) for (const it of j.items) fn(it);
+  if (j.subjects) for (const v of Object.values(j.subjects)) for (const it of (v.items || [])) fn(it);
+}
 function loadNextDue(student) {
   if (dueCache[student]) return dueCache[student];
   const out = {};
   for (const rel of E.findIndexes(E.LIB)) {
     let j; try { j = JSON.parse(fs.readFileSync(path.join(E.LIB, rel), 'utf8').replace(/^\uFEFF/, '')); } catch { continue; }
     if (j.student !== student) continue;
-    for (const it of (j.items || [])) out[it.id] = it.nextDue || '';
+    eachIndexItem(j, it => { out[it.id] = it.nextDue || ''; });
   }
   dueCache[student] = out;
   return out;
@@ -96,7 +103,7 @@ function setNextDue(libDir, student, idList, date) {
     let j; try { j = JSON.parse(fs.readFileSync(p, 'utf8').replace(/^\uFEFF/, '')); } catch { continue; }
     if (j.student !== student) continue;
     let changed = false;
-    for (const it of (j.items || [])) if (idList.includes(it.id)) { it.nextDue = date; changed = true; n++; }
+    eachIndexItem(j, it => { if (idList.includes(it.id)) { it.nextDue = date; changed = true; n++; } });
     if (changed) fs.writeFileSync(p, JSON.stringify(j, null, 2), 'utf8');
   }
   return n;

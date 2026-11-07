@@ -647,8 +647,49 @@ async function serverBase() {
   return s.base;
 }
 
+/* ---------- 库遍历（2026-11-07 新增） ----------
+ * 起因：库结构从「<学生>/<学科>/<卡目录>」迁移过来之后，一批测试仍按老结构（或硬编码
+ * 旧学生名）取卡，直接 ENOENT / 取到空集 ⇒ 整段断言连锁红。
+ * 这里给出**唯一一份**遍历实现：认两种索引形状（扁平 items / subjects 分组），
+ * 返回 {student, subject, item, dirAbs, key}，调用方不再自己拼路径。 */
+function eachCard(libDir, fn) {
+  const base = libDir || LIB;
+  for (const rel of findIndexes(base)) {
+    const abs = path.join(base, rel);
+    let j; try { j = JSON.parse(fs.readFileSync(abs, 'utf8').replace(/^\uFEFF/, '')); } catch { continue; }
+    const student = j.student || (path.basename(path.dirname(abs)) || '?');
+    const dirBase = path.dirname(abs);
+    if (Array.isArray(j.items)) {
+      for (const it of j.items) fn({ student, subject: j.subject || '', item: it, dirAbs: path.join(dirBase, it.dir || it.id || ''), key: student + '|' + it.id });
+    }
+    if (j.subjects && typeof j.subjects === 'object') {
+      for (const [sub, v] of Object.entries(j.subjects)) {
+        for (const it of (v.items || [])) fn({ student, subject: sub, item: it, dirAbs: path.join(dirBase, sub, it.dir || it.id || ''), key: student + '|' + it.id });
+      }
+    }
+  }
+}
+/** 库里第一个有卡的学生（不写死名字——学生名会变） */
+function firstStudentWithCards(libDir) {
+  const seen = new Map();
+  eachCard(libDir, c => { seen.set(c.student, (seen.get(c.student) || 0) + 1); });
+  for (const [s, n] of seen) if (n > 0) return s;
+  return null;
+}
+/** 按前缀取某学生的卡（prefix 形如 'M'） */
+function cardsOfStudent(libDir, student, prefix) {
+  const out = [];
+  eachCard(libDir, c => {
+    if (c.student !== student) return;
+    if (prefix && !String(c.item.id || '').startsWith(prefix)) return;
+    out.push(c);
+  });
+  return out;
+}
+
 module.exports = {
   REPO, TOOLS, LIB, LIB_SOURCE, isFrozen, findIndexes,
+  eachCard, firstStudentWithCards, cardsOfStudent,
   lib, tool, makeTempLib, runToolSync,
   /* ★ 2026-11-03（批次 2）：隔离树复制 —— 把工具**及其相对 import 的传递闭包**一起搬走，
      免得"新增一个兄弟模块"就让别人的对照实例 ERR_MODULE_NOT_FOUND（已踩两次）。 */

@@ -182,9 +182,15 @@ function runAll() {
     const selCard = { id: 'T-SEL', type: '选择题', question: '（　）', stemHtml: '<p>选</p>', answerMode: 'none' };
     A('B4 none：0 高匿名区（选择/判断）', render(selCard).indexOf('height:0') >= 0, render(selCard).slice(-120));
     /* 真库回归：上一轮点名卡必须已是 figure */
-    const m0011 = cards.find(x => x.key.endsWith('|M0011'));
+    /* ★ 2026-11-07（修 BUG：选择器用 id 尾匹配 ⇒ 命中错卡）：
+       真实库里**两个学生各有一张 M0011**（一张是"集合填数·图里下笔"，answerMode=figure；
+       另一张是"方程解漏根"，answerMode=blank）。`endsWith('|M0011')` 只按 id 尾匹配，
+       谁先被 indexFiles 遍历到就选谁 ⇒ 断言结果随目录遍历顺序漂移（实测命中另一张）。
+       修法：按**学生|id 精确匹配**，并在本断言里点名"集合填数·图里下笔"那张。
+       （学生化名不写进仓库——隐私门禁 repo-hygiene 会判红。） */
+    const m0011 = cards.find(x => x.item && x.item.dir === 'M0011-集合填数交集');
     if (m0011) A('B5 M0011（集合填数·图里下笔）已判 figure', m0011.item.answerMode === 'figure', m0011.item.answerMode || '(未登记)');
-    else A('B5 M0011 存在（夹具库可能没有）', true, 'SKIP 库中无 M0011');
+    else A('B5 M0011 存在（夹具库可能没有）', true, 'SKIP 库中无该卡');
     /* 反例：库里所有 figure 卡，渲染都不得留大答题区 */
     const figAll = cards.filter(x => x.item.answerMode === 'figure');
     const leak = figAll.filter(x => { const h = render(x.item); return /anszone" style="height:(?!0)/.test(h); });

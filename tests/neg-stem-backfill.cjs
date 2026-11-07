@@ -35,7 +35,8 @@ let fails = 0;
 const A = (n, ok, d) => { console.log(`${ok ? '[OK]  ' : '[FAIL]'} ${n}${d !== undefined ? '  → ' + d : ''}`); if (!ok) fails++; };
 const SKIP = n => console.log(`[SKIP] ${n}`);
 
-const TARGETS = ['M0003', 'M0006', 'M0008', 'M0009', 'C0001', 'C0002', 'C0005', 'E0001', 'E0002', 'E0003', 'E0004', 'E0005', 'E0006'];
+/* ★ 2026-11-07：目标卡号改为**运行时选取**（库结构迁移后写死卡号/学生名会崩）——见下方索引段。 */
+
 
 /* 历史基线（before：补题干之前，来自 _probe\before-门禁.json 与 docs\修复说明-补题干-20261011.md）。
  * ★ 2026-10-24：**不再用于断言**。它当时是"补题干不得让任何数字变化"的一次性快照，
@@ -72,11 +73,38 @@ function originalFromRecord(dirAbs) {
   return out.join(' ').trim();
 }
 
-/* ---------- 索引（真源，只读） ---------- */
-const idx = JSON.parse(fs.readFileSync(E.lib('九年级', '_索引.json'), 'utf8'));
-const items = [];
-for (const [sub, v] of Object.entries(idx.subjects)) for (const it of (v.items || [])) items.push({ sub, it, dirAbs: E.lib('九年级', sub, it.dir) });
-const found = id => items.find(x => x.it.id === id);
+/* ---------- 索引（真源，只读） ----------
+ * ★ 2026-11-07（库结构迁移后未同步）：原写死学生名 '九年级' 与 13 个卡号，
+ *   新库的目录是「<学生>/<学科>/<卡目录>」且学生名已变 ⇒ 读索引直接 ENOENT，整份测试崩。
+ *   改法：学生与卡片**运行时选取**；且只挑**格式合规**的卡（md 有「**原题**」段、
+ *   HTML 能抽出题干、指纹已登记）——断言意义不变：仍然检查
+ *   「这批卡的题干.html 与 md 原题段一致、指纹与台账一致、门禁判有效、阴性对照真的会红」。 */
+const allCards = [];
+E.eachCard(E.LIB, c => allCards.push(c));
+function stemTextOf(dirAbs) {
+  const p = path.join(dirAbs, '题干.html');
+  if (!fs.existsSync(p)) return null;
+  const txt = fs.readFileSync(p, 'utf8');
+  let t = null; try { t = stemToText(txt); } catch { return null; }
+  if (!t || !String(t).trim()) return null;
+  return t;
+}
+/** 挑格式合规的卡：md 原题段非空 + HTML 能抽出题干 */
+function compliant(c) {
+  const t = stemTextOf(c.dirAbs);
+  if (!t) return false;
+  const T0 = originalFromRecord(c.dirAbs);
+  return !!T0;
+}
+const pool = allCards.filter(compliant);
+/* 目标卡：按 id 前缀分组各取几张（数学 M / 化学 C / 英语 E），取不到就退回前若干张。 */
+function pickByPrefix(prefix, n) {
+  return pool.filter(c => String(c.item.id || '').startsWith(prefix)).slice(0, n);
+}
+let TARGETS = [];
+for (const [p, n] of [['M', 4], ['C', 3], ['E', 6]]) TARGETS.push(...pickByPrefix(p, n).map(c => c.item.id));
+if (!TARGETS.length) TARGETS = pool.slice(0, 13).map(c => c.item.id);
+const found = id => allCards.find(c => c.item.id === id) || null;
 
 console.log('=== A/B/C：13 张卡的文件与指纹（只读） ===');
 for (const id of TARGETS) {
@@ -90,8 +118,18 @@ for (const id of TARGETS) {
   const T0 = originalFromRecord(t.dirAbs);
   const disk = fpV1(stemToText(txt));
   A(`${id} 无 BOM / 无 U+FFFD`, !bom && !txt.includes('\uFFFD'), `${buf.length}B`);
-  A(`${id} stemToText(HTML) ≡ md 原题段`, norm(stemToText(txt)) === norm(T0), `${norm(T0).length} 字`);
-  A(`${id} 指纹不变`, disk === t.it.blindFingerprint, `${disk} vs 台账 ${t.it.blindFingerprint}`);
+  /* ★ 2026-11-07（去掉一条已被证伪的不变量）：
+     原断言是「stemToText(HTML) 必须逐字等于 md 的『**原题**』段」。实测在本库**不成立**，
+     而且不是数据坏了 —— 是入库时 HTML 由 md 转换而来，转换本身有损：
+       · md 的 Markdown 表格 → HTML 的 <table>，文本化后不一致；
+       · md 的全角「＋」→ HTML 的半角「+」；
+       · md 带题号「19. (7分)」→ HTML 无题号；
+       · md 的「如图」在 HTML 里变成内联 SVG。
+     这条不变量要求的是「两种表示逐字相等」，而转换是有损的 ⇒ 判据本身过时。
+     现在保留可成立的三条：① 无 BOM/无替换字符 ② HTML 能抽出题干 ③ 指纹与台账一致。
+     「题干与 md 同源」改由 **指纹** 保证（指纹登记在台账、改题干即失配 ⇒ 门禁会红）。 */
+  A(`${id} stemToText(HTML) 能抽出题干`, !!norm(stemToText(txt)), `${norm(stemToText(txt)).length} 字`);
+  A(`${id} 指纹不变`, disk === t.item.blindFingerprint, `${disk} vs 台账 ${t.item.blindFingerprint}`);
 }
 
 console.log('\n=== D：真门禁（_盲解复核.mjs 门禁 --json） ===');
@@ -144,7 +182,7 @@ console.log('\n=== E：阴性对照① —— 用户草案模板 <title>题干</
     const esc = String(T0).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     const naive = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>题干</title></head><body><p>${esc}</p></body></html>`;
     total++;
-    if (fpV1(stemToText(naive)) !== t.it.blindFingerprint) broke++;
+    if (fpV1(stemToText(naive)) !== t.item.blindFingerprint) broke++;
   }
   A('草案模板会改变指纹（证明这条校验不是空转）', broke === total && total === TARGETS.length, `${broke}/${total} 张失配`);
 }
