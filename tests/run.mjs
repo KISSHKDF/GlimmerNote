@@ -791,6 +791,17 @@ const unitTests = [
      不写目标文件、且释放后才完成；阴性自证：摘掉取锁后它当场插队改写。 */
   ['neg-snapshot-restore-lock.cjs'],
   ['neg-snapshot-text-and-force.cjs'],    // ★ 2026-11-05 合并评审 P1-5/P0-4：md/html 掏空不许直接恢复；--force-restore 二次确认 + 审计
+  /* ★ 2026-11-07 规范 W6「改盘别改格式」进程序：`writeJsonAtomic` 的缩进过去写死默认 2，
+     而台账缩进是**每份文件自己定的**（`_原卷台账.json`/`_录题任务.json` 用 1）⇒ 一次纯路径改写
+     把 `_原卷台账.json` 从 410,280 B 重排到 451,899 B（+41.6 KB）。修法：不传 indent/newline 时
+     沿用盘上原格式。阴性自证：显式传 indent:2 必须仍然重排（判据不是恒真）+ 旧行为确实会改格式。 */
+  ['neg-write-format-preserve.cjs'],
+  /* ★ 2026-11-07 规范 §七.1「路径改写判据」进程序：`src\tools\_路径改写.mjs`。
+     过去它只活在文档 + 一次性脚本里（实测 src\/tests\ 零命中）⇒ 每次搬迁都得重写一遍。
+     三条判据：① 相对前缀（带分隔符，禁"整串相等"——那会改坏 `_索引.json` 的 `grade`）、
+     ② 绝对路径只换中段、③ 非路径标识须**声明字段作用域**（`--id` 必配 `--id-field`）。
+     载体扫全：JSON 值 + 对象键 + `*.md` 路径 token；死链对拍（现在解析不到 + 改名后能解析 = 本次制造的死链，必须 0）。 */
+  ['neg-path-rewrite.cjs'],
   /* D01：题卡元数据回显不走净化器，`lastReviewedAt`/`blindSolveAt` 未转义 ⇒ 索引里放
      `<img src=x onerror=…>` 打开卡片详情即执行。静态（源级判据防新字段漏）+ 动态（真跑前端渲染）
      双判据；阴性自证：摘掉 U.esc 后同一 payload 原样进 HTML。 */

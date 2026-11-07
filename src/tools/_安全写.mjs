@@ -87,10 +87,42 @@ export function backupJson(file, { keep = DEFAULT_KEEP, dir } = {}) {
 }
 
 /**
+ * 量出盘上这份 JSON **自己的**格式（缩进 / 有没有收尾换行）。
+ * 返回 null = 文件不存在、读不出、或内容为空 ⇒ 调用方该用默认值。
+ *
+ * 为什么需要它（规范 W6「改盘别改格式」的机械实现）：
+ * 缩进是**每一份文件自己定的**——`_原卷台账.json` 与 `_录题任务.json` 刻意用 1 空格，新文件才用 2。
+ * 写入器若一律用默认值，"只改了一个字符串"就会变成"整篇重排"：实测一次纯路径改写让
+ * `_原卷台账.json` 从 410,280 B 涨到 451,899 B（+41.6 KB），内容上却只动了几个路径。
+ */
+export function detectJsonFormat(file) {
+  let raw;
+  try { raw = fs.readFileSync(file, 'utf8'); } catch { return null; }
+  if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
+  if (!raw.trim()) return null;
+  const m = /\n([ \t]+)"/.exec(raw);          // 第一个缩进行的顶层字段；紧凑单行文件匹配不到 ⇒ 缩进 0
+  let indent = 0;
+  if (m) indent = /^\t+$/.test(m[1]) ? '\t'.repeat(m[1].length) : m[1].length;
+  return { indent, newline: raw.endsWith('\n') };
+}
+
+/**
  * 原子写 JSON：同目录临时文件 → fsync → rename 覆盖。
  * 任何一步失败都**不碰目标文件**（这正是它比 writeFileSync 安全的地方）。
+ *
+ * `indent` / `newline` **不传**时沿用盘上原格式（W6）；显式传了才按传的来。
+ * 文件不存在（新文件）时用历史默认：2 空格 + 收尾换行。
  */
-export function writeJsonAtomic(file, obj, { backup = false, keep = DEFAULT_KEEP, newline = true, indent = 2 } = {}) {
+export function writeJsonAtomic(file, obj, { backup = false, keep = DEFAULT_KEEP, newline, indent } = {}) {
+  if (indent === undefined || newline === undefined) {
+    const cur = detectJsonFormat(file);
+    if (cur) {
+      if (indent === undefined) indent = cur.indent;
+      if (newline === undefined) newline = cur.newline;
+    }
+  }
+  if (indent === undefined) indent = 2;
+  if (newline === undefined) newline = true;
   const dir = path.dirname(file);
   fs.mkdirSync(dir, { recursive: true });
   const data = JSON.stringify(obj, null, indent) + (newline ? '\n' : '');
