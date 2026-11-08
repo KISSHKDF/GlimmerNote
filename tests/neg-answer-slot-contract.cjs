@@ -161,6 +161,26 @@ function runAll() {
         A('A7 图上作答卡在答案册上有明确提示', /在图上|按图形批改/.test(hf), hf.slice(0, 240));
       }
     }
+    /* A8–A14 逐空行必须被三个界面共用（2026-11-08 用户报障：「E0042 题干给了 3 个空，
+       答案只给出一个」——答案册印了逐空，题库抽屉与复习流只印 `answer` 那条文字）。
+       判据两层：① 纯函数行为（每个空都在、空号对）；② **源码级**——三个视图都必须调
+       `M.slotAnswerLine`，少一处就红（否则同一个事实又会在某个面上静默消失）。 */
+    {
+      const multi = { id: 'X4', answer: '总答案', answerSlots: ['Does', 'love', 'he does'] };
+      A('A8 非 partial 按顺序定空号 1..k', JSON.stringify(M.slotAnswerItems(multi).map(i => i.n)) === '[1,2,3]', JSON.stringify(M.slotAnswerItems(multi)));
+      const line = M.slotAnswerLine(multi);
+      A('A9 逐空行含全部三个空', /第1空：Does/.test(line) && /第2空：love/.test(line) && /第3空：he does/.test(line), line);
+      A('A10 逐空纯文本同源（灯泡箱 detail 用）', M.slotAnswerText(multi) === '第1空：Does　｜　第2空：love　｜　第3空：he does', M.slotAnswerText(multi));
+      const part = { id: 'X5', answerScope: 'partial', answerSlots: ['甲'], answerSlotsAt: [3], answerNote: '只考第3空' };
+      A('A11 partial 按 answerSlotsAt 定空号并带说明', /第3空：甲/.test(M.slotAnswerLine(part)) && /只考第3空/.test(M.slotAnswerLine(part)), M.slotAnswerLine(part));
+      A('A12 没有逐空答案就不出行（不凭空造行）', M.slotAnswerLine({ id: 'X6', answer: '一段话' }) === '', JSON.stringify(M.slotAnswerLine({ id: 'X6', answer: '一段话' })));
+      for (const rel of [['views', 'bank.js'], ['views', 'review.js'], ['views', 'paper.js']]) {
+        const src = fs.readFileSync(path.join(ROOT, 'src', 'app', 'js', rel[0], rel[1]), 'utf8');
+        A('A13 ' + rel[1] + ' 调 M.slotAnswerLine（不是各拼各的）', /M\.slotAnswerLine\(/.test(src), '');
+      }
+      const css = fs.readFileSync(path.join(ROOT, 'src', 'app', 'css', 'app.css'), 'utf8');
+      A('A14 屏幕侧逐空行有样式（.sect/.reveal）', /\.sect \.ans-slot,\.reveal \.ans-slot\{/.test(css), '');
+    }
   }
 
   /* ================= B. 图上作答不留答题区 ================= */

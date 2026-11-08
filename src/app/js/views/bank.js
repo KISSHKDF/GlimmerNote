@@ -290,6 +290,9 @@
         '</div>' +
         '<div class="sect"><h4>答案与当时错答</h4>' +
         '<div class="ans"><b>正确：</b>' + U.esc(c.answer || '—') + '</div>' +
+        /* 逐空行（唯一实现 M.slotAnswerLine）：题干有 N 个空时，光一条 answer 文字看不出每空填什么
+           —— 2026-11-08 用户报障「题干给了 3 个空，答案只给出一个」指的就是这里。 */
+        M.slotAnswerLine(c) +
         '<div class="wrong-ans"><b>孩子错答：</b>' + U.esc(c.studentAnswer || '—') + '</div>' +
         '<div class="cause-box"><span class="' + layerCls(c.causeLayer) + '">' + U.esc((c.causeLayer || '') + (c.causeCode || '')) + '</span> ' +
         (c.causeConfirmed === false ? '<span class="tag warn">⚠ 待孩子口述确认</span>' : '<span class="tag ok">错因已确认</span>') +
@@ -336,7 +339,7 @@
           src: H.asset(rel), rel, title,
           chips: '<span class="tag warn">' + U.esc(c.id) + '</span><span class="' + layerCls(c.causeLayer) + '">' + U.esc((c.causeLayer || '') + (c.causeCode || '')) + '</span>',
           q: c.question,
-          detail: '正确答案：' + (c.answer || '—') + '　｜　当时错答：' + (c.studentAnswer || '—') + '　｜　错因：' + (c.causeDesc || '—'),
+          detail: '正确答案：' + (c.answer || '—') + (M.slotAnswerLine(c) ? '　｜　逐空：' + M.slotAnswerText(c) : '') + '　｜　当时错答：' + (c.studentAnswer || '—') + '　｜　错因：' + (c.causeDesc || '—'),
           hint: '这是从原图（整页）上按题裁下的单题图（含孩子黑笔作答与红笔订正），仅用于核对，勿用于重做（泄答案防线）。看细节用这张，看这题在第几页/旁边是什么就按 P 切原图。',
         }, M.origOf(c));
         d.querySelectorAll('[data-open]').forEach(t => t.onclick = () => S.lightbox([lbItem(t.dataset.open, c.id + ' 原卷')]));

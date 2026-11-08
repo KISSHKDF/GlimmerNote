@@ -391,6 +391,12 @@ html[data-theme="dark"] .hm-cell{stroke:rgba(255,255,255,.05)}
 .wrong-ans{background:var(--bad-soft);border-radius:var(--r-m);padding:var(--s3) var(--s4);margin-bottom:var(--s2)}
 .wrong-ans b{color:var(--bad-ink)}
 .cause-box{background:var(--surface2);border:1px solid var(--line);border-radius:var(--r-m);padding:var(--s3) var(--s4);margin-bottom:var(--s2)}
+/* 逐空答案行在题库抽屉与复习流里也要出现（2026-11-08 用户报障「E0042 题干给了 3 个空，
+   答案只给出一个」）。唯一实现是 `model.js` 的 `M.slotAnswerLine`，三个面一律调它。
+   ⚠ 答案册那条 `.sheet .ans-slot`（10.5pt）是**纸面**口径，别与这里合并——纸面字号被打印调过。 */
+.sect .ans-slot,.reveal .ans-slot{background:var(--surface2);border:1px solid var(--line);border-radius:var(--r-m);
+  padding:var(--s2) var(--s4);margin:calc(-1 * var(--s1)) 0 var(--s2);font-size:var(--fs-sm);line-height:1.75}
+.sect .ans-slot b,.reveal .ans-slot b{color:var(--ok-ink)}
 .cause-x{margin-top:var(--s1)}
 .cause-warn{color:var(--warn-ink);margin-top:var(--s1)}
 .ans-fig{margin-bottom:var(--s3)}

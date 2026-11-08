@@ -249,6 +249,9 @@
   function revealBox(c, note) {
     return '<div class="reveal">' +
       '<div class="ans"><b>正确答案：</b>' + U.esc(c.answer || '—') + '</div>' +
+      /* 逐空行（唯一实现 M.slotAnswerLine）——复习流是判分的地方，N 个空只给一条文字答案
+         就没法逐空核对（2026-11-08 用户报障：题干 3 个空、答案只给一个）。 */
+      M.slotAnswerLine(c) +
       '<div class="wrong-ans"><b>当时错答：</b>' + U.esc(c.studentAnswer || '—') + '</div>' +
       '<div class="cause-box"><span class="' + layerCls(c.causeLayer) + '">' + U.esc((c.causeLayer || '') + (c.causeCode || '')) + ' ' + (M.LAYER[c.causeLayer] ? M.LAYER[c.causeLayer].name : '') + '</span>' +
       '<div class="cause-x">' + U.esc(c.causeDesc || '（无错因说明）') + '</div>' +

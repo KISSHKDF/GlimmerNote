@@ -741,6 +741,41 @@
     });
     return out;
   };
+  /* ---------- 逐空答案的展示（**唯一实现**：答案册 / 题库抽屉 / 复习流三处共用，防漂移） ----------
+     起因（2026-11-08 用户报障）：「E0042，你的题干给了 3 个空，答案只给出一个」。
+     实测：E0042 的 `answerSlots` = ["Does","love","he does"]（三条齐全），但
+       · 答案册（views/paper.js）印「答案：II10：he does」**并**印逐空三行 ⇒ 看得全；
+       · 题库抽屉（views/bank.js）与复习流（views/review.js）**只印那条 `answer` 文字** ⇒ 只看到一个。
+     同一个事实在三个面上两种呈现 = 本仓最忌讳的"静默分叉"。现在把"空号怎么定、逐空行怎么拼"
+     收进这里一个家，三个面一律调它；`tests\neg-answer-slot-contract.cjs` 有单元断言 +
+     源码级断言（三处都必须调 `M.slotAnswerLine`），少一处就红。 */
+  /** 逐空条目：`[{ n: 第几空(1起), answer }]`。partial 卡按 answerSlotsAt 定空号，
+   *  非 partial 按顺序 1..k（与 _作答门禁.mjs 的 alignedAnswers 同口径）。 */
+  M.slotAnswerItems = function (card) {
+    const c = card || {};
+    const list = M.slotAnswers(c);
+    if (!list || !list.length) return [];
+    const at = Array.isArray(c.answerSlotsAt) ? c.answerSlotsAt : null;
+    const partial = String(c.answerScope || '') === 'partial';
+    return list.map((a, k) => ({ n: partial && at && at[k] ? at[k] : k + 1, answer: a }));
+  };
+  /** 逐空纯文本（灯泡箱 detail 这类只吃字符串的地方用） */
+  M.slotAnswerText = function (card, sep) {
+    const items = M.slotAnswerItems(card);
+    if (!items.length) return '';
+    return items.map(it => '第' + it.n + '空：' + (it.answer || '—')).join(sep || '　｜　');
+  };
+  /** 逐空 HTML 行（三个界面共用的那一行；partial 附 answerNote 说明为什么只列部分空） */
+  M.slotAnswerLine = function (card) {
+    const c = card || {};
+    const items = M.slotAnswerItems(c);
+    if (!items.length) return '';
+    const partial = String(c.answerScope || '') === 'partial';
+    return '<div class="ans-slot"><b>逐空：</b>' +
+      items.map(it => '第' + it.n + '空：' + U.esc(it.answer || '—')).join('　｜　') +
+      (partial ? '<span class="small muted">（' + U.esc(c.answerNote || '本卡只列部分空') + '）</span>' : '') +
+      '</div>';
+  };
   /* 把每个空撑到够宽（渲染唯一实现；与 _空位.mjs applySlotWidths 同判） */
   M.applySlotWidths = function (html, answers, opts) {
     const o = Object.assign({ fallbackEm: 7, minEm: 4 }, opts || {});

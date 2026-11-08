@@ -454,18 +454,9 @@
     let h = '<div class="sheet">' + shHead(title, refs, { h1: '答案册（家长批改用）', score: false, req: false });
     refs.forEach((x, i) => {
       const c = x.card;
-      const slots = M.slotAnswers(c);
-      const at = Array.isArray(c.answerSlotsAt) ? c.answerSlotsAt : null;
-      const partial = String(c.answerScope || '') === 'partial';
-      let slotLine = '';
-      if (slots && slots.length) {
-        const items = slots.map((a, k) => {
-          const n = partial && at && at[k] ? at[k] : k + 1;
-          return '第' + n + '空：' + U.esc(a || '—');
-        });
-        slotLine = '<div class="ans-slot"><b>逐空：</b>' + items.join('　｜　') +
-          (partial ? '<span class="small muted">（' + U.esc(c.answerNote || '本卡只列部分空') + '）</span>' : '') + '</div>';
-      }
+      /* 逐空行改走**唯一实现** M.slotAnswerLine（2026-11-08：原先三个界面各拼各的，
+         抽屉与复习流漏掉了逐空 ⇒ 用户看到"题干 3 个空、答案只给一个"）。 */
+      const slotLine = M.slotAnswerLine(c);
       const modeTip = String(c.answerMode || '') === 'figure'
         ? '<div class="small muted">（本题答案写在图上／按图形批改，卷面不留答题区）</div>' : '';
       h += '<div class="q"><div class="q-hd">' + (i + 1) + '．' + U.esc(c.id) + '　<span style="font-weight:400">' + U.esc(c.type || '') + '</span></div>' +
