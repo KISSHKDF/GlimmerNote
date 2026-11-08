@@ -60,8 +60,12 @@
  *      ⚠ 防误报：`<u>` 出现在**任意位置**即算已标（不必与"画线"二字同段）；
  *        实体化形态 `&lt;u&gt;` **不算**（那属判据①，别重复计 —— 两者修法不同：①改编码、⑦补标记）。
  *   ⑧ **语音类题没有任何画线标记**（2026-11-08 新增，B 级只报告）：
- *      题干 / 索引 question / 来源 / 类型命中 `语音|读音|发音|音标|重音|Pronunciation` 却无 `<u>`
- *      ⇒ 列出待核清单，人工回原卷核对（这类里可能只是题干引用了原题的词、画线在别处）。
+ *      题干 / 索引 question / 来源 / 类型命中 `语音|读音|发音|音标|重音|Pronunciation`，
+ *      **且**同时出现对照/标注语境（`画线|相同|不同|归类|替换|对比|分组|标出|圈出|标注|一项`）
+ *      却无 `<u>` ⇒ 列出待核清单，人工回原卷核对。
+ *      ⚠ 为什么必须"共现对照语境"：固定大题指令「根据句意、中文释义、首字母和**音标**提示，
+ *        写出句中所缺单词」里的"音标"与画线无关 —— 不收窄就会把一整批词汇题当假阳性长期挂着
+ *        （真库实测 5 张，另一路 teammate 回原卷逐张核对确认全是误报，见 PHONETIC_CONTEXT 注释）。
  *
  * 用法（node _题干门禁.mjs <动作>）：
  *   扫描 [--json]   只读：逐卡列出标记使用与问题
@@ -314,6 +318,28 @@ export function hasUnderlineMarkAny(html) {
 /** 判据⑧的语音类关键词（题干 / 索引 question / 来源 / 类型 命中即可）。 */
 export const PHONETIC_WORD = /语音|读音|发音|音标|重音|pronunciation/i;
 
+/** 判据⑧的**对照/标注语境**词：语音类关键词必须与它**共现**，才算"题面靠标记承载信息"的语音题。
+ *
+ *  ★ 2026-11-08 收窄（另一路 teammate 回原卷逐张核对后定的口径）：
+ *    旧口径"命中语音类关键词却无 `<u>` 就报"把 5 张**假阳性**长期挂在待核清单上
+ *    （真库实测：学生A·英语 E0026 / E0031 / E0041 / E0064，学生B·英语 E0062）。
+ *    它们的"音标"二字来自**固定大题指令**「根据句意、中文释义、首字母和**音标**提示，
+ *    写出句中所缺单词」——这是该大题的通用提示行，与"哪个字母画了线"无关；
+ *    原卷上那些字母是**首字母提示**（`She is so f______`）或括号里的**音标**
+ *    （`Please ______ (/rɪ'mɑnd/)`），**下方都没有下划线**。B 级清单是给人当工单用的，
+ *    长期挂着假阳性等于没有清单 ⇒ 收窄。
+ *
+ *    判据形状：`语音类关键词` **且** `对照/标注语境` **且** 无 `<u>`。
+ *    为什么"对照/标注语境"能分开：只有出现「画线 / 相同 / 不同 / 归类 / 替换 / 对比 / 分组 /
+ *    标出 / 圈出 / 标注 / 一项」这类语义，题面才是**靠标记承载信息**（读者看不出标记就做不了）；
+ *    只说"音标提示 / 听录音"的题，标记与否不影响作答。
+ *
+ *  ⚠ 诚实标注边界（本仓惯例：宁可漏判也不误报）——这条收窄**放弃了**这一类真阳性：
+ *    语音题但指令里**一个对照/标注词都没有**（例如只写「说明每组单词的异同」「朗读并比较」
+ *    这类少见措辞）。这类卡不会被 ⑧ 报出来，要靠人抽查；换来的是一份**能当工单用**的清单。
+ *    （同类卡若同时写了"画线"二字，仍会被 A 级 ⑦ 拦下 —— ⑦ 不受本条收窄影响。） */
+export const PHONETIC_CONTEXT = /画线|划线|相同|不同|归类|替换|对比|分组|标出|圈出|标注|一项/;
+
 /** 逐卡判定：返回 {ok, problems[], warns[], info} */
 export function judgeCard({ stem = '', question = '', source = '', type = '' } = {}) {
   const html = String(stem || '');
@@ -385,13 +411,16 @@ export function judgeCard({ stem = '', question = '', source = '', type = '' } =
     problems.push({ code: 'underline-missing', msg: '题干提到了**画线**（"画线 / 划线"），却一个 `<u>` 标记都没有——读者看不出哪个字母/哪个短语被画了线，这类题（判读音异同 / 按画线归类 / 对画线部分提问 / 替换或翻译画线部分）**不标画线就没法作答**。把被画线的字母或短语原样括起来：`classm<u>a</u>te`、`6. y<u>e</u>s  h<u>e</u>lp`、`The woman is <u>80 years old</u>.`' });
   }
 
-  /* ⑧ 语音类题没有任何画线标记（B 级：**只报告**）—— 题干 / 索引 question / 来源 / 类型提到
-     语音类关键词却无 `<u>` ⇒ 列出待核清单。为什么只报告：这类里可能只是题干引用了原题的词、
-     画线在别处（语境另有出处），机器判不了，只能人工回原卷核对（与 ④⑥ 同一条分级理由）。 */
+  /* ⑧ 语音类题没有任何画线标记（B 级：**只报告**）—— 题干 / 索引 question / 来源 / 类型同时命中
+     语音类关键词与"对照/标注语境"却无 `<u>` ⇒ 列出待核清单。为什么只报告：这类里可能只是题干
+     引用了原题的词、画线在别处（语境另有出处），机器判不了，只能人工回原卷核对（与 ④⑥ 同分级）。
+     ⚠ 2026-11-08 收窄：必须**共现对照/标注语境**，否则固定指令里的"音标提示"会把一批假阳性
+       长期挂在清单上（见 PHONETIC_CONTEXT 注释：真库实测 5 张假阳性，全部来自那条固定指令）。 */
   const phonFields = [plain, plainOf(question), plainOf(source), String(type || '')].join(' ');
   const phonetic = PHONETIC_WORD.test(phonFields);
-  if (phonetic && !hasU) {
-    warns.push({ code: 'phonetic-no-underline', msg: '这是**语音类题**（命中 语音/读音/发音/音标/重音/Pronunciation），题干却没有 `<u>` 画线标记——请回原卷核对：若原题画了线，把被画线的字母/短语用 `<u>` 括出来（只报告，不阻断）' });
+  const phoneticContext = PHONETIC_CONTEXT.test(phonFields);
+  if (phonetic && phoneticContext && !hasU) {
+    warns.push({ code: 'phonetic-no-underline', msg: '这是**语音类题**（命中 语音/读音/发音/音标/重音/Pronunciation，且题面出现 相同/不同/归类/替换/画线 这类对照语境），题干却没有 `<u>` 画线标记——请回原卷核对：若原题画了线，把被画线的字母/短语用 `<u>` 括出来（只报告，不阻断）' });
   }
 
   return {
@@ -401,7 +430,7 @@ export function judgeCard({ stem = '', question = '', source = '', type = '' } =
       nums: [...new Set(nums)], orphan, instructed, plainLen: plain.length,
       paras: paras.length, maxParaLen,
       fragment: frag.length > 0, truncated: trunc.length > 0, longPara: maxParaLen >= LONG_PARA_MIN,
-      underline: hasU, underlineWord: mentionsUnderline, phonetic,
+      underline: hasU, underlineWord: mentionsUnderline, phonetic, phoneticContext,
     },
   };
 }
@@ -436,8 +465,9 @@ export function judgeLibrary(root = ROOT) {
   const longParagraphs = rows.filter(r => r.info.longPara)
     .map(r => ({ key: r.key, maxParaLen: r.info.maxParaLen, paras: r.info.paras, blocked: !r.ok }))
     .sort((a, b) => b.maxParaLen - a.maxParaLen);
-  /* ⑧ 语音类题无画线标记：**只报告**的待核清单（不依赖 ok —— 被 ⑦ 阻断的卡也要列出来）。 */
-  const phoneticNoUnderline = rows.filter(r => r.info.phonetic && !r.info.underline)
+  /* ⑧ 语音类题无画线标记：**只报告**的待核清单（不依赖 ok —— 被 ⑦ 阻断的卡也要列出来）。
+     ⚠ 条件是"关键词 **且** 对照/标注语境"（收窄见 PHONETIC_CONTEXT 注释）。 */
+  const phoneticNoUnderline = rows.filter(r => r.info.phonetic && r.info.phoneticContext && !r.info.underline)
     .map(r => ({ key: r.key, id: r.id, subject: r.subject, blocked: !r.ok }));
   return {
     ok: blocked.length === 0,
@@ -472,6 +502,7 @@ if (IS_ENTRY) switch (action) {
         ok: r.ok, nums: r.info.nums, orphan: r.info.orphan, instructed: r.info.instructed,
         fragment: r.info.fragment, truncated: r.info.truncated, maxParaLen: r.info.maxParaLen,
         underline: r.info.underline, underlineWord: r.info.underlineWord, phonetic: r.info.phonetic,
+        phoneticContext: r.info.phoneticContext,
       }])),
       /* ⑥ 的清单单独成键（B 级只报告；含被 ⑤ 阻断的卡），供人回原卷核对分段 */
       longParagraphs,

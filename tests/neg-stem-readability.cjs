@@ -29,9 +29,13 @@
  *      200 字符单段落**不**报 ⑥）+ 可证伪（摘掉判据 ⇒ 样本变绿；⑥ 的门槛/摘除都可对拍）。
  *   H. **⑦ 该画线却没画线（阻断）/ ⑧ 语音类题无画线（只报告）**（2026-11-08 新增，用户报障
  *      「单词画线的字母，你在印刷版中没有体现出哪个字母画线了，这样的错误还不少」）：
- *      正例各一条 + 阴性对照三条（标了 `<u>` 的"画线"卡**不**红；`<u>` 在别的段落也算已标；
+ *      正例各一条 + 阴性对照（标了 `<u>` 的"画线"卡**不**红；`<u>` 在别的段落也算已标；
  *      没提"画线"的题**不**红；语音类题标了画线就**不**报告）+ 实体化形态不与判据①重复计
  *      + 可证伪（摘掉 ⑦⑧ ⇒ 样本变绿）+ 入库侧拒收与不误拒。
+ *      ⚠ ⑧ 于同日**收窄**：必须"语音类关键词 **且** 对照/标注语境（画线|相同|不同|归类|替换|…）"
+ *      才报 —— 固定大题指令「…首字母和**音标**提示，写出句中所缺单词」里的"音标"与画线无关，
+ *      不收窄会有 5 张假阳性长期挂在待核清单上（另一路 teammate 回原卷逐张核对确认全是误报）。
+ *      回归里因此多一条**假阳性阴性对照** + 一条"收窄条件在承重"的可证伪对拍。
  *
  * 全部只读：不写库、不起壳。退出码 0=全绿。
  */
@@ -132,10 +136,20 @@ const UNDERLINE_MARKED = '<div class="stem"><p class="stem-lead">1. The woman is
 const UNDERLINE_MARKED_ELSEWHERE = '<div class="stem"><p class="stem-lead">【题目要求】把画线部分的字母发音归类。</p><p class="stem-lead">1. c<u>a</u>ke    2. c<u>a</u>t</p></div>';
 /** ⑦ 与判据①的分界：实体化的 `&lt;u&gt;` 属判据①（转义层套两次），**不许**在 ⑦ 里再计一遍。 */
 const UNDERLINE_ENTITY = '<div class="stem"><p class="stem-lead">1. classm&lt;u&gt;a&lt;/u&gt;te（画线部分的字母）</p></div>';
-/** ⑧ 阳性：语音类题却没有 `<u>`（顺便证"只报告不阻断"）。 */
-const PHONETIC_NO_U = '<div class="stem"><p class="stem-lead">1. 听录音，选出你听到的单词（语音辨析）</p></div>';
+/** ⑧ 阳性：语音对照类题却没有 `<u>`（关键词 + 对照语境共现；顺便证"只报告不阻断"）。 */
+const PHONETIC_NO_U = '<div class="stem"><p class="stem-lead">1. 判断每组单词的读音是否相同（相同写 S，不同写 D）</p></div>';
 /** ⑧ 阴性：语音类题**标了**画线 ⇒ 不再报告。 */
 const PHONETIC_WITH_U = '<div class="stem"><p class="stem-lead">1. 判断每组单词画线部分读音是否相同：y<u>e</u>s  h<u>e</u>lp</p></div>';
+/* ⑧ 的**假阳性**形态（2026-11-08 收窄；另一路 teammate 回原卷逐张核对确认 5 张全是误报）：
+   "音标"二字来自**固定大题指令**「根据句意、中文释义、首字母和音标提示，写出句中所缺单词」——
+   该大题的通用提示行，与"哪个字母画了线"无关；原卷上那些字母是**首字母提示**
+   （`She is so f______`）或括号里的**音标**（`Please ______ (/rɪ'mɑnd/)`），下方都没有下划线。
+   B 级清单是给人当工单用的 ⇒ 长期挂假阳性等于没有清单。 */
+const PHONETIC_FIXED_INSTRUCTION = '<div class="stem">'
+  + '<p class="stem-lead">五、词汇运用：根据句意、中文释义、首字母和音标提示，写出句中所缺单词</p>'
+  + '<p class="stem-item">3. She is so f______ (注意力集中的) when she is writing.</p>'
+  + '<p class="stem-item">5. Please ______ (/rɪ\'mɑnd/) me to write the article at the weekend.</p>'
+  + '</div>';
 /** 把 ⑦⑧ 两条新判据从判定结果里**摘掉**（可证伪用：摘掉必须变绿）。 */
 const dropUnderlineGate = r => Object.assign({}, r, {
   problems: r.problems.filter(p => p.code !== 'underline-missing'),
@@ -371,11 +385,36 @@ function runAll() {
     !h7.warns.some(w => w.code === 'phonetic-no-underline'),
     'warns=' + (h7.warns.map(w => w.code).join(',') || '无'));
 
-  /* ── H8 ⑧ 也看"来源 / 类型"：题干干净、来源写着 Pronunciation ⇒ 也进待核清单 ── */
-  const h8 = GATE.judgeCard({ stem: '<div class="stem"><p class="stem-lead">1. computer ______</p></div>', source: '课时练·Unit 1 Period 5 Pronunciation' });
-  A('⑧ 判据覆盖"题干/来源/类型"：来源命中语音类关键词也进待核清单（不只看题干）',
+  /* ── H8 ⑧ 也看"来源 / 类型"：题干干净、来源写着 Pronunciation **且**带对照语境 ⇒ 也进待核清单 ── */
+  const h8 = GATE.judgeCard({ stem: '<div class="stem"><p class="stem-lead">1. computer ______</p></div>', source: '课时练·Unit 1 Period 5 Pronunciation·一、判断画线部分读音是否相同' });
+  A('⑧ 判据覆盖"题干/来源/类型"：来源命中语音类关键词（且带对照语境）也进待核清单（不只看题干）',
     h8.warns.some(w => w.code === 'phonetic-no-underline'),
     'warns=' + (h8.warns.map(w => w.code).join(',') || '无'));
+
+  /* ── H8b ⑧ 收窄（2026-11-08）：固定指令里的"音标提示"**不**报（假阳性清零）── */
+  const h8b = GATE.judgeCard({ stem: PHONETIC_FIXED_INSTRUCTION });
+  A('⑧ 阴性（收窄）：固定大题指令「…首字母和音标提示，写出句中所缺单词」**不**报（真库 5 张假阳性的形态）',
+    h8b.ok === true && !h8b.warns.some(w => w.code === 'phonetic-no-underline'),
+    'ok=' + h8b.ok + ' warns=' + (h8b.warns.map(w => w.code).join(',') || '无'));
+
+  /* ── H8c 可证伪：收窄条件真的在承重 —— 样本"命中关键词、无 `<u>`"，老口径（不看对照语境）就会报 ── */
+  const oldWouldWarn = stem => GATE.PHONETIC_WORD.test(GATE.plainOf(stem)) && !GATE.hasUnderlineMark(stem);
+  A('可证伪 · 收窄条件在承重：固定指令样本 `PHONETIC_WORD` 命中、无 `<u>`（老口径会报），但 `PHONETIC_CONTEXT` 不命中 ⇒ 不报',
+    oldWouldWarn(PHONETIC_FIXED_INSTRUCTION) === true &&
+    GATE.PHONETIC_CONTEXT.test(GATE.plainOf(PHONETIC_FIXED_INSTRUCTION)) === false &&
+    !h8b.warns.some(w => w.code === 'phonetic-no-underline'),
+    '关键词命中=' + GATE.PHONETIC_WORD.test(GATE.plainOf(PHONETIC_FIXED_INSTRUCTION)) +
+    ' 无<u>=' + !GATE.hasUnderlineMark(PHONETIC_FIXED_INSTRUCTION) +
+    ' 对照语境=' + GATE.PHONETIC_CONTEXT.test(GATE.plainOf(PHONETIC_FIXED_INSTRUCTION)));
+
+  /* ── H8d 收窄**没有**把真阳性一起丢掉：真阳性样本两条（对照语境 / 关键词）都命中 ── */
+  A('收窄未伤真阳性：对照类语音题样本 `PHONETIC_WORD` 与 `PHONETIC_CONTEXT` 都命中 ⇒ 仍报 ⑧',
+    GATE.PHONETIC_WORD.test(GATE.plainOf(PHONETIC_NO_U)) &&
+    GATE.PHONETIC_CONTEXT.test(GATE.plainOf(PHONETIC_NO_U)) &&
+    h6.warns.some(w => w.code === 'phonetic-no-underline'),
+    '关键词=' + GATE.PHONETIC_WORD.test(GATE.plainOf(PHONETIC_NO_U)) +
+    ' 对照语境=' + GATE.PHONETIC_CONTEXT.test(GATE.plainOf(PHONETIC_NO_U)) +
+    ' warns=' + h6.warns.map(w => w.code).join(','));
 
   /* ── H9 可证伪：摘掉 ⑦⑧ 两条判据 ⇒ 两个阳性样本分别变绿 / 不再报告 ── */
   A('可证伪：摘掉 ⑦ 的判据后 ⑦ 阳性样本**变绿**、摘掉 ⑧ 后 ⑧ 阳性样本不再报告（判据不是恒真）',
