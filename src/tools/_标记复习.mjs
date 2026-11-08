@@ -724,7 +724,7 @@ switch (action) {
       const bad = ids.filter(id => { const v = gate.cards[json.student + '|' + id]; return v && v.ok === false; });
       if (bad.length) {
         console.error('✖ 题干门禁拦截：' + bad.map(id => json.student + '|' + id).join(' '));
-        console.error('   → 这些题的题面读不懂（实体化标签 / 字面标签 / 标记不配对 / 孤儿题号却没带大题指令 / 语篇残篇）。');
+        console.error('   → 这些题的题面读不懂（实体化标签 / 字面标签 / 标记不配对 / 孤儿题号却没带大题指令 / 语篇残篇 / 该画线却没画线）。');
         console.error('     看详情：node _题干门禁.mjs 扫描；修完题干再组卷。确需绕过加 --force（不推荐，卷面会印出读不懂的题）。');
         process.exit(2);
       }

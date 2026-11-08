@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 拾光小册 · 题干可读性门禁（v1，2026-11-07 建；2026-11-08 增 ⑤ 语篇残篇 / ⑥ 长段未分段）
+ * 拾光小册 · 题干可读性门禁（v1，2026-11-07 建；2026-11-08 增 ⑤ 语篇残篇 / ⑥ 长段未分段 / ⑦ 该画线却没画线 / ⑧ 语音类题无画线）
  *
  * 起源（用户原话，指着 E0017 的单题预览）：
  *   「你转换出来的题干莫名其妙，谁能看得懂？这样的题干也能通过双盲解答？也能进库？」
@@ -52,6 +52,16 @@
  *        （段首省略号，实测 plainOf 口径 45 字符）——判据宽到"见到段首省略号就红"就误报它。
  *   ⑥ **长段未分段**（B 级只报告）：最长段落纯文本 ≥400 字符 ⇒ 列出（原文多段被拍平成一段，
  *      读者看不出段落边界），供人工回原卷核对分段；**不阻断**（存量形态，且要靠人核原文）。
+ *   ⑦ **该画线却没有画线标记**（2026-11-08 新增，A 级阻断。用户报障原话：
+ *      「单词画线的字母，你在印刷版中没有体现出哪个字母画线了，这样的错误还不少」）：
+ *      题干纯文本里出现 `画线` / `划线`，但**整份题干一个 `<u>` 都没有**。
+ *      为什么是 A 级而不是只报告：这类题（判断读音异同 / 按画线部分归类 / 对画线部分提问 /
+ *      替换或翻译画线部分）**不标出画线就没法作答** —— 印出去等于一道做不了的题（与 E0017 同级）。
+ *      ⚠ 防误报：`<u>` 出现在**任意位置**即算已标（不必与"画线"二字同段）；
+ *        实体化形态 `&lt;u&gt;` **不算**（那属判据①，别重复计 —— 两者修法不同：①改编码、⑦补标记）。
+ *   ⑧ **语音类题没有任何画线标记**（2026-11-08 新增，B 级只报告）：
+ *      题干 / 索引 question / 来源 / 类型命中 `语音|读音|发音|音标|重音|Pronunciation` 却无 `<u>`
+ *      ⇒ 列出待核清单，人工回原卷核对（这类里可能只是题干引用了原题的词、画线在别处）。
  *
  * 用法（node _题干门禁.mjs <动作>）：
  *   扫描 [--json]   只读：逐卡列出标记使用与问题
@@ -278,8 +288,34 @@ export function ellipsisLeadParagraphs(html, minLen = ELLIPSIS_MIN_LEN) {
   return out;
 }
 
+/* ---------- 判据⑦⑧：该画线却没画线（2026-11-08 新增） ---------- */
+
+/** 判据⑦的措辞：题干纯文本里出现「画线 / 划线」。 */
+export const UNDERLINE_WORD = /画线|划线/;
+
+/** 题干里**有没有画线标记** `<u>`。
+ *  ⚠ 判据刻意宽松（**任意位置**即算已标，不必与"画线"二字同段）——本仓惯例是宁可漏判也不误报。
+ *  ⚠ 只认真标签：实体化形态（`&lt;u&gt;`）不算 —— 那是判据①的活，见 `hasUnderlineMarkAny`。
+ *  ⚠ 写正则而非 `includes('<u>')`：`<u class="…">` 之类也应当算「有标记」。 */
+export function hasUnderlineMark(html) {
+  return /<u(?:\s[^<>]*)?>/i.test(String(html || ''));
+}
+
+/** 题干里有没有画线标记（**含实体化 / 双重转义形态** `&lt;u&gt;`）。
+ *  判据⑦⑧用它判"是否已标"：实体化形态属判据①（转义层套了两次），
+ *  **不在这里重复计** —— 否则同一处问题会同时报 ① 和 ⑦，读者会以为坏了两处（修法也不同：
+ *  ① 是改编码、⑦ 是补标记）。 */
+export function hasUnderlineMarkAny(html) {
+  const s = String(html || '');
+  if (hasUnderlineMark(s)) return true;
+  return entityTagHits(s).some(e => /^\/?u$/i.test(String(e.tag || '')));
+}
+
+/** 判据⑧的语音类关键词（题干 / 索引 question / 来源 / 类型 命中即可）。 */
+export const PHONETIC_WORD = /语音|读音|发音|音标|重音|pronunciation/i;
+
 /** 逐卡判定：返回 {ok, problems[], warns[], info} */
-export function judgeCard({ stem = '', question = '', type = '' } = {}) {
+export function judgeCard({ stem = '', question = '', source = '', type = '' } = {}) {
   const html = String(stem || '');
   const problems = [];
   const warns = [];
@@ -339,6 +375,25 @@ export function judgeCard({ stem = '', question = '', type = '' } = {}) {
     warns.push({ code: 'long-paragraph', msg: `最长段落纯文本 ${maxParaLen} 字符（≥${LONG_PARA_MIN}，共 ${paras.length} 段）——原文可能有多段被拍平成一个 <p>，读者看不出段落边界；请回原卷核对分段（只报告，不阻断）` });
   }
 
+  /* ⑦ 该画线却没有画线标记（A 级：**阻断**）—— 用户报障「单词画线的字母，你在印刷版中
+     没有体现出哪个字母画线了，这样的错误还不少」。提到"画线"却一个 `<u>` 都没有的题干，
+     读者不知道哪个字母/哪个短语被画了线 ⇒ 判断读音异同、按画线归类、对画线部分提问、
+     替换或翻译画线部分这些题**根本没法作答** ⇒ 印出去就是废题（与 ①②③⑤ 同为数据损坏级）。 */
+  const hasU = hasUnderlineMarkAny(html);
+  const mentionsUnderline = UNDERLINE_WORD.test(plain);
+  if (mentionsUnderline && !hasU) {
+    problems.push({ code: 'underline-missing', msg: '题干提到了**画线**（"画线 / 划线"），却一个 `<u>` 标记都没有——读者看不出哪个字母/哪个短语被画了线，这类题（判读音异同 / 按画线归类 / 对画线部分提问 / 替换或翻译画线部分）**不标画线就没法作答**。把被画线的字母或短语原样括起来：`classm<u>a</u>te`、`6. y<u>e</u>s  h<u>e</u>lp`、`The woman is <u>80 years old</u>.`' });
+  }
+
+  /* ⑧ 语音类题没有任何画线标记（B 级：**只报告**）—— 题干 / 索引 question / 来源 / 类型提到
+     语音类关键词却无 `<u>` ⇒ 列出待核清单。为什么只报告：这类里可能只是题干引用了原题的词、
+     画线在别处（语境另有出处），机器判不了，只能人工回原卷核对（与 ④⑥ 同一条分级理由）。 */
+  const phonFields = [plain, plainOf(question), plainOf(source), String(type || '')].join(' ');
+  const phonetic = PHONETIC_WORD.test(phonFields);
+  if (phonetic && !hasU) {
+    warns.push({ code: 'phonetic-no-underline', msg: '这是**语音类题**（命中 语音/读音/发音/音标/重音/Pronunciation），题干却没有 `<u>` 画线标记——请回原卷核对：若原题画了线，把被画线的字母/短语用 `<u>` 括出来（只报告，不阻断）' });
+  }
+
   return {
     ok: problems.length === 0,
     problems, warns,
@@ -346,6 +401,7 @@ export function judgeCard({ stem = '', question = '', type = '' } = {}) {
       nums: [...new Set(nums)], orphan, instructed, plainLen: plain.length,
       paras: paras.length, maxParaLen,
       fragment: frag.length > 0, truncated: trunc.length > 0, longPara: maxParaLen >= LONG_PARA_MIN,
+      underline: hasU, underlineWord: mentionsUnderline, phonetic,
     },
   };
 }
@@ -368,7 +424,7 @@ export function judgeLibrary(root = ROOT) {
   const rows = cards.map(x => {
     const p = path.join(x.dirAbs, STEM);
     const stem = fs.existsSync(p) ? fs.readFileSync(p, 'utf8').replace(/^\uFEFF/, '') : '';
-    const r = judgeCard({ stem, question: x.item.question, type: x.item.type });
+    const r = judgeCard({ stem, question: x.item.question, source: x.item.source, type: x.item.type });
     return Object.assign({ key: x.key, id: x.item.id, subject: x.subject, status: x.item.status }, r);
   });
   /* 已归档的卡只记录不阻断（与 _着重号门禁.mjs 同口径） */
@@ -380,9 +436,12 @@ export function judgeLibrary(root = ROOT) {
   const longParagraphs = rows.filter(r => r.info.longPara)
     .map(r => ({ key: r.key, maxParaLen: r.info.maxParaLen, paras: r.info.paras, blocked: !r.ok }))
     .sort((a, b) => b.maxParaLen - a.maxParaLen);
+  /* ⑧ 语音类题无画线标记：**只报告**的待核清单（不依赖 ok —— 被 ⑦ 阻断的卡也要列出来）。 */
+  const phoneticNoUnderline = rows.filter(r => r.info.phonetic && !r.info.underline)
+    .map(r => ({ key: r.key, id: r.id, subject: r.subject, blocked: !r.ok }));
   return {
     ok: blocked.length === 0,
-    rows, blocked, warned, longParagraphs,
+    rows, blocked, warned, longParagraphs, phoneticNoUnderline,
     stats: {
       total: rows.length,
       block: blocked.length,
@@ -392,6 +451,8 @@ export function judgeLibrary(root = ROOT) {
       fragment: rows.filter(r => r.problems.some(p => p.code === 'fragment-self-described')).length,
       truncated: rows.filter(r => r.problems.some(p => p.code === 'truncated-paragraph')).length,
       longPara: longParagraphs.length,
+      underlineMissing: rows.filter(r => r.problems.some(p => p.code === 'underline-missing')).length,
+      phoneticNoUnderline: phoneticNoUnderline.length,
     },
   };
 }
@@ -400,7 +461,7 @@ if (IS_ENTRY) switch (action) {
   case '扫描':
   case '门禁': {
     const lib = judgeLibrary();
-    const { rows, blocked, warned, longParagraphs } = lib;
+    const { rows, blocked, warned, longParagraphs, phoneticNoUnderline } = lib;
     const json = {
       ok: lib.ok,
       action,
@@ -410,9 +471,12 @@ if (IS_ENTRY) switch (action) {
       cards: Object.fromEntries(rows.map(r => [r.key, {
         ok: r.ok, nums: r.info.nums, orphan: r.info.orphan, instructed: r.info.instructed,
         fragment: r.info.fragment, truncated: r.info.truncated, maxParaLen: r.info.maxParaLen,
+        underline: r.info.underline, underlineWord: r.info.underlineWord, phonetic: r.info.phonetic,
       }])),
       /* ⑥ 的清单单独成键（B 级只报告；含被 ⑤ 阻断的卡），供人回原卷核对分段 */
       longParagraphs,
+      /* ⑧ 的清单单独成键（B 级只报告；含被 ⑦ 阻断的卡），供人回原卷核对画线 */
+      phoneticNoUnderline,
     };
     if (opt.json) {
       console.log(JSON.stringify(json));
@@ -420,10 +484,10 @@ if (IS_ENTRY) switch (action) {
       break;
     }
     if (action === '扫描') {
-      console.log(`题干可读性：${rows.length} 张卡 —— 数据损坏 ${rows.filter(r => !r.ok).length} 张（阻断 ${blocked.length}），内容欠完整 ${warned.length} 张（只报告）`);
+      console.log(`题干可读性：${rows.length} 张卡 —— 数据损坏 ${rows.filter(r => !r.ok).length} 张（阻断 ${blocked.length}，其中⑦该画线却没画线 ${lib.stats.underlineMissing} 张），内容欠完整 ${warned.length} 张（只报告）`);
       for (const r of rows) {
         if (r.ok && !r.warns.length) continue;
-        console.log(`${r.key.padEnd(14)} ${String(r.subject).padEnd(3)} ${r.ok ? 'ⓘ' : '⛔'} 题号[${r.info.nums.slice(0, 6).join(',')}] 孤儿号=${r.info.orphan ? '是' : '否'} 带指令=${r.info.instructed ? '是' : '否'} 最长段=${r.info.maxParaLen}`);
+        console.log(`${r.key.padEnd(14)} ${String(r.subject).padEnd(3)} ${r.ok ? 'ⓘ' : '⛔'} 题号[${r.info.nums.slice(0, 6).join(',')}] 孤儿号=${r.info.orphan ? '是' : '否'} 带指令=${r.info.instructed ? '是' : '否'} 最长段=${r.info.maxParaLen} 画线标记=${r.info.underline ? '有' : '无'}`);
         for (const p of r.problems) console.log('   ↳ ' + p.msg);
         for (const w of r.warns) console.log('   ⓘ ' + w.msg);
       }
@@ -431,11 +495,15 @@ if (IS_ENTRY) switch (action) {
         console.log(`\n⑥ 长段未分段（B 级只报告）：${longParagraphs.length} 张 —— 最长段落纯文本 ≥${LONG_PARA_MIN} 字符，回原卷核对段落边界`);
         for (const r of longParagraphs) console.log(`   ${r.key.padEnd(14)} 最长段 ${r.maxParaLen} 字符（共 ${r.paras} 段）${r.blocked ? '（另有 A 级问题，已阻断）' : ''}`);
       }
+      if (phoneticNoUnderline.length) {
+        console.log(`\n⑧ 语音类题没有画线标记（B 级只报告）：${phoneticNoUnderline.length} 张 —— 题干/来源/类型命中语音类关键词却无 <u>，回原卷核对画线在哪`);
+        for (const r of phoneticNoUnderline) console.log(`   ${r.key.padEnd(14)} ${String(r.subject).padEnd(3)}${r.blocked ? '（另有 A 级问题，已阻断）' : ''}`);
+      }
       break;
     }
     /* 门禁 */
     if (json.ok) {
-      console.log(`题干门禁通过：${rows.length} 张卡没有数据损坏（实体化标签 / 字面标签 / 标记不配对 / 语篇残篇）。`);
+      console.log(`题干门禁通过：${rows.length} 张卡没有数据损坏（实体化标签 / 字面标签 / 标记不配对 / 语篇残篇 / 该画线却没画线）。`);
       if (warned.length) {
         console.log(`   ⚠ 另有 ${warned.length} 张卡**内容欠完整**（题号是孤儿号却没带大题指令）——只报告不阻断。`);
         console.log('     这些是 2026-10-22 那批的历史欠账，登记在库根 `_整改台账.md`；整改要逐张回原卷核对，别批量改。');
@@ -445,8 +513,12 @@ if (IS_ENTRY) switch (action) {
         console.log(`   ⚠ 另有 ${longParagraphs.length} 张卡**长段未分段**（最长段落 ≥${LONG_PARA_MIN} 字符）——只报告不阻断，回原卷核对分段。`);
         console.log('     看清单：node _题干门禁.mjs 扫描（⑥ 段）');
       }
+      if (phoneticNoUnderline.length) {
+        console.log(`   ⚠ 另有 ${phoneticNoUnderline.length} 张卡是**语音类题却没有画线标记**——只报告不阻断，回原卷核对画线。`);
+        console.log('     看清单：node _题干门禁.mjs 扫描（⑧ 段）');
+      }
     } else {
-      console.log(`⛔ 题干门禁未通过：${blocked.length} 张卡有数据损坏（语篇残篇计入阻断）——`);
+      console.log(`⛔ 题干门禁未通过：${blocked.length} 张卡有数据损坏（语篇残篇、该画线却没画线均计入阻断）——`);
       for (const p of json.problems) console.log('   ' + p);
       process.exitCode = 1;
     }

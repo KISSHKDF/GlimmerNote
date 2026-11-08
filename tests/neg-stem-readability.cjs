@@ -13,7 +13,7 @@
  *   ② **大题指令没带进来**：只抄了小题（第 3、5 小题）⇒ 题号成孤儿号，
  *      读者不知道要做什么（S/D 各代表什么也没写）。
  *
- * 断言分七段：
+ * 断言分八段：
  *   A. 判据能力：四条判据各自能抓出对应的坏题干（**含已知事故样本**）。
  *   B. 判据**不误报**：数学不等号 `&lt;` / `&gt;`、合法内联标记（`<i>` `<sub>` `<span class="fr">`）
  *      、`<svg>` 图形、卡片自己的外壳（`<div class="stem">`）都**必须**判绿
@@ -27,6 +27,11 @@
  *   G. **⑤ 语篇残篇（阻断）/ ⑥ 长段未分段（只报告）**（2026-11-08 新增，E0058/E0059 跨页语篇事故）：
  *      正例各一条 + 阴性对照各一条（E0050 式短引用行**不**红；修复后抬头「跨页语篇已接成全文」**不**红；
  *      200 字符单段落**不**报 ⑥）+ 可证伪（摘掉判据 ⇒ 样本变绿；⑥ 的门槛/摘除都可对拍）。
+ *   H. **⑦ 该画线却没画线（阻断）/ ⑧ 语音类题无画线（只报告）**（2026-11-08 新增，用户报障
+ *      「单词画线的字母，你在印刷版中没有体现出哪个字母画线了，这样的错误还不少」）：
+ *      正例各一条 + 阴性对照三条（标了 `<u>` 的"画线"卡**不**红；`<u>` 在别的段落也算已标；
+ *      没提"画线"的题**不**红；语音类题标了画线就**不**报告）+ 实体化形态不与判据①重复计
+ *      + 可证伪（摘掉 ⑦⑧ ⇒ 样本变绿）+ 入库侧拒收与不误拒。
  *
  * 全部只读：不写库、不起壳。退出码 0=全绿。
  */
@@ -64,7 +69,7 @@ function loadIngestPure() {
   const end = src.indexOf('/* ───────────────── 错题记录.md');
   if (start < 0 || end < 0 || end <= start) throw new Error('抽不出 buildStemHtml 段（源码形状变了？）');
   const code = src.slice(start, end)
-    + '\nexport { buildStemHtml, escapeHtmlAllowMarkup, assertNoEntityTags, checkEntityTags };';
+    + '\nexport { buildStemHtml, escapeHtmlAllowMarkup, assertNoEntityTags, checkEntityTags, assertUnderlineMarked, checkUnderlineMarked };';
   /* 源码里 assertNoEntityTags / checkEntityTags 已是 export ⇒ 再 export 一次会报重复 */
   const tmp = path.join(require('os').tmpdir(), 'ctb-ingest-pure-' + process.pid + '.mjs');
   fs.writeFileSync(tmp, code.replace(/^export function /gm, 'function '), 'utf8');
@@ -111,6 +116,30 @@ const wrapP = t => '<div class="stem"><p class="stem-lead">' + t + '</p></div>';
 /** 把新增的 A 级两条判据从判定结果里**摘掉**（可证伪用：摘掉必须变绿）。 */
 const dropNewBlocking = r => Object.assign({}, r, {
   problems: r.problems.filter(p => p.code !== 'fragment-self-described' && p.code !== 'truncated-paragraph'),
+});
+
+/* ═══════════ 2026-11-08 新增样本：⑦ 该画线却没画线（阻断） / ⑧ 语音类题无画线（只报告） ═══════════
+   用户报障原话：「单词画线的字母，你在印刷版中没有体现出哪个字母画线了，这样的错误还不少」。
+   真库实测（610 张题干）：提到"画线/划线"却一个 `<u>` 都没有的 = 6 张（全在学生A·英语
+   E0006 / E0018 / E0038 / E0044 / E0045 / E0046）；另有 9 张命中语音类关键词却无 `<u>`（待核清单）。
+   样本一律内联（铁律：测试不依赖真实用户数据），形状照抄真库事故样本。 */
+
+/** ⑦ 阳性（E0006 的真实形态）：「对画线部分提问」却没有任何 `<u>`。 */
+const UNDERLINE_MISSING = '<div class="stem"><p class="stem-lead">1. The woman is 80 years old. (对画线部分提问) ______ ______ ______ the woman?</p></div>';
+/** ⑦ 阴性一：同一道题**标了画线**（`<u>` 把被画线的短语括出来）⇒ 必须判绿。 */
+const UNDERLINE_MARKED = '<div class="stem"><p class="stem-lead">1. The woman is <u>80 years old</u>. (对画线部分提问) ______ ______ ______ the woman?</p></div>';
+/** ⑦ 阴性二：`<u>` 在**另一个段落**（不必与"画线"二字同段）⇒ 也算已标，必须判绿。 */
+const UNDERLINE_MARKED_ELSEWHERE = '<div class="stem"><p class="stem-lead">【题目要求】把画线部分的字母发音归类。</p><p class="stem-lead">1. c<u>a</u>ke    2. c<u>a</u>t</p></div>';
+/** ⑦ 与判据①的分界：实体化的 `&lt;u&gt;` 属判据①（转义层套两次），**不许**在 ⑦ 里再计一遍。 */
+const UNDERLINE_ENTITY = '<div class="stem"><p class="stem-lead">1. classm&lt;u&gt;a&lt;/u&gt;te（画线部分的字母）</p></div>';
+/** ⑧ 阳性：语音类题却没有 `<u>`（顺便证"只报告不阻断"）。 */
+const PHONETIC_NO_U = '<div class="stem"><p class="stem-lead">1. 听录音，选出你听到的单词（语音辨析）</p></div>';
+/** ⑧ 阴性：语音类题**标了**画线 ⇒ 不再报告。 */
+const PHONETIC_WITH_U = '<div class="stem"><p class="stem-lead">1. 判断每组单词画线部分读音是否相同：y<u>e</u>s  h<u>e</u>lp</p></div>';
+/** 把 ⑦⑧ 两条新判据从判定结果里**摘掉**（可证伪用：摘掉必须变绿）。 */
+const dropUnderlineGate = r => Object.assign({}, r, {
+  problems: r.problems.filter(p => p.code !== 'underline-missing'),
+  warns: r.warns.filter(w => w.code !== 'phonetic-no-underline'),
 });
 
 function runAll() {
@@ -297,6 +326,102 @@ function runAll() {
     GATE.fragmentSelfDescHits(GATE.plainOf(XPG_BAD)).length >= 1,
     '修复后=' + JSON.stringify(GATE.fragmentSelfDescHits(GATE.plainOf(XPG_FIXED))) +
     ' 修复前=' + JSON.stringify(GATE.fragmentSelfDescHits(GATE.plainOf(XPG_BAD))));
+
+  console.log('\n== H. 新增判据：⑦ 该画线却没画线（阻断） / ⑧ 语音类题无画线（只报告） ==');
+
+  /* ── H1 ⑦ 阳性：提到"画线"却一个 `<u>` 都没有 ⇒ 判红（阻断）── */
+  const h1 = GATE.judgeCard({ stem: UNDERLINE_MISSING });
+  A('⑦ 阳性：题干提到"画线"却一个 `<u>` 都没有 ⇒ 判红（阻断，印出去是废题）',
+    h1.ok === false && h1.problems.some(p => p.code === 'underline-missing'),
+    'ok=' + h1.ok + ' problems=' + h1.problems.map(p => p.code).join(','));
+
+  /* ── H2 ⑦ 阴性：标了画线就不红 ── */
+  const h2 = GATE.judgeCard({ stem: UNDERLINE_MARKED });
+  A('⑦ 阴性：提到"画线"且用 `<u>` 括出了画线部分 ⇒ **不**命中（不误报）',
+    h2.ok === true && !h2.problems.some(p => p.code === 'underline-missing'),
+    'problems=' + (h2.problems.map(p => p.code).join(',') || '无'));
+
+  /* ── H3 ⑦ 阴性：`<u>` 在另一个段落也算已标（判据不许窄到"必须与画线同段"）── */
+  const h3 = GATE.judgeCard({ stem: UNDERLINE_MARKED_ELSEWHERE });
+  A('⑦ 阴性：`<u>` 出现在**另一个段落**也算已标（"任意位置即算"，避免误报）',
+    h3.ok === true && !h3.problems.some(p => p.code === 'underline-missing'),
+    'problems=' + (h3.problems.map(p => p.code).join(',') || '无'));
+
+  /* ── H4 ⑦ 阴性：没提"画线"的题即使没有 `<u>` 也不红（否则全库误报）── */
+  const h4 = GATE.judgeCard({ stem: '<div class="stem"><p class="stem-lead">1. 计算 2+3</p></div>' });
+  A('⑦ 阴性：没提"画线"的题即使没有 `<u>` 也**不**红（不宽到"没 `<u>` 就红"）',
+    h4.ok === true && !h4.problems.some(p => p.code === 'underline-missing'),
+    'ok=' + h4.ok + ' problems=' + (h4.problems.map(p => p.code).join(',') || '无'));
+
+  /* ── H5 ⑦ 与 ① 不重复计：实体化的 `&lt;u&gt;` 归判据① ── */
+  const h5 = GATE.judgeCard({ stem: UNDERLINE_ENTITY });
+  A('⑦ 不重复计：实体化 `&lt;u&gt;` 由判据①（entity-tag）接手，⑦ 不再报一遍（修法不同）',
+    h5.ok === false && h5.problems.some(p => p.code === 'entity-tag') && !h5.problems.some(p => p.code === 'underline-missing'),
+    'problems=' + h5.problems.map(p => p.code).join(','));
+
+  /* ── H6 ⑧ 阳性：语音类题无 `<u>` ⇒ **只报告不阻断** ── */
+  const h6 = GATE.judgeCard({ stem: PHONETIC_NO_U });
+  A('⑧ 阳性：提到"语音/发音"却没有 `<u>` ⇒ 进 warns（只报告），ok 仍为 true（不阻断发布链）',
+    h6.ok === true && h6.problems.length === 0 && h6.warns.some(w => w.code === 'phonetic-no-underline'),
+    'ok=' + h6.ok + ' problems=' + (h6.problems.map(p => p.code).join(',') || '无') + ' warns=' + h6.warns.map(w => w.code).join(','));
+
+  /* ── H7 ⑧ 阴性：语音类题标了画线 ⇒ 不再报告 ── */
+  const h7 = GATE.judgeCard({ stem: PHONETIC_WITH_U });
+  A('⑧ 阴性：语音类题**标了**画线 ⇒ 不再报告',
+    !h7.warns.some(w => w.code === 'phonetic-no-underline'),
+    'warns=' + (h7.warns.map(w => w.code).join(',') || '无'));
+
+  /* ── H8 ⑧ 也看"来源 / 类型"：题干干净、来源写着 Pronunciation ⇒ 也进待核清单 ── */
+  const h8 = GATE.judgeCard({ stem: '<div class="stem"><p class="stem-lead">1. computer ______</p></div>', source: '课时练·Unit 1 Period 5 Pronunciation' });
+  A('⑧ 判据覆盖"题干/来源/类型"：来源命中语音类关键词也进待核清单（不只看题干）',
+    h8.warns.some(w => w.code === 'phonetic-no-underline'),
+    'warns=' + (h8.warns.map(w => w.code).join(',') || '无'));
+
+  /* ── H9 可证伪：摘掉 ⑦⑧ 两条判据 ⇒ 两个阳性样本分别变绿 / 不再报告 ── */
+  A('可证伪：摘掉 ⑦ 的判据后 ⑦ 阳性样本**变绿**、摘掉 ⑧ 后 ⑧ 阳性样本不再报告（判据不是恒真）',
+    h1.ok === false && dropUnderlineGate(h1).problems.length === 0 &&
+    h6.warns.some(w => w.code === 'phonetic-no-underline') && !dropUnderlineGate(h6).warns.some(w => w.code === 'phonetic-no-underline'),
+    '⑦摘掉后 problems=' + (dropUnderlineGate(h1).problems.map(p => p.code).join(',') || '无') +
+    ' ⑧摘掉后 warns=' + (dropUnderlineGate(h6).warns.map(w => w.code).join(',') || '无'));
+
+  /* ── H10 判据函数级可证伪：两个判据函数真会分辨，不是恒真/恒假 ── */
+  A('可证伪 · `hasUnderlineMark` 有分辨力（无标记样本 false / 有标记样本 true）',
+    GATE.hasUnderlineMark(UNDERLINE_MISSING) === false && GATE.hasUnderlineMark(UNDERLINE_MARKED) === true &&
+    GATE.hasUnderlineMark(UNDERLINE_MARKED_ELSEWHERE) === true,
+    'missing=' + GATE.hasUnderlineMark(UNDERLINE_MISSING) + ' marked=' + GATE.hasUnderlineMark(UNDERLINE_MARKED));
+  A('可证伪 · `<u class="x">` 也算有标记（判据不写成 `includes("<u>")`）',
+    GATE.hasUnderlineMark('<p>a<u class="x">b</u></p>') === true,
+    String(GATE.hasUnderlineMark('<p>a<u class="x">b</u></p>')));
+  A('可证伪 · `UNDERLINE_WORD` 只在提到"画线/划线"时命中',
+    GATE.UNDERLINE_WORD.test('对画线部分提问') && GATE.UNDERLINE_WORD.test('把划线部分译成中文') && !GATE.UNDERLINE_WORD.test('选出你听到的单词'),
+    '画线=' + GATE.UNDERLINE_WORD.test('对画线部分提问') + ' 划线=' + GATE.UNDERLINE_WORD.test('把划线部分译成中文'));
+
+  /* ── H11 入库侧：提到"画线"却没有 `<u>` ⇒ buildStemHtml **抛错拒收** ── */
+  let uThrew = null, uOut = null;
+  try { uOut = INGEST.buildStemHtml('1. The woman is 80 years old. (对画线部分提问) ______', false); } catch (e) { uThrew = e; }
+  A('入库侧：`buildStemHtml` 对"提到画线却无 `<u>`"**抛错**（不是静默落盘）',
+    !!uThrew, uThrew ? String(uThrew.message).slice(0, 110) : '没抛错，输出了：' + String(uOut).slice(0, 110));
+
+  const uKeep = INGEST.buildStemHtml('1. y<u>e</u>s  h<u>e</u>lp', false);
+  A('入库侧：标了画线的题**照常入库**（这条判据不误拒）',
+    uKeep.includes('<u>e</u>'), uKeep.replace(/\n/g, ' ').trim().slice(0, 110));
+
+  const uPlain = INGEST.buildStemHtml('1. 计算 2+3', false);
+  A('入库侧：没提"画线"的题不受这条约束',
+    uPlain.includes('2+3'), uPlain.replace(/\n/g, ' ').trim().slice(0, 110));
+
+  const uEnt = INGEST.assertUnderlineMarked('1. classm&lt;u&gt;a&lt;/u&gt;te（画线部分）');
+  A('入库侧：实体化形态归"实体化标签"那条，这条判据**不重复报**（返回 null）',
+    uEnt === null, String(uEnt).slice(0, 90));
+
+  /* ── H12 阴性自证：入库器里两处入口都真的接了这条判据（不是空壳）── */
+  A('阴性自证 · 入库器里「提到画线却没标 ⇒ 抛错」的代码在位（入库 + 改卡两个入口 + buildStemHtml）',
+    /export function assertUnderlineMarked/.test(srcText) &&
+    /checkUnderlineMarked\(raw\)/.test(srcText) &&
+    (srcText.match(/assertUnderlineMarked\(c\.questionText\)/g) || []).length === 2,
+    '定义=' + /export function assertUnderlineMarked/.test(srcText) +
+    ' buildStemHtml=' + /checkUnderlineMarked\(raw\)/.test(srcText) +
+    ' 入口处数=' + (srcText.match(/assertUnderlineMarked\(c\.questionText\)/g) || []).length);
 
   console.log('\n──────────────────────────────');
   console.log(fails === 0 ? 'RESULT=PASS 断言=' + passed : 'RESULT=FAIL 断言=' + passed + ' 失败=' + fails);

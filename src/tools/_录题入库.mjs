@@ -204,6 +204,10 @@ function imageAbs(task) {
 function buildStemHtml(text, hasBlank) {
   const raw = String(text || '');
   checkEntityTags(raw);
+  /* ★ 2026-11-08（用户报障「单词画线的字母…没有体现出哪个字母画线了」）：
+     提到"画线"却一个 `<u>` 都没有 ⇒ 当场拒收（与实体化标签同一处、同一风格）。
+     这类题不标画线就没法作答，落盘等于造一道印不出来的废题。 */
+  checkUnderlineMarked(raw);
   const paras = raw.split(/\n+/).map(s => s.trim()).filter(Boolean);
   const body = paras.length ? paras.map(p => '<p class="stem-lead">' + escapeHtmlAllowMarkup(p) + '</p>').join('\n  ')
     : '<p class="stem-lead">（题干为空）</p>';
@@ -260,6 +264,35 @@ export function assertNoEntityTags(text) {
  *  返回 null 表示通过；返回字符串表示有问题（给前置检查用，不抛）。 */
 export function checkEntityTags(text) {
   const msg = assertNoEntityTags(text);
+  if (msg) throw new Error(msg);
+  return null;
+}
+/** **该画线却没画线标记** ⇒ 拒收（2026-11-08，用户报障「单词画线的字母，你在印刷版中
+ *  没有体现出哪个字母画线了，这样的错误还不少」）。
+ *  判据：`questionText` 里出现「画线 / 划线」，却**一个 `<u>` 都没有**。
+ *  为什么是拒收而不是警告：这类题（判断读音异同 / 按画线部分归类 / 对画线部分提问 /
+ *  替换或翻译画线部分）**不标出画线就没法作答** —— 落盘等于造一道印不出来的废题。
+ *  ⚠ 判据与 `_题干门禁.mjs` 判据⑦同口径（那边是扫描存量、这里是入库当场拦），
+ *    两处**同一条规则**，改一处要同时改另一处。
+ *  ⚠ 只认**真标签** `<u>`：实体化形态（`&lt;u&gt;`）属"实体化标签"那条（assertNoEntityTags），
+ *    不在这里重复计（否则同一处问题报两条，修法还不同）。`<u>` 出现在**任意位置**即算已标
+ *    （不必与"画线"二字同段）——宁可漏判也不误报。 */
+export function assertUnderlineMarked(text) {
+  const s = String(text || '');
+  if (!/画线|划线/.test(s)) return null;
+  if (/<u(?:\s[^<>]*)?>/i.test(s)) return null;
+  /* 实体化 / 双重转义形态（`&lt;u&gt;` / `&amp;lt;u&amp;gt;`）算"已标"——它归 assertNoEntityTags 管 */
+  if (/&(?:amp;)*lt;\/?u\b/i.test(s)) return null;
+  return '题干提到**画线**（"画线 / 划线"）却一个 `<u>` 标记都没有——读者看不出哪个字母/哪个短语被画了线，' +
+    '这类题（判断读音异同 / 按画线部分归类 / 对画线部分提问 / 替换或翻译画线部分）**不标画线就没法作答**。' +
+    '请把被画线的字母或短语**原样**用 `<u>` 括起来：' +
+    '`classm<u>a</u>te`、`6. y<u>e</u>s  h<u>e</u>lp`、`The woman is <u>80 years old</u>.`' +
+    '（画线的就是哪个字母/哪个短语，不要整词一起括）。';
+}
+/** 该画线却没画线标记 ⇒ **抛错拒收**（入库前置检查与 buildStemHtml 都走它）。
+ *  返回 null 表示通过；返回字符串表示有问题（给前置检查用，不抛）。 */
+export function checkUnderlineMarked(text) {
+  const msg = assertUnderlineMarked(text);
   if (msg) throw new Error(msg);
   return null;
 }
@@ -534,6 +567,10 @@ function cmdFix() {
      不让"转义层套两次"的题干再落一次盘。 */
   const entityProblem = assertNoEntityTags(c.questionText);
   if (entityProblem) return fail('改卡中止：' + entityProblem, 1);
+  /* ★ 2026-11-08（用户报障「单词画线的字母…没有体现出哪个字母画线了」）：改卡入口同样要拒
+     **提到"画线"却一个 `<u>` 都没有**的题干 —— 写盘前拦，别把废题改进来。 */
+  const underlineProblem = assertUnderlineMarked(c.questionText);
+  if (underlineProblem) return fail('改卡中止：' + underlineProblem, 1);
 
   /* ③ 找到原图：优先用回传的 sourceImageSha256 去台账/收件箱找；找不到就只改文本不动裁图 */
   let srcImg = null;
@@ -803,6 +840,11 @@ function cmdLand() {
        前置检查拦 ⇒ 错在入库那一刻就看得见，而不是印出来才发现。 */
     const entityProblem = assertNoEntityTags(c.questionText);
     if (entityProblem) problems.push(id + ' 的 ' + entityProblem);
+    /* ★ 2026-11-08（用户报障「单词画线的字母，你在印刷版中没有体现出哪个字母画线了，
+       这样的错误还不少」）：`questionText` 提到"画线"却一个 `<u>` 都没有 ⇒ 当场拒收。
+       与上一条（实体化标签）同一处、同一风格：错在入库那一刻就看得见。 */
+    const underlineProblem = assertUnderlineMarked(c.questionText);
+    if (underlineProblem) problems.push(id + ' 的 ' + underlineProblem);
     /* ★ 2026-11-07（红字归属·第二次收紧，用户裁定）：**卷面红字绝大部分不是老师批的**
        （孩子自己批改/订正、同学互批、家长帮批）⇒ 红字**只能作普通参考，不能作定案标准**。
        ⇒ 「老师定案」这个 answerSource 取值**被废除**：它等于"把红字当定案标准"。
