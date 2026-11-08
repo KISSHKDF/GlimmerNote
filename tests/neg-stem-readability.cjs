@@ -13,7 +13,7 @@
  *   ② **大题指令没带进来**：只抄了小题（第 3、5 小题）⇒ 题号成孤儿号，
  *      读者不知道要做什么（S/D 各代表什么也没写）。
  *
- * 断言分五段：
+ * 断言分七段：
  *   A. 判据能力：四条判据各自能抓出对应的坏题干（**含已知事故样本**）。
  *   B. 判据**不误报**：数学不等号 `&lt;` / `&gt;`、合法内联标记（`<i>` `<sub>` `<span class="fr">`）
  *      、`<svg>` 图形、卡片自己的外壳（`<div class="stem">`）都**必须**判绿
@@ -23,6 +23,10 @@
  *   D. 入库流水线：`buildStemHtml` 对实体化标签**必须抛错拒收**（不是静默落盘），
  *      对真标签**必须原样保留**（画线标记丢了题就做不了），对 `<script>` **必须转义**。
  *   E. 阴性自证：把判据拆掉（实体检测 / 不自足检测 / 拒收逻辑）⇒ 对应断言**必须变红**。
+ *   F. 分级：数据损坏=阻断，内容欠完整=只报告。
+ *   G. **⑤ 语篇残篇（阻断）/ ⑥ 长段未分段（只报告）**（2026-11-08 新增，E0058/E0059 跨页语篇事故）：
+ *      正例各一条 + 阴性对照各一条（E0050 式短引用行**不**红；修复后抬头「跨页语篇已接成全文」**不**红；
+ *      200 字符单段落**不**报 ⑥）+ 可证伪（摘掉判据 ⇒ 样本变绿；⑥ 的门槛/摘除都可对拍）。
  *
  * 全部只读：不写库、不起壳。退出码 0=全绿。
  */
@@ -71,7 +75,48 @@ function loadIngestPure() {
 /* ═══════════ A. 判据能力 ═══════════ */
 const E0017_BAD = '<div class="stem">\n  <p class="stem-lead">( ) 3. classm&lt;u&gt;a&lt;/u&gt;te        &lt;u&gt;a&lt;/u&gt;ny</p>\n  <p class="stem-lead">( ) 5. th&lt;u&gt;e&lt;/u&gt;se        &lt;u&gt;e&lt;/u&gt;nergy</p>\n</div>';
 
+/* ═══════════ 2026-11-08 新增样本：⑤ 语篇残篇 / ⑥ 长段未分段（E0058/E0059 跨页语篇事故） ═══════════
+   事故现场（学生A·英语 E0058/E0059，课时练 p31→p32 跨页语篇）：题干**只抄了后半页**，
+   抄题的人自己在题干里写了占位「本页为后半，前半在 p31」，正文段又以省略号起头
+   ⇒ 读者读不到标题与主题句，原文两段还被拍平成一个 `<p>`。
+   修复前真库实测（2026-11-08，610 张卡）：⑤ 命中 2 张 = 学生A|E0058 / 学生A|E0059；
+   ⑥ 列出 24 张；E0050（学生A）的段首省略号只有 43 字符 ⇒ 必须**不**被 ⑤ 命中。
+   样本一律内联（铁律：测试不依赖真实用户数据），形状照抄真库事故样本。 */
+const XPG_BODY = '…happy and healthy. In China, many grandmas love dancing together in parks or public squares (公共广场). They often meet in the evening to move to the music and chat with friends. Some also play mahjong (麻将), a fun game with tiles. Light exercises, such as walking backward while clapping hands, are also popular ways to stay active (活跃的). In the United States, elderly people have their own hobbies. Many enjoy playing card games. This helps them make friends and feel less lonely.';
+const XPG_BAD = '<div class="stem">\n'
+  + '  <p class="stem-lead">4. How many hobbies for elderly people in the US are mentioned (提到) in the passage?</p>\n'
+  + '  <p class="stem-lead">【短文原文（第32页·技能拓展提升 阅读短文，回答问题；跨页语篇，本页为后半，前半在 p31）】</p>\n'
+  + '  <p class="stem-lead">（跨页语篇：短文前半在 p31，本页为后半）' + XPG_BODY + '</p>\n'
+  + '</div>';
+/* 修复后的口径（Lead 2026-11-08 定）：抬头写「跨页语篇已接成全文」——**提到"跨页"但已完整**，
+   ⑤a 必须判绿（判据只认"残篇自述"的具体措辞，不认"跨页"这个词本身）。 */
+const XPG_FIXED = '<div class="stem">\n'
+  + '  <p class="stem-lead">4. How many hobbies for elderly people in the US are mentioned (提到) in the passage?</p>\n'
+  + '  <p class="stem-lead">【短文原文（课时练 7A 第31–32页·技能拓展提升 阅读短文，回答问题；跨页语篇已接成全文）】</p>\n'
+  + '  <p class="stem-lead">Good health is very important for everyone. In China, many grandmas love dancing together in parks or public squares (公共广场). They often meet in the evening to move to the music and chat with friends.</p>\n'
+  + '  <p class="stem-lead">In the United States, elderly people have their own hobbies. Many enjoy playing card games. This helps them make friends and feel less lonely.</p>\n'
+  + '</div>';
+/* E0050（学生A）的真实形态：省略号在**问题行**里、只有 43 字符 —— 合法的引用标记（阴性对照）。 */
+const E0050_SHORT_QUOTE = '<div class="stem">\n'
+  + '  <p class="stem-lead">…like Chinese, Maths, English and (4) ______.</p>\n'
+  + '  <p class="stem-lead">&nbsp;</p>\n'
+  + '  <p class="stem-lead">【短文原文（第29页·基础知识巩固 二、短文填空）】</p>\n'
+  + '  <p class="stem-lead">I am Liu Hua. I am from No. 1 Middle School. Our school has seven clubs (1) ______.</p>\n'
+  + '</div>';
+/* ⑥ 的两个长度样本（同一段文字的截断，避免"字面不同"干扰长度对照） */
+const PARA_SRC = 'Hobbies keep our lives interesting and full of joy. '.repeat(12);
+const PARA_200 = PARA_SRC.slice(0, 200);
+const PARA_420 = PARA_SRC.slice(0, 420);
+const wrapP = t => '<div class="stem"><p class="stem-lead">' + t + '</p></div>';
+/** 把新增的 A 级两条判据从判定结果里**摘掉**（可证伪用：摘掉必须变绿）。 */
+const dropNewBlocking = r => Object.assign({}, r, {
+  problems: r.problems.filter(p => p.code !== 'fragment-self-described' && p.code !== 'truncated-paragraph'),
+});
+
 function runAll() {
+  /* ⑤/⑥ 的两个主样本先算出来：F 段（分级）与 G 段（新判据）都要用同一份判定结果。 */
+  const g1 = GATE.judgeCard({ stem: XPG_BAD });
+  const g7 = GATE.judgeCard({ stem: wrapP(PARA_420) });
   console.log('== A. 判据能力：坏题干必须被抓 ==');
   const r1 = GATE.judgeCard({ stem: E0017_BAD });
   A('事故样本被判红', r1.ok === false, r1.problems.map(p => p.code).join(','));
@@ -180,6 +225,78 @@ function runAll() {
   A('「标记不配对」进 problems（阻断）',
     unbalanced.ok === false && unbalanced.problems.some(p => p.code === 'tag-unbalanced'),
     'ok=' + unbalanced.ok + ' problems=' + unbalanced.problems.map(p => p.code).join(','));
+
+  /* ⑤（语篇残篇）也必须是 **problems**（阻断）——只抄半页的题**绝不能**印出去（E0058/E0059 事故） */
+  A('「语篇残篇」进 problems（阻断，绝不印半页题）',
+    g1.problems.some(p => p.code === 'fragment-self-described') && g1.warns.every(w => w.code !== 'fragment-self-described'),
+    'problems=' + g1.problems.map(p => p.code).join(',') + ' warns=' + (g1.warns.map(w => w.code).join(',') || '无'));
+
+  /* ⑥（长段未分段）必须是 **warns**（只报告）——分段对不对只能回原卷核，判成阻断会把存量一次打挂 */
+  A('「长段未分段」进 warns（只报告，不阻断发布链）',
+    g7.ok === true && g7.problems.length === 0 && g7.warns.some(w => w.code === 'long-paragraph'),
+    'ok=' + g7.ok + ' problems=' + (g7.problems.map(p => p.code).join(',') || '无') + ' warns=' + g7.warns.map(w => w.code).join(','));
+
+  console.log('\n== G. 新增判据：⑤ 语篇残篇（阻断） / ⑥ 长段未分段（只报告） ==');
+
+  /* ── G1 ⑤a 阳性：跨页残篇（残篇自述占位 + 段首省略号）── */
+  A('⑤a 阳性：跨页残篇（含「本页为后半 / 前半在」）被判红',
+    g1.ok === false && g1.problems.some(p => p.code === 'fragment-self-described'),
+    'ok=' + g1.ok + ' problems=' + g1.problems.map(p => p.code).join(','));
+
+  /* ── G2 ⑤a 阴性：修复后抬头含「跨页语篇已接成全文」——必须判绿（判据不许宽到"见跨页就红"）── */
+  const g2 = GATE.judgeCard({ stem: XPG_FIXED });
+  A('⑤a 阴性：修复后抬头「跨页语篇已接成全文」**不**命中残篇判据（不宽到"遇到『跨页』就红"）',
+    !g2.problems.some(p => p.code === 'fragment-self-described'),
+    'problems=' + (g2.problems.map(p => p.code).join(',') || '无'));
+
+  /* ── G3 ⑤b 阳性：段首省略号 + 纯文本 ≥100 字符 ── */
+  const g3 = GATE.judgeCard({ stem: wrapP(XPG_BODY) });
+  A('⑤b 阳性：`<p>` 以省略号开头且 ≥100 字符 ⇒ 判红（长文从半句开始 = 截断）',
+    g3.ok === false && g3.problems.some(p => p.code === 'truncated-paragraph'),
+    'ok=' + g3.ok + ' problems=' + g3.problems.map(p => p.code).join(','));
+
+  /* ── G4 ⑤b 阴性（Lead 实测口径）：E0050 式短引用行必须**不**红 ── */
+  const g4 = GATE.judgeCard({ stem: E0050_SHORT_QUOTE });
+  const shortLen = GATE.paragraphTexts(E0050_SHORT_QUOTE)[0].length;
+  A('⑤ 阴性：E0050 式短引用行（段首省略号，' + shortLen + ' 字符 < 门槛 ' + GATE.ELLIPSIS_MIN_LEN + '）**不**被 ⑤ 命中',
+    g4.ok === true && !g4.problems.some(p => p.code === 'fragment-self-described' || p.code === 'truncated-paragraph'),
+    'ok=' + g4.ok + ' problems=' + (g4.problems.map(p => p.code).join(',') || '无'));
+
+  /* ── G5 ⑤b 的**长度门槛是判据的一部分**：同一样本降到门槛 1 就会被命中 ⇒ 去掉门槛必误报 E0050 ── */
+  A('⑤b 门槛可证伪：同一样本在门槛 ' + GATE.ELLIPSIS_MIN_LEN + ' 下 0 命中、门槛 1 下 1 命中（证明"短引用行不算"靠的就是门槛）',
+    GATE.ellipsisLeadParagraphs(E0050_SHORT_QUOTE, GATE.ELLIPSIS_MIN_LEN).length === 0 &&
+    GATE.ellipsisLeadParagraphs(E0050_SHORT_QUOTE, 1).length === 1,
+    '门槛' + GATE.ELLIPSIS_MIN_LEN + '=' + GATE.ellipsisLeadParagraphs(E0050_SHORT_QUOTE, GATE.ELLIPSIS_MIN_LEN).length +
+    '，门槛1=' + GATE.ellipsisLeadParagraphs(E0050_SHORT_QUOTE, 1).length);
+
+  /* ── G6 ③⑤ 可证伪：把新增两条 A 级判据摘掉 ⇒ 事故样本必须**变绿**（"加了才红"）── */
+  A('可证伪：摘掉 ⑤ 的两条判据后，跨页残篇样本**变绿**（判据是新增的、去掉就绿）',
+    g1.ok === false && dropNewBlocking(g1).problems.length === 0,
+    '原 problems=' + g1.problems.map(p => p.code).join(',') + ' ⇒ 摘掉后=' + (dropNewBlocking(g1).problems.map(p => p.code).join(',') || '无'));
+
+  /* ── G7 ⑥ 阳性：最长段落 ≥400 字符 ⇒ **只报告**（ok 仍为 true，不阻断发布链）── */
+  A('⑥ 阳性：最长段落 ' + PARA_420.length + ' 字符（≥' + GATE.LONG_PARA_MIN + '）⇒ 报告长段未分段，且**不阻断**（ok=true）',
+    g7.ok === true && g7.warns.some(w => w.code === 'long-paragraph') && g7.info.maxParaLen >= GATE.LONG_PARA_MIN,
+    'ok=' + g7.ok + ' warns=' + g7.warns.map(w => w.code).join(',') + ' maxParaLen=' + g7.info.maxParaLen);
+
+  /* ── G8 ⑥ 阴性：单段落短文 200 字符必须**不**报 ⑥ ── */
+  const g8 = GATE.judgeCard({ stem: wrapP(PARA_200) });
+  A('⑥ 阴性：单段落短文 ' + PARA_200.length + ' 字符（<' + GATE.LONG_PARA_MIN + '）**不**报长段未分段',
+    !g8.warns.some(w => w.code === 'long-paragraph'),
+    'warns=' + (g8.warns.map(w => w.code).join(',') || '无'));
+
+  /* ── G9 ⑥ 可证伪：把该告警摘掉 ⇒ 阳性样本不再报告（判据有牙齿）── */
+  A('可证伪：摘掉 ⑥ 的告警后，长段阳性样本不再报告（判据不是恒真）',
+    g7.warns.some(w => w.code === 'long-paragraph') &&
+    g7.warns.filter(w => w.code !== 'long-paragraph').length === 0,
+    '摘掉后 warns=' + g7.warns.filter(w => w.code !== 'long-paragraph').map(w => w.code).join(',') || '无');
+
+  /* ── G10 ⑤ 的措辞判据不宽：光有"跨页"二字（修复后抬头）零命中 ── */
+  A('⑤a 措辞判据有边界：`fragmentSelfDescHits` 对「跨页语篇已接成全文」零命中，对「本页为后半」命中',
+    GATE.fragmentSelfDescHits(GATE.plainOf(XPG_FIXED)).length === 0 &&
+    GATE.fragmentSelfDescHits(GATE.plainOf(XPG_BAD)).length >= 1,
+    '修复后=' + JSON.stringify(GATE.fragmentSelfDescHits(GATE.plainOf(XPG_FIXED))) +
+    ' 修复前=' + JSON.stringify(GATE.fragmentSelfDescHits(GATE.plainOf(XPG_BAD))));
 
   console.log('\n──────────────────────────────');
   console.log(fails === 0 ? 'RESULT=PASS 断言=' + passed : 'RESULT=FAIL 断言=' + passed + ' 失败=' + fails);
