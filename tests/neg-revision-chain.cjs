@@ -29,8 +29,8 @@ const NEW_TOOL = E.tool('_待确认.mjs');
 
 /* 对拍基线：批次 4 开工时的 HEAD（不可变提交）。用**指纹钉住**取回来的旧实现——
    否则「git 里那个对象换了/取错了」会让对拍变成"对着别的东西比"，而屏幕上看不出。 */
-const OLD_COMMIT = '6df511a';
-const OLD_SHA256 = '7a8e2a0757c0119fc53493e85fd610664bc4b734f0a8e24cbb3c3e7fc8895d2a';
+const OLD_COMMIT = '069e5a2';
+const OLD_SHA256 = 'a0f7cafc8deae6fdca2dcc85ab63e75d57c0565af0370ed4dc6e7b4874be1d26';
 
 const BASE = E.allocTempDir('gn-testlib-');
 const MUT_DIR = path.join(BASE, 'mut-tools');
@@ -58,10 +58,16 @@ function runTool(toolAbs, libDir, args) {
   });
   return { code: r.status, out: r.stdout || '', err: r.stderr || '' };
 }
-/* 已知环境差异只归一化两处：① 两边各自的临时库根路径；② 行尾。其余一律逐字节比。 */
+/* 已知环境差异只归一化两处：① 两边各自的临时库根路径；② 行尾。其余一律逐字节比。
+   ★ 2026-11-09 增补（已知差异·清单系统维护行）：`_生成首页.ps1`（PowerShell 生成器）已退役删除，
+   「系统维护」行的生成器指令有意改指 `node 生成状态.mjs`（连带"已刷新 N 字符"计数）——
+   两边归一成 <GENCMD>/<N>，专断言见对拍收尾后。 */
 function norm(t, libDir) {
   let s = String(t || '').replace(/\r\n/g, '\n');
   for (const v of [libDir, libDir.replace(/\\/g, '/'), libDir.replace(/\//g, '\\')]) if (v) s = s.split(v).join('<LIB>');
+  s = s.split('`node _生成队列.mjs` + `_生成首页.ps1`').join('<GENCMD>');
+  s = s.split('`node _生成队列.mjs` + `node 生成状态.mjs`').join('<GENCMD>');
+  s = s.replace(/_待确认清单\.md 已刷新：\d+ 字符/g, '_待确认清单.md 已刷新：<N> 字符');
   return s;
 }
 function firstDiff(a, b) {
@@ -663,42 +669,54 @@ if (!OLD_SRC) {
   A('★ 对拍收尾：两库 _待确认.json 逐字节相同',
     rawLedger(OLD_LIB).equals(rawLedger(NEW_LIB)), rawLedger(OLD_LIB).length + 'B vs ' + rawLedger(NEW_LIB).length + 'B');
   const mdNorm = p => {
-    try { return read(p).replace(/_更新于 \d{4}-\d{2}-\d{2}_/g, '_更新于 <DATE>_').replace(/\r\n/g, '\n'); }
+    try {
+      return read(p).replace(/_更新于 \d{4}-\d{2}-\d{2}_/g, '_更新于 <DATE>_')
+        /* 已知差异·清单系统维护行 同款归一（见 norm 内注，2026-11-09） */
+        .split('`node _生成队列.mjs` + `_生成首页.ps1`').join('<GENCMD>')
+        .split('`node _生成队列.mjs` + `node 生成状态.mjs`').join('<GENCMD>')
+        .replace(/\r\n/g, '\n');
+    }
     catch (e) { return '(读不出：' + e.message + ')'; }
   };
   A('★ 对拍收尾：两库 _待确认清单.md 除「_更新于 <日期>」外逐字节相同',
     mdNorm(path.join(OLD_LIB, '_待确认清单.md')) === mdNorm(path.join(NEW_LIB, '_待确认清单.md')),
     firstDiff(mdNorm(path.join(OLD_LIB, '_待确认清单.md')), mdNorm(path.join(NEW_LIB, '_待确认清单.md'))));
 
-  /* ── **必然差异**（新增子命令出现在"可用列表"里）：单列、钉死，绝不放进对拍序列 ──
-     批次 3 在这里吃过 14 条连锁红的亏（把"新增能力本身的差异"当成回归）。 */
+  /* ── 原已知差异（批次 4 新增 候选/修订/采用/作废候选 出现在"可用列表"里）随基线推进退役：
+     2026-11-09 基线从 6df511a（批次 3 开工）推进到 069e5a2（.01 落地后，含批次 4 全部子命令），
+     那批增量已两侧都在 ⇒ 改写为"两侧逐字一致"的同强度判据（宁可对拍变严，不放水历史差异）。
+     结构判据保留（对后续继续加子命令免疫，但对删老命令/改别的行仍有牙齿）。批次 3 在这里
+     吃过 14 条连锁红的亏（把"新增能力本身的差异"当成回归）——这次的教训是**基线推进要随版走**。 */
   const ua = runTool(OLD_TOOL, OLD_LIB, ['不存在的动作']), ub = runTool(NEW_TOOL, NEW_LIB, ['不存在的动作']);
   const uea = norm(ua.err, OLD_LIB), ueb = norm(ub.err, NEW_LIB);
-  const NEW_MEMBERS = ['候选', '修订', '采用', '作废候选'];
-  const NEW_USAGE_RE = /^\s*(候选|修订|采用|作废候选) --id/;
-  const uebCleaned = ueb.split('\n').filter(l => !NEW_USAGE_RE.test(l))
-    .map(l => l.replace('候选 / 修订 / 采用 / 作废候选 / ', '')).join('\n');
-  A('已知差异（未知动作）：两边都 exit 2（行为不变）', ua.code === 2 && ub.code === 2, ua.code + '/' + ub.code);
-  A('★ 已知差异 逐字节只差「可用列表新增 4 个成员 + 4 行用法」', uebCleaned === uea, firstDiff(uea, uebCleaned));
-  A('  新增成员逐个都在（各恰好一次）', NEW_MEMBERS.every(m => ueb.split(' / ' + m + ' / ').length === 2 || ueb.includes('纠因 / 候选 / 修订 / 采用 / 作废候选 / 状态')),
-    firstLine(ueb));
-  A('  旧实现的可用列表里一个都没有（差异方向只增不减）', NEW_MEMBERS.every(m => !uea.includes(m)), firstLine(uea));
-  A('  4 行新用法都带 --id（与既有用法行同形）', NEW_MEMBERS.every(m => new RegExp('^\\s*' + m + ' --id Txxx', 'm').test(ueb)));
+  const availLine = (t) => (t.split('\n').find(l => /可用：/.test(l)) || '');
+  const namesIn = (t) => availLine(t).replace(/^.*可用：/, '').split('/').map(s => s.trim()).filter(Boolean);
+  const usageLines = (t) => t.split('\n').filter(l => /^\s{2,}\S+\s+--/.test(l));
+  const restSame = (a, b) => {
+    const strip = (t) => t.split('\n').filter(l => !/可用：/.test(l) && !/^\s{2,}\S+\s+--/.test(l)).join('\n');
+    const kept = usageLines(a).every(l => usageLines(b).some(x => x.replace(/\s+/g, ' ') === l.replace(/\s+/g, ' ')));
+    return kept && strip(a) === strip(b);
+  };
+  const oldNames = namesIn(uea), newNames = namesIn(ueb);
+  A('未知动作：两边都 exit 2（行为不变）', ua.code === 2 && ub.code === 2, ua.code + '/' + ub.code);
+  A('★ 可用列表与用法提示两侧一致（"只增不减"口径保留，此刻应零差异）',
+    oldNames.filter(n => !newNames.includes(n)).length === 0 &&
+    restSame(uea, ueb),
+    '旧 ' + oldNames.length + ' 项 → 新 ' + newNames.length + ' 项　缺失=[' +
+      oldNames.filter(n => !newNames.includes(n)).join(',') + ']　其余行差异=' + (restSame(uea, ueb) ? '无' : firstDiff(uea, ueb)));
 
-  /* ── 新子命令本身带来的必然差异：旧实现不认识它们（未知动作 exit 2）──
-     它不能进对拍序列（旧实现本来就不该有这些行为）；这里把"两边分别是什么"钉死，
-     一旦哪天旧实现也认识 `候选`（= 对拍基线取错），这一条先红。 */
+  /* ── 原已知差异（旧实现不认识 候选）随基线推进退役：069e5a2 里 候选 已存在 ⇒ 进对拍。── */
   const cntOf = dir => (jsonLedger(dir).items || []).length;
   const kOld0 = cntOf(OLD_LIB), kNew0 = cntOf(NEW_LIB);
-  const ka = runTool(OLD_TOOL, OLD_LIB, ['候选', '--id', 'T004', '--kind', '卡', '--target', 'P0012', '--payload', '旧实现不认识这个动作']);
-  const kb = runTool(NEW_TOOL, NEW_LIB, ['候选', '--id', 'T004', '--kind', '卡', '--target', 'P0012', '--payload', '旧实现不认识这个动作']);
-  A('已知差异（新子命令 候选）：旧实现 exit 2 未知动作且不写盘',
-    ka.code === 2 && /未知动作/.test(ka.err) && cntOf(OLD_LIB) === kOld0, 'exit=' + ka.code);
-  A('★ 已知差异（新子命令 候选）：新实现 exit 0 且只加 candidates[]（条数不变）',
-    kb.code === 0 && cntOf(NEW_LIB) === kNew0 && candsOf(NEW_LIB, 'T004').length === 1, 'exit=' + kb.code);
-  A('  两库台账自此不同（差异只来自这一条 candidates[]）',
-    !rawLedger(OLD_LIB).equals(rawLedger(NEW_LIB)) &&
-    JSON.stringify(Object.assign({}, itemOf(NEW_LIB, 'T004'), { candidates: null })) === JSON.stringify(Object.assign({}, itemOf(OLD_LIB, 'T004'), { candidates: null })));
+  const candArgs = ['候选', '--id', 'T004', '--kind', '卡', '--target', 'P0012', '--payload', '两侧同构写入的候选'];
+  const ka = runTool(OLD_TOOL, OLD_LIB, candArgs);
+  const kb = runTool(NEW_TOOL, NEW_LIB, candArgs);
+  A('候选 --kind 卡：两侧一致接受（都 exit 0 且各加 1 条 candidates）',
+    ka.code === 0 && kb.code === 0 && candsOf(OLD_LIB, 'T004').length === 1 && candsOf(NEW_LIB, 'T004').length === 1,
+    'exit ' + ka.code + '/' + kb.code);
+  A('  两库台账仍然逐字节相同（两侧同构写入；哪天一侧不认 候选 = 基线取错，这里先红）',
+    rawLedger(OLD_LIB).equals(rawLedger(NEW_LIB)),
+    firstDiff(norm(rawLedger(OLD_LIB).toString('utf8'), OLD_LIB), norm(rawLedger(NEW_LIB).toString('utf8'), NEW_LIB)));
 }
 
 /* ══════════════════════════════════════════════════════════════════════
