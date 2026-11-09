@@ -8,7 +8,10 @@
  *   错/部分对 + 不在册  → 应「补建卡」
  *   对        + 在册    → 应「撤卡」
  *   对/错     + 状态已对 → 「无需处置」
+ *   不适用（非题目类）   → 应「已核销」（判的对象不存在，但动作可能仍存在 ⇒ 必须显式核销）
  *   无法判定             → 「待人工」（不得静默结案）
+ *
+ * ⚠ 上面这张表是**唯一真源** `_应做动作.mjs` 的人话版本，改语义只改那个文件（2026-11-09）。
  *
  * 「在册与否」的判定要点：台账 cardId 用**扫描页**（p42），索引 source 用**印刷页**（第030页），
  * 两者是不同键空间 —— 必须经 `_work-*​/转录/pNN.md` 页头映射后再按「页+题号」比对（L-331 同族）。
@@ -21,6 +24,7 @@ import fs from 'fs';
 import path from 'path';
 import { readJsonStrict } from './_安全写.mjs';
 import { libraryRoot } from './_库根.mjs';
+import { required, closed } from './_应做动作.mjs';
 
 /* BUG-15（2026-10-11）：本文件原先把 5 处 JSON 读取写成裸 `JSON.parse(fs.readFileSync(p,'utf8'))`，
    JSON.parse 不容忍 BOM ⇒ 真源被任何带 BOM 的通道（PowerShell `Set-Content -Encoding UTF8` 等）
@@ -210,26 +214,11 @@ function resolve(it) {
   return { kind: 'byPage', cards, retracted: null, scan, qno, printed };
 }
 
-/* ---------- 5. 应做动作 f(verdict, 在册与否) ---------- */
-function required(verdict, hasCard) {
-  if (verdict === '无法判定') return '待人工';
-  // 非题目类（系统维护/纯笔迹归属追责）：判的对象不存在，但**动作可能仍存在**
-  // （例：T024 要求重裁 4 张低饱和截图，实测至今没做）。故不给"自动无需处置"，
-  // 而是要求显式核销——必须有人写下「做了什么」才算闭环。
-  if (verdict === '不适用') return '已核销';
-  if (verdict === '错' || verdict === '部分对') return hasCard ? '无需处置' : '补建卡';
-  if (verdict === '对') return hasCard ? '撤卡' : '无需处置';
-  return '待人工';
-}
-function closed(requiredAction, disp) {
-  if (!disp) return false;
-  if (requiredAction === '补建卡') return disp === '已补建卡';
-  if (requiredAction === '撤卡') return disp === '已撤卡' || disp === '已核销';
-  if (requiredAction === '无需处置') return disp === '无需处置' || disp === '已核销';
-  if (requiredAction === '已核销') return disp === '已核销';
-  if (requiredAction === '待人工') return disp === '待人工' || disp === '已核销';
-  return false;
-}
+/* ---------- 5. 应做动作 f(verdict, 在册与否) ----------
+   2026-11-09：映射搬到 `_应做动作.mjs`（唯一真源），本文件与 `_待确认.mjs` 共用同一份。
+   搬之前，本文件算「不适用 ⇒ 已核销」、而 `_待确认.mjs` 的注释写「固定为无需处置」，
+   两边从首次公开导入起就不一致 —— 夜间链第一次吃到「不适用」条目即 25 条 RED。
+   用法见文件头 import。 */
 
 /* ---------- 6. 逐条稽核 ---------- */
 const rows = [];

@@ -86,6 +86,9 @@ import { readJsonStrict, writeJsonAtomic, writeTextAtomic, acquireLibLock, withL
 import { normEvidenceBox, evidenceAbs } from './_区域坐标.mjs';
 /* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。 */
 import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
+/* 2026-11-09：应做动作口径的**唯一真源**（与 `_闭环稽核.mjs` import 同一份）。
+   此前本文件注释里另写了一份口径且与稽核相反，夜间链据此登记错值 ⇒ 25 条 RED。 */
+import { DISPOSITIONS, VERDICT_BOUND_DISPOSITIONS, required } from './_应做动作.mjs';
 
 /* ★ 2026-10-23 程序与数据分家：ROOT 现在是**用户库根**，不再是"本脚本所在目录"。
    兄弟工具一律用 toolPath(...)，见 _库根.mjs。 */
@@ -1830,7 +1833,9 @@ if (action === '清单') {
      必须回原卷/原图（判字先查笔形库）把线索解释成 错/对/部分对/无法判定，并写下依据。
      没有本字段 → 门禁红（「结论落了库、判定没人做」）；有判定后由 _闭环稽核.mjs 算「应做动作」。
      `不适用` 用于**非题目类**条目（系统维护、纯笔迹归属追责等）：它们没有"这道题对错"可言，
-     应做动作固定为「无需处置」——不是"没法判"，是"判的对象不存在"。 */
+     应做动作固定为「已核销」——不是"没法判"，是"判的对象不存在"，但动作可能仍存在，
+      必须显式写下做了什么才算闭环。口径唯一真源=`_应做动作.mjs`
+      （2026-11-09 前这里误写成「无需处置」，与稽核不一致，夜间链据此登记错值 ⇒ 25 条 RED）。 */
   const VS = ['错', '对', '部分对', '无法判定', '不适用'];
   const j = load();
   const it = findById(j, opt.id);
@@ -1849,13 +1854,27 @@ if (action === '清单') {
      并把那道题补全吗？」。查明：结论落库后**没有任何机器可读的"该做什么"**，"若确认孩子确实错了，
      需补建卡"只写在 detail 文本里；于是"办结"被误当成"办完"，实际后续动作（补建卡/撤卡/核销）
      全靠人记得。本动作把"结论之后干了什么"变成必填字段，门禁据此点名。
-     取值：无需处置（结论=孩子对，确认在册库确无该卡）/ 已补建卡 / 已撤卡 / 已核销 / 待人工。 */
-  const AS = ['无需处置', '已补建卡', '已撤卡', '已核销', '待人工'];
+     取值：无需处置（结论=孩子对，确认在册库确无该卡）/ 已补建卡 / 已撤卡 / 已核销 / 待人工。
+     ⚠ 准入闸（2026-11-09）：与**判定强绑定**的两类判定只许登记规定取值 ——
+       判定=不适用 ⇒ 已核销 或 待人工；判定=无法判定 ⇒ 待人工 或 已核销。
+       口径唯一真源=`_应做动作.mjs` 的 VERDICT_BOUND_DISPOSITIONS；错/对/部分对
+       要看"在册与否"才能判，本命令放行、由 `_闭环稽核.mjs` 兜底判红。 */
+  const AS = DISPOSITIONS;
   const j = load();
   const it = findById(j, opt.id);
   if (!it) { console.error(`找不到 ${opt.id}`); process.exit(2); }
   if (open(it)) { console.error(`${it.id} 还没结论（status=${it.status}），先「答」再「处置」`); process.exit(2); }
   if (!AS.includes(opt.as)) { console.error('缺参数或取值非法：--as ' + AS.join(' | ')); process.exit(2); }
+  /* 准入闸（2026-11-09 事故的对策）：判定=不适用/无法判定 这两类，应做动作由判定唯一确定，
+     登记成别的值一定是错的 —— 只报"取值不非法"是不够的，2026-11-09 夜间链就是这么把
+     16 条「不适用」登记成「无需处置」，静默产出 25 条 RED。这里挡在写盘之前。 */
+  const bound = VERDICT_BOUND_DISPOSITIONS[it.verdict];
+  if (bound && !bound.includes(opt.as) && !opt.force) {
+    console.error(`处置取值与判定不符：${it.id} 判定「${it.verdict}」⇒ 应做「${required(it.verdict, false)}」。`);
+    console.error(`  允许登记：${bound.join(' / ')}（口径见 _应做动作.mjs）。`);
+    console.error('  确实有别的实情要如实记？加 --force 并在 --note 里写清为什么——但稽核仍会按机器口径判色。');
+    process.exit(2);
+  }
   it.disposition = opt.as;
   it.dispositionAt = opt.date || today();
   it.dispositionNote = opt.note || '';
