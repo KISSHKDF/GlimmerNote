@@ -34,7 +34,7 @@
  *   状态  [--student 学生B]                              （只读：不写任何文件）
  *   准入  [--student 学生B]                              （只读：哪张卡进不了组卷池、卡在哪道门禁）
  *   同步  --file %USERPROFILE%\Downloads\ctb-sync-20261006.json   （合并首页导出的待同步包）
- *   任意动作加 --refresh 生成后自动重跑 _生成首页.ps1
+ *   任意动作加 --refresh 完成后自动重建状态包（生成状态.mjs）
  */
 import fs from 'fs';
 import path from 'path';
@@ -522,7 +522,7 @@ switch (action) {
        而拦的原因一半是"字段没写"，不是"真没做复核"）。
        三态：可组卷 / 缺第二来源 / 盲解未过。
        `--json` 输出 { "学生|编号": {ok,why} } —— **本文件是准入判定的唯一实现**，
-       `_生成首页.ps1` 把它注入 _状态.json.admit，v2 界面据此决定"这张卡能不能进篮子"，
+       `生成状态.mjs` 把它注入 _状态.json.admit，v2 界面据此决定"这张卡能不能进篮子"，
        从而杜绝"界面上选得动、工具一提交就拒"的口径漂移（2026-10-10 实测踩到）。 */
     const admit = {};
     let totalAll = 0, canAll = 0;
@@ -1157,6 +1157,8 @@ switch (action) {
 commitTx();
 
 if (opt.refresh) {
-  const r = spawnSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', toolPath('_生成首页.ps1')], { stdio: 'ignore' });
-  console.log(r.status === 0 ? '首页已刷新' : '首页刷新失败，请手动重跑 _生成首页.ps1');
+  /* ★ 2026-11-09 清债：PS1 生成器已退役删除，改跑 Node 生成器（镜像 _服务端.mjs runGen 参数）。 */
+  const r = spawnSync(process.execPath, [toolPath('生成状态.mjs')],
+    { stdio: 'ignore', cwd: ROOT, env: Object.assign({}, process.env, { CTB_DATA: ROOT }) });
+  console.log(r.status === 0 ? '状态包已刷新' : '状态包刷新失败，请手动重跑：node 生成状态.mjs');
 }

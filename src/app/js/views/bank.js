@@ -3,7 +3,7 @@
   const U = CTB.util, M = CTB.model, H = CTB.host, S = CTB.shell;
   const V = CTB.views.bank = {};
 
-  const DEFAULT = { q: '', subject: '全部', diff: '全部', layer: '全部', state: '全部', blind: '全部', code: '', hasImg: false, sort: 'new' };
+  const DEFAULT = { q: '', subject: '全部', diff: '全部', layer: '全部', state: '全部', blind: '全部', code: '', kp: '', hasImg: false, sort: 'new' };
   let f = Object.assign({}, DEFAULT, U.lsGet('ctb2.filters', {}));
   const save = () => U.lsSet('ctb2.filters', f);
 
@@ -12,6 +12,9 @@
   function filtered() {
     let cs = M.cardsOf();
     if (f.code) cs = cs.filter(x => M.causeKey(x.card) === f.code);
+    /* 考点筛选（2026-11-09）：stats 薄弱考点榜点进来就是这个值；与错因代码筛选同层级的精确匹配。
+       kpoints 缺失/为空的卡在选了考点后自然被滤掉——不是缺陷，是口径（有标签才谈得上按标签筛）。 */
+    if (f.kp) cs = cs.filter(x => (x.card.kpoints || []).includes(f.kp));
     if (f.subject !== '全部') cs = cs.filter(x => x.subject === f.subject);
     if (f.diff !== '全部') cs = cs.filter(x => x.card.difficulty === f.diff);
     if (f.layer !== '全部') cs = cs.filter(x => x.card.causeLayer === f.layer);
@@ -68,6 +71,7 @@
         ['K', 'L', 'S'].map(k => '<span class="chip' + (f.layer === k ? ' on' : '') + '" role="button" tabindex="0" data-k="layer" data-v="' + k + '" title="' + M.LAYER[k].name + '"><span class="chip-dot" style="background:' + M.LAYER[k].color + '"></span>' + k + ' ' + M.LAYER[k].name + '</span>').join('') + '</div>') +
       row('状态', chipRow('state', ['全部', '未复习', '到期', '复习中', '待批改', '已掌握', '已归档'], f.state)) +
       row('盲解', chipRow('blind', ['全部', 'ok', 'no'], f.blind, v => v === 'ok' ? '已通过' : v === 'no' ? '未过 / 存疑' : '全部')) +
+      row('考点', kpSelect(all)) +
       '</div></div>' +
       '<div class="row bk-bar"><span class="small muted" id="bkCount">' + countHtml(fn) + '</span>' +
       '<span class="small muted">· 点击行看详情；勾选进组卷篮</span>' +
@@ -82,6 +86,9 @@
     renderList();
     U.$id('bkQ').oninput = U.debounce(e => { f.q = e.target.value; save(); renderList(); }, 200);
     U.$id('bkSort').onchange = e => { f.sort = e.target.value; save(); renderList(); };
+    /* 考点下拉（2026-11-09）：改动走 renderList 不整页重绘（与排序/搜索同口径）；来源面板词汇按频次排。 */
+    const kpEl = U.$id('bkKp');
+    if (kpEl) kpEl.onchange = e => { f.kp = e.target.value; save(); renderList(); };
     U.$id('bkReset').onclick = () => { f = Object.assign({}, DEFAULT); save(); S.render(); };
     /* 键盘可达（F-RB-7）：chip 此前是裸 span（tabIndex -1，实测 25/25 不可 Tab） */
     el.querySelectorAll('.chip[data-k]').forEach(c => {
@@ -96,7 +103,7 @@
     el.querySelectorAll('[data-a]').forEach(b => b.onclick = () => {
       const a = b.dataset.a;
       if (a === 'reset') { f = Object.assign({}, DEFAULT); save(); S.render(); }
-      else if (a === 'clearQ') { f.q = ''; f.code = ''; save(); S.render(); }
+      else if (a === 'clearQ') { f.q = ''; f.code = ''; f.kp = ''; save(); S.render(); }
       else if (a === 'allStu') { M.student('全部'); S.render(); }
       else if (a === 'reload') { S.reload(); }
     });
@@ -164,12 +171,24 @@
   V.onParam = function (p) {
     if (!p) return;
     if (p.code) { f.code = p.code; save(); S.render(); return; }
+    /* 考点联动入口（2026-11-09）：stats 薄弱知识点榜点击带 kp 进来（镜像 p.code 模式） */
+    if (p.kp) { f.kp = p.kp; save(); S.render(); return; }
     /* 复习流空态里的「看被拦的题」会带 blind=no 进来（此前没人消费这个参数 ⇒ 点了没反应） */
     if (p.blind) { f.blind = p.blind; f.q = ''; save(); S.render(); return; }
     if (p.openKey) { const x = M.cards.find(c => c.key === p.openKey); if (x) openCard(x); }
   };
 
   function opt(arr, sel) { return arr.map(([v, t]) => '<option value="' + U.esc(v) + '"' + (v === sel ? ' selected' : '') + '>' + U.esc(t) + '</option>').join(''); }
+  /* 考点下拉（2026-11-09）：词汇=当前学生范围卡的 kpoints 并集，按出现次数降序（同数按 zh 拼音）。
+     计数展示让"这个考点有几张卡"一眼可见；值进属性位必须 esc（F-48 同款纪律）。 */
+  function kpSelect(all) {
+    const freq = {};
+    for (const x of all) for (const k of (x.card.kpoints || [])) { if (k) freq[k] = (freq[k] || 0) + 1; }
+    const entries = Object.entries(freq).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh'));
+    return '<select id="bkKp" class="bk-sort"><option value=""' + (f.kp ? '' : ' selected') + '>全部考点</option>' +
+      entries.map(([k, n]) => '<option value="' + U.esc(k) + '"' + (k === f.kp ? ' selected' : '') + '>' + U.esc(k) + '（' + n + '）</option>').join('') +
+      '</select>';
+  }
   /* 一行筛选片（2026-10-26 重做）：标签由外层的 .bk-flabel 提供，这里只出胶囊。
      调用方用 row('学科', chipRow(...)) 把标签列与胶囊列拼起来 ⇒ 各行左边缘对齐。 */
   function chipRow(key, vals, cur, lb) {

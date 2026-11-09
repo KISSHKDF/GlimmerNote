@@ -44,10 +44,10 @@
  *                                    空集（筛选 0 条）也判失败，除非显式 --allow-empty
  *                                    `--json` 与人类模式同一次判定、同一退出码，输出
  *                                    { ok, problems:[id[原因]], cards:{"学生|编号":新鲜度} }
- *   任意动作加 --refresh 会顺带重跑 _生成首页.ps1
+ *   任意动作加 --refresh 完成后自动重建状态包（生成状态.mjs）
  *
  * ⚠ 2026-10-09 修：`门禁 --json` 原先在判定之前 break，人类模式 exit 1 而机器通道 exit 0——
- *   消费方（_标记复习.mjs 的组卷口、_生成首页.ps1 的准入徽章）看到的是永远绿灯。见 §门禁五律。
+ *   消费方（_标记复习.mjs 的组卷口、生成状态.mjs 的准入徽章）看到的是永远绿灯。见 §门禁五律。
  */
 import fs from 'fs';
 import path from 'path';
@@ -614,7 +614,7 @@ switch (action) {
     }
     for (const x of rows) cards[x.student + '|' + x.item.id] = freshState(x);
     /* ⚠ 计数**不能塞进 `cards`**：那本字典的契约是「键=学生|编号、值=新鲜度字符串」，
-       且它会被 `_生成首页.ps1` 直接注入 `BLINDFRESH` 给前端按卡查表。
+       且它会被 `生成状态.mjs` 直接注入 `BLINDFRESH` 给前端按卡查表。
        塞进去会让键集合多出 `__fpV1` 之类（**契约门禁当场抓到，2026-10-11**），也污染下发给前端的字典。
        故统一放信封的独立字段 `meta`。 */
     const meta = {};
@@ -710,6 +710,8 @@ switch (action) {
 }
 
 if (opt.refresh) {
-  const r = spawnSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', toolPath('_生成首页.ps1')], { stdio: 'ignore' });
-  console.log(r.status === 0 ? '首页已刷新' : '首页刷新失败，请手动重跑 _生成首页.ps1');
+  /* ★ 2026-11-09 清债：PS1 生成器已退役删除，改跑 Node 生成器（镜像 _服务端.mjs runGen 参数）。 */
+  const r = spawnSync(process.execPath, [toolPath('生成状态.mjs')],
+    { stdio: 'ignore', cwd: ROOT, env: Object.assign({}, process.env, { CTB_DATA: ROOT }) });
+  console.log(r.status === 0 ? '状态包已刷新' : '状态包刷新失败，请手动重跑：node 生成状态.mjs');
 }

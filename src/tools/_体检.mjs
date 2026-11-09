@@ -160,7 +160,7 @@ if (STATE_OBJ) {
   if (STATE_OBJ.dataHealth) {
     const bad = Object.entries(STATE_OBJ.dataHealth).filter(([, v]) => v !== 'ok');
     H('数据源健康（dataHealth）', bad.length === 0, bad.length ? bad.map(([k, v]) => `${k}: ${v}`).join(' ｜ ') : JSON.stringify(STATE_OBJ.dataHealth));
-  } else H('数据源健康（dataHealth）', false, '状态包缺 dataHealth 字段——生成器没带健康台账（重跑 node _生成首页.ps1）');
+  } else H('数据源健康（dataHealth）', false, '状态包缺 dataHealth 字段——生成器没带健康台账（重跑 node 生成状态.mjs）');
 } else H('数据源健康（dataHealth）', false, '读不到 _状态.json（缺失或不是合法 JSON）——本项判定不了，按红处理');
 
 /* 方案文档完整性：U+FFFD 是**真腐损**（读坏了才出现），必须为 0 */

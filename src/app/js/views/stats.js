@@ -85,8 +85,18 @@
       '<div class="card"><div class="card-h"><b>入册趋势（近 14 天）</b><span class="hint">每天新增错题数=作业批改节奏</span></div>' +
       CTB.chart.line(days, [{ name: '新增', values: vals, color: 'var(--brand)' }], { height: 130 }) + '</div>' +
 
-      '<div class="card"><div class="card-h"><b>薄弱知识点 Top' + kp.length + '</b><span class="hint">kpoints 出现次数</span></div>' +
-      CTB.chart.hbars(kp.map(([name, value]) => ({ name, value })), {}) + '</div></div>' +
+      '<div class="card"><div class="card-h"><b>薄弱知识点 Top' + kp.length + '</b><span class="hint">kpoints 出现次数 · 点考点 → 题库按考点筛</span></div>' +
+      (kp.length ? kp.map(([name, value]) =>
+        /* 2026-11-09 考点联动：原先 hbars 只能看不能点；改同构 .kbar 按钮（样式类复用，button 默认样式就地复位），
+           点击带 kp 跳题库（镜像下方 data-code 的跳转模式）⇒ 统计页的"薄弱"直接变成下一步动作。 */
+        '<button class="kbar" data-kp="' + U.esc(name) + '" title="去题库按考点「' + U.esc(name) + '」筛题"' +
+        ' style="cursor:pointer;width:100%;background:none;border:none;text-align:left;padding:3px 0;font:inherit">' +
+        '<span class="kn" title="' + U.esc(name) + '">' + U.esc(name) + '</span>' +
+        '<div class="pbar"><i style="width:' + (value / kp[0][1] * 100) + '%;background:var(--brand)"></i></div>' +
+        '<span class="kv2">' + value + '</span></button>').join('')
+      : '<div class="empty sm ready"><div class="e-ic">🏷️</div><b>还没有出现 ≥2 次的考点</b>' +
+        '<div class="e-sub">单例考点构不成"弱项"（minN=2 口径）；错题卡标注 kpoints 之后这里自动成榜。</div>' +
+        '<div class="e-act"><a class="btn sm" data-go="bank">去题库浏览 →</a></div></div>') + '</div></div>' +
 
       '<div class="grid g-12">' +
       '<div class="card"><div class="card-h"><b>复习进度环</b></div>' +
@@ -115,6 +125,7 @@
       '</div></div>';
 
     el.querySelectorAll('[data-code]').forEach(b => b.onclick = () => S.route('bank', { code: b.dataset.code }));
+    el.querySelectorAll('[data-kp]').forEach(b => b.onclick = () => S.route('bank', { kp: b.dataset.kp }));
     el.querySelectorAll('[data-risk]').forEach(a => a.onclick = () => S.route('review', { queue: 'due' }));
   };
   function qc(label, n, hint) {

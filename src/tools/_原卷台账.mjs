@@ -786,7 +786,7 @@ function build({ dry, force }) {
   }
   const doc = {
     version: 1, generatedAt: new Date().toISOString(), note:
-      '错题卡→原卷整页 溯源台账（唯一真源）。page=🗂 打开的整页；box=归一化红框；import=sha256 一致的导入原件。生成器 _生成首页.ps1 读本文件输出 origPage/origBox/origImport。',
+      '错题卡→原卷整页 溯源台账（唯一真源）。page=🗂 打开的整页；box=归一化红框；import=sha256 一致的导入原件。生成器 生成状态.mjs 读本文件并回 origPage/origBox/origImport。',
     cards: out,
   };
   const before = fs.existsSync(LEDGER) ? sha256(LEDGER) : '(无)';

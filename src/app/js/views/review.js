@@ -56,7 +56,10 @@
     /* ⚠ 2026-10-25（同 bank.js:104 的同类错）：basketCards() 返回包装对象，必须取 .card。
        此前 `filter(M.canGroup)` 让"题源=组卷篮"永远空池。 */
     const basket = M.basketCards().filter(x => M.canGroup(x.card));
-    const pools = { due: ['⏰ 到期优先', due], all: ['🗂 全部未复习', unrev], basket: ['🧾 组卷篮', basket] };
+    /* ★ 2026-11-09 随机速测（对标公众号「火山错题本」第③页签的本地化版）：
+       第 4 题源——从过准入的卡里随机抽，只在本屏对答案、不落库（session.quick 标记，结算屏分叉）。
+       准入与既有三源同口径（只抽 M.canGroup 过了的卡），速测不落库但也不看未核验答案。 */
+    const pools = { due: ['⏰ 到期优先', due], all: ['🗂 全部未复习', unrev], basket: ['🧾 组卷篮', basket], random: ['🎲 随机速测', cards] };
     /* ⚠ 2026-10-11 修（用户实测报错：总览点「进入复习流」→「视图渲染出错 Cannot read properties of undefined (reading '1')」）：
        总览的 CTA 走 `S.route('review', { queue: 'pick' })`，而 pools 只有 due/all/basket **没有 pick** ⇒
        下一行 `pools[src][1]` 直接 TypeError。侧栏切页不带参数（走 due）所以一直没暴露。
@@ -68,7 +71,23 @@
     let sj = U.lsGet('ctb2.rvSj', '全部');
     let cap = U.lsGet('ctb2.rvCap', 15);
 
+    /* 随机池：洗牌结果按题源+学科记忆——画界面/切选项不重抽（点「🎲 换一批」才重洗），
+       否则每次重绘都会悄悄换题，用户对不上自己刚看到的队列。 */
+    let randomCache = null;
+    function shuffle(list) {
+      const a = list.slice();
+      for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); const t = a[i]; a[i] = a[j]; a[j] = t; }
+      return a;
+    }
     function poolList() {
+      if (src === 'random') {
+        const key = sj;
+        if (!randomCache || randomCache.key !== key) {
+          const base = sj === '全部' ? cards : cards.filter(x => x.subject === sj);
+          randomCache = { key, list: shuffle(base) };
+        }
+        return randomCache.list;
+      }
       let list = pools[src][1];
       if (sj !== '全部') list = list.filter(x => x.subject === sj);
       return list;
@@ -109,9 +128,10 @@
         '</div></div>' +
         '<div class="card">' + (q.length ?
           '<div class="row"><div class="rv-grow"><b class="num">' + q.length + '</b> 题进场' +
-          '<div class="small muted">' + (src === 'due' ? '按逾期天数倒序，逾期最久的先还账；没有到期题时这里主要是未复习题。' : src === 'basket' ? '组卷篮里的题直接屏幕重做。' : '未复习存量按入册先后排。') + '</div>' +
+          '<div class="small muted">' + (src === 'due' ? '按逾期天数倒序，逾期最久的先还账；没有到期题时这里主要是未复习题。' : src === 'basket' ? '组卷篮里的题直接屏幕重做。' : src === 'random' ? '从可练的题里随机抽——答完只在本屏对答案，<b>不计入复习记录</b>（建议日与组卷池都不动）。' : '未复习存量按入册先后排。') + '</div>' +
           (blockCnt ? '<div class="small rv-warn">⚠ 本范围内另有 <b class="num">' + blockCnt + '</b> 题被门禁挡在复习流外（盲解未过 / 答案来源不足 / 已掌握 / 已归档）——<button class="btn xs ghost" data-a="bankBlind">按「盲解未过」筛出来看原因</button></div>' : '') +
           '</div>' +
+          (src === 'random' ? '<button class="btn" id="rvReshuffle">🎲 换一批</button>' : '') +
           '<button class="btn primary" id="rvStart">▶ 开始（空格=翻答案 · 1/2/3=判分）</button>' +
           '<button class="btn" id="rvPaper">改用纸质卷（打印重做）</button></div>' :
           emptyBox() + '<div class="row rv-empty-act"><span class="small muted">屏幕练不了时，也可以直接把题印成纸质卷重做：</span><button class="btn" id="rvPaper">改用纸质卷（打印重做）</button></div>') +
@@ -136,12 +156,16 @@
       const capEl = U.$id('rvCap');
       if (capEl) capEl.onchange = e => { cap = U.clamp(+e.target.value || 15, 1, 60); U.lsSet('ctb2.rvCap', cap); draw(); };
       U.$id('rvRq').onchange = e => { requeueWrong = e.target.checked; U.lsSet('ctb2.rq', requeueWrong); };
+      const rs = U.$id('rvReshuffle');
+      if (rs) rs.onclick = () => { randomCache = null; draw(); };
       const st = U.$id('rvStart');
       if (st) st.onclick = () => {
         const ile = U.$id('rvIle').checked;
         let list = q;
         if (ile) list = interleave(list);
         M.startSession(list);
+        /* ★ 2026-11-09 随机速测：场级标记——结算屏据此走"不落库"分叉（不写台账、不弹"判定丢失"）。 */
+        if (src === 'random' && M.session) M.session.quick = true;
         S.render();
       };
       const pEl = U.$id('rvPaper'); if (pEl) pEl.onclick = () => S.route('paper');   // 空态分支可能不带它
@@ -259,9 +283,14 @@
       (c.img ? '<div class="ans-fig"><img class="rv-img rv-img-s" src="' + U.esc(H.asset(c.img)) + '" alt="原卷核对"></div>' : '') +
       '<input type="text" id="rvNote" class="rv-note" value="' + U.esc(note || '') + '" placeholder="转折点（可选，随判分记入复习流水）：我想到哪一步、在哪拐错？">' +
       '<div class="grades">' +
-      '<button class="btn ok gr-yes" data-grade="对">✓ 对 · 下次≈' + previewIv(c, '对') + '天后 (1)</button>' +
-      '<button class="btn warn gr-half" data-grade="半对">◐ 半对 · 下次≈3天 (2)</button>' +
-      '<button class="btn danger gr-no" data-grade="错">✗ 错 · 下次≈1天 (3)</button>' +
+      /* 随机速测不落库 ⇒ 不承诺"下次≈N天"（界面承诺与实际行为同口径；正常场次文案不变）。 */
+      (M.session && M.session.quick
+        ? '<button class="btn ok gr-yes" data-grade="对">✓ 对 (1)</button>' +
+          '<button class="btn warn gr-half" data-grade="半对">◐ 半对 (2)</button>' +
+          '<button class="btn danger gr-no" data-grade="错">✗ 错 (3)</button>'
+        : '<button class="btn ok gr-yes" data-grade="对">✓ 对 · 下次≈' + previewIv(c, '对') + '天后 (1)</button>' +
+          '<button class="btn warn gr-half" data-grade="半对">◐ 半对 · 下次≈3天 (2)</button>' +
+          '<button class="btn danger gr-no" data-grade="错">✗ 错 · 下次≈1天 (3)</button>') +
       '</div></div>';
   }
 
@@ -333,7 +362,9 @@
       '<div class="big">🏁</div><b class="rv-done-t">本场结束 · <span class="num">' + rows.length + '</span> 题已判' +
       (skippedN ? '<span class="muted rv-done-sk">（另 <span class="num">' + skippedN + '</span> 题跳过未判）</span>' : '') + '</b>' +
       '<div class="row rv-done-cnt">' + ztag('ok', '对', cnt['对'], 1) + ztag('warn', '半对', cnt['半对'], 1) + ztag('bad', '错', cnt['错'], 1) + '</div>' +
-      '<div class="small muted rv-done-x">「对」累计连对 2 次 = 已掌握；「错」下次建议回到 1 天档</div>' +
+      '<div class="small muted rv-done-x">' + (s.quick
+        ? '🎲 随机速测——本屏判分只帮你核对思路，<b>不写入复习记录</b>（建议日与组卷池都没动）。要计入复习请用「到期优先 / 全部未复习」的场。'
+        : '「对」累计连对 2 次 = 已掌握；「错」下次建议回到 1 天档') + '</div>' +
       (heldRows.length ?
         '<div class="rv-rows"><div class="row small" style="color:var(--warn)"><b>已建批、待补批改 ' + heldRows.length + ' 题</b>' +
         '<span class="muted">上一轮组卷已成功落盘、批改没成功；点下面的「💾 落库」只会补批改，**不会重复组卷**。</span></div>' +
@@ -354,7 +385,7 @@
           '<div class="e-act">' + (skippedN ? '<button class="btn sm primary" id="rvRedoSkipped">只练这 ' + skippedN + ' 题</button>' : '') +
           '<button class="btn sm" id="rvMore2">重选范围</button></div></div>')) +
       '</div>' +
-      (H.mode === 'shell' && pendingN ?
+      (H.mode === 'shell' && pendingN && !s.quick ?
         '<div class="card"><div class="row"><div class="rv-grow"><b>写回台账' + (heldRows.length ? '（待补批改 ' + heldRows.length + ' 题）' : '') + '</b><div class="small muted">按学生·学科自动 组卷→批改（<code>_标记复习.mjs</code> 唯一入口；写完建议「全量重建」刷新磁盘快照）</div></div>' +
         '<button class="btn" id="rvDrop">丢弃不写</button><button class="btn primary" id="rvCommit">💾 落库</button></div></div>' : '') +
       (skippedN && (rows.length || heldRows.length) ? '<div class="card"><div class="row"><div class="rv-grow"><b>还有 <span class="num">' + skippedN + '</span> 题跳过了</b>' +
@@ -372,7 +403,9 @@
        修法：凡是还有未写回台账的东西（`M.sessionPendingCount() > 0`）就先问，
        与 rvDrop 用同一个 S.confirm 口径（壳里原生 confirm 会冻整页，只能用 S.confirm）。 */
     const leaveSession = async (next) => {
-      const pend = M.sessionPendingCount();
+      /* 随机速测本来就"不落库"：判定不写台账是设计行为，不是丢失 ⇒ 不弹"判定会丢"确认。
+         正常场次的口径不变（有未写回判定必须先问）。 */
+      const pend = s.quick ? 0 : M.sessionPendingCount();
       if (pend > 0) {
         const ok = await S.confirm({
           title: '还有 ' + pend + ' 条判定没写回台账',
@@ -389,7 +422,9 @@
     const m2 = U.$id('rvMore2'); if (m2) m2.onclick = () => leaveSession();
     el.querySelectorAll('#rvRedoSkipped').forEach(b => b.onclick = () => {
       if (!skippedRefs.length) return;
-      leaveSession(() => M.startSession(skippedRefs));
+      /* 速测场的"只练跳过的"必须继承速测身份，否则新场会静默变成可落库的正常场。 */
+      const wasQuick = !!s.quick;
+      leaveSession(() => { M.startSession(skippedRefs); if (wasQuick && M.session) M.session.quick = true; });
     });
   }
 

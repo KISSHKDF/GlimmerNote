@@ -41,9 +41,18 @@ const st = JSON.parse(fs.readFileSync(E.lib('_状态.json'), 'utf8'));
     A('原卷台账存在（原卷溯源前置）', false, ledgerPath);
   } else {
     const led = JSON.parse(fs.readFileSync(ledgerPath, 'utf8')).cards || {};
-    const nPage = Object.values(led).filter((x) => x && x.page).length;
-    const nBox = Object.values(led).filter((x) => x && x.box).length;
-    const nImp = Object.values(led).filter((x) => x && x.import).length;
+    /* ★ 2026-11-09 口径修正：台账侧只数**索引里现存的卡**（键=学生|编号）。
+       原口径数全部台账行——但撤卡按「留档」设计会保留台账行（实测 2026-11-09：
+       两张物理卡 P0136/P0137 因"答案证伪撤卡"进 _撤卡留档，行留在台账、卡已不在索引），
+       于是每撤一张带原卷的卡，这条门禁就假红一次（状态包 604 / 台账 606）。
+       状态包只服务现存卡 ⇒ 不变量本来就是"现存卡的 orig* == 现存卡台账行的 orig*"；
+       孤儿行的存在不影响它。 */
+    const idxKeys = new Set();
+    for (const s of st.data) for (const sub of s.subjects) for (const it of sub.items) idxKeys.add(s.name + '|' + it.id);
+    const liveLed = Object.entries(led).filter(([k, x]) => x && idxKeys.has(k));
+    const nPage = liveLed.filter(([, x]) => x && x.page).length;
+    const nBox = liveLed.filter(([, x]) => x && x.box).length;
+    const nImp = liveLed.filter(([, x]) => x && x.import).length;
     const cards = st.data.reduce((a, s) => a.concat(...s.subjects.map((x) => x.items)), []);
     const stuOf = new Map();
     for (const s of st.data) for (const sub of s.subjects) for (const it of sub.items) stuOf.set(it, s.name);

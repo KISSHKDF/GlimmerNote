@@ -148,6 +148,13 @@ node src\tools\_配方.mjs 收件箱 --all
 
 # 给「换了自己的 AI」打分：拿黄金样本比一比
 node src\tools\_配方.mjs 自检 --recipe ingest-single --in cards.json
+
+# ── 变式（Phase 1：库内检索，零 AI 参与）──
+# 全库劝退类普查（图形卡/语文英语/S4/错因未确认/多问整题 各类计数）
+node src\tools\_变式.mjs 资格
+# 给某张卡找"同考点异题"候选（七条门禁：同生同学/盲解已核/难度不升2档/错因已确认/
+# 排除S4/结果唯一/不落任何台账；确定性排序；默认上限 2 张）
+node src\tools\_变式.mjs 检索 --for <卡ID> [--student <学生>] [--limit 2]
 ```
 
 ### 录题四步（界面上怎么走）

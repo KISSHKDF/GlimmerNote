@@ -126,7 +126,6 @@ const PORT = resolvePort();
 const TOOL = toolPath('_待确认.mjs');
 const REFRESH = toolPath('_状态刷新.mjs');
 const GEN_MJS = toolPath('生成状态.mjs');
-const GEN_PS1 = toolPath('_生成首页.ps1');
 /* ★ 2026-10-23：程序文件在 AppRoot，用户数据在库根 —— 静态服务要两头都认。 */
 /* 界面根 = 真有 index.html 的那个目录（包内 = AppRoot；开发区 = AppRoot\app） */
 const APP = WEB_ROOT;
@@ -256,12 +255,11 @@ function runTool(args, timeoutMs = 120000) {
 }
 function runGen(timeoutMs = 180000) {
   return new Promise((resolve) => {
-    /* ★ 2026-10-23：优先跑 Node 生成器（生成状态.mjs）；没有才退回 PowerShell 版。
+    /* ★ 2026-11-09 清债：PS1 生成器（_生成首页.ps1）已退役删除，原"没有 Node 版才退回 PowerShell"
+       的兜底分支一并摘除——那是一条静默降级路径：兜底文件已不存在时 spawn 必败且无人看见。
+       现在只有 Node 生成器一条路，失败走 runGen 的 resolve({code}) 显式可见。
        cwd 用库根，并显式传 CTB_DATA —— 生成器据此确定"读哪个库、写哪个状态包"。 */
-    const useNode = fs.existsSync(GEN_MJS);
-    const p = useNode
-      ? spawn(process.execPath, [GEN_MJS], { cwd: ROOT, windowsHide: true, env: Object.assign({}, process.env, { CTB_DATA: ROOT }) })
-      : spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', GEN_PS1], { cwd: ROOT, windowsHide: true });
+    const p = spawn(process.execPath, [GEN_MJS], { cwd: ROOT, windowsHide: true, env: Object.assign({}, process.env, { CTB_DATA: ROOT }) });
     let out = '', err = '', done = false;
     const t = setTimeout(() => { if (!done) { done = true; try { p.kill(); } catch (e) {} resolve({ code: 124, out, err: err + '\n[timeout]' }); } }, timeoutMs);
     p.stdout.on('data', d => { out += d; });
