@@ -265,12 +265,13 @@
     if (f.layer !== '全部') active.push('错因层 ' + U.esc(f.layer));
     if (f.state !== '全部') active.push('状态 ' + U.esc(f.state));
     if (f.blind !== '全部') active.push('盲解 ' + (f.blind === 'ok' ? '已通过' : '未过/存疑'));
+    if (f.kp) active.push('考点 ' + U.esc(f.kp));       // 2026-11-09：新筛选项必须同步空态清单（F-RB-3 空态不得说谎）
     if (f.hasImg) active.push('只有图');
     return '<div class="card"><div class="empty ready"><div class="e-ic">🔍</div><b>筛选把 ' + total + ' 题全挡掉了</b>' +
       '<div class="e-sub">这个范围<b>有</b> <b class="num">' + total + '</b> 张卡，是下面这 <b class="num">' + active.length + '</b> 个条件同时生效筛成了 0 条：' +
       active.join(' ＋ ') + '。放宽任意一条就会重新出现。</div>' +
       '<div class="e-act"><button class="btn sm primary" data-a="reset">重置全部筛选</button>' +
-      ((f.q.trim() || f.code) ? '<button class="btn sm" data-a="clearQ">只清搜索/错因代码</button>' : '') +
+      ((f.q.trim() || f.code || f.kp) ? '<button class="btn sm" data-a="clearQ">只清搜索/错因代码/考点</button>' : '') +
       '</div></div></div>';
   }
   function row(x) {

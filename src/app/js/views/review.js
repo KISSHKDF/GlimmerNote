@@ -31,6 +31,11 @@
   }
   /* F-47：causeLayer 只许进白名单类名（非 K/L/S 的取值此前直接进 class 属性位 = 属性逃逸面） */
   const layerCls = v => M.LAYER[v] ? 'tag ' + v : 'tag gray';
+  /* ★ 2026-11-09 随机速测的洗牌缓存：**模块级**、键含 学生+学科+卡数 ——
+     复核发现：放 setup() 闭包里时，任何整页重绘（切学生/自动重读/落库后重绘）都会重跑 setup
+     ⇒ 随机池静默重洗，与"画界面不重抽、点「🎲 换一批」才重洗"的承诺矛盾。
+     卡数进键 = 数据重读后卡集变了自动重洗（重洗可见，不是静默错配）。 */
+  let randomCache = null;   // { key, list }
 
   V.sub = () => M.session ? ('进行中 ' + Math.min(M.session.idx + 1, M.session.queue.length) + '/' + M.session.queue.length) : '练 → 判 → 建议日（工具爬档）';
 
@@ -71,9 +76,8 @@
     let sj = U.lsGet('ctb2.rvSj', '全部');
     let cap = U.lsGet('ctb2.rvCap', 15);
 
-    /* 随机池：洗牌结果按题源+学科记忆——画界面/切选项不重抽（点「🎲 换一批」才重洗），
-       否则每次重绘都会悄悄换题，用户对不上自己刚看到的队列。 */
-    let randomCache = null;
+    /* 随机池：洗牌结果按 学生+学科+卡数 记忆（模块级缓存，见文件头注）——
+       画界面/切选项不重抽；点「🎲 换一批」或数据集变化才重洗。 */
     function shuffle(list) {
       const a = list.slice();
       for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); const t = a[i]; a[i] = a[j]; a[j] = t; }
@@ -81,7 +85,7 @@
     }
     function poolList() {
       if (src === 'random') {
-        const key = sj;
+        const key = M.student() + '|' + sj + '|' + cards.length;
         if (!randomCache || randomCache.key !== key) {
           const base = sj === '全部' ? cards : cards.filter(x => x.subject === sj);
           randomCache = { key, list: shuffle(base) };
@@ -443,6 +447,9 @@
   }
 
   async function commit() {
+    /* ★ 2026-11-09 纵深闸：随机速测场永不落库。当前唯一入口 rvCommit 的渲染条件已含 !s.quick
+       （不可达），这行防未来新增入口绕过结算屏分支直接落库。 */
+    if (M.session && M.session.quick) return;
     /* ⚠ 2026-10-11（F-RB-2，高）：双击「落库」此前会**并发跑两遍 endSession**——
        两次都在第一个 await（mark('组卷')）之前读到了同一份 results，于是同一批题
        组了**两张卷**、回录两次（探针实测：组卷 ids=M0027,M0028 出现 2 次、批改 2 次）。
