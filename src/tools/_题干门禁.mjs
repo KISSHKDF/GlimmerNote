@@ -294,8 +294,37 @@ export function ellipsisLeadParagraphs(html, minLen = ELLIPSIS_MIN_LEN) {
 
 /* ---------- 判据⑦⑧：该画线却没画线（2026-11-08 新增） ---------- */
 
-/** 判据⑦的措辞：题干纯文本里出现「画线 / 划线」。 */
+/** 判据⑦的措辞：题干纯文本里出现「画线 / 划线」。
+ *
+ *  ★ 2026-11-10 收窄（Lead 实测卷二第16题踩到）：`/画线|划线/` 会把
+ *    **物理作图题的固定说法**「请用**画线**代替导线」「用**笔画线**代替绳」一起命中 ——
+ *    那不是"给字母/短语画下划线"，而是"用笔描一根导线"，**与 `<u>` 毫无关系**。
+ *    2026-11-10 真库实测：卷二第16题三张卡（物理·实物电路作图）被本判据**误判为数据损坏**，
+ *    入库器当场拒收（且 `buildStemHtml` 也抛错）⇒ 好题进不了库。
+ *
+ *  收窄口径：**只有"画线/划线"紧跟"部分"（或"单词/字母/短语/词组"）时才算 underline 语境**；
+ *  「用笔画线代替导线/绳/线」「画线代替连接」这类**作图指令**不算。
+ *  ⚠ 保持"宁可漏判也不误报"的仓规：漏掉一条真废题，比拦掉一批好题代价小。
+ */
 export const UNDERLINE_WORD = /画线|划线/;
+
+/** 判据⑦真正要抓的语境：**画线/划线的对象是字母、单词或短语**（英文题的"画线部分"）。
+ *  物理作图题的「用笔画线代替导线」不是这一类 —— 那里要画的是一根线，不是给字母加下划线。 */
+export const UNDERLINE_OBJECT = /(画线|划线)\s*(部分|单词|字母|短语|词组|音标|读音)/;
+
+/** 「用笔画线代替…」这类**作图指令**：画的是导线/绳/线，不是给字加下划线 ⇒ 不属判据⑦。 */
+export const DRAW_WIRE_PHRASE = /(用|以)?\s*(笔画线|笔划线|画线|划线)\s*代替\s*(导线|导线和|绳|线和|电线|连接线)/;
+
+/** 题干是否处在「给字母/短语画下划线」的语境里（判据⑦⑧共用）。
+ *  判据：出现「画线/划线 **部分|单词|字母|短语|词组|音标|读音**」，
+ *  且**不是**「用笔画线代替导线/绳」这种作图指令。 */
+export function mentionsUnderlineSense(text) {
+  const s = String(text || '');
+  if (!UNDERLINE_WORD.test(s)) return false;
+  /* 作图指令优先排除（它的宾语是导线/绳，不是字母） */
+  if (DRAW_WIRE_PHRASE.test(s)) return false;
+  return UNDERLINE_OBJECT.test(s);
+}
 
 /** 题干里**有没有画线标记** `<u>`。
  *  ⚠ 判据刻意宽松（**任意位置**即算已标，不必与"画线"二字同段）——本仓惯例是宁可漏判也不误报。
@@ -406,7 +435,7 @@ export function judgeCard({ stem = '', question = '', source = '', type = '' } =
      读者不知道哪个字母/哪个短语被画了线 ⇒ 判断读音异同、按画线归类、对画线部分提问、
      替换或翻译画线部分这些题**根本没法作答** ⇒ 印出去就是废题（与 ①②③⑤ 同为数据损坏级）。 */
   const hasU = hasUnderlineMarkAny(html);
-  const mentionsUnderline = UNDERLINE_WORD.test(plain);
+  const mentionsUnderline = mentionsUnderlineSense(plain);
   if (mentionsUnderline && !hasU) {
     problems.push({ code: 'underline-missing', msg: '题干提到了**画线**（"画线 / 划线"），却一个 `<u>` 标记都没有——读者看不出哪个字母/哪个短语被画了线，这类题（判读音异同 / 按画线归类 / 对画线部分提问 / 替换或翻译画线部分）**不标画线就没法作答**。把被画线的字母或短语原样括起来：`classm<u>a</u>te`、`6. y<u>e</u>s  h<u>e</u>lp`、`The woman is <u>80 years old</u>.`' });
   }

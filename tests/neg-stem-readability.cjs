@@ -130,6 +130,12 @@ const dropNewBlocking = r => Object.assign({}, r, {
 
 /** ⑦ 阳性（E0006 的真实形态）：「对画线部分提问」却没有任何 `<u>`。 */
 const UNDERLINE_MISSING = '<div class="stem"><p class="stem-lead">1. The woman is 80 years old. (对画线部分提问) ______ ______ ______ the woman?</p></div>';
+/** ⑦ 阴性三（2026-11-10 新增）：**物理作图题的固定说法**「请用画线代替导线」——
+ *  画的是一根导线，**不是**给字母加下划线 ⇒ 与 `<u>` 无关，**不许**判红。
+ *  真库事故：卷二第16题三张物理卡被本判据误判为数据损坏，入库器当场拒收（好题进不了库）。 */
+const DRAW_WIRE_INSTRUCTION = '<div class="stem"><p class="stem-lead">16. (2) 如图乙所示，请用笔画线代替导线将图中的实物电路连接完整。要求：两灯并联，电流表测量通过灯L₁的电流。</p></div>';
+/** ⑦ 阴性四（2026-11-10 新增）：同一句里的另一种作图说法「用笔画线代替绳」。 */
+const DRAW_WIRE_ROPE = '<div class="stem"><p class="stem-lead">如图乙，请用笔画线代替绳画出最省力的绕线以及绳子自由端的拉力F。</p></div>';
 /** ⑦ 阴性一：同一道题**标了画线**（`<u>` 把被画线的短语括出来）⇒ 必须判绿。 */
 const UNDERLINE_MARKED = '<div class="stem"><p class="stem-lead">1. The woman is <u>80 years old</u>. (对画线部分提问) ______ ______ ______ the woman?</p></div>';
 /** ⑦ 阴性二：`<u>` 在**另一个段落**（不必与"画线"二字同段）⇒ 也算已标，必须判绿。 */
@@ -373,6 +379,26 @@ function runAll() {
     h5.ok === false && h5.problems.some(p => p.code === 'entity-tag') && !h5.problems.some(p => p.code === 'underline-missing'),
     'problems=' + h5.problems.map(p => p.code).join(','));
 
+  /* ── H4b ⑦ 阴性（2026-11-10 新增）：物理作图题「用笔画线代替导线/绳」**不**红 ──
+     真库事故：卷二第16题三张物理卡被本判据误判为数据损坏 ⇒ 入库器当场拒收，好题进不了库。 */
+  const h4b = GATE.judgeCard({ stem: DRAW_WIRE_INSTRUCTION });
+  A('⑦ 阴性：物理作图题「请用笔画线代替导线」（画的是导线，不是给字母加下划线）**不**命中',
+    h4b.ok === true && !h4b.problems.some(p => p.code === 'underline-missing'),
+    'ok=' + h4b.ok + ' problems=' + (h4b.problems.map(p => p.code).join(',') || '无'));
+  const h4c = GATE.judgeCard({ stem: DRAW_WIRE_ROPE });
+  A('⑦ 阴性：物理作图题「请用笔画线代替绳」**不**命中',
+    h4c.ok === true && !h4c.problems.some(p => p.code === 'underline-missing'),
+    'ok=' + h4c.ok + ' problems=' + (h4c.problems.map(p => p.code).join(',') || '无'));
+  A('⑦ 收窄后：`mentionsUnderlineSense` 对"画线代替导线"判 false、对"对画线部分提问"判 true',
+    GATE.mentionsUnderlineSense('请用笔画线代替导线') === false &&
+    GATE.mentionsUnderlineSense('请用笔画线代替绳画出最省力的绕线') === false &&
+    GATE.mentionsUnderlineSense('对画线部分提问') === true &&
+    GATE.mentionsUnderlineSense('把划线部分译成中文') === true,
+    '导线=' + GATE.mentionsUnderlineSense('请用笔画线代替导线') +
+    ' 绳=' + GATE.mentionsUnderlineSense('请用笔画线代替绳画出最省力的绕线') +
+    ' 部分提问=' + GATE.mentionsUnderlineSense('对画线部分提问') +
+    ' 划线部分=' + GATE.mentionsUnderlineSense('把划线部分译成中文'));
+
   /* ── H6 ⑧ 阳性：语音类题无 `<u>` ⇒ **只报告不阻断** ── */
   const h6 = GATE.judgeCard({ stem: PHONETIC_NO_U });
   A('⑧ 阳性：提到"语音/发音"却没有 `<u>` ⇒ 进 warns（只报告），ok 仍为 true（不阻断发布链）',
@@ -452,6 +478,14 @@ function runAll() {
   const uEnt = INGEST.assertUnderlineMarked('1. classm&lt;u&gt;a&lt;/u&gt;te（画线部分）');
   A('入库侧：实体化形态归"实体化标签"那条，这条判据**不重复报**（返回 null）',
     uEnt === null, String(uEnt).slice(0, 90));
+
+  /* 入库侧阴性（2026-11-10 新增）：物理作图题「用笔画线代替导线」**不**被拒收 */
+  const uWire = INGEST.assertUnderlineMarked('16. (2) 如图乙所示，请用笔画线代替导线将图中的实物电路连接完整。要求：两灯并联。');
+  A('入库侧：物理作图题「请用笔画线代替导线」**不**被这条判据拒收（好题要能进库）',
+    uWire === null, String(uWire).slice(0, 110));
+  const uWireKeep = INGEST.buildStemHtml('16. (2) 请用笔画线代替导线将实物电路连接完整', false);
+  A('入库侧：物理作图题（笔画线代替导线）**照常入库**（buildStemHtml 不抛错）',
+    uWireKeep.includes('笔画线代替导线'), uWireKeep.replace(/\n/g, ' ').trim().slice(0, 110));
 
   /* ── H12 阴性自证：入库器里两处入口都真的接了这条判据（不是空壳）── */
   A('阴性自证 · 入库器里「提到画线却没标 ⇒ 抛错」的代码在位（入库 + 改卡两个入口 + buildStemHtml）',

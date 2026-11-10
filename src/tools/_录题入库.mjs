@@ -267,6 +267,28 @@ export function checkEntityTags(text) {
   if (msg) throw new Error(msg);
   return null;
 }
+/** 判据⑦真正要抓的语境：**画线/划线的对象是字母、单词或短语**（英文题的"画线部分"）。
+ *  物理作图题的「用笔画线代替导线」不是这一类 —— 那里要画的是一根导线，不是给字母加下划线。
+ *
+ *  ★ 2026-11-10 新增（Lead 实测卷二第16题踩到）：原判据是裸 `/画线|划线/`，
+ *    把物理作图题的固定说法「请用**画线**代替导线」「用**笔画线**代替绳」一起命中 ⇒
+ *    那 3 张**好卡**被入库器当场拒收（`buildStemHtml` 也抛错）。
+ *    收窄口径与 `_题干门禁.mjs` 判据⑦**同一条规则**（那边扫描存量、这边入库当场拦）：
+ *    只有「画线/划线」紧跟「部分|单词|字母|短语|词组|音标|读音」才算 underline 语境；
+ *    「用笔画线代替导线/绳/线」这种作图指令**不算**。
+ *    ⚠ 保持"宁可漏判也不误报"：漏掉一条真废题，比拦掉一批好题代价小。 */
+export const UNDERLINE_WORD = /画线|划线/;
+export const UNDERLINE_OBJECT = /(画线|划线)\s*(部分|单词|字母|短语|词组|音标|读音)/;
+export const DRAW_WIRE_PHRASE = /(用|以)?\s*(笔画线|笔划线|画线|划线)\s*代替\s*(导线|导线和|绳|线和|电线|连接线)/;
+
+/** 题干是否处在「给字母/短语画下划线」的语境里（与 `_题干门禁.mjs` 同口径）。 */
+export function mentionsUnderlineSense(text) {
+  const s = String(text || '');
+  if (!UNDERLINE_WORD.test(s)) return false;
+  if (DRAW_WIRE_PHRASE.test(s)) return false;
+  return UNDERLINE_OBJECT.test(s);
+}
+
 /** **该画线却没画线标记** ⇒ 拒收（2026-11-08，用户报障「单词画线的字母，你在印刷版中
  *  没有体现出哪个字母画线了，这样的错误还不少」）。
  *  判据：`questionText` 里出现「画线 / 划线」，却**一个 `<u>` 都没有**。
@@ -279,7 +301,7 @@ export function checkEntityTags(text) {
  *    （不必与"画线"二字同段）——宁可漏判也不误报。 */
 export function assertUnderlineMarked(text) {
   const s = String(text || '');
-  if (!/画线|划线/.test(s)) return null;
+  if (!mentionsUnderlineSense(s)) return null;
   if (/<u(?:\s[^<>]*)?>/i.test(s)) return null;
   /* 实体化 / 双重转义形态（`&lt;u&gt;` / `&amp;lt;u&amp;gt;`）算"已标"——它归 assertNoEntityTags 管 */
   if (/&(?:amp;)*lt;\/?u\b/i.test(s)) return null;
