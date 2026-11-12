@@ -154,6 +154,23 @@
   };
   S.toggleTheme = function () { S.applyTheme(S.theme() === 'dark' ? 'light' : 'dark'); S.render(); };
 
+  /* ================= 孩子模式（2026-11-12 批次 3 / UX-11）=================
+     为什么要有：做题屏原先混着**家长向**信息 —— 错因码 K/L/S、入册天数、批次号、难度标签、
+     工具名，以及「下次≈N 天后」这种排程承诺（审计 UX-11）。孩子看这些既看不懂，
+     又会被"还有几天"带偏；而家长恰恰需要它们。⇒ 一套界面两种视图：
+     孩子模式只留「题面 / 答案 / 对错」三件事，并把题干与按钮放大。
+
+     ⚠ 收口方式：家长向元素**一律带 class `adm`**，由 CSS 的
+     `body[data-kid="1"] .adm{display:none}` **一处**隐藏 —— 不散写成 `style="display:none"`，
+     否则以后新增的家长向元素会因为"忘了加判断"而漏进孩子视图（本仓 L-286 族）。
+     状态存 localStorage（下次进做题屏仍生效），**不落库、不写索引**。 */
+  S.kidMode = () => U.lsGet('gn.kidMode', false) === true;
+  S.applyKidMode = function (on) {
+    if (on) document.body.dataset.kid = '1'; else delete document.body.dataset.kid;
+    U.lsSet('gn.kidMode', !!on);
+  };
+  S.toggleKidMode = function () { S.applyKidMode(!S.kidMode()); S.render(); };
+
   /* ================= 渲染主流程 ================= */
   S.render = function () {
     try {
@@ -897,6 +914,7 @@
   S.mount = function () {
     const savedTheme = U.lsGet('ctb2.theme', null) || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
     S.applyTheme(savedTheme);
+    S.applyKidMode(S.kidMode());          // ★ 批次 3 / UX-11：孩子模式随上次选择恢复（只读 localStorage）
     if (U.lsGet('ctb2.side', 'full') === 'mini') document.documentElement.dataset.side = 'mini';
     const h = (location.hash || '#dash').slice(1);
     route = CTB.views[h] ? h : 'dash';

@@ -784,3 +784,17 @@ textarea{width:100%;resize:vertical;min-height:64px;line-height:1.7}
     scroll-behavior: auto !important;
   }
 }
+
+/* ═══ 孩子模式（2026-11-12 批次 3 / UX-11）═══════════════════════════════════
+   为什么必须有：做题屏原先混着错因码 K/L/S、入册天数、批次号、难度标签、工具名，
+   以及「下次≈N 天后」这种排程承诺（审计 UX-11）—— 孩子看这些既看不懂，又会被
+   "还有几天"带偏；而家长恰恰需要它们。⇒ 一套界面两种视图。
+   收口方式：家长向元素一律带 `adm`，**只在这一处**隐藏（不散写 style="display:none"，
+   否则以后新增的家长向元素会因为"忘了加判断"而漏进孩子视图，本仓 L-286 族）。
+   开启后同时把题干与按钮放大：孩子模式是要**离开家长在旁边念题**的场景。 */
+body[data-kid="1"] .adm { display: none !important }
+body[data-kid="1"] .rv-q { font-size: 1.15rem; line-height: 1.95 }
+body[data-kid="1"] .rv-q .stembox { font-size: 1.15rem; line-height: 1.95 }
+body[data-kid="1"] .grades .btn,
+body[data-kid="1"] .rv-actions .btn { font-size: 1.05rem; padding: 12px 18px }
+body[data-kid="1"] .rv-bar .btn { font-size: 0.95rem }

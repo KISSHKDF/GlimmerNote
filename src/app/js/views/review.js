@@ -207,14 +207,18 @@
       '<div class="rv">' +
       '<div class="rv-bar"><button class="btn sm ghost" id="rvAbort">✕ 退出</button>' +
       '<div class="rv-prog"><i style="width:' + (s.idx / total * 100) + '%"></i></div>' +
-      '<span class="small num rv-pos">' + (s.idx + 1) + ' / ' + total + '</span></div>' +
-      '<div class="row small">' + ztag('ok', '对', cnt['对']) + ztag('warn', '半对', cnt['半对']) + ztag('bad', '错', cnt['错']) +
+      '<span class="small num rv-pos">' + (s.idx + 1) + ' / ' + total + '</span>' +
+      /* ★ 2026-11-12（批次 3 / UX-11）：孩子模式开关。判据留在 CSS 一处（`body[data-kid="1"] .adm`），
+         本页的家长向元素一律带 `adm` —— 新增元素忘了带，会被 tests\neg-kid-mode.cjs 的清单断言拦住。 */
+      '<button class="btn sm ghost" id="rvKid" title="孩子模式：只留题面 / 答案 / 对错，隐藏错因码·入册天数·批次号·排程预测">' +
+      (S.kidMode() ? '👀 家长视图' : '👦 孩子模式') + '</button></div>' +
+      '<div class="row small"><span class="adm">' + ztag('ok', '对', cnt['对']) + ztag('warn', '半对', cnt['半对']) + ztag('bad', '错', cnt['错']) + '</span>' +
       '<span class="muted num">· 已坚持 ' + s.idx + ' 题</span>' +
       (skippedN ? '<span class="tag gray num">已跳过 ' + skippedN + '</span>' : '') +
       '<span class="tb-sp"></span><button class="btn xs ghost" id="rvUndo">↶ 撤上一题 (U)</button></div>' +
 
       '<div class="card rv-card">' +
-      '<div class="rv-meta"><span class="tag sj" style="background:' + U.sjColor(x.subject) + '">' + U.esc(x.kid + '·' + x.subject) + '</span>' +
+      '<div class="rv-meta adm"><span class="tag sj" style="background:' + U.sjColor(x.subject) + '">' + U.esc(x.kid + '·' + x.subject) + '</span>' +
       '<b class="num">' + U.esc(c.id) + '</b><span class="tag gray">' + U.esc(c.type || '题目') + '</span>' +
       '<span class="diff-' + U.esc(c.difficulty) + ' diff-tag">' + U.esc(c.difficulty || '') + '</span>' +
       '<span class="' + layerCls(c.causeLayer) + '">' + U.esc((c.causeLayer || '') + (c.causeCode || '')) + '</span>' +
@@ -261,6 +265,8 @@
       chips: '<span class="tag warn">' + U.esc(c.id) + '</span>', q: c.question,
       hint: '判分前核对：红笔订正处即当时错误点。此图含答案，只在翻开后用。' }, M.origOf(c))]);
     const rv = U.$id('rvReveal'); if (rv) rv.onclick = () => { reveal = true; S.render(); };
+    /* ★ 批次 3 / UX-11：孩子模式开关。⚠ 仍按本文件的老教训判空——`$id` 取不到就是 null。 */
+    const kidBtn = U.$id('rvKid'); if (kidBtn) kidBtn.onclick = () => S.toggleKidMode();
 
     if (reveal) {
       /* 回填本卡已写的转折点（F-RB-4）：重绘不再吞掉用户输入 */
@@ -281,14 +287,16 @@
          就没法逐空核对（2026-11-08 用户报障：题干 3 个空、答案只给一个）。 */
       M.slotAnswerLine(c) +
       '<div class="wrong-ans"><b>当时错答：</b>' + U.esc(c.studentAnswer || '—') + '</div>' +
-      '<div class="cause-box"><span class="' + layerCls(c.causeLayer) + '">' + U.esc((c.causeLayer || '') + (c.causeCode || '')) + ' ' + (M.LAYER[c.causeLayer] ? M.LAYER[c.causeLayer].name : '') + '</span>' +
+      '<div class="cause-box"><span class="adm ' + layerCls(c.causeLayer) + '">' + U.esc((c.causeLayer || '') + (c.causeCode || '')) + ' ' + (M.LAYER[c.causeLayer] ? M.LAYER[c.causeLayer].name : '') + '</span>' +
       '<div class="cause-x">' + U.esc(c.causeDesc || '（无错因说明）') + '</div>' +
-      (c.causeConfirmed === false ? '<div class="small cause-warn">⚠ 错因未经孩子口述确认，判分前先问问当时怎么想的</div>' : '') + '</div>' +
+      (c.causeConfirmed === false ? '<div class="small cause-warn adm">⚠ 错因未经孩子口述确认，判分前先问问当时怎么想的</div>' : '') + '</div>' +
       (c.img ? '<div class="ans-fig"><img class="rv-img rv-img-s" src="' + U.esc(H.asset(c.img)) + '" alt="原卷核对"></div>' : '') +
       '<input type="text" id="rvNote" class="rv-note" value="' + U.esc(note || '') + '" placeholder="转折点（可选，随判分记入复习流水）：我想到哪一步、在哪拐错？">' +
       '<div class="grades">' +
-      /* 随机速测不落库 ⇒ 不承诺"下次≈N天"（界面承诺与实际行为同口径；正常场次文案不变）。 */
-      (M.session && M.session.quick
+      /* 随机速测不落库 ⇒ 不承诺"下次≈N天"（界面承诺与实际行为同口径；正常场次文案不变）。
+         ★ 2026-11-12（批次 3 / UX-11）：**孩子模式**下同样不显示"下次≈N 天"——
+         那是排程承诺（家长向信息），自评时看到它会诱导"挑好判的判对"（与 UX-10 同源）。 */
+      (M.session && M.session.quick || S.kidMode()
         ? '<button class="btn ok gr-yes" data-grade="对">✓ 对 (1)</button>' +
           '<button class="btn warn gr-half" data-grade="半对">◐ 半对 (2)</button>' +
           '<button class="btn danger gr-no" data-grade="错">✗ 错 (3)</button>'
