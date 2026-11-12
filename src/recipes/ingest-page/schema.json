@@ -32,6 +32,8 @@
           "title": { "type": "string", "minLength": 1, "maxLength": 24 },
           "source": { "type": "string", "maxLength": 200 },
           "sourceDate": { "type": "string", "pattern": "^$|^\\d{4}-\\d{2}-\\d{2}$" },
+          "srcBook": { "type": "string", "maxLength": 120, "description": "**可选**：教辅/教材名（如「人教版数学八年级上」「5·3 天天练」）。同名教辅的**地区专版 / 印次**不同，同一道题的答案可能不同 —— 这是答案对不上时的**第一顺位排查字段**。卷面上能看清就填，看不清就留空，**不许猜**。" },
+          "srcEdition": { "type": "string", "maxLength": 120, "description": "**可选**：版本 / 印次（如「2025 秋 · 第 3 次印刷」「人教版 · 江苏专版」）。同上，看不清就留空，不许猜。" },
           "questionText": { "type": "string", "minLength": 1 },
           "studentAnswer": { "type": "string", "minLength": 1 },
           "answer": { "type": "string" },

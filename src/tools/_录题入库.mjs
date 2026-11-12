@@ -685,6 +685,13 @@ function cmdFix() {
     const it = hit.item;
     if (c.source !== undefined) it.source = c.source || '';
     if (c.sourceDate !== undefined) it.sourceDate = c.sourceDate || '';
+    /* ★ 2026-11-13（批次 4 / 教辅版本字段）：**答案冲突的根因字段**。
+       同名教辅的「地区专版 / 印次」不同，同一道题的答案可能就不一样（2025 秋"3×8 vs 8×3"
+       那类争议就是这么来的）；答案对不上时，先要看的就是"我们说的是不是同一本书"。
+       **可选**：老卡没有这两个字段照样合法（不进 required，否则整库一夜变红）。
+       写入归属同 `source` —— 由本工具写，不由门禁写。 */
+    if (c.srcBook !== undefined) it.srcBook = String(c.srcBook || '').slice(0, 120);
+    if (c.srcEdition !== undefined) it.srcEdition = String(c.srcEdition || '').slice(0, 120);
     if (c.questionText !== undefined) it.question = String(c.questionText || '').replace(/\s+/g, ' ').trim();
     if (c.answer !== undefined) it.answer = c.answer || '';
     if (c.studentAnswer !== undefined) it.studentAnswer = c.studentAnswer || '';
@@ -960,6 +967,10 @@ function cmdLand() {
   /* ⑨ 幂等判定（内容摘要不含卡号 ⇒ 同一份内容重跑必得同一个摘要） */
   const digest = sha256(JSON.stringify(cards.map(c => ({
     subject: c.subject, title: c.title, source: c.source, sourceDate: c.sourceDate,
+    /* ★ 2026-11-13（批次 4）：新字段必须进摘要 —— 否则"只改了教辅版本再重提"会被幂等跳过。
+       ⚠ 老内容没有这两个字段时 `JSON.stringify` 会**省略 undefined 属性** ⇒ 摘要与旧算法逐字相同，
+       存量任务的 `landedDigest` 依然匹配（幂等不会被这次改动打破）。 */
+    srcBook: c.srcBook, srcEdition: c.srcEdition,
     questionText: c.questionText, studentAnswer: c.studentAnswer, answer: c.answer,
     answerSource: c.answerSource, answerSourceNote: c.answerSourceNote,
     causeCode: c.causeCode, causeNote: c.causeNote, kpoints: c.kpoints,
@@ -1078,6 +1089,8 @@ function cmdLand() {
         const it = {
           id, dir: dn,
           source: c.source || '', sourceDate: c.sourceDate || '',
+          /* ★ 2026-11-13（批次 4）：教辅版本字段（可选）。见上方"答案冲突的根因字段"注释。 */
+          srcBook: String(c.srcBook || '').slice(0, 120), srcEdition: String(c.srcEdition || '').slice(0, 120),
           type: c.type || '（未填）',
           question: String(c.questionText || '').replace(/\s+/g, ' ').trim(),
           answer: c.answer || '',
