@@ -19,8 +19,8 @@ const path = require('path');
 /* ★ 2026-10-23 程序与数据分家：工具在 src\tools\，数据在库根（见 tests\_测试环境.cjs） */
 const E = require('./_测试环境.cjs');
 const ROOT = path.resolve(__dirname, '..');
-let fails = 0;
-const A = (n, ok, d) => { console.log(`${ok ? '[OK]  ' : '[FAIL]'} ${n}${d !== undefined ? '  → ' + d : ''}`); if (!ok) fails++; };
+let fails = 0, total = 0;   /* ★ 2026-11-13：total 供 `断言=N` 对账用 */
+const A = (n, ok, d) => { total++; console.log(`${ok ? '[OK]  ' : '[FAIL]'} ${n}${d !== undefined ? '  → ' + d : ''}`); if (!ok) fails++; };
 
 const APP = path.join(ROOT, 'src', 'app', 'js');
 const readApp = (f) => fs.readFileSync(path.join(APP, f), 'utf8');
@@ -156,5 +156,5 @@ A('阴性对照 · 缺 admit 分区必须判降级', healthOf({ dataHealth: {}, 
 A('阴性对照 · 某源报错必须判降级', healthOf({ dataHealth: { admit: '准入输出缺 .admit' }, blindFresh: {}, figState: {}, admit: {} }).ok === false,
   JSON.stringify(healthOf({ dataHealth: { admit: '准入输出缺 .admit' }, blindFresh: {}, figState: {}, admit: {} }).bad));
 
-console.log(`\nRESULT=${fails ? 'FAIL(' + fails + ')' : 'PASS'}`);
+console.log(`\nRESULT=${fails ? 'FAIL(' + fails + ')' : 'PASS'}  断言=${total}  失败=${fails}`);
 process.exit(fails ? 1 : 0);
