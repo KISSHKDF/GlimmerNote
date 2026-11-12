@@ -25,6 +25,7 @@
  *   node _原卷台账.mjs 回填 --key "学生A|P0001" --page "…" [--box x,y,w,h] [--note "…"] [--by 视觉定位]
  *   node _原卷台账.mjs 导入历史 --from <老台账.json>[,<又一份>] [--dry] [--force]   # 迁移修复（逐条自证）
  *   node _原卷台账.mjs 门禁                     # 未定位>0 / 路径失效 / box 越界 → exit 1
+ *   node _原卷台账.mjs 工单                     # 未定位条目 → 库根「_原卷待定位-按批次.md」（派生物，可随时重算）
  *
  * 铁律：--dry 既不写真源也不写缓存（预览件落过程目录，见 `_过程目录.mjs`；用文件哈希自证，教训 L-312）；
  *       写真源前把旧台账复制到 _备份-原卷台账-*。
@@ -34,7 +35,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
-import { readJsonStrict, writeJsonAtomic, acquireLibLock } from './_安全写.mjs';
+import { readJsonStrict, writeJsonAtomic, acquireLibLock, writeTextAtomic } from './_安全写.mjs';
 import { procPath } from './_过程目录.mjs';
 import { displaySize, jpegOrientation, imageSize } from './_图尺寸.mjs';
 import { libraryRoot, toolPath } from './_库根.mjs';
@@ -826,6 +827,81 @@ function report(cards, { persist = false } = {}) {
   console.log('\n' + auditLine(audit));
 }
 
+/* ---------- 工单：未定位条目 → `<库根>\_原卷待定位-按批次.md`（库根的**派生物**，可随时重算） ----------
+   ★ 2026-11-13（批次 4 收尾）：这份清单原先是一次性脚本的产物。而"派生物可随时重算"是本仓
+   数据区纪律（规范 F4）——定位进展一变，重跑这一条命令就能刷新，不会留一份**悄悄过期**的清单。
+   与 `定位单` 的分工：定位单给的是「网格候选页 + 任务单」（**看图定位**，落过程目录、体积大）；
+   工单给的是「按批次的可读清单」（**总览与勾选**，落库根、纯文本、可搜索可打印）。两者互补。 */
+function workOrder() {
+  const doc = fs.existsSync(LEDGER) ? readJson(LEDGER) : { cards: {} };
+  const cards = loadCards();
+  const need = cards.filter(c => !doc.cards[c.key] || !doc.cards[c.key].page);
+  if (!need.length) { console.log('全部卡片都已定位到整页，无需生成工单'); return; }
+  /* 批次名 = `source` 的第一段（如「《学习与评价 初中物理 九年级上册》（苏科版）」）——
+     真实库的批次不在硬编码的 `BATCHES` 里，只能从 source 解析；解析不出就老实用「(无批次名)」，
+     不许编一个名字出来（清单是给人照着干活的，编名字会把人带偏）。 */
+  const batchNameOf = c => String(c.source || '').split(' · ')[0].trim() || '(无批次名)';
+  const byBatch = new Map(), bySub = new Map();
+  for (const c of need) {
+    const b = batchNameOf(c);
+    if (!byBatch.has(b)) byBatch.set(b, []);
+    byBatch.get(b).push(c);
+    const sk = c.student + '/' + c.subject;
+    bySub.set(sk, (bySub.get(sk) || 0) + 1);
+  }
+  const groups = [...byBatch.entries()].sort((a, b) => b[1].length - a[1].length);
+  const d = new Date();
+  const p2 = n => String(n).padStart(2, '0');
+  const genAt = d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()) + ' ' + p2(d.getHours()) + ':' + p2(d.getMinutes());
+
+  const L = [];
+  L.push('# 原卷母本待定位清单（按批次）', '');
+  L.push('> 生成：' + genAt + ' ｜ 数据源：`_原卷台账.mjs 门禁` 的未定位条目（**' + need.length + ' 条**）');
+  L.push('>');
+  L.push('> **这批卡本身是可用的**（题干 / 原卷截图 / 答案 / 错因齐全，能组卷能打印）。');
+  L.push('> 缺的只是「整页原卷」的定位 ⇒ 后果是：**不能从卡跳回整页、不能做整页视觉复核**。');
+  L.push('>');
+  L.push('> **一次定位解决一批**：同批次的卡来自同一页或同几页——找到那一页后，');
+  L.push('> 用下面这条命令逐条回填即可（工具自带库根包含性准入 + 存在性 + 形状守卫 + 原子写）：');
+  L.push('>');
+  L.push('> ```');
+  L.push('> node src\\tools\\_原卷台账.mjs 回填 --key "学生|卡号" --page "<库内相对路径>" --box "x,y,w,h" --by "人工定位" --note "<依据>"');
+  L.push('> ```');
+  L.push('>');
+  L.push('> `--box` 是**该题在整页上的归一化位置**（0~1，x,y,w,h）；页面上直接量或按已有截图反推都行。');
+  L.push('> 定位完成后跑一次 `node src\\tools\\_原卷台账.mjs 门禁` 验收（未定位数必须下降）。');
+  L.push('>');
+  L.push('> **要看图定位**（而不是对着清单猜）：先跑 `node src\\tools\\_原卷台账.mjs 定位单 --per 8`，');
+  L.push('> 它会按批次产出「带网格的候选页 + 任务单」到过程目录（`_probe\\定位单\\`），');
+  L.push('> 对着候选页找那一页，比翻整个文件夹快得多。');
+  L.push('');
+  L.push('## 一、批次总览（按张数降序）', '');
+  L.push('| 批次 | 张数 | 涉及学科 |');
+  L.push('|---|---|---|');
+  for (const [b, list] of groups) {
+    L.push('| ' + b + ' | ' + list.length + ' | ' + [...new Set(list.map(x => x.subject))].join('、') + ' |');
+  }
+  L.push('');
+  L.push('**合计 ' + need.length + ' 条 / ' + groups.length + ' 个批次。**', '');
+  L.push('## 二、分学科统计', '');
+  L.push('| 学生/学科 | 张数 |');
+  L.push('|---|---|');
+  for (const [sk, n] of [...bySub.entries()].sort((a, b) => b[1] - a[1])) L.push('| ' + sk + ' | ' + n + ' |');
+  L.push('');
+  L.push('## 三、明细（按批次）', '');
+  for (const [b, list] of groups) {
+    L.push('### ' + b + '（' + list.length + ' 张）', '');
+    for (const c of list.slice().sort((a, b2) => String(a.source).localeCompare(String(b2.source)) || a.id.localeCompare(b2.id))) {
+      L.push('- **' + c.key + '** ｜ ' + c.subject + ' ｜ ' + (c.source || '（无来源）') + ' ｜ 卡目录：`' + c.cardDir + '`');
+    }
+    L.push('');
+  }
+  const out = path.join(ROOT, '_原卷待定位-按批次.md');
+  writeTextAtomic(out, L.join('\n').replace(/\n+$/, '\n'));
+  console.log('✔ 工单已写出：' + out);
+  console.log('  未定位 ' + need.length + ' 条 / ' + groups.length + ' 个批次 ｜ 最便宜的在前：带页码的批次从「一、批次总览」往下看即可。');
+}
+
 /* ---------- 定位单：给未定位的卡产出「带网格候选页 + 任务单」 ---------- */
 function locateSheet({ per }) {
   const doc = fs.existsSync(LEDGER) ? readJson(LEDGER) : { cards: {} };
@@ -1372,5 +1448,6 @@ try {
   else if (cmd === '试算') trial(opt);
   else if (cmd === '合并') mergeLocated();
   else if (cmd === '门禁') gate(!!opt['px-cache']);
-  else { console.log('未知命令：' + cmd + '（可用 生成|采集|覆盖|定位单|回填|导入历史|门禁）'); process.exit(2); }
+  else if (cmd === '工单') workOrder();
+  else { console.log('未知命令：' + cmd + '（可用 生成|采集|覆盖|定位单|回填|导入历史|门禁|工单）'); process.exit(2); }
 } catch (e) { console.error('失败：' + e.message); process.exit(1); }
