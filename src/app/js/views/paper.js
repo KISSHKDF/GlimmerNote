@@ -471,6 +471,27 @@
     if (!sheet) return '';
     return kind === 'ans' ? ansHtml(sheet.title, sheet.refs) : paperHtml(sheet.title, sheet.refs, sheet.form);
   };
+  /* ★ 2026-11-12（批次 4 / 打印硬规则①）：选项按**内容宽度**自动 4 / 2 / 1 列。
+     为什么在**打印期**做、不改数据：题干是净化过的 HTML，屏幕观感不该因此变化；而打印是"要落在纸上"
+     的场景，列数排错就白费纸。规则借 [exam-zh] 的思路（**只借规则不抄代码**）：
+     把同一段里的 A./B./C./D. 四个选项拆成独立项，按**最长选项的字数**决定列数——
+       ≤8 字 ⇒ 4 列；≤16 字 ⇒ 2 列；更长 ⇒ 1 列。
+     ⚠ 只在**四个选项齐全**时动手；识别不确定就**原样返回**（宁可不变，也不许把一道题排错）。
+       选项内可能带 <i>/<sub> 等标签，所以量长度前先剥标签与实体。 */
+  function optsGrid(html) {
+    return String(html).replace(/<p class="stem-q">([\s\S]*?)<\/p>/g, function (m, inner) {
+      const parts = inner.split(/(?=[A-D][.．、]\s*)/).map(s => s.trim()).filter(Boolean);
+      const items = parts.filter(s => /^[A-D][.．、]/.test(s));
+      if (items.length < 4) return m;                       // 不足四个 ⇒ 原样
+      const plain = s => s.replace(/<[^>]+>/g, '').replace(/&[a-zA-Z#0-9]+;/g, 'x').trim();
+      const maxLen = Math.max.apply(null, items.map(s => plain(s).length));
+      const cols = maxLen <= 8 ? 4 : (maxLen <= 16 ? 2 : 1);
+      return '<div class="stem-opts cols-' + cols + '">' +
+        items.map(s => '<span class="opt">' + s + '</span>').join('') + '</div>';
+    });
+  }
+  /* 暴露给 e2e 断言（纯函数，不触发打印对话框）——与 V.printUnit 同一惯例 */
+  V.optsGrid = optsGrid;
   function qHtml(x, i, form) {
     const c = x.card;
     let stem;
@@ -478,7 +499,7 @@
        「裁净题干图」模式只许用 题干.jpg（stem），没有就降级印刷版题干/文字题干。
        F-27/F-57/F-58：题干走 M.stemHtmlSafe（唯一实现：白名单净化 + 相对图解析到卡片目录 + fig 兜底）。 */
     if (form === 'img' && c.stem) stem = '<div class="q-stem"><img src="' + U.esc(H.asset(c.stem)) + '"></div>';
-    else stem = '<div class="q-stem">' + (M.stemHtmlSafe(c) || M.stemFit(U.esc(c.question), c)) + '</div>';
+    else stem = '<div class="q-stem">' + optsGrid(M.stemHtmlSafe(c) || M.stemFit(U.esc(c.question), c)) + '</div>';
     const t = (c.type || '') + (c.question || '');
     /* 答题区自适应（2026-10-16 修，用户 P20261015-01 实测两条）：
        ① 填空题「题干里已有坑」的（ASCII 下划线或 blank span）不再另留 90px 大框——

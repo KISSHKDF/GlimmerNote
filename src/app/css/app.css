@@ -599,6 +599,16 @@ textarea{width:100%;resize:vertical;min-height:64px;line-height:1.7}
 .stembox img{max-width:100% !important;height:auto}
 .sheet .q-stem table{border-collapse:collapse;max-width:100%}
 .sheet .q-stem th,.sheet .q-stem td{border:1px solid #333;padding:2px 12px;text-align:center}
+/* ═══ 选项按内容宽度自动 4/2/1 列（2026-11-12 批次 4 / 打印硬规则①）═════════════════
+   列数**不在 CSS 里判**，由 `paper.js` 的 `optsGrid()` 按"最长选项的字数"算出并写成 cols-N
+   （≤8 字 4 列 / ≤16 字 2 列 / 更长 1 列；不足四个选项一律不动）。这里只负责排布。
+   ⚠ 打印时 `break-inside:avoid` —— 四个选项被拆到两页上，孩子会以为只有两个选项。 */
+.stem-opts{display:grid;gap:2px 14px;margin:3px 0 0}
+.stem-opts.cols-4{grid-template-columns:repeat(4,minmax(0,1fr))}
+.stem-opts.cols-2{grid-template-columns:repeat(2,minmax(0,1fr))}
+.stem-opts.cols-1{grid-template-columns:minmax(0,1fr)}
+.stem-opts .opt{min-width:0;overflow-wrap:break-word}
+@media print{.stem-opts{break-inside:avoid;page-break-inside:avoid}}
 /* ⚠ 2026-11-04 修（用户报障：M0066「表格最左下角，负5分之一的3次方，打印版换行了，
     这一换行会造成很多误解，能不能不换行？」）：
     现象——真打印 PDF（Edge printToPDF → 栅格化）里 M0066 左下格印成
