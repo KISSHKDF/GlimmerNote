@@ -33,6 +33,12 @@ import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
 import { extractJsonText } from './_配方.mjs';
 import { slotCount } from './_空位.mjs';
 import { displaySize } from './_图尺寸.mjs';
+/* ★ 2026-11-12（审计 F03）：判据⑦「该画线却没画线」的语境判定**唯一真源是 `_划线.mjs`**
+   （零副作用模块）。此前这里是**逐字抄的第二份**（3 个正则 + `mentionsUnderlineSense`），
+   而测试只覆盖门禁侧 ⇒ 两处一旦分叉：要么把好题拒收（入库侧），要么放过废题（门禁侧），**且测试全绿**。
+   ⚠ 不能改成 `import './_题干门禁.mjs'`：它是 CLI，顶层解析 `process.argv`，
+   被本文件 import 时会拿**调用方的**命令行去解析并报「未知参数」退出（实测踩到）。 */
+import { mentionsUnderlineSense, hasUnderlineMark, hasUnderlineMarkEntity } from './_划线.mjs';
 
 /* ───────────────── 参数 ───────────────── */
 const { action: _cmd, opt, positional } = parseArgs(process.argv.slice(2), {
@@ -276,18 +282,10 @@ export function checkEntityTags(text) {
  *    收窄口径与 `_题干门禁.mjs` 判据⑦**同一条规则**（那边扫描存量、这边入库当场拦）：
  *    只有「画线/划线」紧跟「部分|单词|字母|短语|词组|音标|读音」才算 underline 语境；
  *    「用笔画线代替导线/绳/线」这种作图指令**不算**。
- *    ⚠ 保持"宁可漏判也不误报"：漏掉一条真废题，比拦掉一批好题代价小。 */
-export const UNDERLINE_WORD = /画线|划线/;
-export const UNDERLINE_OBJECT = /(画线|划线)\s*(部分|单词|字母|短语|词组|音标|读音)/;
-export const DRAW_WIRE_PHRASE = /(用|以)?\s*(笔画线|笔划线|画线|划线)\s*代替\s*(导线|导线和|绳|线和|电线|连接线)/;
-
-/** 题干是否处在「给字母/短语画下划线」的语境里（与 `_题干门禁.mjs` 同口径）。 */
-export function mentionsUnderlineSense(text) {
-  const s = String(text || '');
-  if (!UNDERLINE_WORD.test(s)) return false;
-  if (DRAW_WIRE_PHRASE.test(s)) return false;
-  return UNDERLINE_OBJECT.test(s);
-}
+ *    ⚠ 2026-11-12（审计 F03）：判据已**收敛到单一真源** `_划线.mjs`（本文件改为导入 + re-export），
+ *      "两处同步改"这条纪律不再靠人记 —— 分叉时是**同一函数引用**，不可能漂。 */
+/* 对外契约保持不变（re-export）；不要再在这里抄第二份正则。 */
+export { UNDERLINE_WORD, UNDERLINE_OBJECT, DRAW_WIRE_PHRASE, mentionsUnderlineSense, hasUnderlineMark, hasUnderlineMarkEntity } from './_划线.mjs';
 
 /** **该画线却没画线标记** ⇒ 拒收（2026-11-08，用户报障「单词画线的字母，你在印刷版中
  *  没有体现出哪个字母画线了，这样的错误还不少」）。
@@ -301,10 +299,10 @@ export function mentionsUnderlineSense(text) {
  *    （不必与"画线"二字同段）——宁可漏判也不误报。 */
 export function assertUnderlineMarked(text) {
   const s = String(text || '');
-  if (!mentionsUnderlineSense(s)) return null;
-  if (/<u(?:\s[^<>]*)?>/i.test(s)) return null;
+  if (!mentionsUnderlineSense(s)) return null;      // ← 单一真源（_划线.mjs）
+  if (hasUnderlineMark(s)) return null;             // ← 同上（`<u>` / `<u class="…">`）
   /* 实体化 / 双重转义形态（`&lt;u&gt;` / `&amp;lt;u&amp;gt;`）算"已标"——它归 assertNoEntityTags 管 */
-  if (/&(?:amp;)*lt;\/?u\b/i.test(s)) return null;
+  if (hasUnderlineMarkEntity(s)) return null;
   return '题干提到**画线**（"画线 / 划线"）却一个 `<u>` 标记都没有——读者看不出哪个字母/哪个短语被画了线，' +
     '这类题（判断读音异同 / 按画线部分归类 / 对画线部分提问 / 替换或翻译画线部分）**不标画线就没法作答**。' +
     '请把被画线的字母或短语**原样**用 `<u>` 括起来：' +

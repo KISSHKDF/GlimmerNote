@@ -72,8 +72,15 @@ function loadIngestPure() {
   const start = src.indexOf('function buildStemHtml');
   const end = src.indexOf('/* ───────────────── 错题记录.md');
   if (start < 0 || end < 0 || end <= start) throw new Error('抽不出 buildStemHtml 段（源码形状变了？）');
-  const code = src.slice(start, end)
+  /* ★ 2026-11-12：判据已收敛到**零副作用**共享模块 `_划线.mjs`（F03）。抽出的源码不带文件顶部的
+     import，而 `export { … } from '…'` **不建立本地绑定** ⇒ 必须自己注入一行 import，且要用
+     **仓库里的绝对 URL**（否则临时模块会去找 %TEMP%\_划线.mjs）。用同一个 URL 也保证了
+     "两侧是同一函数引用"这条断言成立。 */
+  const gateUrl = asUrl(path.join(ROOT, 'src', 'tools', '_划线.mjs'));
+  const code = 'import { mentionsUnderlineSense, hasUnderlineMark, hasUnderlineMarkEntity } from ' + JSON.stringify(gateUrl) + ';\n'
+    + src.slice(start, end).replace(/from '\.\/_划线\.mjs'/g, 'from ' + JSON.stringify(gateUrl))
     + '\nexport { buildStemHtml, escapeHtmlAllowMarkup, assertNoEntityTags, checkEntityTags, assertUnderlineMarked, checkUnderlineMarked };';
+  /* ⚠ `UNDERLINE_*` / `mentionsUnderlineSense` 由抽段里那行 re-export 提供，别再列一次（会 Duplicate export）。 */
   /* 源码里 assertNoEntityTags / checkEntityTags 已是 export ⇒ 再 export 一次会报重复 */
   const tmp = path.join(require('os').tmpdir(), 'ctb-ingest-pure-' + process.pid + '.mjs');
   fs.writeFileSync(tmp, code.replace(/^export function /gm, 'function '), 'utf8');
@@ -495,6 +502,40 @@ function runAll() {
     '定义=' + /export function assertUnderlineMarked/.test(srcText) +
     ' buildStemHtml=' + /checkUnderlineMarked\(raw\)/.test(srcText) +
     ' 入口处数=' + (srcText.match(/assertUnderlineMarked\(c\.questionText\)/g) || []).length);
+
+  /* ★ 2026-11-12（审计 F03）：判据⑦的语境判定**已收敛到单一真源** —— 本段守"没有第二份实现"。
+     改前 `_题干门禁.mjs` 与 `_录题入库.mjs` 各抄一份 3 正则 + mentionsUnderlineSense，
+     而测试只覆盖门禁侧 ⇒ 分叉时测试全绿（2026-11-10 那次靠人记"两处同步改"）。 */
+  A('★ 判据收敛：入库侧与门禁侧的 `mentionsUnderlineSense` 是**同一个函数**（不是各抄一份）',
+    typeof INGEST.mentionsUnderlineSense === 'function' && INGEST.mentionsUnderlineSense === GATE.mentionsUnderlineSense,
+    '同一引用=' + (INGEST.mentionsUnderlineSense === GATE.mentionsUnderlineSense));
+  A('★ 判据收敛：三个正则也是同一引用',
+    INGEST.UNDERLINE_WORD === GATE.UNDERLINE_WORD &&
+    INGEST.UNDERLINE_OBJECT === GATE.UNDERLINE_OBJECT &&
+    INGEST.DRAW_WIRE_PHRASE === GATE.DRAW_WIRE_PHRASE,
+    JSON.stringify({
+      word: INGEST.UNDERLINE_WORD === GATE.UNDERLINE_WORD,
+      object: INGEST.UNDERLINE_OBJECT === GATE.UNDERLINE_OBJECT,
+      wire: INGEST.DRAW_WIRE_PHRASE === GATE.DRAW_WIRE_PHRASE,
+    }));
+  A('★ 判据收敛：入库器源码里**不再有**第二份 `export function mentionsUnderlineSense`（防回抄）',
+    !/export function mentionsUnderlineSense/.test(srcText),
+    '命中=' + /export function mentionsUnderlineSense/.test(srcText));
+  /* ★ 2026-11-12 实测踩到的坑：`_题干门禁.mjs` 是 **CLI**（顶层 `parseArgs(process.argv.slice(2))`），
+     被别的工具 import 时会拿**调用方的**命令行去解析并报「未知参数」退出 ——
+     本次第一版收敛就把它 import 了，`neg-ingest-crop-and-figure.cjs` 五条断言集体变红
+     （stderr 指向 `_参数.mjs:102`）。共享判据必须住在零副作用模块里。 */
+  A('★ 判据收敛：入库器**不 import** CLI 模块 `_题干门禁.mjs`（import 它=用调用方 argv 解析，会崩）',
+    !/from\s+'\.\/_题干门禁\.mjs'/.test(srcText),
+    '命中=' + /from\s+'\.\/_题干门禁\.mjs'/.test(srcText));
+  A('★ 判据收敛：`_划线.mjs` 是零副作用模块（不解析 argv、不读库根）', (() => {
+    /* ⚠ 必须先剥注释：本模块的注释里**引用了** `process.argv.slice(2)`（说明"为什么不能 import CLI"），
+       直接对全文做正则会被自己的注释命中（这正是"结构字符/词被朴素正则骗到"的同族，见 L-869）。 */
+    const g = fs.readFileSync(path.join(ROOT, 'src', 'tools', '_划线.mjs'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
+    return !/process\.argv/.test(g) && !/libraryRoot\s*\(/.test(g);
+  })(), '');
 
   console.log('\n──────────────────────────────');
   console.log(fails === 0 ? 'RESULT=PASS 断言=' + passed : 'RESULT=FAIL 断言=' + passed + ' 失败=' + fails);

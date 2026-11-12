@@ -18,5 +18,7 @@
  "neg-triage-dedupe.cjs": 24,
  "neg-ingest-crop-and-figure.cjs": 21,
  "neg-orig-backup-fallback.cjs": 19,
- "verify-variant-retrieval.cjs": 23
+ "verify-variant-retrieval.cjs": 23,
+ "neg-data-area-rules.mjs": 224,
+ "neg-stem-gate-broken-index.cjs": 9
 }

@@ -15,6 +15,43 @@
 
 版本号遵循日期制 `YYYY.MM.DD.NN`。版本号唯一真源：`VERSION.json`。
 
+## [2026.11.12.03] - 2026-11-12 · 判据⑦收敛到零副作用共享模块（两处逐字重复 → 单一真源）+ 两个新用例进 CI
+
+**变更分类**：Fixed / Changed
+**升级影响**：① **不改任何用户数据、不改卡、不改索引、不改 schema**——判据行为**逐字不变**（收窄口径原样搬运），
+变的只是"它住在哪"；② 门禁覆盖面：`neg-data-area-rules.mjs`（224 断言）与 `neg-stem-gate-broken-index.cjs`（9 断言）
+**进 CI 白名单**（已按仓规在干净克隆实测通过）；③ `fixture` 档耗时 52s → **81s**（多跑这两个用例）；
+④ 新增源码级断言：**入库器不许 import CLI 模块**（见根因）。
+
+### 根因
+
+判据⑦「该画线却没画线」的语境判定（3 个正则 + `mentionsUnderlineSense`）在
+`src\tools\_题干门禁.mjs`（扫存量）与 `src\tools\_录题入库.mjs`（入库当场拦）里**逐字各一份**，
+而回归测试只覆盖门禁侧 ⇒ 两处一旦分叉：要么把好题拒收、要么放过废题，**且测试全绿**。
+2026-11-10 那次收窄靠的是人记"改一处要同时改另一处"——靠记性的同步迟早会漂。
+
+### 改法（含一个实测踩到的坑）
+
+- 新增 `src\tools\_划线.mjs`：**零副作用**共享模块（只有常量与纯函数，不解析 argv、不读库根），
+  判据的唯一真源。`_题干门禁.mjs` 与 `_录题入库.mjs` 都从它 import；
+  两者各自 **re-export** 同样的名字，保持既有消费方（测试里的 `GATE.*` / `INGEST.*`）不受影响。
+- **坑（本次第一版就这么写的，五条断言当场变红）**：一开始让 `_录题入库.mjs` 直接
+  `import './_题干门禁.mjs'` —— 但后者是 **CLI**，顶层执行 `parseArgs(process.argv.slice(2))`，
+  被别的工具 import 时会拿**调用方的**命令行去解析，直接报「未知参数」并 exit 1
+  （`neg-ingest-crop-and-figure.cjs` 五条断言集体红，stderr 指向 `_参数.mjs:102`）。
+  ⇒ 结论写成断言：**入库器不许 import CLI 模块**，共享判据必须住在零副作用模块里。
+- CI 白名单：`neg-data-area-rules.mjs` 与 `neg-stem-gate-broken-index.cjs` 进 `HERMETIC`
+  （此前已 `git clone --no-hardlinks` 到 %TEMP%、无 exe 无真库实测通过）。
+
+### 回归断言
+
+- `neg-stem-readability.cjs` 增 5 条（74 断言）：两侧 `mentionsUnderlineSense` / 三个正则是**同一函数引用**、
+  入库器源码里**不再有**第二份定义、**不 import CLI 模块**、`_划线.mjs` 本身零副作用
+  （剥注释后再查，免得被自己的注释命中——与 L-869 同族）。
+- `neg-ingest-crop-and-figure.cjs`（21 断言）回归绿：它守的正是"入库侧判据真能拦/真能放"。
+- `node tests\run.mjs fixture` **81 秒全绿**（22 用例 / 972 断言 / 对账通过）；`lint` PASS；
+  真库 `_题干门禁.mjs 门禁` 仍绿（656 张卡）。
+
 ## [2026.11.12.02] - 2026-11-12 · 门禁补三处假绿（断言数对账 / 数据区门禁归位 / 题干门禁空真）+ 7 处库内原子写
 
 **变更分类**：Fixed / Changed

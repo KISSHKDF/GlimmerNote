@@ -29,7 +29,9 @@ function A(name, ok, detail) {
   else { worst++; console.log('[FAIL] ' + name + (detail ? '  → ' + detail : '')); }
 }
 
-const TOOL_FILES = ['_题干门禁.mjs', '_库根.mjs', '_参数.mjs'];
+/* ⚠ 依赖要跟住：`_题干门禁.mjs` 从 2026-11-12 起还 import `_划线.mjs`（零副作用共享判据）——
+   副本目录缺它会在 `ModuleJob.link` 阶段直接失败（本次实测踩到）。 */
+const TOOL_FILES = ['_题干门禁.mjs', '_库根.mjs', '_参数.mjs', '_划线.mjs'];
 const MUTATE_FROM = "catch (e) { indexErrors.push({ file: f, error: String((e && e.message) || e) }); continue; }";
 const MUTATE_TO = 'catch { continue; }';
 
