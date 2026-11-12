@@ -609,6 +609,11 @@ textarea{width:100%;resize:vertical;min-height:64px;line-height:1.7}
 .stem-opts.cols-1{grid-template-columns:minmax(0,1fr)}
 .stem-opts .opt{min-width:0;overflow-wrap:break-word}
 @media print{.stem-opts{break-inside:avoid;page-break-inside:avoid}}
+/* ★ 2026-11-13（批次 4 / 答案册「错在哪一步」）：转折点是**给人讲题用的旁注**，
+   所以视觉上要"看得见但不抢主线"（答案与错因仍是主体），打印时也不许把它拆到下一页。 */
+.sheet .trace{margin-top:2mm;padding:1.5mm 2mm;border-left:3px solid var(--focus);background:var(--surface2);
+  border-radius:0 6px 6px 0;font-size:0.875rem;line-height:1.7;break-inside:avoid;page-break-inside:avoid}
+.sheet .trace .muted{font-size:0.8125rem}
 /* ⚠ 2026-11-04 修（用户报障：M0066「表格最左下角，负5分之一的3次方，打印版换行了，
     这一换行会造成很多误解，能不能不换行？」）：
     现象——真打印 PDF（Edge printToPDF → 栅格化）里 M0066 左下格印成

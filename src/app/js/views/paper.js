@@ -439,6 +439,23 @@
       (opts.req === false ? '' : '<div class="sh-meta" style="margin-top:2mm"><span>要求：先独立思考再写；卡住 5 分钟以上的题号圈出来</span></div>') +
       '</div>';
   }
+  /* ★ 2026-11-13（批次 4 / 答案册「错在哪一步」）：把复习流水里的**转折点**打进答案册。
+     为什么：家长批改时要看的不是"错了"（卷面上就有红叉），而是"**孩子当时是怎么想错的**"——
+     `reviews[].note` 正是判分时问的那句"我想到哪一步、在哪拐错？"（复习屏收的口述）。
+     改前这份数据只在复习屏以"✎ 转折点"图标悬停可见、并被拼进批改备注落库，
+     **家长手里那份答案册上一个字都没有**。
+     ⚠ 只显示**最近 2 次**：旧记录常已被后来的理解推翻（"当时以为是单位换算，后来发现是公式记错"），
+       全量列出来会让家长照着过时的判断去讲题；超过 2 次时明确写出"共 N 次记录"。 */
+  function traceLines(c) {
+    const rs = (Array.isArray(c && c.reviews) ? c.reviews : []).filter(r => r && String(r.note || '').trim());
+    if (!rs.length) return '';
+    const shown = rs.slice(-2);
+    return '<div class="trace"><b>错在哪一步：</b>' +
+      shown.map(r => '（' + U.esc(r.date || '未记日期') + '）' + U.esc(String(r.note).slice(0, 140))).join('　') +
+      (rs.length > shown.length
+        ? '<span class="muted">　（共 ' + rs.length + ' 次记录，只显示最近 ' + shown.length + ' 次）</span>' : '') +
+      '</div>';
+  }
   /* 打印单元（纯函数，e2e 直接断言用；title 由这里 esc 一次，调用方传原文） */
   function paperHtml(title, refs, form) {
     let h = '<div class="sheet">' + shHead(title, refs);
@@ -461,7 +478,8 @@
         ? '<div class="small muted">（本题答案写在图上／按图形批改，卷面不留答题区）</div>' : '';
       h += '<div class="q"><div class="q-hd">' + (i + 1) + '．' + U.esc(c.id) + '　<span style="font-weight:400">' + U.esc(c.type || '') + '</span></div>' +
         '<div class="ans-a"><b>答案：</b>' + U.esc(c.answer || '—') + '</div>' + slotLine + modeTip +
-        '<div class="why"><b>当时错答：</b>' + U.esc(c.studentAnswer || '—') + '　<b>错因：</b>' + U.esc((c.causeLayer || '') + (c.causeCode || '')) + '　' + U.esc(c.causeDesc || '') + '</div></div>';
+        '<div class="why"><b>当时错答：</b>' + U.esc(c.studentAnswer || '—') + '　<b>错因：</b>' + U.esc((c.causeLayer || '') + (c.causeCode || '')) + '　' + U.esc(c.causeDesc || '') + '</div>' +
+        traceLines(c) + '</div>';
     });
     return h + '</div>';
   }
