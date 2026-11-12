@@ -425,6 +425,28 @@ function runAll() {
     }
     A('E0 临时库有可测样板卡（有答案 + id 唯一）', Boolean(t), t ? `${t.id}` : '无');
 
+    /* ★ 2026-11-12 修（本轮查出的真实失败 E1/E7 —— 它在 HEAD 上就已红、被 quick 档的数据侧红掩盖）：
+       本段要测的是**答案契约指纹**，而上面的 `makeTempLib(null, { copyCardFiles: true })`
+       把**真库整库**复制了进来 ⇒ 真库里任何与本判据无关的数据问题都会让本段判红：
+       实测真库有 4 张卡报 `answerMode=figure 但题干里没有图`（编号 M0061/M0071/P0149/P0151 等），
+       于是 E1「老卡无指纹 → 不阻断」与 E7「重新登记后恢复绿」恒红，红点与被测判据毫无关系。
+       这也违反 AGENTS.md 红线 5「测试不依赖真实用户数据」。
+       修法：拿到样板卡后把临时库**瘦身为只含这一张卡**（只改索引，不动文件系统）——
+       本段后续所有断言都只关心这张卡。 */
+    if (t) {
+      /* 彻底解耦：**所有**索引都瘦身 —— 含样板卡的那份只留它，其余清空 items。
+         只清一份是不够的：临时库有多份学科级索引，真库任意一份出现数据问题都会让本段恒红。 */
+      for (const p of indexFiles(tmp)) {
+        const jj = JSON.parse(fs.readFileSync(p, 'utf8'));
+        if (jj.subjects) for (const v of Object.values(jj.subjects)) { if (Array.isArray(v.items)) v.items = v.items.filter(x => x && x.id === t.id); }
+        else if (Array.isArray(jj.items)) jj.items = jj.items.filter(x => x && x.id === t.id);
+        fs.writeFileSync(p, JSON.stringify(jj, null, 2) + '\n', 'utf8');
+      }
+      const left = itemsOf(readIdx());
+      A('E0.5 临时库已瘦身为只含样板卡（全库解耦，红点只可能来自被测判据）',
+        left.length === 1, left.length + ' 张（' + left.map(x => x.id).join(',') + '）');
+    }
+
     if (t) {
       const sp = stemPathOf(t);
       const before = fs.readFileSync(sp, 'utf8');
