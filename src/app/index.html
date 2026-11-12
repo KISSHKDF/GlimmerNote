@@ -17,10 +17,12 @@
 <!-- 应用骨架：由 js/shell.js 挂载（经典 script，兼容 file:// 直开） -->
 <div id="boot" class="boot">
   <div class="boot-card">
-    <div class="boot-logo">拾</div>
+    <div class="boot-logo" aria-hidden="true">拾</div>
     <div class="boot-t">拾光小册</div>
-    <div class="boot-s" id="bootMsg">正在连接数据…</div>
-    <div class="boot-bar"><i></i></div>
+    <!-- ★ 2026-11-12（批次 3 / 可访问性）：启动状态是**会变的文本**，屏幕阅读器默认不会播报
+         非聚焦区域的变化 ⇒ 加 role=status + aria-live=polite（礼貌播报，不打断用户当前朗读）。 -->
+    <div class="boot-s" id="bootMsg" role="status" aria-live="polite">正在连接数据…</div>
+    <div class="boot-bar" aria-hidden="true"><i></i></div>
   </div>
 </div>
 <div id="app" hidden>
@@ -39,7 +41,7 @@
     <div class="palette"><input id="paletteInput" placeholder="搜索题目 / 输命令（&gt; 前缀执行命令）"><div id="paletteList" class="palette-list"></div></div>
   </div>
   <div id="lightbox" class="lightbox" hidden></div>
-  <div id="toasts" class="toasts"></div>
+  <div id="toasts" class="toasts" role="status" aria-live="polite" aria-atomic="false"></div>
   <div id="printArea" class="print-area"></div>
 </div>
 <!-- 顺序装载（无构建依赖）：版本 → 工具 → 数据 → 渲染 → 视图 → 启动 -->

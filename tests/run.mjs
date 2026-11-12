@@ -921,6 +921,9 @@ const unitTests = [
      （`git clone --no-hardlinks` 到 %TEMP%，无 exe、无真库；实测 13+13+16+9=51 断言、exit 0）
      ⇒ 已搬进上面的 HERMETIC 白名单，此处不再重复挂（unitTests 循环不去重，挂了会跑两遍）。 */
   ['neg-snapshot-text-and-force.cjs'],    // ★ 2026-11-05 合并评审 P1-5/P0-4：md/html 掏空不许直接恢复；--force-restore 二次确认 + 审计
+  /* ★ 2026-11-12（批次 3 / 可访问性）：字号 px→rem（视觉逐值不变）+ prefers-reduced-motion
+     + 动态状态 aria-live。改前实测：58 处 px 字号、reduced-motion 0 处、aria-live 0 处。 */
+  ['neg-a11y-baseline.cjs'],
   /* ★ 2026-11-12：`_快照.mjs` 自 2026-11-08 起**完全不可用** —— 纳管清单里的 glob 允许"当前零匹配"
      （`_收件箱/**\/_来源映射.csv`：收件箱清空后该文件就不在了），而 `git add -A -- <pattern>` 对
      不匹配的 pathspec 会 fatal（exit 128），`git add` 又**没有** `--ignore-unmatch`（实测 2.54.0）。
