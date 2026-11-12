@@ -10,7 +10,10 @@
    退出码 0=全绿；非 0=有断言红了。不读不写任何题库文件。 */
 'use strict';
 
-const MSG_LIMIT_BYTES = 256 * 1024;   // 与 C# `ShellForm.MSG_LIMIT_BYTES` 同值
+const fs = require('fs');
+const path = require('path');
+
+const MSG_LIMIT_BYTES = 256 * 1024;   // 与 C# `ShellForm.MSG_LIMIT_BYTES` 同值（**运行时对账**见文件末尾，别只信这句注释）
 const OLD_MSG_LIMIT = 700 * 1024;     // 旧实现的字符口径（审计实测的那个 700KB）
 
 let fails = 0, asserts = 0;
@@ -217,6 +220,22 @@ console.log('\n══ ② 有牙齿自证：旧算法在同一批样本上必须
       o2.dropped === 1 && o2.parts.join('') === t2.slice(0, t2.length - 1) && splitByByteBudget(t2, MSG_LIMIT_BYTES).join('') === t2,
       'L=' + t2.length + ' 丢失=' + o2.dropped);
   }
+}
+
+/* ★ 2026-11-13 修（审计 §4 缺口 F-01 第 5 条"假绿"，记忆里那条一直没修）：
+   本文件原先**手抄** `MSG_LIMIT_BYTES`，只在注释里声称"与 C# 同值" ⇒
+   **改 C# 那一侧（`ShellForm.MSG_LIMIT_BYTES`），本用例照样全绿** —— 这正是审计点名的假绿形态：
+   断言的是"手抄的 JS 同构体"，不是"C# 真的还是这个值"。
+   现在把 C# 源码里那个常量读出来对账。只支持 `数字 (* 数字)*` 这种写法，**不用 eval**。 */
+{
+  const csPath = path.join(path.resolve(__dirname, '..'), 'src', 'shell', 'CTBShellV2.cs');
+  let csExpr = null;
+  try {
+    csExpr = (fs.readFileSync(csPath, 'utf8').match(/const int MSG_LIMIT_BYTES\s*=\s*([^;]+);/) || [])[1];
+  } catch (e) { /* 读不到就落到下面的判红："源在仓里读不到"本身就是异常 */ }
+  const csVal = csExpr ? csExpr.trim().split('*').map((t) => Number(t.trim())).reduce((a, b) => a * b, 1) : NaN;
+  A('MSG_LIMIT_BYTES 与 C# 侧同值（源码对账，不是注释里的声称）',
+    csVal === MSG_LIMIT_BYTES, 'C# 侧=' + csExpr + ' ⇒ ' + csVal + '；本文件=' + MSG_LIMIT_BYTES);
 }
 
 console.log('\nRESULT=' + (fails ? 'FAIL(' + fails + ')' : 'PASS') + ' 断言=' + asserts);

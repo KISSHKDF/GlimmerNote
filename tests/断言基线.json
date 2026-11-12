@@ -3,7 +3,7 @@
  "neg-v2-smoke.cjs": 23,
  "neg-shell-path.cjs": 29,
  "neg-shell-args.mjs": 57,
- "chunk-roundtrip.cjs": 24,
+ "chunk-roundtrip.cjs": 25,
  "safe-write.test.mjs": 12,
  "neg-recipe-contract.cjs": 168,
  "neg-stem-sanitize.cjs": 75,
