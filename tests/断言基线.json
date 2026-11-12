@@ -24,5 +24,19 @@
  "neg-libfind-convergence.cjs": 13,
  "neg-answer-source-convergence.cjs": 13,
  "neg-runtime-artifacts.cjs": 16,
- "neg-shell-subprocess-timeout.cjs": 9
+ "neg-shell-subprocess-timeout.cjs": 9,
+ "neg-a11y-baseline.cjs": 14,
+ "neg-readme-structure.cjs": 11,
+ "neg-bundled-notes.cjs": 13,
+ "neg-kid-mode.cjs": 15,
+ "neg-grade-keyboard.cjs": 20,
+ "neg-answer-mask.cjs": 22,
+ "neg-print-rules.cjs": 18,
+ "neg-print-source-id.cjs": 11,
+ "neg-answer-trace.cjs": 18,
+ "neg-difficulty-elo.cjs": 19,
+ "neg-similarity-dedupe.cjs": 24,
+ "neg-parent-report.cjs": 26,
+ "neg-source-edition-field.cjs": 20,
+ "neg-cause-stage.cjs": 27
 }
