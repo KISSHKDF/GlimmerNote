@@ -46,6 +46,8 @@ import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
 import { indexFiles } from './_题库发现.mjs';
 /* ★ 2026-11-12（审计 F04）：`answerSource` 取值契约的唯一真源（原先三处各一份 + 两种语义）。 */
 import { isAcceptableSource, isRetiredSource } from './_来源.mjs';
+/* ★ 2026-11-13（批次 4 / 后接 Elo）：难度在线估计（零副作用纯函数）。 */
+import { applyElo } from './_难度.mjs';
 
 /* ★ 2026-10-23 程序与数据分家：ROOT 现在是**用户库根**，不再是"本脚本所在目录"。
    兄弟工具一律用 toolPath(...)，见 _库根.mjs。 */
@@ -423,6 +425,16 @@ function actGrading(paperId, resultsStr, date, note) {
     it.reviews = capped;
     if (res === '错' && before !== '错') it.errorCount = num(it.errorCount) + 1;
     if (res !== '错' && before === '错') it.errorCount = Math.max(1, num(it.errorCount) - 1);
+    /* ★ 2026-11-13（批次 4 / 后接 Elo）：顺手更新"这道题有多难"与"这孩子在**这一科**上多强"。
+       只**加**两个字段（`it.elo` / `json.ability`），既有判据（errorCount / nextDue / passStreak /
+       reviewStatus）一个都没动 —— 它们是复习流的下游输入，不许被新算法搅动。
+       方向见 `_难度.mjs` 头注：答对 ⇒ 孩子能力升、**题目难度估计降**（题目是"对手"，孩子赢 ⇒ 对手显得弱）。
+       ⚠ `ability` 落在**学科索引**上 ⇒ 语义是"该生该科的能力"（数学能力 ≠ 英语能力，本来就不该混）。 */
+    {
+      const upd = applyElo({ elo: it.elo, ability: json.ability, difficulty: it.difficulty, result: res });
+      it.elo = upd.elo;
+      json.ability = upd.ability;
+    }
     const pass = passStreak(revsOf(it));
     it.nextDue = addDays(day, intervalOf(res, pass));
     b.results = b.results || {};
