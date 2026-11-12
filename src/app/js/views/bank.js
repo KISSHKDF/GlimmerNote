@@ -3,7 +3,7 @@
   const U = CTB.util, M = CTB.model, H = CTB.host, S = CTB.shell;
   const V = CTB.views.bank = {};
 
-  const DEFAULT = { q: '', subject: '全部', diff: '全部', layer: '全部', state: '全部', blind: '全部', code: '', kp: '', hasImg: false, sort: 'new' };
+  const DEFAULT = { q: '', subject: '全部', diff: '全部', layer: '全部', stage: '全部', state: '全部', blind: '全部', code: '', kp: '', hasImg: false, sort: 'new' };
   let f = Object.assign({}, DEFAULT, U.lsGet('ctb2.filters', {}));
   const save = () => U.lsSet('ctb2.filters', f);
 
@@ -12,6 +12,12 @@
   function filtered() {
     let cs = M.cardsOf();
     if (f.code) cs = cs.filter(x => M.causeKey(x.card) === f.code);
+    /* ★ 2026-11-13（批次 4 / 错因阶段维）：按"错在解题的哪一步"筛。
+       ⚠ 这里**不能**用空串表示"全部"：老卡与"拿不准"的卡恰好就是空值，
+         所以"未填"是一个**显式选项**（找那些还没定阶段的卡，正是要补录的清单）。 */
+    if (f.stage !== '全部') {
+      cs = cs.filter(x => f.stage === '未填' ? !x.card.causeStage : String(x.card.causeStage || '') === f.stage);
+    }
     /* 考点筛选（2026-11-09）：stats 薄弱考点榜点进来就是这个值；与错因代码筛选同层级的精确匹配。
        kpoints 缺失/为空的卡在选了考点后自然被滤掉——不是缺陷，是口径（有标签才谈得上按标签筛）。 */
     if (f.kp) cs = cs.filter(x => (x.card.kpoints || []).includes(f.kp));
@@ -70,6 +76,10 @@
         '<span class="chip' + (f.layer === '全部' ? ' on' : '') + '" role="button" tabindex="0" data-k="layer" data-v="全部">全部</span>' +
         ['K', 'L', 'S'].map(k => '<span class="chip' + (f.layer === k ? ' on' : '') + '" role="button" tabindex="0" data-k="layer" data-v="' + k + '" title="' + M.LAYER[k].name + '"><span class="chip-dot" style="background:' + M.LAYER[k].color + '"></span>' + k + ' ' + M.LAYER[k].name + '</span>').join('') + '</div>') +
       row('状态', chipRow('state', ['全部', '未复习', '到期', '复习中', '待批改', '已掌握', '已归档'], f.state)) +
+      /* ★ 2026-11-13（批次 4 / 错因阶段维）：'未填' 是显式选项 —— 点它就是要一份"还没定阶段的清单"。
+         title 里写清这一维与 K/L/S 正交，免得用户以为它是错因层的别名。 */
+      row('阶段', chipRow('stage', ['全部', '审题', '转化', '求解', '书写', '未填'], f.stage,
+        v => v === '未填' ? '未填' : v === '全部' ? '全部' : v)) +
       row('盲解', chipRow('blind', ['全部', 'ok', 'no'], f.blind, v => v === 'ok' ? '已通过' : v === 'no' ? '未过 / 存疑' : '全部')) +
       row('考点', kpSelect(all)) +
       '</div></div>' +

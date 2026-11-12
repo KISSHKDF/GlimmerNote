@@ -718,6 +718,9 @@ function cmdFix() {
     if (c.studentAnswer !== undefined) it.studentAnswer = c.studentAnswer || '';
     if (Array.isArray(c.kpoints)) it.kpoints = c.kpoints;
     if (c.causeCode !== undefined) { it.causeCode = c.causeCode || ''; it.causeLayer = String(c.causeCode || '')[0] || ''; }
+    /* ★ 2026-11-13（批次 4 / 错因阶段维）：`causeStage` 与 K/L/S **正交** ——
+       K/L/S 说"什么性质的错"，阶段说"错在解题的哪一步"（审题/转化/求解/书写）。**可选**。 */
+    if (c.causeStage !== undefined) it.causeStage = String(c.causeStage || '').slice(0, 8);
     if (c.causeNote !== undefined) it.causeDesc = c.causeNote || '';
     if (c.difficulty !== undefined) it.difficulty = c.difficulty || '中';
     if (c.answerSource !== undefined) it.answerSource = c.answerSource || '未能确认';
@@ -952,6 +955,13 @@ function cmdLand() {
       }
     }
     if (c.causeCode && !/^[KLS][1-7]$/.test(String(c.causeCode))) problems.push(id + ' 的 causeCode 非法：' + c.causeCode);
+    /* ★ 2026-11-13（批次 4 / 错因阶段维）：枚举外的值**一律拒**。
+       这一维的全部意义就是"可筛可统计"——放一个自由文本值进来等于没加，而且会**静默污染趋势**。
+       空串是合法的（"拿不准"是被允许的答案，总比猜一个强）。 */
+    if (c.causeStage !== undefined && !['审题', '转化', '求解', '书写', ''].includes(String(c.causeStage))) {
+      problems.push(id + ' 的 causeStage 非法：' + JSON.stringify(c.causeStage) +
+        '（只能 审题/转化/求解/书写，或空串表示拿不准）');
+    }
     if (c.confidence && !['high', 'medium', 'low'].includes(c.confidence)) problems.push(id + ' 的 confidence 非法：' + c.confidence);
     if (c.subject && c.subject !== subj) problems.push(id + ' 的 subject（' + c.subject + '）与本次入库的学科（' + subj + '）不符');
     if (c.bbox !== undefined) {
@@ -1014,6 +1024,7 @@ function cmdLand() {
     questionText: c.questionText, studentAnswer: c.studentAnswer, answer: c.answer,
     answerSource: c.answerSource, answerSourceNote: c.answerSourceNote,
     causeCode: c.causeCode, causeNote: c.causeNote, kpoints: c.kpoints,
+    causeStage: c.causeStage,   // ★ 2026-11-13（批次 4）：改了阶段也算新内容，不许被幂等跳过
     difficulty: c.difficulty, hasFigure: c.hasFigure, confidence: c.confidence,
     sourceImageSha256: c.sourceImageSha256, notes: c.notes, bbox: c.bbox,
     answerMode: c.answerMode, answerSlots: c.answerSlots,
@@ -1138,6 +1149,7 @@ function cmdLand() {
           kpoints: Array.isArray(c.kpoints) ? c.kpoints : [],
           causeLayer: String(c.causeCode || '')[0] || '',
           causeCode: c.causeCode || '',
+          causeStage: String(c.causeStage || ''),   // ★ 2026-11-13（批次 4）：错因阶段维（审题/转化/求解/书写）
           causeDesc: c.causeNote || '',
           causeConfirmed: false,
           difficulty: c.difficulty || '中',
