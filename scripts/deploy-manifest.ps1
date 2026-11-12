@@ -1,5 +1,5 @@
 ﻿# ═══════════════════════════════════════════════════════════
-# 拾光小册 · 部署清单写入（唯一实现）
+# 拾光小册 · 部署清单写入 + 运行期产物剔除（唯一实现）
 #   被 scripts\deploy.ps1（部署）与 scripts\rollback.ps1（回滚）共用，二者只 dot-source 本文件。
 #
 # 为什么必须抽成一份（2026-10-31 E04 整改，外部复核已证实）：
@@ -20,6 +20,38 @@
 # 判据：清单**只许由落地内容导出** —— app\版本.json 的版本与传入版本不一致就直接 throw，
 #   否则"清单写了 A、app\ 是 B"会变成一种自证清白的造假路径。
 # ═══════════════════════════════════════════════════════════
+
+# ── 运行期产物剔除（2026-11-12 立，审计 R-04）───────────────────────────────
+# 为什么需要：`app\` 既是"发布包镜像"、又被**运行中的壳**写（日志降级落点、wv2-profile 降级）。
+#   · deploy 备份 `_app-上一版` 时若把这些一起拷进去，**回滚会把它们"洗白"成基线的一部分** ——
+#     此后再也不会被判成"凭空多出"，门禁对这份运行区永久失真；
+#   · rollback 把备份拷回 `app\` 时同理。
+# 白名单的**唯一真源是 `scripts\运行期产物.json`**（`scripts\verify-deploy.mjs` 读同一份）——
+# 三处口径必须一份，否则会出现"一处豁免、另一处照旧"（本仓 L-286 族）。
+function Remove-RuntimeArtifacts {
+  [CmdletBinding()]
+  param([Parameter(Mandatory = $true)][string]$Root)
+  $spec = Join-Path $PSScriptRoot '运行期产物.json'
+  if (-not (Test-Path $spec)) {
+    # fail-closed：读不到白名单就**不剔除任何东西**（宁可让备份里多带文件，也不静默改判据）
+    Write-Host "  ⚠ 读不到运行期产物白名单（$spec）—— 本次不剔除任何运行期产物" -ForegroundColor Yellow
+    return 0
+  }
+  $patterns = @((Get-Content $spec -Raw -Encoding UTF8 | ConvertFrom-Json).patterns)
+  $n = 0
+  Get-ChildItem $Root -Recurse -File -Force -ErrorAction SilentlyContinue | ForEach-Object {
+    $rel = $_.FullName.Substring($Root.Length).TrimStart('\', '/')
+    foreach ($p in $patterns) {
+      if ($rel -match $p) {
+        Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
+        $n++
+        break
+      }
+    }
+  }
+  return $n
+}
+
 function Write-DeployManifest {
   [CmdletBinding()]
   param(

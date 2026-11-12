@@ -15,6 +15,43 @@
 
 版本号遵循日期制 `YYYY.MM.DD.NN`。版本号唯一真源：`VERSION.json`。
 
+## [2026.11.12.08] - 2026-11-12 · 「运行期产物」白名单收敛为一份真源：deploy/rollback 不再把 `shell.log` 洗白成基线
+
+**变更分类**：Fixed
+**升级影响**：① **不改任何用户数据、不改卡、不改索引**；② 部署与回滚的行为变化：备份 `_app-上一版`
+与回滚拷回 `app\` 时，会**剔除**运行期产物（`shell.log`、`shell.log.N`、`wv2-profile\`、`*.tmp-<pid>-<ts>`）；
+③ 白名单从"硬编码在 `verify-deploy.mjs` 里"改为数据真源 `scripts\运行期产物.json`，三处共读一份。
+
+### 根因（R-04）
+
+`app\` 既是"发布包镜像"、又被**运行中的壳**写（日志降级落点 `CTBShellV2.cs:159-164`、
+`wv2-profile\` 降级 `:1499`）。上一版把 `verify-deploy.mjs` 的判据收窄成"运行期产物单列、不算漂移"，
+但**部署链路的另外两处还在照旧**：
+
+- `deploy.ps1` 备份 `_app-上一版` 时是 `Copy-Item <app>\* -Recurse` —— 连运行期产物一起拷；
+- `rollback.ps1` 回滚时再把它们拷回 `app\`，随后 `Write-DeployManifest` **按落地内容重写清单** ⇒
+  运行期产物被写进**新基线**，从此"凭空多出"再也报不出来（判据被静默洗白）。
+
+### 改法
+
+- 新增数据真源 `scripts\运行期产物.json`（patterns 是 JS/PS 双方都吃的正则子集，`note` 里写明
+  加一条必须说明"哪个代码路径产出它"）。`verify-deploy.mjs` 改为读它（读不到时 **fail-closed**：
+  不豁免任何东西）。
+- 共享函数 `Remove-RuntimeArtifacts` 加在 `scripts\deploy-manifest.ps1`（**两脚本已经 dot-source
+  这个文件**，是仓内既有的唯一实现位）；`deploy.ps1` 备份后调用、`rollback.ps1` 拷回后调用
+  （后者防"旧备份是加这份逻辑之前做的"）。
+- ⚠ 本次编辑 `*.ps1` 一度**丢了 BOM**（`lint` 的 L5 当场报出 3 处）——已按仓规改回 UTF-8 带 BOM + CRLF。
+
+### 回归断言
+
+- 新增 `tests\neg-runtime-artifacts.cjs`（16 断言，零库依赖）：真源可解析且 patterns 都是合法正则 /
+  `verify-deploy.mjs` 读它且**不再硬编码** `^shell\.log$` / `deploy.ps1` 与 `rollback.ps1` 都调
+  `Remove-RuntimeArtifacts` 且定义处读同一份 JSON / **行为对照**（8 个样本：4 个运行期产物命中、
+  `app.js` `js\model.js` `node.exe` `版本.json` 不命中）。
+- PowerShell 侧实证（本次手工跑过）：三个 `.ps1` 语法解析通过；`Remove-RuntimeArtifacts` 对
+  4 个运行期产物 + 2 个正常文件的合成目录，剔除数 **4**、剩余 **app.js,model.js**。
+- `lint` PASS；真机 `verify-deploy` 仍报"一致（93 个文件逐字节相符）"。
+
 ## [2026.11.12.07] - 2026-11-12 · `answerSource` 取值契约收敛到零副作用 `_来源.mjs`（精确集/前缀集两种语义合一）
 
 **变更分类**：Fixed / Changed

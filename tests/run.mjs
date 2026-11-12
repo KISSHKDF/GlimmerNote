@@ -916,6 +916,11 @@ const unitTests = [
      本用例守：三处已收敛 / 无精确集字面量 / 共享模块零副作用 / 行为（含"老师定案"只在有独立证明时放行）
      / 阴性自证（掏掉剥后缀 ⇒ 带限定值变回不在册）。零库依赖。 */
   ['neg-answer-source-convergence.cjs'],
+  /* ★ 2026-11-12（审计 R-04）：「运行期产物」白名单原先硬编码在 verify-deploy.mjs 里，而 deploy.ps1
+     备份 `_app-上一版` 时整目录拷 ⇒ **回滚会把它们"洗白"成基线的一部分**（此后报不出这类漂移）。
+     三处口径收到 `scripts\运行期产物.json`。本用例守：真源可解析 / verify-deploy 读它且不再硬编码 /
+     deploy+rollback 都走同一个共享函数 / 行为对照（含"白名单外不命中"）。零库依赖。 */
+  ['neg-runtime-artifacts.cjs'],
   ['neg-snapshot-text-and-force.cjs'],    // ★ 2026-11-05 合并评审 P1-5/P0-4：md/html 掏空不许直接恢复；--force-restore 二次确认 + 审计
   /* ★ 2026-11-12：`_快照.mjs` 自 2026-11-08 起**完全不可用** —— 纳管清单里的 glob 允许"当前零匹配"
      （`_收件箱/**\/_来源映射.csv`：收件箱清空后该文件就不在了），而 `git add -A -- <pattern>` 对

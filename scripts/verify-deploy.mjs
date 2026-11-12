@@ -165,7 +165,7 @@ const actual = {};
 })(APP);
 
 /* ---- 比对 ---- */
-/* 运行期产物白名单（2026-11-12 立）。
+/* 运行期产物白名单（2026-11-12 立；**唯一真源 = `scripts\运行期产物.json`**）。
    背景：`app\` 既是"发布包镜像"，又被**运行中的程序**写——桌面壳在日志/用户数据降级落点会往
    程序目录写东西（`src\shell\CTBShellV2.cs:159-164` 的 `LogTarget` ②、`:1499` 的 wv2-profile 降级）。
    实测 2026-11-12：清单内 90 个文件 **changed=[] missing=[] verMismatch=false**，唯一差异是
@@ -174,15 +174,20 @@ const actual = {};
    直接改了运行区」——**超出了判据能证明的范围**，且测试驱动的壳自己就能产出它（fixture 档因此
    在本机必红、在 CI 必绿）。
    判据收窄为三条，**牙齿不削**：
-     ① 只有本表显式列出的运行期产物才豁免（白名单要窄：加一条必须说明"哪个代码路径产出它"）；
+     ① 只有清单文件 §patterns 显式列出的运行期产物才豁免（加一条必须说明"哪个代码路径产出它"）；
      ② 它们不进 `extra`，单列 `runtimeArtifacts`（JSON 与人类可读输出都给）；
-     ③ **任何不在白名单里的多出文件仍然判红**——"有人往 app\ 里塞了东西"照样抓得住。 */
-const RUNTIME_ARTIFACTS = [
-  /^shell\.log$/,
-  /^shell\.log\.\d+$/,
-  /^wv2-profile[\\/]/,
-  /^[^\\/]+\.tmp-\d+-\d+$/,
-];
+     ③ **任何不在白名单里的多出文件仍然判红**——"有人往 app\ 里塞了东西"照样抓得住。
+   ⚠ 口径曾在本文件里硬编码过一版，2026-11-12 抽成 JSON：`deploy.ps1`（备份时剔除，否则回滚会把
+     它们"洗白"成基线）与 `rollback.ps1`（拷回后同样剔除）也要读同一份——同一规则多处实现必然漂。 */
+const RUNTIME_ARTIFACTS_FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), '运行期产物.json');
+let RUNTIME_ARTIFACTS = [];
+try {
+  RUNTIME_ARTIFACTS = JSON.parse(fs.readFileSync(RUNTIME_ARTIFACTS_FILE, 'utf8').replace(/^\uFEFF/, '')).patterns.map(p => new RegExp(p));
+} catch (e) {
+  die(RC.BAD_MANIFEST, '✖ 读不到运行期产物白名单：' + RUNTIME_ARTIFACTS_FILE, {
+    hint: '它是 `scripts\\运行期产物.json`（随仓库版本化）。读不到时**不豁免任何东西**（fail-closed，宁可多报一次漂移）。原因：' + (e && e.message),
+  });
+}
 const isRuntimeArtifact = rel => RUNTIME_ARTIFACTS.some(re => re.test(rel));
 
 const changed = [], missing = [], extra = [], runtimeArtifacts = [];
