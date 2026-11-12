@@ -15,6 +15,49 @@
 
 版本号遵循日期制 `YYYY.MM.DD.NN`。版本号唯一真源：`VERSION.json`。
 
+## [2026.11.12.09] - 2026-11-12 · 桌面壳子进程超时判据从「不可达」修成「可达」（F02）：两处进程代码收敛为一份
+
+**变更分类**：Fixed
+**升级影响**：① **不改任何用户数据、不改卡、不改索引**；② 行为变化只在**异常路径**：工具卡死时
+现在真的会在超时后被 `Kill()`（此前不会——见下），界面不再无限转圈、`Mark` 的写闸也能正常释放；
+③ 正常路径（子进程正常结束）行为不变：stdout/stderr/退出码的返回口径与超时码 `124` 都保持原样。
+**需要重编壳**（`src\shell\build.ps1`，随本版发布）。
+
+### 根因（F02）
+
+两处进程代码（`RunNodeRaw` 与 `Mark` 内联）都是这个顺序：
+
+```csharp
+stdout = p.StandardOutput.ReadToEnd();      // 子进程不关流 ⇒ 这里永久阻塞
+stderr = p.StandardError.ReadToEnd();       // 两流**同步**读：谁先写满管道就互相等（既知死锁）
+if (!p.WaitForExit(timeoutMs)) { Kill(); }  // ← 走到这里子进程通常已退出 ⇒ 超时判据**不可达**
+```
+
+⇒ 工具一卡死：界面永远转圈；`Mark` 里写闸 `WriteGate` 在 `finally` 释放不掉，此后**所有写入排队等死**。
+两段注释自己都写着"`WaitForExit(ms)` 的返回值永远用不上"——知道但没修。
+
+### 改法
+
+- 新增唯一实现 `RunNodeCapture(args, timeoutMs, forceDataRoot, out outCode, out outErr)`：
+  **两路 `ReadToEndAsync`**（互不阻塞、也不会被对方写满管道卡住）+ `WaitForExit(timeoutMs)` 判超时
+  → `Kill()` + `WaitForExit(5000)`，再用**有界** `BoundedResult(Task)` 收尾（拿到多少算多少，绝不无限等）。
+- `RunNodeRaw` 与 `Mark` 都改为调用它（`Mark` 那段自己 new `ProcessStartInfo` 的代码与其"无条件覆盖 code"
+  的历史补丁一并不需要了——code 只由分支决定）。
+- 不用 `await`：本文件是同步 WinForms 消息循环代码，`await` 会把调用点变异步、牵动一大片调用链；
+  而这里的等待发生在子进程**已退出或已被杀**之后，流必然收尾 ⇒ 有界 `Wait` 足够。
+
+### 回归断言（真实证伪，不是文本推断）
+
+新增 `tests\neg-shell-subprocess-timeout.cjs`（9 断言）：把真源码里的 `RunNodeCapture` / `BoundedResult`
+**抽出来**用 `csc` 编一个最小宿主，跑一个**永不退出、也不写输出**的 node 子进程：
+
+- 真源码版：超时 1500ms ⇒ 实测 **code=124、总耗时 1543ms**（超时判据可达）；
+- **阴性自证**：把异步读换回同步 `ReadToEnd()`（正是改前形态）⇒ 实测**被外层超时打断**
+  （`killed=true`）⇒ 证明这条断言有牙齿，改前的超时判据确实不可达。
+
+另：`lint` PASS、`portability` PASS、`git diff --check` 干净；`src\shell\build.ps1` 编译通过
+（exe 253,896 字节，签名 Valid）。
+
 ## [2026.11.12.08] - 2026-11-12 · 「运行期产物」白名单收敛为一份真源：deploy/rollback 不再把 `shell.log` 洗白成基线
 
 **变更分类**：Fixed

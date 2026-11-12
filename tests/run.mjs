@@ -921,6 +921,11 @@ const unitTests = [
      三处口径收到 `scripts\运行期产物.json`。本用例守：真源可解析 / verify-deploy 读它且不再硬编码 /
      deploy+rollback 都走同一个共享函数 / 行为对照（含"白名单外不命中"）。零库依赖。 */
   ['neg-runtime-artifacts.cjs'],
+  /* ★ 2026-11-12（审计 F02）：桌面壳的「子进程超时」判据原先**不可达**（先同步 ReadToEnd 读完两路流、
+     再 WaitForExit(timeout)），且两处各一份（Mark 的注释自己都承认"返回值永远用不上"）。
+     现在收敛到 `RunNodeCapture`（异步读两路 + 有界等待 + 超时 Kill）。本用例把真源码抽出来用 csc
+     编最小宿主，跑一个**永不退出**的 node：真源码版必须 1.5s 返回 124；改回同步读必须挂住（阴性自证）。 */
+  ['neg-shell-subprocess-timeout.cjs'],
   ['neg-snapshot-text-and-force.cjs'],    // ★ 2026-11-05 合并评审 P1-5/P0-4：md/html 掏空不许直接恢复；--force-restore 二次确认 + 审计
   /* ★ 2026-11-12：`_快照.mjs` 自 2026-11-08 起**完全不可用** —— 纳管清单里的 glob 允许"当前零匹配"
      （`_收件箱/**\/_来源映射.csv`：收件箱清空后该文件就不在了），而 `git add -A -- <pattern>` 对

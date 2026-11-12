@@ -25,6 +25,7 @@ using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
@@ -535,40 +536,16 @@ namespace CTBShell2
                 if (inter == "0" || inter == "false") args.Add("--no-interleave");
                 else if (inter == "1" || inter == "true") args.Add("--interleave");
                 string code = "0", stdout = "", stderr = "";
-                var psi = new ProcessStartInfo
-                {
-                    FileName = "node.exe",
-                    Arguments = QuoteArgs(args.ToArray()),
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    StandardOutputEncoding = Encoding.UTF8,
-                    StandardErrorEncoding = Encoding.UTF8,   // 不设则中文错误信息按 GBK 解码成乱码（e2e 实测踩坑）
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true
-                };
-                using (var p = Process.Start(psi))
-                {
-                    stdout = p.StandardOutput.ReadToEnd();
-                    stderr = p.StandardError.ReadToEnd();
-                    /* ⚠ 2026-10-12(BUG-14·高)：ReadToEnd 先阻塞读完（子进程不死就不返回），
-                       所以 WaitForExit(ms) 的返回值原先**永远用不上** —— 工具一卡死，界面永远转圈，
-                       且 WriteGate 在 finally 里释放 ⇒ 写闸被永久占住，此后所有写入排队等死。
-                       现在：显式判断超时并**杀掉进程**，让 finally 能走到。 */
-                    if (!p.WaitForExit(180000))
-                    {
-                        try { p.Kill(); } catch { }
-                        try { p.WaitForExit(5000); } catch { }
-                        code = "124";
-                        stderr = (stderr ?? "") + "\n[超时] 子进程 180s 未退出，已强制结束（写闸即将释放）";
-                    }
-                    else code = p.ExitCode.ToString();
-                    /* ⚠ 2026-10-29（R2 SC-02 / D-09）：这里原有 `code = p.ExitCode.ToString();`
-                       一行**无条件覆盖**了上面两个分支，于是超时分支刚设的 "124" 永远作废：
-                       ① 上面注释宣告的"超时码 124"不可达；② 若子进程恰在 WaitForExit 超时与 Kill
-                       之间以 0 正常结束（工具其实已写完盘），code 变成 "0" ⇒ 前端 paper.js 的
-                       `r.code !== 0` 判据放行 ⇒ 界面报"已入账"，而壳的结论是"超时已强制结束"
-                       （重复入账方向的错）。删掉它，让两个分支各自的结果生效。 */
-                }
+                /* ★ 2026-11-12（F02）：进程代码收敛到 `RunNodeCapture` —— 本处原先自己 new ProcessStartInfo
+                   + 同步 `ReadToEnd`，与 `RunNodeRaw` 是**同一实现的两份**，而且超时判据同样不可达
+                   （下面那段老注释其实已经承认："ReadToEnd 先阻塞读完 ⇒ WaitForExit(ms) 的返回值永远用不上"）。
+                   现在两处共用一份：异步读两路 + 有界等待 + 超时 Kill。行为保持：
+                   超时记 code=124；D-09 那行"无条件覆盖 code"随收敛一并消失（code 只由分支决定）。 */
+                int mkCode; string mkErr;
+                stdout = RunNodeCapture(args.ToArray(), 180000, null, out mkCode, out mkErr);
+                stderr = mkErr;
+                code = mkCode.ToString();
+                if (mkCode == 124) stderr = (stderr ?? "") + "\n（写闸即将释放）";
                 HostBridge.Log("mark " + action + " exit=" + code + " out=" + SliceForLog((stdout ?? "").Replace("\r\n", " | ")));
                 return "{\"ok\":true,\"code\":" + code + ",\"out\":\"" + Esc(stdout) + "\",\"err\":\"" + Esc(stderr) + "\"}";
             }
@@ -1184,13 +1161,18 @@ namespace CTBShell2
             return parts;
         }
 
-        /* 跑 node 的**唯一底座**：返回值仍是 stdout，但退出码与 stderr 一并带出。
-           为什么要有 outCode（2026-10-29 R2 SC-02 / D-01）：原实现把退出码在**返回处就丢掉了**，
-           而 `_配方.mjs 校验` 的退出码是被测试钉死的契约（tests\neg-recipe-contract.cjs:141/160：
-           通过=0 / 拒收=1 / 参数错=2）。丢掉它 ⇒ Recipe() 只能硬编码 code:0 ⇒
-           页面把"拒收"渲染成绿色「✔ 校验通过」（失败被讲成成功，L1 阻断项）。
-           outCode = 进程真实退出码；超时被杀记 124（与 Mark 同码）且**不抛**，由包装决定怎么报。 */
-        string RunNodeRaw(string[] args, int timeoutMs, out int outCode, out string outErr, string forceDataRoot = null)
+        /* 跑 node 子进程、把 stdout/stderr/退出码一并拿回的**唯一实现**（2026-11-12 修 F02）。
+           改前的形态（两处各一份，Mark 那处的注释自己都写着"ReadToEnd 先阻塞读完 ⇒ WaitForExit(ms)
+           的返回值永远用不上"）：
+               stdout = p.StandardOutput.ReadToEnd();      // 子进程不关流 ⇒ 这里永久阻塞
+               stderr = p.StandardError.ReadToEnd();       // 而且两流**同步**读：谁先写满管道就互相等
+               if (!p.WaitForExit(timeoutMs)) { Kill(); }  // ← 走到这里子进程通常已退出 ⇒ 超时判据不可达
+           ⇒ 工具一卡死：界面永远转圈，而 WriteGate 在 finally 里释放不掉（此后所有写入排队等死），
+             "超时杀进程"从未真正生效过。
+           现在：**两路异步读**（互不阻塞、也不会被对方写满管道卡住）+ `WaitForExit(timeoutMs)` 判超时
+           → `Kill()` + 有界等流收尾（拿到多少算多少，绝不无限等）。
+           outCode：真实退出码；**超时被杀记 124**（与既有契约同码）且**不抛**，由调用方决定怎么报。 */
+        string RunNodeCapture(string[] args, int timeoutMs, string forceDataRoot, out int outCode, out string outErr)
         {
             var psi = new ProcessStartInfo
             {
@@ -1209,21 +1191,42 @@ namespace CTBShell2
             if (!string.IsNullOrEmpty(forceDataRoot)) psi.EnvironmentVariables["CTB_DATA"] = forceDataRoot;
             using (var p = Process.Start(psi))
             {
-                string so = p.StandardOutput.ReadToEnd();
-                string se = p.StandardError.ReadToEnd();
-                /* ⚠ BUG-14：同 Mark —— 超时必须可判并杀进程。 */
+                var soTask = p.StandardOutput.ReadToEndAsync();
+                var seTask = p.StandardError.ReadToEndAsync();
                 if (!p.WaitForExit(timeoutMs))
                 {
                     try { p.Kill(); } catch { }
                     try { p.WaitForExit(5000); } catch { }
                     outCode = 124;
-                    outErr = (se ?? "") + "\n[超时] node 子进程 " + (timeoutMs / 1000) + "s 未退出，已强制结束";
-                    return so;
+                    outErr = (BoundedResult(seTask) ?? "") + "\n[超时] node 子进程 " + (timeoutMs / 1000) + "s 未退出，已强制结束";
+                    return BoundedResult(soTask);
                 }
                 outCode = p.ExitCode;
-                outErr = se;
-                return so;
+                outErr = BoundedResult(seTask);
+                return BoundedResult(soTask);
             }
+        }
+
+        /** 等异步读取收尾，**有界**：超时或异常一律返回已拿到的部分（拿不到就是空串）。
+            为什么不用 `await`：本文件是同步的 WinForms 消息循环代码，`await` 会把调用点变成异步、
+            牵动一大片调用链；而这里的等待发生在子进程**已经退出或已被杀**之后，流必然收尾 ⇒
+            有界 `Wait` 足够，且不会造成新的阻塞风险。 */
+        static string BoundedResult(Task<string> t)
+        {
+            try { return t.Wait(5000) ? (t.Result ?? "") : ""; }
+            catch { return ""; }
+        }
+
+        /* 跑 node 的**唯一底座**：返回值仍是 stdout，但退出码与 stderr 一并带出。
+           为什么要有 outCode（2026-10-29 R2 SC-02 / D-01）：原实现把退出码在**返回处就丢掉了**，
+           而 `_配方.mjs 校验` 的退出码是被测试钉死的契约（tests\neg-recipe-contract.cjs:141/160：
+           通过=0 / 拒收=1 / 参数错=2）。丢掉它 ⇒ Recipe() 只能硬编码 code:0 ⇒
+           页面把"拒收"渲染成绿色「✔ 校验通过」（失败被讲成成功，L1 阻断项）。
+           outCode = 进程真实退出码；超时被杀记 124（与 Mark 同码）且**不抛**，由包装决定怎么报。
+           ★ 2026-11-12（F02）：进程代码本身收敛到 `RunNodeCapture`（异步读 + 超时必达），本方法只保留签名。 */
+        string RunNodeRaw(string[] args, int timeoutMs, out int outCode, out string outErr, string forceDataRoot = null)
+        {
+            return RunNodeCapture(args, timeoutMs, forceDataRoot, out outCode, out outErr);
         }
 
         /* 门禁语义包装（既有调用方的口径**不变**）：0/1 均正常（1=有未通过项）；其他=失败（抛错）。
