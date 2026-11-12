@@ -1,0 +1,22 @@
+{
+ "repo-hygiene.cjs": 14,
+ "neg-v2-smoke.cjs": 23,
+ "neg-shell-path.cjs": 29,
+ "neg-shell-args.mjs": 57,
+ "chunk-roundtrip.cjs": 24,
+ "safe-write.test.mjs": 12,
+ "neg-recipe-contract.cjs": 166,
+ "neg-stem-sanitize.cjs": 75,
+ "neg-shell-source-and-reparse.cjs": 89,
+ "neg-write-lock-and-txn.cjs": 22,
+ "neg-image-backup-coverage.cjs": 14,
+ "neg-orig-fallback.cjs": 32,
+ "neg-shell-writegate.cjs": 18,
+ "neg-confirm-html-sanitize.cjs": 37,
+ "neg-lock-migration-and-cache.cjs": 25,
+ "neg-snapshot-text-and-force.cjs": 15,
+ "neg-triage-dedupe.cjs": 24,
+ "neg-ingest-crop-and-figure.cjs": 21,
+ "neg-orig-backup-fallback.cjs": 19,
+ "verify-variant-retrieval.cjs": 23
+}

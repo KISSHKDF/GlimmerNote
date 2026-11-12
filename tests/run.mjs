@@ -44,11 +44,84 @@ if (/fixtures/.test(String(E.LIB_SOURCE || ''))) {
   console.log('  要对着真库跑：设 GLIMMERNOTE_PROD 指向运行区根（或 CTB_TEST_LIB 指向 <运行区>\\数据）。');
 }
 
+/* ★ 2026-11-12 新增（审计 T-01）：**断言数对账**。
+   改前 `run()` 是 `stdio:'inherit'` + 只取退出码 —— 全仓**没有任何一处解析 `RESULT=… 断言=N`**，
+   于是「把某个用例的断言删光」「让它走 `RESULT=SKIP 断言=0`」与「真跑过」在门禁眼里完全一样
+   （AGENTS.md 却写着"断言数以 run.mjs 输出为准"）。实测仓内确有 `RESULT=SKIP 断言=0` 形态。
+   现在：捕获子进程输出（仍原样转发给终端）、解析每个用例的断言数，与随仓库版本化的
+   `tests\断言基线.json` 对账 —— **只许涨不许跌**（跌 = 判据被删的典型形态）；
+   没报 `断言=N` 的用例也计入"未申报"。退出前统一结算，不达标则 `process.exitCode = 1`。
+   更新基线：`node tests\run.mjs --update-baseline`（会打印差异，便于提交时审阅）。 */
+const BASELINE_FILE = path.join(ROOT, 'tests', '断言基线.json');
+let ASSERT_BASELINE = {};
+try { ASSERT_BASELINE = JSON.parse(fs.readFileSync(BASELINE_FILE, 'utf8').replace(/^\uFEFF/, '')); }
+catch { ASSERT_BASELINE = {}; }
+const ASSERT_SEEN = {};        // script → 本轮实测断言数（取最大，容忍同文件多档）
+const ASSERT_UNREPORTED = [];  // 跑了但没报 `断言=N` 的用例
+const UPDATE_BASELINE = process.argv.includes('--update-baseline');
+
 function run(script, args = []) {
   console.log('\n═══ ' + script + ' ' + args.join(' ') + ' ═══');
-  const r = spawnSync(process.execPath, [path.join(ROOT, 'tests', script), ...args], { cwd: ROOT, stdio: 'inherit', encoding: 'utf8' });
+  const r = spawnSync(process.execPath, [path.join(ROOT, 'tests', script), ...args],
+    { cwd: ROOT, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
+  const out = String(r.stdout || '') + String(r.stderr || '');
+  process.stdout.write(out);                     // 输出仍可见（滞后到本例结束，但完整）
+  const hits = out.match(/断言=(\d+)/g);
+  if (hits && hits.length) {
+    const n = Number(String(hits[hits.length - 1]).replace('断言=', ''));
+    ASSERT_SEEN[script] = Math.max(ASSERT_SEEN[script] || 0, n);
+  } else {
+    ASSERT_UNREPORTED.push(script);
+  }
   return r.status ?? 1;
 }
+
+function settleAssertionBudget() {
+  const names = Object.keys(ASSERT_SEEN).sort();
+  const total = names.reduce((a, k) => a + ASSERT_SEEN[k], 0);
+  console.log('\n────────── 断言数对账（' + mode + '）──────────');
+  console.log('  本轮跑过 ' + names.length + ' 个用例、合计断言 ' + total +
+    (ASSERT_UNREPORTED.length ? '、**未申报断言数 ' + ASSERT_UNREPORTED.length + ' 个**' : ''));
+
+  if (UPDATE_BASELINE) {
+    const next = Object.assign({}, ASSERT_BASELINE, ASSERT_SEEN);
+    fs.writeFileSync(BASELINE_FILE, JSON.stringify(next, null, 1) + '\n', 'utf8');
+    console.log('  ✔ 已更新基线：' + BASELINE_FILE + '（' + Object.keys(next).length + ' 个用例）');
+    return;
+  }
+
+  const dropped = [], unknown = [];
+  for (const k of names) {
+    const base = ASSERT_BASELINE[k];
+    if (base === undefined) { unknown.push(k + '（' + ASSERT_SEEN[k] + '）'); continue; }
+    if (ASSERT_SEEN[k] < base) dropped.push(k + '：' + base + ' → ' + ASSERT_SEEN[k]);
+    else if (ASSERT_SEEN[k] > base) console.log('  ↑ ' + k + ' 断言增加 ' + base + ' → ' + ASSERT_SEEN[k] + '（跑 --update-baseline 登记）');
+  }
+  let bad = 0;
+  if (dropped.length) {
+    bad++;
+    console.log('  ✖ 断言数**下降**（判据被删或被改窄的典型形态）：');
+    for (const d of dropped) console.log('      ' + d);
+    console.log('    确认是有意删除后再跑 `node tests\\run.mjs --update-baseline` 登记。');
+  }
+  if (ASSERT_UNREPORTED.length) {
+    bad++;
+    console.log('  ✖ 有 ' + ASSERT_UNREPORTED.length + ' 个用例没报 `断言=N`（无法对账）：' +
+      ASSERT_UNREPORTED.slice(0, 8).join('、') + (ASSERT_UNREPORTED.length > 8 ? ' …' : ''));
+  }
+  if (unknown.length) {
+    console.log('  ○ 基线里还没有这些用例（首次入库请跑 --update-baseline）：' + unknown.slice(0, 8).join('、') +
+      (unknown.length > 8 ? ' …' : ''));
+  }
+  if (bad) {
+    console.log('  ✖ 断言数对账未过（fail-closed）');
+    process.exitCode = 1;
+  } else {
+    console.log('  ✔ 断言数对账通过（无一例下降、无未申报）');
+  }
+}
+process.on('exit', () => { try { settleAssertionBudget(); } catch (e) { console.log('断言数对账自身异常：' + (e && e.message)); process.exitCode = 1; } });
+
 
 /* ════════ 运行区部署一致性（两种模式都跑，2026-10-25 用户定规）════════
  * 用户原话：「我需要你以后只能走正确链路：dev 改 → dev 测 → build-release.ps1 打包 →
@@ -822,6 +895,11 @@ const unitTests = [
      （台账旧、索引新，两边都报成功）。本用例用一个真持锁者占库，断言 restore 在锁释放前
      不写目标文件、且释放后才完成；阴性自证：摘掉取锁后它当场插队改写。 */
   ['neg-snapshot-restore-lock.cjs'],
+  /* ★ 2026-11-12：把「数据区门禁」整族的阴性对照接进链。此前 `neg-data-area-rules.mjs`
+     （223 断言、61 KB 门禁的守卫）**不在 run.mjs、不在三个钩子、也不在 CI** ——
+     而 CONTRIBUTING 与 `docs\数据区规范.md` 都把它写成必跑步骤 ⇒ 整族数据区规则事实上无人执行。
+     它零库依赖（自建 %TEMP% 合成库 + `allocTempDir` 登记清扫），可直接进 unitTests。 */
+  ['neg-data-area-rules.mjs'],
   ['neg-snapshot-text-and-force.cjs'],    // ★ 2026-11-05 合并评审 P1-5/P0-4：md/html 掏空不许直接恢复；--force-restore 二次确认 + 审计
   /* ★ 2026-11-12：`_快照.mjs` 自 2026-11-08 起**完全不可用** —— 纳管清单里的 glob 允许"当前零匹配"
      （`_收件箱/**\/_来源映射.csv`：收件箱清空后该文件就不在了），而 `git add -A -- <pattern>` 对
@@ -830,6 +908,12 @@ const unitTests = [
      本用例四条判据：零匹配模式不许报错 / --dry 不留暂存 / 未跟踪新真源仍要被纳入 / 换回旧写法必须复现 128。
      零库依赖（自建 %TEMP% 迷你 git 仓 + 只读本仓源码）。 */
   ['neg-snapshot-pathspec.cjs'],
+  /* ★ 2026-11-12：`_题干门禁` 的 `allCards()` 原先 `catch { continue; }` ⇒ 索引读不出时
+     收集到 0 张卡、`judgeLibrary` 直接 ok:true，体检还会报「✔ 扫描 0 张，阻断 0」——
+     一份全绿但什么都没查的报告（兄弟门禁 `_作答门禁` 用的是会抛错的 readJsonStrict）。
+     本用例守四条：好库不误伤 / 坏索引判红并点名 / 空真判红 / 空库不误伤，并带阴性自证。
+     零库依赖（自建 %TEMP% 合成库 + 工具副本动态 import）。 */
+  ['neg-stem-gate-broken-index.cjs'],
   /* ★ 2026-11-07 规范 W6「改盘别改格式」进程序：`writeJsonAtomic` 的缩进过去写死默认 2，
      而台账缩进是**每份文件自己定的**（`_原卷台账.json`/`_录题任务.json` 用 1）⇒ 一次纯路径改写
      把 `_原卷台账.json` 从 410,280 B 重排到 451,899 B（+41.6 KB）。修法：不传 indent/newline 时

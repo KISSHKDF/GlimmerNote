@@ -15,6 +15,54 @@
 
 版本号遵循日期制 `YYYY.MM.DD.NN`。版本号唯一真源：`VERSION.json`。
 
+## [2026.11.12.02] - 2026-11-12 · 门禁补三处假绿（断言数对账 / 数据区门禁归位 / 题干门禁空真）+ 7 处库内原子写
+
+**变更分类**：Fixed / Changed
+**升级影响**：① **不改任何用户数据、不改卡、不改索引、不改 schema**——本版全是门禁与写盘底座的加固；
+② 门禁行为变化：**断言数下降会红**（新增 `tests\断言基线.json`，只许涨不许跌；`--update-baseline` 登记）；
+③ 门禁覆盖面变化：`neg-data-area-rules.mjs`（数据区门禁整族的阴性对照，224 断言）**首次进入门禁链**；
+④ `_题干门禁` 在索引读不出或"有索引却 0 张卡"时**判红**（此前静默 ok:true）；
+⑤ 7 处库内写盘改为原子写（断电不再留半截文件）。
+
+### 根因（三处"假绿" + 一处写盘风险）
+
+1. **门禁入口从不看断言数**（审计 T-01）：`tests\run.mjs` 的 `run()` 是 `stdio:'inherit'` + 只取退出码，
+   全仓**没有任何一处解析 `RESULT=… 断言=N`** ⇒ 「把某个用例的断言删光」「让它走 `RESULT=SKIP 断言=0`」
+   与「真跑过」在门禁眼里完全一样；而 AGENTS.md 却写着"断言数以 run.mjs 输出为准"。
+   实测仓内确有 `RESULT=SKIP 断言=0` 形态。
+2. **数据区门禁整族从不执行**（审计 T-15）：`tests\neg-data-area-rules.mjs`（223 断言、守卫 61 KB 的
+   `_数据区门禁.mjs`）**不在 run.mjs、不在三个钩子、也不在 CI**，而 CONTRIBUTING 与
+   `docs\数据区规范.md` 都把它写成必跑步骤 ⇒ 整族数据区规则事实上无人执行。
+3. **题干门禁在索引损坏时报绿**（审计 F01）：`allCards()` 用 `try { … } catch { continue; }`，
+   索引读不出 ⇒ 收集到 0 张卡 ⇒ `judgeLibrary` 返回 `ok: true`，
+   `_体检.mjs` 还会把它当硬门禁汇报成「题干门禁（可读性）✔ 扫描 0 张，阻断 0」。
+   兄弟门禁 `_作答门禁.mjs` 用的是会响亮抛错的 `readJsonStrict`，两处口径不一致。
+4. **7 处库内写盘不是原子写**（审计 D-01）：`_生成队列.mjs`（`_复习队列.md`）、`_笔形.mjs`（笔形卡 + README）、
+   `_盲解复核.mjs`（盲解清稿）、`_分流器.mjs`（`_分流结果.json` + 任务单 ×2）都直接 `fs.writeFileSync` ——
+   断电 / `taskkill` / 磁盘满会留下**半截文件**，而它们都是库内真源（盲解清稿是回传答案的唯一凭据）。
+
+### 改法
+
+- `tests\run.mjs`：`run()` 改为捕获输出（仍原样转发终端）+ 解析 `断言=N`；新增
+  `tests\断言基线.json`（随仓库版本化）与退出前统一结算 `settleAssertionBudget()`：
+  **断言数下降 ⇒ 红**（判据被删的典型形态）、**没申报断言数 ⇒ 红**、新用例不在基线 ⇒ 提示不判红；
+  `node tests\run.mjs <档> --update-baseline` 更新基线（会打印差异）。
+  顺带把唯一"不申报"的 `verify-variant-retrieval.cjs` 统一成 `断言=N` 口径（对账上线当天就把它抓了出来）。
+- `tests\run.mjs`：把 `neg-data-area-rules.mjs` 挂进 `unitTests`（它零库依赖：自建 %TEMP% 合成库 + 登记清扫）。
+- `src\tools\_题干门禁.mjs`：`allCards()` 逐条记录索引读失败（`indexErrors`），`judgeLibrary` 在
+  **读失败 > 0** 或 **有索引却 0 张卡**（空真）时 `ok: false`；`--json` 的 `problems` 头部点名出问题的索引文件。
+- 四个工具改 `writeTextAtomic`（同目录临时文件 + fsync + rename）。**未加库写锁**——并发语义需单独评估，
+  不在本次顺手改。
+
+### 回归断言
+
+- 新增 `tests\neg-stem-gate-broken-index.cjs`（9 断言）：好库不误伤 / 坏索引判红并点名 / 空真判红 /
+  空库不误伤 + **阴性自证**（把 catch 改回 `continue` ⇒ 坏库必须变回 ok:true）。
+- 断言数对账**自带阴性验证**（本次手工跑过）：把基线里某用例的断言数改成 999 ⇒ 该用例判"下降"并 exit 1；
+  还原后恢复通过。
+- `neg-data-area-rules.mjs` 首次进链实测：`RESULT=PASS 断言=224`（含它自己的"判据改永假必须红"自证）。
+- `node tools\lint.mjs` PASS；`node tests\run.mjs fixture` **52 秒全绿**（20 用例 / 739 断言 / 对账通过）。
+
 ## [2026.11.12.01] - 2026-11-12 · 快照复活 + 部署漂移判据收窄 + 入库后重建 + 96 张卡原卷归位
 
 **变更分类**：Fixed / Changed

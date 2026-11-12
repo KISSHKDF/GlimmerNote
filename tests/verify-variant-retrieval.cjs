@@ -176,5 +176,8 @@ fs.writeFileSync(path.join(LIB, '学生甲', '数学', 'V0010-合规乙', '题�
 /* ---------- 清场 ---------- */
 try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { }
 
-console.log(`\nRESULT=verify-variant-retrieval 通过=${pass} 失败=${fail}`);
+/* ★ 2026-11-12：输出**标准断言字段** `断言=N`。此前只报 `通过=/失败=`，
+   而 run.mjs 的断言数对账（以及 AGENTS.md「断言数以 run.mjs 输出为准」）认的是 `断言=N`
+   ⇒ 本用例成了全仓唯一"无法对账"的一个（对账上线当天就把它抓了出来）。 */
+console.log(`\nRESULT=verify-variant-retrieval 断言=${pass + fail} 通过=${pass} 失败=${fail}`);
 process.exit(fail ? 1 : 0);

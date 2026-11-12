@@ -55,7 +55,7 @@ import crypto from 'crypto';
 import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { libraryRoot, toolPath } from './_库根.mjs';
-import { readJsonStrict, writeJsonAtomic, acquireLibLock } from './_安全写.mjs';
+import { readJsonStrict, writeJsonAtomic, acquireLibLock, writeTextAtomic } from './_安全写.mjs';
 /* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。 */
 import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
 
@@ -422,7 +422,9 @@ switch (action) {
       // --ids 是"定点重盲解"，写到单独文件，避免把整册清稿覆盖成子集；--lane 2 也单独落文件
       const suffix = opt.ids ? '-重盲解' : (String(opt.lane || '1') === '2' ? '-第2路' : '');
       const out = path.join(OUTDIR, `${student}-${subject}-盲解清稿${suffix}.md`);
-      fs.writeFileSync(out, lines.join('\n') + '\n', 'utf8');
+      /* ★ 2026-11-12（审计 D-01）：库内真源改原子写（盲解清稿是"回传答案的唯一凭据"，
+         半截文件会让复核者按残缺题面判卷） */
+      writeTextAtomic(out, lines.join('\n') + '\n');
       console.log(`已生成清稿（${list.length} 题 · ${laneTag}）：${out}`);
     }
     break;

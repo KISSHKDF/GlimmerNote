@@ -106,11 +106,21 @@ function itemsOfJson(j, base) {
   if (j.subjects) for (const [name, v] of Object.entries(j.subjects)) for (const it of (v.items || [])) out.push({ item: it, subject: name, student: j.student, dirAbs: path.join(base, name, it.dir || it.id) });
   return out;
 }
+/* ★ 2026-11-12 修（静默假绿，全仓最忌讳的一类）：
+   改前 `allCards` 里是 `try { … } catch { continue; }` —— 索引读不出时收集到的卡为 0，
+   `judgeLibrary` 于是 `rows=[]`、`blocked=[]` ⇒ **ok: true**，`_体检.mjs` 还会打印
+   「题干门禁（可读性）✔ 扫描 0 张，阻断 0」——**一份全绿但什么都没查的报告**。
+   兄弟门禁 `_作答门禁.mjs` 用的是会响亮抛错的 `readJsonStrict`，两处口径不一致；
+   而 CHANGELOG 早就为同类事故定过规矩：**一份都没扫到不得当作通过**。
+   现在：读失败逐条记进本数组（不吞），并让 judgeLibrary 判红。 */
+export const indexErrors = [];
 export function allCards(root = ROOT) {
   const out = [];
+  indexErrors.length = 0;
   for (const f of indexFiles(root)) {
     let j;
-    try { j = JSON.parse(fs.readFileSync(f, 'utf8').replace(/^\uFEFF/, '')); } catch { continue; }
+    try { j = JSON.parse(fs.readFileSync(f, 'utf8').replace(/^\uFEFF/, '')); }
+    catch (e) { indexErrors.push({ file: f, error: String((e && e.message) || e) }); continue; }
     for (const x of itemsOfJson(j, path.dirname(f))) out.push({ ...x, key: x.student + '|' + x.item.id });
   }
   return out;
@@ -479,6 +489,12 @@ const IS_ENTRY = (() => {
 /** 全库判定（供 CLI 与其它工具复用）：返回 {ok, stats, problems, rows} */
 export function judgeLibrary(root = ROOT) {
   const cards = allCards(root);
+  const indexFileCount = indexFiles(root).length;
+  /* ★ 2026-11-12：读失败与"空真"都要能让 ok 变 false（见 allCards 上方注释）。
+     空真判据取"有索引文件却一张卡都没读出来"——它比"读失败条数 > 0"更宽：
+     索引能解析、但结构里根本没有 items/subjects 时同样属于"什么都没查到"。 */
+  const idxErrs = indexErrors.slice();
+  const emptyButHasIndex = indexFileCount > 0 && cards.length === 0;
   const rows = cards.map(x => {
     const p = path.join(x.dirAbs, STEM);
     const stem = fs.existsSync(p) ? fs.readFileSync(p, 'utf8').replace(/^\uFEFF/, '') : '';
@@ -499,10 +515,13 @@ export function judgeLibrary(root = ROOT) {
   const phoneticNoUnderline = rows.filter(r => r.info.phonetic && r.info.phoneticContext && !r.info.underline)
     .map(r => ({ key: r.key, id: r.id, subject: r.subject, blocked: !r.ok }));
   return {
-    ok: blocked.length === 0,
+    ok: blocked.length === 0 && !emptyButHasIndex && idxErrs.length === 0,
     rows, blocked, warned, longParagraphs, phoneticNoUnderline,
+    indexErrors: idxErrs,
     stats: {
       total: rows.length,
+      indexFiles: indexFileCount,
+      indexErrors: idxErrs.length,
       block: blocked.length,
       archivedSkipped: rows.filter(r => !r.ok && String(r.status || '') === '已归档').length,
       warn: warned.length,
@@ -525,7 +544,14 @@ if (IS_ENTRY) switch (action) {
       ok: lib.ok,
       action,
       stats: lib.stats,
-      problems: blocked.map(r => `${r.key}[${r.problems.map(p => p.msg).join('；')}]`),
+      problems: [
+        /* ★ 2026-11-12：这两条必须在最前 —— 它们是"判据本身没跑起来"，比任何单卡问题都严重。 */
+        ...(lib.stats.indexErrors ? [`索引读失败 ${lib.stats.indexErrors} 份（不得当作通过）：` +
+          lib.indexErrors.map(e => e.file + '（' + e.error + '）').join('、')] : []),
+        ...(lib.stats.indexFiles > 0 && lib.stats.total === 0
+          ? [`库里有 ${lib.stats.indexFiles} 份索引，却一张卡都没读出来 ⇒ 空真，不得当作通过`] : []),
+        ...blocked.map(r => `${r.key}[${r.problems.map(p => p.msg).join('；')}]`),
+      ],
       warns: warned.map(r => `${r.key}[${r.warns.map(w => w.msg).join('；')}]`),
       cards: Object.fromEntries(rows.map(r => [r.key, {
         ok: r.ok, nums: r.info.nums, orphan: r.info.orphan, instructed: r.info.instructed,
