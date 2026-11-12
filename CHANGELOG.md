@@ -15,6 +15,52 @@
 
 版本号遵循日期制 `YYYY.MM.DD.NN`。版本号唯一真源：`VERSION.json`。
 
+## [2026.11.13.19] - 2026-11-13 · 断言清账第二刀 + **修掉本会话自己造成的 4 处连带**
+
+**变更分类**：Fixed
+**升级影响**：**只改测试**。
+
+### ① 断言清账第二刀：真正要补的只有 3 个
+
+上一版扫出"21 个需补"，本版逐个看过后发现**大部分是扫描误判**：
+
+| 情况 | 结论 |
+|---|---|
+| `e2e-ui.mjs` / `neg-v2-ui-dash-toast-grid` / `neg-v2-ui-review-bank` | 它们用自定义 `P()` 打印（不是 `console.log`），**已经报了** `断言=` ⇒ 无需补 |
+| `neg-region-contract.cjs` | 它用共享库 `neg-server-lib.cjs` 的 `end()`，那里**已经**输出 `断言=` ⇒ 无需补 |
+| **`neg-v2-pagesmoke.cjs` / `smoke-shell.mjs` / `verify-shell-visual.cjs`** | **确实没报** ⇒ 本版补齐 |
+
+### ② ⚠ 修掉**本会话自己造成的 4 处连带**（这才是本版的重点）
+
+现象：`neg-paper-order-blank` 崩在 `ReferenceError: optsGrid is not defined`。顺藤摸下去发现 **4 个用例**
+都在用 `new Function` **抽 `paper.js` 的内部函数**来测，而我本会话给 `paper.js` 加的两个函数
+**没被它们的注入清单跟上**：
+
+| 我的改动 | 被它打破的用例 | 症状 |
+|---|---|---|
+| `optsGrid`（打印硬规则①：选项排 4/2/1 列） | `neg-paper-order-blank`、`neg-stem-math-nowrap`、`neg-stem-table-fit`、`neg-answer-slot-contract`（B 段） | `ReferenceError: optsGrid is not defined` |
+| `traceLines`（答案册"错在哪一步"） | `neg-answer-slot-contract`（A 段，抽 `ansHtml`） | `✖ 装载 失败：traceLines is not defined` |
+
+**它们一直红着没人知道**——因为都在 `full` 档，而 `full` 被前面的门禁长期挡着（正是前几版解开的那个坑）。
+
+**修法**：把这 4 处的抽取清单补上新依赖（`optsGrid` 连依赖一起抽出来注入；`traceLines` 同法）。
+修完 4 个**全 PASS**：`neg-answer-slot-contract` 断言=66 / `neg-stem-math-nowrap` 23 /
+`neg-stem-table-fit` 15 / `neg-paper-order-blank` 23。
+
+**教训（本会话第三次踩同一形态）**：**抽内部函数做测试时，依赖清单必须跟着被抽函数一起长。**
+值得进教训库。
+
+### ③ 修 `neg-paper-order-blank` 写死的库结构
+
+它读 `lib('九年级', '_索引.json')` —— 那是**真实库的目录名**，合成库上没有 ⇒ 在干净环境里**直接 ENOENT 崩**。
+改成从 `E.findIndexes(LIB)` 里动态找含该批次的索引（与 2026-10-24 修 `neg-interval-and-axis` 的 B-09 同法，
+这个漏改了）。
+
+⚠ 我改的时候**把判据写反过一次**（"撤销后找不到该批次流水"本是**通过**，我先写成了失败）⇒
+当场被这条红抓到，注释里留了记录。
+
+`lint` PASS；`fixture` 全绿（40 用例 / 1283 断言）。
+
 ## [2026.11.13.18] - 2026-11-13 · 一次全清（第一刀）：10 个用例补上 `断言=N`
 
 **变更分类**：Fixed

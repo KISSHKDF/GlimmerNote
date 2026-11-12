@@ -150,8 +150,14 @@ function runAll() {
       const m = src.match(/function ansHtml\(title, refs\) \{[\s\S]*?\n  \}/);
       A('A5.0 ansHtml 可抽取', !!m);
       if (m) {
-        const ansHtml = new Function('U', 'M', 'H', 'shHead', 'return (' + m[0].replace(/^function ansHtml/, 'function') + ')')(
-          U, M, CTB.host, (t) => '<div class="sh-h"></div>');
+        /* ★ 2026-11-13 修（本会话"答案册错在哪一步"引出的连带）：`ansHtml` 现在会调 **`traceLines`**
+           （把复习流水的转折点打进答案册）—— 这里只注入 U/M/H/shHead ⇒ `ReferenceError`，本条当场红。
+           教训：**抽内部函数做测试时，依赖清单必须跟着被抽函数一起长**（本会话第三次踩同一形态）。 */
+        const mT = src.match(/function traceLines\(c\) \{[\s\S]*?\n  \}/);
+        A('A5.0b ansHtml 的新依赖 traceLines 可抽取', !!mT);
+        const traceLines = mT ? new Function('U', 'return (' + mT[0].replace(/^function traceLines/, 'function') + ')')(U) : (() => '');
+        const ansHtml = new Function('U', 'M', 'H', 'shHead', 'traceLines', 'return (' + m[0].replace(/^function ansHtml/, 'function') + ')')(
+          U, M, CTB.host, (t) => '<div class="sh-h"></div>', traceLines);
         const refs = [{ kid: '学生A', card: { id: 'X1', type: '填空', answer: '总答案', answerSlots: ['甲', '乙', '丙'] } }];
         const h = ansHtml('卷', refs);
         A('A5 答案册逐空打印（第1/2/3空都在）', /第1空：甲/.test(h) && /第2空：乙/.test(h) && /第3空：丙/.test(h), h.slice(0, 240));
@@ -189,7 +195,12 @@ function runAll() {
     const src = fs.readFileSync(path.join(ROOT, 'src', 'app', 'js', 'views', 'paper.js'), 'utf8');
     const m = src.match(/function qHtml\(x, i, form\) \{[\s\S]*?\n  \}/);
     A('B0 qHtml 可抽取', !!m);
-    const qHtml = new Function('U', 'M', 'H', 'return (' + m[0].replace(/^function qHtml/, 'function') + ')')(U, M, CTB.host);
+    /* ★ 2026-11-13 修：`qHtml` 现在会调 `optsGrid`（打印硬规则①：选项按内容宽度排 4/2/1 列）
+       ⇒ 只注入 U/M/H 会 ReferenceError。同 A5.0b 的教训：依赖清单跟着被抽函数一起长。 */
+    const mOB = src.match(/function optsGrid\(html\) \{[\s\S]*?\n  \}/);
+    A('B0b qHtml 的新依赖 optsGrid 可抽取', !!mOB);
+    const optsGridB = mOB ? new Function('return (' + mOB[0].replace(/^function optsGrid/, 'function') + ')')() : (x => x);
+    const qHtml = new Function('U', 'M', 'H', 'optsGrid', 'return (' + m[0].replace(/^function qHtml/, 'function') + ')')(U, M, CTB.host, optsGridB);
     const mk = (card) => ({ key: '学生A|' + card.id, kid: '学生A', subject: '数学', card });
     const render = c => qHtml(mk(c), 0, 'stem');
 

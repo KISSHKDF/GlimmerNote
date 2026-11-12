@@ -184,7 +184,7 @@ async function rmProfileEventually(dir) {
     try { if (child) child.kill(); } catch { }
     try { if (profile) await rmProfileEventually(profile); } catch { }
     try { if (__srv) await __srv.stop(); } catch { }
-    P('RESULT=' + ((exitCode || fails) ? 'FAIL(' + (exitCode || fails) + ')' : 'PASS'));
+    P('RESULT=' + ((exitCode || fails) ? 'FAIL(' + (exitCode || fails) + ')' : 'PASS') + '  断言=' + total);
     try { fs.writeFileSync(OUT, log.join('\r\n'), 'utf8'); } catch { }
   }
   process.exit(exitCode || (fails ? 1 : 0));

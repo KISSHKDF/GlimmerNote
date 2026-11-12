@@ -194,7 +194,7 @@ const evalJs = async (c, expr) => {
 
   if (!KEEP) { console.log('=== ④ 关掉壳 ==='); killShell(); }
 
-  console.log('\nRESULT=' + (fails ? 'FAIL(' + fails + ')' : 'PASS'));
+  console.log('\nRESULT=' + (fails ? 'FAIL(' + fails + ')' : 'PASS') + '  断言=' + total + '  失败=' + fails);
   process.exit(fails ? 1 : 0);
 })().catch(e => {
   console.log('EXC ' + (e && e.stack || e));

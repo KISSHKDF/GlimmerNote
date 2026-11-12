@@ -92,10 +92,26 @@ try {
     execFileSync(process.execPath, [E.tool('_标记复习.mjs'), '撤批', '--paper', paper], { encoding: 'utf8', env: TOOL_ENV });
     const led2 = JSON.parse(fs.readFileSync(lib('_组卷台账.json'), 'utf8'));
     A('A4 撤批复原', !led2.batches.some(x => x.paperId === paper));
-    const idx2 = JSON.parse(fs.readFileSync(lib('九年级', '_索引.json'), 'utf8'));
-    const dirty = [];
-    for (const v of Object.values(idx2.subjects || {})) for (const it of (v.items || [])) if ((it.reviews || []).some(r => r.paper === paper)) dirty.push(it.id);
-    A('A5 索引无残留流水', dirty.length === 0, dirty.join(','));
+    /* ★ 2026-11-13 修：这里原先写死 `lib('九年级', '_索引.json')` —— 那是**真实库的目录名**，
+       合成库（fixtures）上没有「九年级」⇒ 本用例在干净环境里**直接 ENOENT 崩**（exit 1）。
+       与 2026-10-24 修 `neg-interval-and-axis.cjs` 时改"动态发现学生"是**同一类问题**（B-09），
+       这个漏改了。现在改成：从 `E.findIndexes(LIB)` 里挑**含这次组卷卡**的那份索引来核。
+       ⚠ 挑不到就显式 SKIP（跳过必须可见），不假装通过。 */
+    const idxFiles = E.findIndexes(LIB);
+    const hitIdx = idxFiles
+      .map(f => ({ f, j: JSON.parse(fs.readFileSync(lib(f), 'utf8')) }))
+      .find(x => Object.values(x.j.subjects || {}).some(v => (v.items || []).some(it => (it.reviews || []).some(r => r.paper === paper))));
+    if (hitIdx) {
+      const dirty = [];
+      for (const v of Object.values(hitIdx.j.subjects || {})) for (const it of (v.items || [])) if ((it.reviews || []).some(r => r.paper === paper)) dirty.push(it.id);
+      A('A5 索引无残留流水', dirty.length === 0, dirty.join(','));
+    } else if (idxFiles.length) {
+      /* ★ 本判据的语义是"索引里**不该**有该批次的流水" ⇒ "一个都找不到"**正是通过**。
+         ⚠ 我改的时候先写成了失败 —— 那是把"无残留"读成了"找不到"（判据写反），当场被这条红抓到。 */
+      A('A5 索引无残留流水（撤批后没有任何索引留该批次）', true, idxFiles.length + ' 份索引，均无 ' + paper);
+    } else {
+      A('A5 索引无残留流水（环境）', false, '一个 _索引.json 都没找到 —— 这是环境问题，不是"无残留"');
+    }
   }
 }
 
@@ -129,7 +145,16 @@ try {
   const src = fs.readFileSync(path.join(ROOT, 'src', 'app', 'js', 'views', 'paper.js'), 'utf8');
   const m = src.match(/function qHtml\(x, i, form\) \{[\s\S]*?\n  \}/);
   A('C0 qHtml 可抽取', !!m);
-  const qHtml = new Function('U', 'M', 'H', 'return (' + m[0].replace(/^function qHtml/, 'function') + ')')(U, M, H);
+  /* ★ 2026-11-13 修（本会话"打印硬规则①"引出的连带）：`qHtml` 现在会调 **`optsGrid`**
+     （把 A./B./C./D. 四个选项按内容宽度排成 4/2/1 列）—— 而这段抽函数只注入了 U/M/H
+     ⇒ `ReferenceError: optsGrid is not defined`，整条用例**当场崩**。
+     ⚠ 这条一直是红的却没人知道：它在 full 档跑，而 full 被前面的门禁长期挡着。
+     教训：**抽内部函数做测试时，被抽函数的依赖清单必须跟着它一起长**（这是第二次踩：
+     `neg-stem-backfill` 的 liveFn 同法）。所以这里把 optsGrid 也抽出来一起注入。 */
+  const mO = src.match(/function optsGrid\(html\) \{[\s\S]*?\n  \}/);
+  A('C0b qHtml 的新依赖 optsGrid 可抽取', !!mO);
+  const optsGrid = mO ? new Function('return (' + mO[0].replace(/^function optsGrid/, 'function') + ')')() : (x => x);
+  const qHtml = new Function('U', 'M', 'H', 'optsGrid', 'return (' + m[0].replace(/^function qHtml/, 'function') + ')')(U, M, H, optsGrid);
   const r1 = qHtml(mk('C0002', '填空（粒子符号）', '微观上，氯化钠是由______（填写具体粒子符号）构成的。'), 0, 'stem');
   A('C1 有坑填空不留 90px 大框', r1.indexOf('height:90px') < 0, r1.slice(-120));
   A('C2 有坑填空的坑被转成 .blank（可下笔宽度）', /class="blank"/.test(r1), '');

@@ -83,7 +83,13 @@ vm.runInContext(rd('src/app/js/views/paper.js'), sandbox, { filename: 'views/pap
 const M = sandbox.CTB.model, U = sandbox.CTB.util, H = sandbox.CTB.host;
 const mQ = rd('src/app/js/views/paper.js').match(/function qHtml\(x, i, form\) \{[\s\S]*?\n  \}/);
 A('qHtml 可从 paper.js 抽取（渲染口径唯一）', !!mQ);
-const qHtml = new Function('U', 'M', 'H', 'return (' + mQ[0].replace(/^function qHtml/, 'function') + ')')(U, M, H);
+/* ★ 2026-11-13 修：`qHtml` 现在会调 `optsGrid`（打印硬规则①：选项按内容宽度排 4/2/1 列）
+   ⇒ 只注入 U/M/H 会 ReferenceError（本会话实测）。教训：抽内部函数做测试时，
+   **依赖清单必须跟着被抽函数一起长**。 */
+const mOG = rd('src/app/js/views/paper.js').match(/function optsGrid\(html\) \{[\s\S]*?\n  \}/);
+A('qHtml 的新依赖 optsGrid 可抽取', !!mOG);
+const optsGridG = mOG ? new Function('return (' + mOG[0].replace(/^function optsGrid/, 'function') + ')')() : (x => x);
+const qHtml = new Function('U', 'M', 'H', 'optsGrid', 'return (' + mQ[0].replace(/^function qHtml/, 'function') + ')')(U, M, H, optsGridG);
 
 /* ---------- 合成卡（M0066 同形：8 列乘方表 + 窄格里的分数表达式） ---------- */
 const FR = '<span class="fr"><span class="nu">1</span><span class="de">5</span></span>';
