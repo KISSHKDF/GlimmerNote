@@ -21,7 +21,7 @@
  *          要工具代为交错排卷（Rohrer 2020，相邻两题不同族考点，d=0.83）须显式加 --interleave，
  *          仅限「ids 顺序尚未印成卷」的纯 CLI 场景；v2 桌面版从 v2.7 起界面洗牌后必须传此开关关闭。）；
  *          错误次数 ≥ --leech-at（默认 4）的题会额外提示「拆卡/补前置知识卡/标记题目问题」三选一）
- *   批改  --paper P20261006-01 --results "M0001=对,M0006=错,M0011=半对" [--date 2026-10-08] [--note 备注]
+ *   批改  --paper P20261006-01 --results "M0001=对,M0006=错,M0011=半对" [--date 2026-10-08] [--note 备注] [--by 家长|孩子|AI辅助]
  *   撤批  --paper P20261006-01
  *         （撤销整卷：批次从台账移除，卷上题目恢复**未组卷**——未批改的直接回池；
  *          已批改的把该卷判分流水一并回滚、错误次数回退、连对/建议复习日按剩余记录重算。
@@ -383,7 +383,21 @@ function capReviews(list) {
 }
 const REVIEWS_CAP_NOTE = '（reviews 超过 ' + REVIEWS_KEEP + ' 条：已裁掉最旧的批次；按批次整留，条数可能略超 ' + REVIEWS_KEEP + '）';
 
-function actGrading(paperId, resultsStr, date, note) {
+/* ★ 2026-11-13（批次 4 / UX-10「谁判的」）：把"这次是谁判的"记进复习流水。
+   为什么：孩子模式下自评时，界面若暗示"判对就能少做"，就会诱导**挑好判的判对**（与 UX-11 同源）。
+   记下"谁判的"之后，家长一眼能看出哪些记录是自评、自评的正确率是否异常偏高——
+   这是**数据自证**，不是猜疑（判据摆在桌上，比"我觉得你在放水"好谈得多）。
+   取值白名单：家长 / 孩子 / AI辅助 / 空串（未记）。**非法值拒收**：
+   自由文本进来这一维就统计不了，与错因阶段维同一个道理。 */
+const GRADERS = ['家长', '孩子', 'AI辅助', ''];
+function byOf(v) {
+  const s = String(v == null ? '' : v).trim();
+  if (!GRADERS.includes(s)) {
+    throw new Error('批改 --by 非法：' + JSON.stringify(v) + '（只能 家长 / 孩子 / AI辅助，或省略表示未记）');
+  }
+  return s;
+}
+function actGrading(paperId, resultsStr, date, note, by) {
   /* ★ 2026-11-04（F02 纵深防御）：actGrading 还有别的调用方（同步路径 b.gradedAt || b.date），
      四个入口各自校验之外，这里再校验一次 —— 它拿到的 date 必须已合法。 */
   const day = validDate(date, '批改日期');
@@ -419,7 +433,7 @@ function actGrading(paperId, resultsStr, date, note) {
     const prevList = revsOf(it);
     const prev = prevList.find(r => r.paper === paperId);           // 同一批次重复回录时按最后一次结果修正，不双计
     const before = prev ? prev.result : null;
-    const merged = prevList.filter(r => r.paper !== paperId).concat([{ date: day, paper: paperId, result: res, note: note || '' }]);
+    const merged = prevList.filter(r => r.paper !== paperId).concat([{ date: day, paper: paperId, result: res, note: note || '', by: byOf(by) }]);
     const capped = capReviews(merged);
     if (capped.length < merged.length) console.log('   ' + id + REVIEWS_CAP_NOTE);
     it.reviews = capped;
@@ -877,7 +891,7 @@ switch (action) {
   case '批改': {
     if (!opt.paper || !opt.results) throw new Error('批改需要 --paper 与 --results="M0001=对,M0002=错"');
     /* ★ 2026-11-04（F02）：批改 --date 四入口之一（actGrading 内还会再校验一次作纵深防御）。 */
-    const r = actGrading(opt.paper, opt.results, opt.date ? validDate(opt.date, '批改 --date') : today(), opt.note);
+    const r = actGrading(opt.paper, opt.results, opt.date ? validDate(opt.date, '批改 --date') : today(), opt.note, opt.by);
     console.log('已回录 ' + r.batch.paperId + '（批次状态：' + r.batch.status + '）');
     r.log.forEach(l => console.log('   ' + l.id + ' 结果=' + l.res + ' → ' + l.status + ' · 连对 ' + l.pass + ' 次 · 建议复习 ' + l.nextDue));
     if (r.batch.status === '已掌握' || r.log.some(l => l.status === '已掌握')) console.log('   ★ 有题连对 2 次 → 已掌握，默认退出组卷池；可说“归档 Mxxxx”永久沉淀');

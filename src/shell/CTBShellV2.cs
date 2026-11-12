@@ -522,6 +522,9 @@ namespace CTBShell2
                 AddFlag(args, payload, "title", "--title");
                 AddFlag(args, payload, "date", "--date");
                 AddFlag(args, payload, "note", "--note");
+                /* ★ 2026-11-13（批次 4 / UX-10「谁判的」）：把"这次谁判的"透传给 _标记复习.mjs 批改。
+                   白名单（家长/孩子/AI辅助/空）由**工具侧**校验，壳只做透明转发——与既有纪律一致。 */
+                AddFlag(args, payload, "by", "--by");
                 AddFlag(args, payload, "paper", "--paper");
                 AddFlag(args, payload, "results", "--results");
                 AddFlag(args, payload, "reason", "--reason");

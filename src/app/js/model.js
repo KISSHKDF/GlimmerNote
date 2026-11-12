@@ -4,6 +4,16 @@
   const U = CTB.util;
   const H = CTB.host;        /* origOf 要把索引里的 URL 编码路径还原成壳能用的相对路径 */
 
+  /* ★ 2026-11-13（批次 4 / UX-10「谁判的」）：这次判分是谁做的 —— 孩子模式 ⇒ 孩子自评，否则家长。
+     ⚠ 必须**防御性**取 shell：`model.js` 会被 Node 直接加载做门禁（`neg-v2-smoke.cjs` 等），
+     那里根本没有 `CTB.shell` —— 首版直接写 `CTB.shell.kidMode()` 当场 TypeError，
+     整条 v2 冒烟用例崩在 `M.endSession`（真实踩到，不是假想）。 */
+  function gradByKid() {
+    try {
+      return (CTB && CTB.shell && typeof CTB.shell.kidMode === 'function' && CTB.shell.kidMode()) ? '孩子' : '家长';
+    } catch (_) { return '家长'; }
+  }
+
   /* ---------- 常量字典（与工具侧语义对齐，不自造含义） ---------- */
   /* ⚠ 2026-10-11（F-RB-1，高）：M.LADDER 是**工具侧的历史/文案表**
      （`_标记复习.mjs:39 LADDER`；该文件 `intervalOf` 的注释明确写着「LADDER 常量保留给文案/历史引用，
@@ -462,7 +472,12 @@
       }
       const noteParts = list.filter(x => x.note).map(x => x.id + '：' + x.note);
       const noteStr = ('屏幕复习·' + kid + subject + ' ' + stamp + (noteParts.length ? ' ｜转折点笔记 ' + noteParts.join('；') : '')).slice(0, 400);
-      const r2 = await CTB.host.mark('批改', { paper: paperId, results: resStr, date: stamp, note: noteStr });
+      const r2 = await CTB.host.mark('批改', { paper: paperId, results: resStr, date: stamp, note: noteStr,
+        /* ★ 2026-11-13（批次 4 / UX-10「谁判的」）：孩子模式下判分的是孩子自己（自评），否则是家长判。
+           **不让人手选**：这个派生本来就准（"孩子模式"的定义就是让孩子自己判），
+           多一个选择器只会多一处忘填/填错。记下来的用处是**数据自证**——
+           家长能看出哪些记录是自评、自评的正确率是否异常偏高（与 UX-11 同源的那点心思）。 */
+        by: gradByKid() });
       if (!r2 || r2.code !== 0) throw new Error('批改失败（批次 ' + paperId + ' 已建，重试只会补批改、不会重复组卷）：' + ((r2 && (r2.err || r2.out) || '').slice(-400)));
       out.push(paperId + '（' + list.length + ' 题）');
       delete s.committed[key];                    // 本组全链路完成

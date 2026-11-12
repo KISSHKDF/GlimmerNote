@@ -416,13 +416,17 @@ let longOpen = false, maskOpen = false;
         '<span class="tag ' + (h.r.res === '对' ? 'ok' : h.r.res === '半对' ? 'warn' : 'bad') + '">' + h.r.res + '</span>' +
         '<span class="muted rv-row-k">' + U.esc(h.r.kid + '·' + h.r.subject) + '</span>' +
         '<span class="muted">批次 ' + U.esc(h.paperId) + '</span>' +
-        (h.r.note ? '<span class="muted" title="' + U.esc(h.r.note) + '">✎ 转折点</span>' : '') + '</div>').join('') + '</div>' : '') +
+        (h.r.note ? '<span class="muted" title="' + U.esc(h.r.note) + '">✎ 转折点</span>' : '') +
+        /* ★ 2026-11-13（批次 4 / UX-10）：这一条是**谁判的**。孩子自评的记录会显式标出来——
+           家长扫一眼就知道哪些"对"是自评来的（数据自证，不用互相猜）。 */
+        (h.r.by ? '<span class="muted rv-by" title="这次判分是谁做的">' + U.esc(h.r.by) + '判</span>' : '') + '</div>').join('') + '</div>' : '') +
       (rows.length ?
         '<div class="rv-rows">' + rows.map(r =>
           '<div class="row small rv-row"><b class="num">' + U.esc(r.id) + '</b>' +
           '<span class="tag ' + (r.res === '对' ? 'ok' : r.res === '半对' ? 'warn' : 'bad') + '">' + r.res + '</span>' +
           '<span class="muted rv-row-k">' + U.esc(r.kid + '·' + r.subject) + '</span>' +
-          (r.note ? '<span class="muted" title="' + U.esc(r.note) + '">✎ 转折点</span>' : '') + '</div>').join('') + '</div>'
+          (r.note ? '<span class="muted" title="' + U.esc(r.note) + '">✎ 转折点</span>' : '') +
+          (r.by ? '<span class="muted rv-by" title="这次判分是谁做的">' + U.esc(r.by) + '判</span>' : '') + '</div>').join('') + '</div>'
         : (heldRows.length ? '' :
           '<div class="empty ready sm"><div class="e-ic">📝</div><b>这场没有判定任何题</b>' +
           '<div class="e-sub">' + (skippedN ? '你把这 ' + skippedN + ' 题都跳过了，没有产生任何判定，所以没有东西要写回台账。' : '队列是空的，没有产生任何判定。') + '</div>' +
