@@ -476,6 +476,15 @@ html[data-theme="dark"] .hm-cell{stroke:rgba(255,255,255,.05)}
    1/2/3 判的就是这一行。没有可见焦点时键盘判分等于盲操作。 */
 .lg-gline.cur{border-color:var(--focus);box-shadow:0 0 0 2px color-mix(in srgb,var(--focus) 28%,transparent)}
 .lg-keys kbd,.lg-keys b{font-family:var(--font-num)}
+
+/* ═══ 答案遮罩（2026-11-12 批次 4）══════════════════════════════════════════
+   为什么要有：「翻开答案后扫一眼就算会了」是复习里最常见的自欺。模糊风格把答案先糊住，
+   **点一下才清晰** —— 那一次点击是明确的"我要看了"。
+   ⚠ 用 `filter` 而不是把文字替换成占位符：文字仍在 DOM 里（复制/朗读/查找都不受影响），
+     只是视觉上看不清；换回「直显」风格时无需重渲染答案本身。 */
+.ans-wrap.masked{filter:blur(6px);cursor:pointer;user-select:none;transition:filter .15s var(--ease)}
+.ans-wrap.masked:hover{filter:blur(4px)}
+.rv-maskhint{margin:0 0 6px}
 .lg-gline .lg-no{width:30px;height:26px;flex:none;border-radius:8px;background:var(--brand-soft);color:var(--brand-ink);display:grid;place-items:center;font-size:0.78125rem;font-weight:700;font-variant-numeric:tabular-nums}
 .lg-gline .lg-id{flex:none;min-width:52px;color:var(--text3);font-size:0.78125rem}
 .lg-gline .lg-q{flex:1 1 150px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

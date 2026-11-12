@@ -171,6 +171,15 @@
   };
   S.toggleKidMode = function () { S.applyKidMode(!S.kidMode()); S.render(); };
 
+  /* ================= 答案遮罩风格（2026-11-12 批次 4）=================
+     为什么要有：翻开答案后"扫一眼就算会了"是复习里最常见的自欺。两种风格：
+       · `full`（默认）：答案直接显示（与改前一致）；
+       · `blur`：答案先糊着，**点一下才清晰** —— 那一次点击是明确的"我要看了"。
+     另有一条与风格无关的：长答案（>400 字）默认**折叠**，避免把整屏撑满（见 review.js）。
+     偏好存 localStorage，不落库。 */
+  S.maskStyle = () => (U.lsGet('gn.maskStyle', 'full') === 'blur' ? 'blur' : 'full');
+  S.toggleMaskStyle = function () { U.lsSet('gn.maskStyle', S.maskStyle() === 'blur' ? 'full' : 'blur'); S.render(); };
+
   /* ================= 渲染主流程 ================= */
   S.render = function () {
     try {

@@ -4,6 +4,10 @@
   const U = CTB.util, M = CTB.model, H = CTB.host, S = CTB.shell;
   const V = CTB.views.review = {};
   let reveal = false, noteVal = '', requeueWrong = U.lsGet('ctb2.rq', true), commitBusy = false;
+/* ★ 2026-11-12（批次 4 / 答案遮罩）：两个"看得见但不许扫一眼就过"的开关。
+   · longOpen：长答案（>400 字）默认折叠——它会把整屏撑满，翻页时反而看不到题；
+   · maskOpen：遮罩风格为「模糊」时，答案先糊着，点一下才清晰（防"扫一眼就算会了"）。 */
+let longOpen = false, maskOpen = false;
   let lastKey = null;   // 只在「换卡」时收起已翻开的答案；同卡重绘（主题/渲染）不吞状态
   /* ⚠ 2026-10-11（F-RB-4，中）：转折点笔记原先只存在 `noteVal` 这一个模块变量里，
      而 `card()` 每次重绘都执行 `noteVal = ''` ⇒ 翻答案后写下的笔记，遇到**任何**一次重绘
@@ -26,7 +30,7 @@
     M.sessionGrade(res);
     if (s.results[k] && noteVal) s.results[k].note = noteVal;
     delete noteByKey[x.key];
-    reveal = false; noteVal = '';
+    reveal = false; noteVal = ''; longOpen = false; maskOpen = false;
     S.render();
   }
   /* F-47：causeLayer 只许进白名单类名（非 K/L/S 的取值此前直接进 class 属性位 = 属性逃逸面） */
@@ -41,7 +45,7 @@
 
   V.render = function (el) {
     const key = M.session && !M.sessionDone() && M.session.queue[M.session.idx] ? M.session.queue[M.session.idx].key : null;
-    if (key !== lastKey) { reveal = false; lastKey = key; }
+    if (key !== lastKey) { reveal = false; lastKey = key; longOpen = false; maskOpen = false; }
     if (!M.session) return setup(el);
     if (M.sessionDone()) return summary(el);
     card(el);
@@ -211,7 +215,10 @@
       /* ★ 2026-11-12（批次 3 / UX-11）：孩子模式开关。判据留在 CSS 一处（`body[data-kid="1"] .adm`），
          本页的家长向元素一律带 `adm` —— 新增元素忘了带，会被 tests\neg-kid-mode.cjs 的清单断言拦住。 */
       '<button class="btn sm ghost" id="rvKid" title="孩子模式：只留题面 / 答案 / 对错，隐藏错因码·入册天数·批次号·排程预测">' +
-      (S.kidMode() ? '👀 家长视图' : '👦 孩子模式') + '</button></div>' +
+      (S.kidMode() ? '👀 家长视图' : '👦 孩子模式') + '</button>' +
+      /* ★ 批次 4 / 答案遮罩：风格切换（'full' ↔ 'blur'），存 localStorage、不落库 */
+      '<button class="btn sm ghost" id="rvMask" title="答案遮罩风格：「模糊」会先把答案糊住，点一下才清晰——防扫一眼就算会">' +
+      (S.maskStyle() === 'blur' ? '🌫 遮罩：模糊' : '👁 遮罩：直显') + '</button></div>' +
       '<div class="row small"><span class="adm">' + ztag('ok', '对', cnt['对']) + ztag('warn', '半对', cnt['半对']) + ztag('bad', '错', cnt['错']) + '</span>' +
       '<span class="muted num">· 已坚持 ' + s.idx + ' 题</span>' +
       (skippedN ? '<span class="tag gray num">已跳过 ' + skippedN + '</span>' : '') +
@@ -267,6 +274,8 @@
     const rv = U.$id('rvReveal'); if (rv) rv.onclick = () => { reveal = true; S.render(); };
     /* ★ 批次 3 / UX-11：孩子模式开关。⚠ 仍按本文件的老教训判空——`$id` 取不到就是 null。 */
     const kidBtn = U.$id('rvKid'); if (kidBtn) kidBtn.onclick = () => S.toggleKidMode();
+    /* ★ 批次 4 / 答案遮罩：风格切换按钮（同样判空） */
+    const maskBtn = U.$id('rvMask'); if (maskBtn) maskBtn.onclick = () => S.toggleMaskStyle();
 
     if (reveal) {
       /* 回填本卡已写的转折点（F-RB-4）：重绘不再吞掉用户输入 */
@@ -277,22 +286,42 @@
       }
       /* 判分按钮带上「渲染时那张卡的 key」：换卡后的陈旧点击一律作废（F-RB-9） */
       el.querySelectorAll('[data-grade]').forEach(b => b.onclick = () => grade(b.dataset.grade, x.key));
+      /* ★ 批次 4 / 答案遮罩：三个新控件的绑定（一律判空——本文件吃过"无条件取 .onclick"的亏） */
+      const bLong = U.$id('rvLong'); if (bLong) bLong.onclick = () => { longOpen = !longOpen; S.render(); };
+      const bUnmask = U.$id('rvUnmask'); if (bUnmask) bUnmask.onclick = () => { maskOpen = true; S.render(); };
+      const bRemask = U.$id('rvRemask');
+      if (bRemask) bRemask.onclick = () => { reveal = false; maskOpen = false; longOpen = false; S.render(); };
     }
   }
 
+  /* ★ 2026-11-12（批次 4 / 答案遮罩，借 obsidian-mistake-notebook 的思路）：三件事——
+     ① 长答案（>400 字）默认**折叠**：它会把整屏撑满，翻页时反而看不到题；
+     ② 遮罩风格「模糊」时答案先糊着，**点一下才清晰**（那次点击是明确的"我要看了"）；
+     ③ 「🙈 重新遮住」把答案收回去、退回到题面，逼自己再想一遍（与 U 的"撤销上一题"不同）。 */
+  const LONG_ANS = 400;
   function revealBox(c, note) {
+    const ans = String(c.answer || '');
+    const long = ans.length > LONG_ANS;
+    const shown = (long && !longOpen) ? ans.slice(0, LONG_ANS) + '…' : ans;
+    const masked = S.maskStyle() === 'blur' && !maskOpen;
     return '<div class="reveal">' +
-      '<div class="ans"><b>正确答案：</b>' + U.esc(c.answer || '—') + '</div>' +
+      '<div class="ans-wrap' + (masked ? ' masked' : '') + '"' + (masked ? ' id="rvUnmask" title="点一下看清答案（遮着是为了不让你扫一眼就过）"' : '') + '>' +
+      '<div class="ans"><b>正确答案：</b>' + U.esc(shown || '—') + '</div>' +
+      (long ? '<div class="small" style="margin:2px 0 6px"><button class="btn xs ghost" id="rvLong">' +
+        (longOpen ? '收起答案' : '展开完整答案（共 ' + ans.length + ' 字）') + '</button></div>' : '') +
       /* 逐空行（唯一实现 M.slotAnswerLine）——复习流是判分的地方，N 个空只给一条文字答案
          就没法逐空核对（2026-11-08 用户报障：题干 3 个空、答案只给一个）。 */
       M.slotAnswerLine(c) +
       '<div class="wrong-ans"><b>当时错答：</b>' + U.esc(c.studentAnswer || '—') + '</div>' +
+      '</div>' +
+      (masked ? '<div class="small muted rv-maskhint">🙈 答案已遮罩 —— 点上面那块（或按 M）看清</div>' : '') +
       '<div class="cause-box"><span class="adm ' + layerCls(c.causeLayer) + '">' + U.esc((c.causeLayer || '') + (c.causeCode || '')) + ' ' + (M.LAYER[c.causeLayer] ? M.LAYER[c.causeLayer].name : '') + '</span>' +
       '<div class="cause-x">' + U.esc(c.causeDesc || '（无错因说明）') + '</div>' +
       (c.causeConfirmed === false ? '<div class="small cause-warn adm">⚠ 错因未经孩子口述确认，判分前先问问当时怎么想的</div>' : '') + '</div>' +
       (c.img ? '<div class="ans-fig"><img class="rv-img rv-img-s" src="' + U.esc(H.asset(c.img)) + '" alt="原卷核对"></div>' : '') +
       '<input type="text" id="rvNote" class="rv-note" value="' + U.esc(note || '') + '" placeholder="转折点（可选，随判分记入复习流水）：我想到哪一步、在哪拐错？">' +
       '<div class="grades">' +
+      '<button class="btn xs ghost" id="rvRemask" title="把答案收回去、退回题面，逼自己再想一遍（快捷键 B）">🙈 重新遮住 (B)</button>' +
       /* 随机速测不落库 ⇒ 不承诺"下次≈N天"（界面承诺与实际行为同口径；正常场次文案不变）。
          ★ 2026-11-12（批次 3 / UX-11）：**孩子模式**下同样不显示"下次≈N 天"——
          那是排程承诺（家长向信息），自评时看到它会诱导"挑好判的判对"（与 UX-10 同源）。 */
@@ -333,6 +362,9 @@
       grade(['对', '半对', '错'][+e.key - 1], x && x.key);     // 带当前卡 key（F-RB-9 同款防护）
       return;
     }
+    /* ★ 批次 4 / 答案遮罩：B = 重新遮住（收回答案、退回题面再想一遍）；M = 模糊风格下看清 */
+    if (e.key.toLowerCase() === 'b' && reveal) { e.preventDefault(); reveal = false; maskOpen = false; longOpen = false; S.render(); return; }
+    if (e.key.toLowerCase() === 'm' && reveal && S.maskStyle() === 'blur' && !maskOpen) { e.preventDefault(); maskOpen = true; S.render(); return; }
     if (e.key.toLowerCase() === 'n') { const b = U.$id('rvSkip'); if (b) b.click(); return; }
     if (e.key.toLowerCase() === 'u' || e.key === 'ArrowLeft') { M.sessionUndo(); reveal = false; S.render(); }
   });
