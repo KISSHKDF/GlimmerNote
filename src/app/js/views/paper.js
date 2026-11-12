@@ -799,24 +799,81 @@
       body: '<div class="small muted" style="margin-bottom:10px">左列方块＝<b>这张卷上印的题号</b>：纸面上第 3 题，就找左边写 3 的那行；' +
         '后面 <span class="num">M0048</span> 是题库内部编号。按题给结果（与 _标记复习.mjs 批改一致：对/半对/错）。' +
         (doneN ? '本批已有 <b>' + doneN + '</b> 题录过（按钮已亮），不重点它就不会被重写。' : '') + '</div>' +
+        /* ★ 2026-11-12（批次 3 / UX-14）：30 题以前要点 30 次。现在键盘一条龙：
+           ↑↓ 移到某行、1/2/3 判对/半对/错并**自动跳下一行**、Ctrl+Enter 提交。
+           提示写在最显眼处 —— 键盘功能"藏起来"等于没有。 */
+        '<div class="small muted lg-keys" style="margin-bottom:10px">⌨ 键盘：<b>↑ ↓</b> 选题 · ' +
+        '<b>1 / 2 / 3</b> 判「对 / 半对 / 错」并跳到下一题 · <b>Ctrl+Enter</b> 提交</div>' +
         '<div class="stack" style="gap:8px">' + V.gradeRows(items, lookup, results) + '</div>' +
         '<div class="opt-item" style="margin-top:12px">备注 <input type="text" id="lgNote" style="flex:1" placeholder="可选：本次重做整体情况"></div>',
       footer: '<span class="small muted" style="flex:1">这次点了 <b id="lgDone">0</b> / ' + items.length +
         ' 题；只提交点过的（结果存本地临时，提交一次性写库）</span>' +
+        '<button class="btn ghost" id="lgClear" title="撤掉本次点过的全部选择（已入库的结果不受影响）">清空本次</button>' +
+        '<button class="btn" id="lgAllYes" title="把还没判的题全判成「对」——只在确实都对时用">剩余全判对</button>' +
         '<button class="btn" id="lgCancel">取消</button><button class="btn primary" id="lgSubmit">提交批改</button>',
       onMount: d => {
         const picked = {};
         const upd = () => { const el = U.$id('lgDone'); if (el) el.textContent = String(Object.keys(picked).length); };
+        const rows = Array.prototype.slice.call(d.querySelectorAll('.lg-gline'));
+        /* 判一题（点选与键盘共用**同一个**入口 —— 两条路各写一份必然漂，本仓 L-286 族） */
+        const pick = (row, v) => {
+          if (!row) return;
+          const seg = row.querySelector('.seg[data-res]'); if (!seg) return;
+          seg.querySelectorAll('button').forEach(x => x.classList.toggle('on', x.dataset.v === v));
+          picked[seg.dataset.res] = v;
+          row.classList.add('done');
+          upd();
+        };
         d.querySelectorAll('.seg[data-res]').forEach(seg => {
-          seg.querySelectorAll('button').forEach(btn => btn.onclick = () => {
-            seg.querySelectorAll('button').forEach(x => x.classList.remove('on')); btn.classList.add('on');
-            picked[seg.dataset.res] = btn.dataset.v;
-            upd();
-          });
+          seg.querySelectorAll('button').forEach(btn => btn.onclick = () => pick(btn.closest('.lg-gline'), btn.dataset.v));
         });
-        /* 续录（批次分几次判完）：直接把第一道**还没录**的题带到眼前，省得在 30 行里找 */
-        const first = d.querySelector('.lg-gline:not(.done)');
-        if (first && doneN) { try { first.scrollIntoView({ block: 'nearest' }); } catch (_) { } }
+
+        /* ★ 2026-11-12（批次 3 / UX-14）：当前行（键盘焦点）——原来是"30 题点 30 次"。
+           从第一道**还没录**的题开始（续录：批次分几次判完时，省得在 30 行里找）。 */
+        let curI = rows.findIndex(r => !r.classList.contains('done'));
+        if (curI < 0) curI = 0;
+        const setCur = i => {
+          if (!rows.length) return;
+          curI = Math.max(0, Math.min(rows.length - 1, i));
+          rows.forEach((r, k) => r.classList.toggle('cur', k === curI));
+          try { rows[curI].scrollIntoView({ block: 'nearest' }); } catch (_) { }
+        };
+        setCur(curI);
+
+        const KEY2V = { 1: '对', 2: '半对', 3: '错' };
+        const keyFn = e => {
+          /* 抽屉已被关掉 ⇒ 自行解绑（shell 的 closeDrawer 只管删节点，不会通知这里） */
+          if (!document.body.contains(d)) { document.removeEventListener('keydown', keyFn); return; }
+          const tag = (e.target && e.target.tagName) || '';
+          if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;   // 备注框里打字不许被判分吞掉
+          if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); setCur(curI + (e.key === 'ArrowDown' ? 1 : -1)); return; }
+          if (KEY2V[e.key]) { e.preventDefault(); pick(rows[curI], KEY2V[e.key]); setCur(curI + 1); return; }
+          if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); const b = U.$id('lgSubmit'); if (b) b.click(); return; }
+        };
+        document.addEventListener('keydown', keyFn);
+
+        /* 批量入口：只在"孩子确实都做对了"时用，所以给二次确认（判错会写进复习排程，重判要再来一次） */
+        U.$id('lgAllYes').onclick = async () => {
+          const rest = rows.filter(r => !picked[r.querySelector('.seg[data-res]').dataset.res]);
+          if (!rest.length) return S.toast('没有待判的题了', 'warn');
+          const ok = await S.confirm({
+            title: '把还没判的 ' + rest.length + ' 题全判成「对」？',
+            body: '只在孩子确实都做对了时用。判分会被写进复习排程（判「对」会推后下次复习日），判多了要整批重判。',
+            ok: '全判对', danger: true,
+          });
+          if (!ok) return;
+          rest.forEach(r => pick(r, '对'));
+          S.toast('已把 ' + rest.length + ' 题判为「对」——记得核对一遍再提交', 'warn', 6000);
+        };
+        U.$id('lgClear').onclick = () => {
+          Object.keys(picked).forEach(k => delete picked[k]);
+          rows.forEach(r => {
+            r.querySelectorAll('.seg button').forEach(x => x.classList.remove('on'));
+            r.classList.remove('done');
+          });
+          upd();
+          setCur(0);
+        };
         U.$id('lgCancel').onclick = S.closeDrawer;
         U.$id('lgSubmit').onclick = async () => {
           const pairs = Object.keys(picked).map(id => id + '=' + picked[id]);

@@ -472,6 +472,10 @@ html[data-theme="dark"] .hm-cell{stroke:rgba(255,255,255,.05)}
    （30 行的抽屉里，按钮被挤出去 = 这题判不了，而用户会以为是自己没找到）。 */
 .lg-gline{display:flex;align-items:center;gap:10px;padding:7px 10px;border:1px solid var(--line);border-radius:10px;background:var(--surface);flex-wrap:wrap}
 .lg-gline.done{background:var(--surface2)}
+/* ★ 2026-11-12（批次 3 / UX-14）：批改回录的「当前行」——键盘 ↑↓ 会把它移来移去，
+   1/2/3 判的就是这一行。没有可见焦点时键盘判分等于盲操作。 */
+.lg-gline.cur{border-color:var(--focus);box-shadow:0 0 0 2px color-mix(in srgb,var(--focus) 28%,transparent)}
+.lg-keys kbd,.lg-keys b{font-family:var(--font-num)}
 .lg-gline .lg-no{width:30px;height:26px;flex:none;border-radius:8px;background:var(--brand-soft);color:var(--brand-ink);display:grid;place-items:center;font-size:0.78125rem;font-weight:700;font-variant-numeric:tabular-nums}
 .lg-gline .lg-id{flex:none;min-width:52px;color:var(--text3);font-size:0.78125rem}
 .lg-gline .lg-q{flex:1 1 150px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
