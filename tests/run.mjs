@@ -437,6 +437,17 @@ if (mode === 'fixture') {
        ② 题干门禁在索引损坏 / 空真时不许报绿（9 断言，此前 `catch { continue }` 会 ok:true）。 */
     ['neg-data-area-rules.mjs', '数据区门禁阴性对照：G 系列判据真会红 + 判据改永假必须红（224 断言）'],
     ['neg-stem-gate-broken-index.cjs', '题干门禁：索引读不出 / 空真时不许报绿（9 断言 + 阴性自证）'],
+    /* ★ 2026-11-12（第二轮扩容）：F05 / F04 / R-04 / F02 四个用例，**已按仓规在干净克隆实测通过**
+       （`git clone --no-hardlinks` 到 %TEMP%，无 exe、无真库；实测 13+13+16+9=51 断言、exit 0）：
+         · F05 题库发现收敛（8 工具 / 共享口径 / 零副作用 / 行为正反对照）；
+         · F04 `answerSource` 契约收敛（含"老师定案"只在有独立证明时放行 + 阴性自证）；
+         · R-04 运行期产物白名单一份真源（含 deploy/rollback 都走同一函数）；
+         · F02 壳子进程超时**真实证伪**（抽真源码 + csc 编最小宿主 + 永不退出的 node；
+           改回同步读必须挂住）—— 它需要本机 csc.exe，缺失时用例自己 SKIP。 */
+    ['neg-libfind-convergence.cjs', '题库发现单一真源：8 工具已收敛 / 共享模块零副作用 / 行为正反对照（13 断言）'],
+    ['neg-answer-source-convergence.cjs', '`answerSource` 契约单一真源：带限定值在册 / 老师定案不在册 / 阴性自证（13 断言）'],
+    ['neg-runtime-artifacts.cjs', '运行期产物白名单一份真源：verify-deploy 不再硬编码 + deploy/rollback 同函数（16 断言）'],
+    ['neg-shell-subprocess-timeout.cjs', '壳子进程超时判据可达性真实证伪：永不退出的 node 必须被 124 结束（9 断言）'],
     ['neg-orig-fallback.cjs', '原图兜底寻址：路径失效后按内容从保全库找回（不判红）/内容对不上不许顶替（25 断言）'],
     /* ★ 2026-11-04（外部复核整改）：两个新用例**零库依赖**（只读本仓源码 / 自建 %TEMP% 夹具），
        已按规矩在**干净克隆**（`git clone --no-hardlinks` 到 %TEMP%，无真库、无 exe）上实测通过，
@@ -906,26 +917,9 @@ const unitTests = [
      而 CONTRIBUTING 与 `docs\数据区规范.md` 都把它写成必跑步骤 ⇒ 整族数据区规则事实上无人执行。
      它零库依赖（自建 %TEMP% 合成库 + `allocTempDir` 登记清扫），可直接进 unitTests。 */
   ['neg-data-area-rules.mjs'],
-  /* ★ 2026-11-12（审计 F05）：`indexFiles` 原先 8 个工具各抄一份（实测 3 种实现，入库侧漏了
-     「作业/假期」跳过行 ⇒ 会往"其余门禁扫不到"的目录里写卡）。收敛到零副作用 `_题库发现.mjs`，
-     本用例守：8 个工具都已收敛 / 共享模块口径与零副作用 / 行为正反对照。零库依赖。 */
-  ['neg-libfind-convergence.cjs'],
-  /* ★ 2026-11-12（审计 F04）：`answerSource` 取值契约原先散在 3 处代码 + 2 份配方 schema，
-     且**精确集与前缀集两种语义并存** ⇒ `_盲解复核` 自己写的 `独立判卷（双路盲解×2 一致）`
-     会被 `_录题入库` 判"取值不在契约内"，改卡直接失败。收敛到零副作用 `_来源.mjs`。
-     本用例守：三处已收敛 / 无精确集字面量 / 共享模块零副作用 / 行为（含"老师定案"只在有独立证明时放行）
-     / 阴性自证（掏掉剥后缀 ⇒ 带限定值变回不在册）。零库依赖。 */
-  ['neg-answer-source-convergence.cjs'],
-  /* ★ 2026-11-12（审计 R-04）：「运行期产物」白名单原先硬编码在 verify-deploy.mjs 里，而 deploy.ps1
-     备份 `_app-上一版` 时整目录拷 ⇒ **回滚会把它们"洗白"成基线的一部分**（此后报不出这类漂移）。
-     三处口径收到 `scripts\运行期产物.json`。本用例守：真源可解析 / verify-deploy 读它且不再硬编码 /
-     deploy+rollback 都走同一个共享函数 / 行为对照（含"白名单外不命中"）。零库依赖。 */
-  ['neg-runtime-artifacts.cjs'],
-  /* ★ 2026-11-12（审计 F02）：桌面壳的「子进程超时」判据原先**不可达**（先同步 ReadToEnd 读完两路流、
-     再 WaitForExit(timeout)），且两处各一份（Mark 的注释自己都承认"返回值永远用不上"）。
-     现在收敛到 `RunNodeCapture`（异步读两路 + 有界等待 + 超时 Kill）。本用例把真源码抽出来用 csc
-     编最小宿主，跑一个**永不退出**的 node：真源码版必须 1.5s 返回 124；改回同步读必须挂住（阴性自证）。 */
-  ['neg-shell-subprocess-timeout.cjs'],
+  /* ★ 2026-11-12：F05 / F04 / R-04 / F02 四个新用例**已按仓规在干净克隆实测通过**
+     （`git clone --no-hardlinks` 到 %TEMP%，无 exe、无真库；实测 13+13+16+9=51 断言、exit 0）
+     ⇒ 已搬进上面的 HERMETIC 白名单，此处不再重复挂（unitTests 循环不去重，挂了会跑两遍）。 */
   ['neg-snapshot-text-and-force.cjs'],    // ★ 2026-11-05 合并评审 P1-5/P0-4：md/html 掏空不许直接恢复；--force-restore 二次确认 + 审计
   /* ★ 2026-11-12：`_快照.mjs` 自 2026-11-08 起**完全不可用** —— 纳管清单里的 glob 允许"当前零匹配"
      （`_收件箱/**\/_来源映射.csv`：收件箱清空后该文件就不在了），而 `git add -A -- <pattern>` 对

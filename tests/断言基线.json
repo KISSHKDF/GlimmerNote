@@ -20,5 +20,9 @@
  "neg-orig-backup-fallback.cjs": 19,
  "verify-variant-retrieval.cjs": 23,
  "neg-data-area-rules.mjs": 224,
- "neg-stem-gate-broken-index.cjs": 9
+ "neg-stem-gate-broken-index.cjs": 9,
+ "neg-libfind-convergence.cjs": 13,
+ "neg-answer-source-convergence.cjs": 13,
+ "neg-runtime-artifacts.cjs": 16,
+ "neg-shell-subprocess-timeout.cjs": 9
 }
