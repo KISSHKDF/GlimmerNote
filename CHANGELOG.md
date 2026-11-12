@@ -15,6 +15,50 @@
 
 版本号遵循日期制 `YYYY.MM.DD.NN`。版本号唯一真源：`VERSION.json`。
 
+## [2026.11.13.18] - 2026-11-13 · 一次全清（第一刀）：10 个用例补上 `断言=N`
+
+**变更分类**：Fixed
+**升级影响**：**只改测试**。`run.mjs` 的断言数对账是 fail-closed（没报 = 未申报 = 判红），
+这批用例此前**一直红着没人知道**——它们排在前面几道长期红着的门禁之后。
+
+### 动机：不再一层一层挖
+
+前三个版本各修一层（`neg-card-select` → `neg-answer-slot-contract` 一族 → `verify-stem-*` 一族），
+**三层形态完全一样**（都是"写在断言数对账机制建立之前"的用例）。所以改成**全仓扫描 + 一次补齐**。
+
+### 做法与结果
+
+扫全仓 `tests\*.cjs|mjs`（排除 `_测试环境.cjs` 与入口 `run.mjs`），判据是
+"**有 `[OK]/[FAIL]` 输出，但 `console.log` 里没有 `断言=`**"（⚠ 一开始我用"文本里出现 `断言=`"当判据，
+结果把注释里写了这三个字的用例误判成"已报"）。共 **21 个**需要补。
+
+本版补完 **10 个**（形态明确的那批：有 `let fails = 0` + `A()` 定义 + 可定位的 RESULT 行）：
+`e2e-writepath` / `interleave-check` / `neg-answer-slot-contract` / `neg-datahealth` /
+`neg-emphasis-mark` / `neg-interval-and-axis` / `neg-paper-order-blank` / `neg-stem-backfill` /
+`neg-v2-pagesmoke` / `smoke-shell`。抽验 4 个真跑：**断言=13 / 19 / 12 / 59，全 PASS**。
+
+### ⚠ 第一版脚本的教训（已回滚重做）
+
+我的 v1 脚本**在"没有 `fails` 计数器"的文件里也插了 `total++`** —— 那些文件根本没声明 `total`
+⇒ 一跑就 `ReferenceError`。发现后**立即从整目录备份回滚**，v2 加了守卫（**必须有 `let fails = 0;` 才动**）、
+并且 RESULT 行只处理**单行**形态（跨行的留给人工，避免插错位置）。
+批量改测试脚本时，"形态守卫"比"能匹配上"重要得多。
+
+### 剩余 11 个（形态各异，下轮处理）
+
+它们没有 `let fails` 计数器（用别的计数方式）：`_合成库.cjs`、`e2e-ui.mjs`、`launch-dev.cjs`、
+`neg-region-contract.cjs`、`neg-stem-table-fit.cjs`、`neg-v2-ui-dash-toast-grid.cjs`、
+`neg-v2-ui-review-bank.cjs`、`verify-shell-visual.cjs`、`verify-stem-13.cjs`、`verify-stem-shape.cjs`
+（外加 `neg-v2-pagesmoke.cjs` 的 RESULT 落点没找到）。
+
+### 顺带发现的另一个既有失败
+
+`neg-paper-order-blank.cjs` **exit 1 崩**：`ENOENT …\九年级\_索引.json` —— 它**写死了"九年级"这个学生目录**，
+在合成库上没有 ⇒ 属"测试假设错"（与 2026-10-24 修 `neg-interval-and-axis` 时改"动态发现学生"同源，
+这个漏改了）。已记入下一轮。
+
+`lint` PASS；`fixture` 全绿（40 用例 / 1283 断言）。
+
 ## [2026.11.13.17] - 2026-11-13 · 清掉"解封"后露出的下一层：3 个用例补断言数 + 查清 4 条失败的真因
 
 **变更分类**：Fixed

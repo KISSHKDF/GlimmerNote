@@ -29,8 +29,8 @@ if (/(^|[\\/])错题本([\\/]|$)/.test(exe)) {
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-let fails = 0;
-const A = (n, ok, d) => {
+let fails = 0, total = 0;   /* ★ 2026-11-13：total 供 `断言=N` 对账用 */
+const A = (n, ok, d) => { total++;
   console.log((ok ? '  [OK]  ' : '  [FAIL] ') + n + (d !== undefined && d !== '' ? '  → ' + String(d).slice(0, 300) : ''));
   if (!ok) fails++;
 };

@@ -27,8 +27,8 @@ const ROOT = path.resolve(__dirname, '..');
 const LEDGER = path.join(LIB, '_配图台账.json');
 const STATE = path.join(LIB, '_状态.json');
 
-let fails = 0;
-const A = (n, ok, d) => { console.log(`${ok ? '[OK]  ' : '[FAIL]'} ${n}${d !== undefined ? '  → ' + d : ''}`); if (!ok) fails++; };
+let fails = 0, total = 0;   /* ★ 2026-11-13：total 供 `断言=N` 对账用 */
+const A = (n, ok, d) => { total++; console.log(`${ok ? '[OK]  ' : '[FAIL]'} ${n}${d !== undefined ? '  → ' + d : ''}`); if (!ok) fails++; };
 
 const readState = () => JSON.parse(fs.readFileSync(STATE, 'utf8'));
 const healthBad = () => Object.entries(readState().dataHealth || {}).filter(([, v]) => v !== 'ok');
@@ -83,5 +83,5 @@ A('shell.js 仍有 renderHealth（降级红条渲染点）', /function\s+renderH
 A('shell.js 仍把 dataHealth 接进判据', /dataHealth/.test(shellSrc));
 A('红条容器 #dataHealthBanner 仍存在', /dataHealthBanner/.test(shellSrc) || /dataHealthBanner/.test(fs.readFileSync(path.join(ROOT, 'src', 'app', 'index.html'), 'utf8')));
 
-console.log(`\nRESULT=${fails ? 'FAIL(' + fails + ')' : 'PASS'}`);
+console.log(`\nRESULT=${fails ? 'FAIL(' + fails + ')' : 'PASS'}` + '  断言=' + total + '  失败=' + fails);
 process.exit(fails ? 1 : 0);

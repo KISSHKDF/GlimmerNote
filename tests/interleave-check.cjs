@@ -23,8 +23,8 @@ const lib = (...p) => path.join(LIB, ...p);
    否则工具自己算库根会算成 <仓库>\src\，读写都落到程序目录里去。 */
 const run = (script, args) => execFileSync(process.execPath, [E.tool(script), ...args],
   { encoding: 'utf8', maxBuffer: 64e6, env: Object.assign({}, process.env, { CTB_DATA: LIB }) });
-let fails = 0;
-const A = (n, ok, d) => { console.log(`${ok ? '[OK]  ' : '[FAIL]'} ${n}${d !== undefined ? '  → ' + d : ''}`); if (!ok) fails++; };
+let fails = 0, total = 0;   /* ★ 2026-11-13：total 供 `断言=N` 对账用 */
+const A = (n, ok, d) => { total++; console.log(`${ok ? '[OK]  ' : '[FAIL]'} ${n}${d !== undefined ? '  → ' + d : ''}`); if (!ok) fails++; };
 
 const SRC_PREFIX_OK = ['独立判卷', '老师定案', '官方答案'];
 const SRC_EXACT_OK = ['红笔订正+官方答案页核对'];
@@ -116,5 +116,5 @@ try {
   }
 }
 
-console.log(`\nRESULT=${fails ? 'FAIL(' + fails + ')' : 'PASS'}`);
+console.log(`\nRESULT=${fails ? 'FAIL(' + fails + ')' : 'PASS'}` + '  断言=' + total + '  失败=' + fails);
 process.exit(fails ? 1 : 0);

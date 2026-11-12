@@ -31,8 +31,8 @@ const { execFileSync } = require('child_process');
 /* ★ 2026-10-23 程序与数据分家：工具在 src\tools\，数据在库根（见 tests\_测试环境.cjs） */
 const E = require('./_测试环境.cjs');
 const ROOT = path.resolve(__dirname, '..');
-let fails = 0;
-const A = (n, ok, d) => { console.log(`${ok ? '[OK]  ' : '[FAIL]'} ${n}${d !== undefined ? '  → ' + d : ''}`); if (!ok) fails++; };
+let fails = 0, total = 0;   /* ★ 2026-11-13：total 供 `断言=N` 对账用 */
+const A = (n, ok, d) => { total++; console.log(`${ok ? '[OK]  ' : '[FAIL]'} ${n}${d !== undefined ? '  → ' + d : ''}`); if (!ok) fails++; };
 const SKIP = n => console.log(`[SKIP] ${n}`);
 
 /* ★ 2026-11-07：目标卡号改为**运行时选取**（库结构迁移后写死卡号/学生名会崩）——见下方索引段。 */
@@ -199,5 +199,5 @@ console.log('\n=== F：阴性对照② —— 原题改一个字，指纹必须�
   A('改一字即改指纹（指纹确实覆盖这段文字）', changed === total, `${changed}/${total} 张`);
 }
 
-console.log(`\nRESULT=${fails ? 'FAIL(' + fails + ')' : 'PASS'}  断言 ${TARGETS.length * 3 + 5 + 2} 项，FAIL ${fails}`);
+console.log(`\nRESULT=${fails ? 'FAIL(' + fails + ')' : 'PASS'}  断言 ${TARGETS.length * 3 + 5 + 2} 项，FAIL ${fails}` + '  断言=' + total + '  失败=' + fails);
 process.exit(fails ? 1 : 0);

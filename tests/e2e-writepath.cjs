@@ -62,7 +62,7 @@ process.on('unhandledRejection', async e => { await cleanup('rejection ' + (e &&
      ══════════════════════════════════════════════════════════════════════ */
   const gate = E.guardWriteTest('e2e-writepath.cjs');
   if (gate.skip) {
-    console.log('RESULT=SKIP(' + gate.reason + ')');
+    console.log('RESULT=SKIP(' + gate.reason + ')' + '  断言=' + total + '  失败=' + fails);
     console.log('  说明：本用例验的是"真写一次组卷+批改+撤批"的闭环，在冻结区上跑就等于用用户真库做实验，');
     console.log('        并且会通过 backupJson 轮转**吃掉真库的历史备份**（每跑一次 8 份/目录）。');
     console.log('        这不是"通过"，是"没跑"——所以打印 SKIP 而不是 PASS。');
@@ -86,8 +86,8 @@ process.on('unhandledRejection', async e => { await cleanup('rejection ' + (e &&
   const ev = async e => { const r = await send('Runtime.evaluate', { expression: e, returnByValue: true, awaitPromise: true }, cdpTimeout()); if (r.exceptionDetails) throw new Error('page exc: ' + JSON.stringify(r.exceptionDetails).slice(0, 300)); return r.result && r.result.value; };
   EV = ev;
   await send('Runtime.enable');
-  let fails = 0;
-  const A = (n, ok, d) => { console.log((ok ? '[OK]  ' : '[FAIL]') + n + (d !== undefined ? '  → ' + String(d).slice(0, 220) : '')); if (!ok) fails++; };
+  let fails = 0, total = 0;   /* ★ 2026-11-13：total 供 `断言=N` 对账用 */
+  const A = (n, ok, d) => { total++; console.log((ok ? '[OK]  ' : '[FAIL]') + n + (d !== undefined ? '  → ' + String(d).slice(0, 220) : '')); if (!ok) fails++; };
 
   console.log('--- [1] mark 状态（只读）---');
   const r1 = await ev(`CTB.host.mark('状态',{})`);

@@ -37,8 +37,8 @@ const E = require('./_测试环境.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const LIB = E.LIB;
-let fails = 0;
-const A = (n, ok, d) => { console.log(`${ok ? '[OK]  ' : '[FAIL]'} ${n}${d !== undefined ? '  → ' + String(d).slice(0, 200) : ''}`); if (!ok) fails++; };
+let fails = 0, total = 0;   /* ★ 2026-11-13：total 供 `断言=N` 对账用 */
+const A = (n, ok, d) => { total++; console.log(`${ok ? '[OK]  ' : '[FAIL]'} ${n}${d !== undefined ? '  → ' + String(d).slice(0, 200) : ''}`); if (!ok) fails++; };
 
 /* ---------- 装载浏览器侧真实代码（与 neg-paper-order-blank.cjs 同法） ---------- */
 function loadV2() {
@@ -507,6 +507,6 @@ function runAll() {
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { }
   }
 
-  console.log(`\nRESULT=${fails ? 'FAIL(' + fails + ')' : 'PASS'}`);
+  console.log(`\nRESULT=${fails ? 'FAIL(' + fails + ')' : 'PASS'}` + '  断言=' + total + '  失败=' + fails);
   process.exit(fails ? 1 : 0);
 }
