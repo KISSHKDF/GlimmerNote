@@ -42,6 +42,8 @@ import { mentionsUnderlineSense, hasUnderlineMark, hasUnderlineMarkEntity } from
 /* ★ 2026-11-12（审计 F04）：`answerSource` 取值契约的**唯一真源**（原先 3 处代码 + 2 份配方 schema
    各写一份，且精确集/前缀集两种语义并存 ⇒ `_盲解复核` 自己写的带限定值会被本文件判非法）。 */
 import { isInContract, isRetiredSource, isOfficialSource } from './_来源.mjs';
+/* ★ 2026-11-13（批次 4 / 相似度判重）：录入时提示"库里可能已经有这道题了"（只提示，不拦）。 */
+import { findSimilar } from './_相似度.mjs';
 import { indexFiles } from './_题库发现.mjs';
 
 /* ───────────────── 参数 ───────────────── */
@@ -121,6 +123,25 @@ function readIdx(p) {
     shape: j => Array.isArray(j.items) || (!!j.subjects && typeof j.subjects === 'object' && !Array.isArray(j.subjects)),
     what: 'items 数组或 subjects 对象', label: path.basename(p),
   });
+}
+
+/** 全库卡片的题干文本（供"疑似重复"提示用）：[{kid, subject, id, text}]
+ *  ⚠ 只读**索引**（不读卡片文件）—— 几百张卡也就是几百 KB 的 JSON，入库前跑一遍是毫秒级。
+ *  ⚠ 只用于相似度**提示**；"同一道题"的硬判据仍是归一化题干的 sha256（见 `_分流器.mjs`）。 */
+function allCardTexts() {
+  const out = [];
+  for (const f of indexFiles(ROOT())) {
+    let j; try { j = readIdx(f); } catch { continue; }
+    const rows = (j.subjects && typeof j.subjects === 'object' && !Array.isArray(j.subjects))
+      ? Object.entries(j.subjects).flatMap(([sn, v]) => ((v && v.items) || []).map(it => [sn, it]))
+      : ((j.items || []).map(it => [String(j.subject || ''), it]));
+    for (const [sub, it] of rows) {
+      if (!it || !it.id) continue;
+      const t = String(it.question || '');
+      if (t) out.push({ kid: String(j.student || ''), subject: sub, id: String(it.id), text: t });
+    }
+  }
+  return out;
 }
 
 /** 找「学生+学科」的落点：返回 {idxFile, idx, subject, dirAbs, itemsOwner} */
@@ -962,6 +983,25 @@ function cmdLand() {
   if (problems.length) {
     for (const p of problems) console.error('  - ' + p);
     return fail('入库前置检查不通过（' + problems.length + ' 条）——未写任何文件', 1);
+  }
+
+  /* ★ 2026-11-13（批次 4 / 相似度判重）：**只提示，不拦、不自动合并**。
+     为什么只提示：本仓"同一道题"的硬判据是**归一化题干的 sha256**（`_分流器.mjs` 的题面级判重，
+     完全一致才算命中）；相似度是模糊量 —— 用它自动合并会把"同题型的另一道题"误并掉，
+     那比漏判重复坏得多（孩子的两道错题被悄悄合成一道）。
+     为什么不按审计建议"自动累加 errorCount"：本仓 `errorCount` 的语义是
+     **"这张卡在复习里重做错了几次"**（复习流/批改累加，统计与组卷都读它），
+     拿它记"录入时见过几次"会搅乱语义 ⇒ 提示人自己决定（同一题走「改卡」，不是就忽略）。 */
+  if (!DRY) {
+    const pool = allCardTexts();
+    for (const c of cards) {
+      for (const h of findSimilar(c.questionText, pool, { limit: 2 })) {
+        console.log('  💡 疑似重复：本题与 ' + h.item.kid + '|' + h.item.id + ' 的题干相似度 ' +
+          (h.score * 100).toFixed(0) + '%（' + String(h.item.text).slice(0, 36) + '…）');
+        console.log('     若确是同一道题，**别新建**：走「改卡」更新它，或让它在复习里累加；' +
+          '不是同一题就忽略这行。');
+      }
+    }
   }
 
   /* ⑨ 幂等判定（内容摘要不含卡号 ⇒ 同一份内容重跑必得同一个摘要） */

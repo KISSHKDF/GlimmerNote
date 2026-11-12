@@ -45,6 +45,8 @@ import { APP_ROOT, libraryRoot, toolPath } from './_库根.mjs';
 import { createTask, newTaskId } from './_录题任务.mjs';
 /* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。 */
 import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
+/* ★ 2026-11-13（批次 4）：文本相似度抽到零副作用模块 —— 入库器的"疑似重复"提示也要用它。 */
+import { dice } from './_相似度.mjs';
 
 /* ⚠ 2026-10-31：**不要**在模块顶层 import `_路径护栏.mjs`。
  *   那个模块在**导入时**就求值 `libraryRoot()` 并缓存，于是它会抢在下面
@@ -448,25 +450,9 @@ function validateAgainst(recipeId, obj) {
 
 /* ══════════════ 自检：与 examples 的期望比对（给"别人的 AI"打分） ══════════════
  * 这不是回归测试，是**评分卡**：用户拿自己的 AI 跑同一配方，用这里告诉他"你的 AI 在
- * 这套配方上能打多少分"。原型只比 5 项且忽略 pageSummary —— 这里补上结构差异。 */
-const norm = (s) => String(s == null ? '' : s)
-  .replace(/\s+/g, '')
-  .replace(/[，。；：、]/g, (m) => ({ '，': ',', '。': '.', '；': ';', '：': ':', '、': ',' }[m]))
-  .replace(/（/g, '(').replace(/）/g, ')')
-  .replace(/[Ａ-Ｚａ-ｚ０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
-  .toLowerCase();
-
-function dice(a, b) {
-  const A = norm(a), B = norm(b);
-  if (!A || !B) return 0;
-  if (A === B) return 1;
-  const grams = (s) => { const m = new Map(); for (let i = 0; i < s.length - 1; i++) { const g = s.slice(i, i + 2); m.set(g, (m.get(g) || 0) + 1); } return m; };
-  const ga = grams(A), gb = grams(B);
-  let inter = 0, total = 0;
-  for (const [g, n] of ga) { total += n; inter += Math.min(n, gb.get(g) || 0); }
-  for (const [, n] of gb) total += n;
-  return total ? (2 * inter) / total : 0;
-}
+ * 这套配方上能打多少分"。原型只比 5 项且忽略 pageSummary —— 这里补上结构差异。
+ * ★ 2026-11-13（批次 4）：文本相似度（原地的 `norm` + `dice`）已抽到零副作用模块 `_相似度.mjs`
+ *   —— 入库器的"疑似重复"提示也要用它，而本文件是 **CLI**（被 import 会继承 argv 解析，见 L-874）。 */
 
 function selfTest(recipeId, actual) {
   const { dir, meta } = loadMeta(recipeId);
