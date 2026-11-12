@@ -266,9 +266,19 @@ console.log('\n══ ④·补 运行期产物：豁免白名单内的，白名�
   A('阴性自证 · 变异点命中（判据没被改名）', mutated !== src, '');
   const mutPath = path.join(base, 'vd-nomut.mjs');
   fs.writeFileSync(mutPath, mutated, 'utf8');
-  const mutRun = spawnSync(process.execPath, [mutPath, '--prod', rtSb.prod], { encoding: 'utf8' });
+  /* ★ 2026-11-13 修（这是本用例在 full 档长期红的原因）：`verify-deploy.mjs` 会**按脚本自身所在目录**
+     读白名单 `scripts\运行期产物.json`。变异副本原先落在临时目录 ⇒ 副本旁没有那份白名单 ⇒
+     脚本 fail-closed 打印"读不到运行期产物白名单" ⇒ `exit 4`（**清单损坏**码）；
+     而这条对照要证明的是 `exit 1`（**漂移**：沙箱里凭空多了一份 shell.log）。
+     两个码不同源，红在错的码上 = 这条阴性对照**没牙齿**（"反正非 0"的假阳性）。
+     ⇒ 把白名单复制到副本旁，让这次运行**只在"豁免判据"这一处**与正式脚本不同。 */
+  fs.copyFileSync(path.join(REPO, 'scripts', '运行期产物.json'), path.join(base, '运行期产物.json'));
+  /* `cwd: REPO` 与 `runVD` 保持一致（本条对照与正式运行的条件应当只有**变异点**不同）。
+     ⚠ 注意：**cwd 不是**这条对照原先红的原因——我一度以为是它，改了仍 `exit 4`。
+     真正的原因是下面那条"白名单要复制到副本旁"（见紧邻的注释）。 */
+  const mutRun = spawnSync(process.execPath, [mutPath, '--prod', rtSb.prod], { encoding: 'utf8', cwd: REPO });
   A('阴性自证 · 掏掉豁免后同一个沙箱必须判红（判据有牙齿）', (mutRun.status == null ? -1 : mutRun.status) === 1,
-    'exit ' + mutRun.status);
+    'exit ' + mutRun.status + '｜' + String(mutRun.stderr || mutRun.stdout || '').split('\n').slice(0, 3).join(' ⁄ ').slice(0, 220));
 }
 
 /* ══════════ ⑤ run.mjs 必须用共享判据、且旧分支已删 ══════════ */
