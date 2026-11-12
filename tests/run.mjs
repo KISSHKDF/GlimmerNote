@@ -823,6 +823,13 @@ const unitTests = [
      不写目标文件、且释放后才完成；阴性自证：摘掉取锁后它当场插队改写。 */
   ['neg-snapshot-restore-lock.cjs'],
   ['neg-snapshot-text-and-force.cjs'],    // ★ 2026-11-05 合并评审 P1-5/P0-4：md/html 掏空不许直接恢复；--force-restore 二次确认 + 审计
+  /* ★ 2026-11-12：`_快照.mjs` 自 2026-11-08 起**完全不可用** —— 纳管清单里的 glob 允许"当前零匹配"
+     （`_收件箱/**\/_来源映射.csv`：收件箱清空后该文件就不在了），而 `git add -A -- <pattern>` 对
+     不匹配的 pathspec 会 fatal（exit 128），`git add` 又**没有** `--ignore-unmatch`（实测 2.54.0）。
+     代价：数据区连续 4 天没有快照回滚点，期间一次提交只能"定向手工提交"。
+     本用例四条判据：零匹配模式不许报错 / --dry 不留暂存 / 未跟踪新真源仍要被纳入 / 换回旧写法必须复现 128。
+     零库依赖（自建 %TEMP% 迷你 git 仓 + 只读本仓源码）。 */
+  ['neg-snapshot-pathspec.cjs'],
   /* ★ 2026-11-07 规范 W6「改盘别改格式」进程序：`writeJsonAtomic` 的缩进过去写死默认 2，
      而台账缩进是**每份文件自己定的**（`_原卷台账.json`/`_录题任务.json` 用 1）⇒ 一次纯路径改写
      把 `_原卷台账.json` 从 410,280 B 重排到 451,899 B（+41.6 KB）。修法：不传 indent/newline 时

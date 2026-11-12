@@ -123,7 +123,25 @@ if (fig) {
 /* ---------- 4. _状态.json 的两个注入字典（前端实际吃到的形状） ---------- */
 const STATE = E.lib('_状态.json');
 if (!fs.existsSync(STATE)) {
-  notes.push('_状态.json 不存在（跳过；生成器还没跑过）');
+  /* ★ 2026-11-12 修（空真/静默失效）：改前这里只 push 一条 note 就继续 —— 而本段守的是
+     2026-10-10「门禁信封被灌进前端 ⇒ 门禁永远放行」那次事故：**状态包缺失时这道判据整段空转**
+     （下面 blindFresh/figState/admit 三道注入检查一条都不跑），读者却只看到一句"跳过"。
+     现在按"库里到底有没有东西"分档：
+       · 有学生 `_索引.json` 却没 `_状态.json` ⇒ **产物链起点缺失**，判红（状态包是界面唯一数据源）；
+       · 空库 / 合成库（没有索引）⇒ 显式 SKIP 并写明"本项未评估"，不冒充通过。 */
+  let hasIndex = false;
+  try {
+    hasIndex = fs.readdirSync(E.LIB, { withFileTypes: true })
+      .filter(d => d.isDirectory() && !d.name.startsWith('_'))
+      .some(d => fs.readdirSync(path.join(E.LIB, d.name)).some(f => f.endsWith('_索引.json')));
+  } catch { /* 读不动库根：下面按"没有索引"记 SKIP，另有别的用例负责报库根异常 */ }
+  if (hasIndex) {
+    bad('_状态.json 不存在，但库里有学生 _索引.json ⇒ 产物链起点缺失：' +
+      '状态包是界面唯一数据源，缺它则 blindFresh / figState / admit 三道注入判据**全部空转**' +
+      '（2026-10-10 那次"门禁永远放行"就是这个形态）。修法：跑一次 `生成状态.mjs --all`。');
+  } else {
+    notes.push('SKIP：_状态.json 不存在，且库里没有学生 _索引.json（空库/合成库）—— 本项**未评估**');
+  }
 } else {
   let st = null;
   try { st = JSON.parse(fs.readFileSync(STATE, 'utf8')); }

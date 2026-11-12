@@ -741,10 +741,17 @@
       if (code === 0) {
         box.innerHTML = '<div class="ig-ok">✔ 已入库 —— 卡进库了，门禁当场跑过</div>' +
           '<pre class="ig-pre">' + U.esc(out) + '</pre>' +
-          '<div class="small muted">新卡已在「题库」里。下一步：让无上下文解题者盲解一遍（清稿已备好），' +
-          '否则这些卡进不了组卷池（盲解门禁是硬拦）。</div>';
-        S.toast('已入库', 'ok', 8000);
+          '<div class="small muted">卡已进库。<b>界面要重建一次状态包才会显示新卡</b>（约几分钟，或点右上 ⟳ 立即刷新）。' +
+          '下一步：让无上下文解题者盲解一遍（清稿已备好），否则这些卡进不了组卷池（盲解门禁是硬拦）。</div>';
+        S.toast('已入库（界面正在重建，稍后可见新卡）', 'ok', 8000);
         if (S.refreshSub) S.refreshSub();
+        /* ★ 2026-11-12 修（P0 体验缺陷）：入库成功后**必须重建状态包**。
+           状态包 `_状态.json` 是界面唯一数据源；壳侧 `ingestLand` 只跑 `_录题入库.mjs`、不跑生成器，
+           而同族的 `createStudent`（`CTBShellV2.cs:460-494`）明确会跑 `生成状态.mjs`。
+           修前：上面那句断言"新卡已在题库里"，但题库读的是旧状态包 ⇒ 用户切过去找不到卡，
+           以为没录进去、可能重录造成重复卡（与 2026-11-04 已修的"录题第 3 步后什么也没发生"同族）。
+           这里用与复习流/组卷同款的后台重建（非阻塞；重建期间界面可继续用）。 */
+        if (S.regenBackground) S.regenBackground();
       } else if (code === 3) {
         box.innerHTML = '<div class="ig-warn">✖ 与任务不匹配 —— <b>没有写盘</b></div>' +
           '<pre class="ig-pre ig-bad">' + U.esc(out || err) + '</pre>';

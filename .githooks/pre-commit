@@ -34,6 +34,18 @@ cd "$REPO"
 #   现在把跳过项记进这个变量，末行按有没有跳过项分两种措辞。
 SKIPPED_ITEMS=""
 
+# ── 0) 门禁文件必须在（fail-closed，2026-11-12 修）──
+# 改前三道检查各自用 `[ -f … ]` 包着 ⇒ **把 tools/lint.mjs 改个名就能"全部通过"**。
+# 这与 verify-deploy 自己的 fail-closed 哲学正好相反（它宁可按"清单损坏"阻断，也不放行）。
+# 缺门禁文件 ≠ 通过：改名/删除门禁文件不能成为过钩子的办法。
+for _f in tools/lint.mjs tests/run.mjs scripts/verify-deploy.mjs; do
+  if [ ! -f "$_f" ]; then
+    echo "[pre-commit] ✖ 门禁文件缺失：$_f"
+    echo "  缺门禁文件不是通过。请恢复该文件（它是版本化真源，见 CONTRIBUTING §六）。"
+    exit 1
+  fi
+done
+
 # ── 1) lint ──
 if [ -f tools/lint.mjs ]; then
   echo "[pre-commit] ① lint ..."

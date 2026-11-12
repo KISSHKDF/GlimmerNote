@@ -228,6 +228,49 @@ if (!shOk) {
   }
 }
 
+/* ══════════ ④·补 运行期产物的分类（2026-11-12 立） ══════════
+   背景：`app\` 既是发布包镜像、又被运行中的壳写（日志/用户数据降级落点）。修前门禁把
+   "壳自己写的 app\shell.log" 报成「有人绕过 deploy.ps1 改了运行区」——**超出判据能证明的范围**，
+   且测试驱动的壳自己就能产出它（fixture 档本机必红、CI 必绿；实测清单内 90 文件 changed=0/missing=0）。
+   本段守三条：白名单内的运行期产物豁免 / 单列 runtimeArtifacts / **白名单外的多出文件仍判红**。 */
+console.log('\n══ ④·补 运行期产物：豁免白名单内的，白名单外的照样判红 ══');
+{
+  const rtSb = makeSandbox('运行期产物');
+  fs.writeFileSync(path.join(rtSb.prod, '_deploy-manifest.json'), goodManifest(rtSb.app, '0.0.1'), 'utf8');
+  fs.writeFileSync(path.join(rtSb.app, 'shell.log'), '09:22:14.620 pendingResolve tmp=...\n', 'utf8');
+  const rt = runVD(rtSb.prod);
+  A('★ 壳写的 shell.log 不再判成"有人绕过部署"（exit 0）', rt.code === 0,
+    'exit ' + rt.code + '｜' + (rt.err.split('\n')[0] || '').slice(0, 100));
+
+  const rtJson = spawnSync(process.execPath, [VD, '--prod', rtSb.prod, '--json'], { encoding: 'utf8', cwd: REPO });
+  let j = null; try { j = JSON.parse(rtJson.stdout); } catch { }
+  A('★ --json 把它单列进 runtimeArtifacts，而不是混进 extra',
+    !!j && Array.isArray(j.runtimeArtifacts) && j.runtimeArtifacts.length === 1 &&
+    j.runtimeArtifacts[0] === 'shell.log' && j.extra.length === 0,
+    j ? JSON.stringify({ extra: j.extra, runtimeArtifacts: j.runtimeArtifacts }) : '(JSON 解析失败)');
+
+  /* 牙齿不削：白名单外的多出文件必须仍然判红 */
+  const evilSb = makeSandbox('白名单外多出');
+  fs.writeFileSync(path.join(evilSb.prod, '_deploy-manifest.json'), goodManifest(evilSb.app, '0.0.1'), 'utf8');
+  fs.writeFileSync(path.join(evilSb.app, 'shell.log'), 'log\n', 'utf8');          // 豁免项
+  fs.writeFileSync(path.join(evilSb.app, 'js', 'hack.js'), 'alert(1)\n', 'utf8'); // 非豁免项
+  const evil = runVD(evilSb.prod);
+  A('★ 白名单外的多出文件仍判红（豁免没有变成"忽略一切 extra"）', evil.code === 1,
+    'exit ' + evil.code);
+  A('  且报错点名了那个文件', /hack\.js/.test(evil.err), (evil.err.match(/凭空多出[^\n]*/) || [''])[0].slice(0, 90));
+
+  /* 阴性自证：把白名单判据掏成"永不豁免" ⇒ 带 shell.log 的沙箱必须判红 */
+  const src = fs.readFileSync(VD, 'utf8');
+  const FROM = 'const isRuntimeArtifact = rel => RUNTIME_ARTIFACTS.some(re => re.test(rel));';
+  const mutated = src.replace(FROM, 'const isRuntimeArtifact = () => false;');
+  A('阴性自证 · 变异点命中（判据没被改名）', mutated !== src, '');
+  const mutPath = path.join(base, 'vd-nomut.mjs');
+  fs.writeFileSync(mutPath, mutated, 'utf8');
+  const mutRun = spawnSync(process.execPath, [mutPath, '--prod', rtSb.prod], { encoding: 'utf8' });
+  A('阴性自证 · 掏掉豁免后同一个沙箱必须判红（判据有牙齿）', (mutRun.status == null ? -1 : mutRun.status) === 1,
+    'exit ' + mutRun.status);
+}
+
 /* ══════════ ⑤ run.mjs 必须用共享判据、且旧分支已删 ══════════ */
 console.log('\n══ ⑤ run.mjs 接线与旧分支清理 ══');
 const runSrc = fs.readFileSync(path.join(REPO, 'tests', 'run.mjs'), 'utf8');
