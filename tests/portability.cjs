@@ -1,8 +1,9 @@
 // 可搬移性验证（只读 + 一次真实启动）：把整个题库复制到别处，确认程序认新位置
 const fs = require('fs'), path = require('path'), crypto = require('crypto');
 const ROOT = path.resolve(__dirname, '..');
-let fail = 0;
-const A = (l, c, d) => { if (c) console.log('  [OK]  ' + l + (d ? '  → ' + d : '')); else { fail++; console.log('  [FAIL] ' + l + '  → ' + d); } };
+let fail = 0, nChecks = 0;   /* ★ 2026-11-13：nChecks 供 `断言=N` 对账用（run.mjs 的断言数对账 fail-closed：没报=判红）。
+                                 ⚠ 名字不能叫 total —— 本文件 L37 已有一个 `const total`（另一件事），首版撞名当场语法错。 */
+const A = (l, c, d) => { nChecks++; if (c) console.log('  [OK]  ' + l + (d ? '  → ' + d : '')); else { fail++; console.log('  [FAIL] ' + l + '  → ' + d); } };
 
 console.log('═══ ① 运行时代码里是否还有硬编码路径 ═══');
 /* 口径（别把分母搞错）：这里查的是**产品运行时代码**（壳 / 工具链 / 前端 / 生成器）。
@@ -97,4 +98,6 @@ A('有日志轮转逻辑', /LogMaxBytes/.test(cs) && /\.1/.test(cs), '');
 A('Main() 整体包 try', /static void Main\(\)\s*\n\s*\{\s*\n\s*try/.test(cs), '');
 
 console.log('\n' + (fail === 0 ? '✔ 可搬移性静态检查全通过' : '✖ ' + fail + ' 项未通过'));
+console.log('\nRESULT=' + (fail ? 'FAIL(' + fail + ')' : 'PASS') +
+  '  断言=' + nChecks + '  通过=' + (nChecks - fail) + '  失败=' + fail);
 process.exit(fail ? 1 : 0);

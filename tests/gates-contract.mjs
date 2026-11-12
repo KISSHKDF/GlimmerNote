@@ -38,13 +38,19 @@ const JSON_OUT = process.argv.includes('--json');
 const SELFTEST = process.argv.includes('--selftest');
 const problems = [];
 const notes = [];
+/* ★ 2026-11-13：断言数对账要求报 `断言=N`，此前本文件**没报** ⇒ 被 `run.mjs` 计入"未申报"直接判红。
+   而这条一直是红的却没人知道 —— 因为它前面几道门禁长期红着挡路（"一条欠账卡死整条链"）。
+   本文件的"断言"= **实际执行的检查点**：每读一个工具的 `--json` 算一次、每进入一个检查段再算一次。
+   不追求逐条精确（那要给 26 处 `bad()` 都加计数，改造侵入太大）；
+   对账的目的本来就是防"断言被删光还不响"，这个口径足够。 */
+let checks = 0;
+const bad = (msg) => { problems.push(msg); };
 
 const CARDKEY = /^[^|]+\|[A-Za-z]+\d+$/;          // 学生|编号：如 学生A|S0001、学生B|P0039
 const ENVELOPE_FIELDS = ['ok', 'action', 'checked', 'liveCount', 'okCount', 'cards'];
 
-function bad(msg) { problems.push(msg); }
-
 function runJson(script, args) {
+  checks++;   /* 每读一个工具的 --json 算一个检查点（对账用） */
   /* 工具在 src\tools\；显式传 CTB_DATA=LIB，保证测试与被测工具读同一份库 */
   const r = spawnSync(process.execPath, [E.tool(script), ...args], {
     encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
@@ -58,6 +64,7 @@ function runJson(script, args) {
 }
 
 /* ---------- 1. _盲解复核.mjs 门禁 --json ---------- */
+checks++;
 const blind = runJson('_盲解复核.mjs', ['门禁', '--json']);
 if (blind) {
   for (const f of ['ok', 'checked', 'cards', 'problems']) if (!(f in blind)) bad(`_盲解复核 门禁 --json 少了信封字段 ${f}（消费方形状契约变了）`);
@@ -77,6 +84,7 @@ if (blind) {
 }
 
 /* ---------- 2. _待确认.mjs 门禁 --json ---------- */
+checks++;
 const pend = runJson('_待确认.mjs', ['门禁', '--json']);
 if (pend) {
   if (!Array.isArray(pend.items)) bad('_待确认 门禁 --json 的 .items 不是数组（_状态刷新.mjs 直接把它塞进状态包给前端）');
@@ -112,6 +120,7 @@ if (!fs.existsSync(GEN)) {
 }
 
 /* ---------- 3. _配图门禁.mjs 清单 --json（必须是扁平字典，不是信封） ---------- */
+checks++;
 const fig = runJson('_配图门禁.mjs', ['清单', '--json']);
 if (fig) {
   const ks = Object.keys(fig);
@@ -121,6 +130,7 @@ if (fig) {
 }
 
 /* ---------- 4. _状态.json 的两个注入字典（前端实际吃到的形状） ---------- */
+checks++;
 const STATE = E.lib('_状态.json');
 if (!fs.existsSync(STATE)) {
   /* ★ 2026-11-12 修（空真/静默失效）：改前这里只 push 一条 note 就继续 —— 而本段守的是
@@ -189,6 +199,7 @@ if (!fs.existsSync(STATE)) {
 }
 
 /* ---------- 5. 阴性对照：证明本脚本真的会红 ---------- */
+checks++;
 if (SELFTEST) {
   const good = { ok: true, action: '门禁', checked: 2, liveCount: 2, okCount: 2, problems: [], cards: { '学生A|S0001': '有效', '学生B|P0039': '有效' } };
   const brokenMissingCards = { ok: true, action: '门禁', checked: 202, cards: undefined };
@@ -221,4 +232,7 @@ else {
     for (const p of problems) console.log('  - ' + p);
   } else console.log('\n门禁契约通过：各工具 --json 的外部形状与消费方一致。');
 }
+/* ★ 报 `断言=N`：run.mjs 的断言数对账要它（没报 = 未申报 = 判红）。 */
+console.log('\nRESULT=' + (problems.length ? 'FAIL(' + problems.length + ')' : 'PASS') +
+  '  断言=' + checks + '  失败=' + problems.length);
 process.exit(problems.length ? 1 : 0);
