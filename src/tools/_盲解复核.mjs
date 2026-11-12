@@ -58,6 +58,7 @@ import { libraryRoot, toolPath } from './_库根.mjs';
 import { readJsonStrict, writeJsonAtomic, acquireLibLock, writeTextAtomic } from './_安全写.mjs';
 /* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。 */
 import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
+import { indexFiles } from './_题库发现.mjs';
 
 /* ★ 2026-10-23 程序与数据分家：ROOT 现在是**用户库根**，不再是"本脚本所在目录"。
    兄弟工具一律用 toolPath(...)，见 _库根.mjs。 */
@@ -189,15 +190,8 @@ function writeJson(p, o) { writeJsonAtomic(p, o, { backup: true }); }
 const IDX_SHAPE = j => Array.isArray(j.items) || (!!j.subjects && typeof j.subjects === 'object' && !Array.isArray(j.subjects));
 const readIndexFile = p => readJsonStrict(p, { shape: IDX_SHAPE, what: 'items 数组或 subjects 对象', label: path.basename(p) });
 
-function indexFiles(dir, acc = []) {
-  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (!e.isDirectory()) { if (e.name === '_索引.json') acc.push(path.join(dir, e.name)); continue; }
-    if (e.name.startsWith('_') || e.name.startsWith('.')) continue;
-    if (/(作业|假期)/.test(e.name)) continue;
-    indexFiles(path.join(dir, e.name), acc);
-  }
-  return acc;
-}
+/* 2026-11-12（审计 F05）：本函数已收敛到 `_题库发现.mjs`（零副作用共享模块）。
+   原先 8 个工具各抄一份，实测 3 种实现（本文件那份与 SB 口径不同）⇒ 改一处漏一处且各自测试全绿。 */
 /** 索引（已解析对象）→ [{item, subject, student, dirAbs}]，兼容学科级(items)与学生级(subjects)两种形态。
  *  注意：必须传已解析对象，传入文件路径会返回副本、改动不落盘（曾因此静默丢写）。 */
 function itemsOfJson(j, base) {

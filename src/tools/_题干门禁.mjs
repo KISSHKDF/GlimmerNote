@@ -91,15 +91,8 @@ const { action, opt } = parseArgs(argv, {
 });
 
 /* ---------- 题库发现（与 _盲解复核.mjs / _配图门禁.mjs 同规则） ---------- */
-function indexFiles(dir, acc = []) {
-  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (!e.isDirectory()) { if (e.name === '_索引.json') acc.push(path.join(dir, e.name)); continue; }
-    if (e.name.startsWith('_') || e.name.startsWith('.')) continue;
-    if (/(作业|假期)/.test(e.name)) continue;
-    indexFiles(path.join(dir, e.name), acc);
-  }
-  return acc;
-}
+/* 2026-11-12（审计 F05）：本函数已收敛到 `_题库发现.mjs`（零副作用共享模块）。
+   原先 8 个工具各抄一份，实测 3 种实现（本文件那份与 SB 口径不同）⇒ 改一处漏一处且各自测试全绿。 */
 function itemsOfJson(j, base) {
   const out = [];
   if (Array.isArray(j.items)) for (const it of j.items) out.push({ item: it, subject: j.subject || '', student: j.student, dirAbs: path.join(base, it.dir || it.id) });
@@ -312,6 +305,7 @@ export {
   mentionsUnderlineSense, hasUnderlineMark, hasUnderlineMarkEntity,
 } from './_划线.mjs';
 import { mentionsUnderlineSense, hasUnderlineMark } from './_划线.mjs';
+import { indexFiles } from './_题库发现.mjs';
 
 /** 题干里有没有画线标记（**含实体化 / 双重转义形态** `&lt;u&gt;`）。
  *  判据⑦⑧用它判"是否已标"：实体化形态属判据①（转义层套了两次），

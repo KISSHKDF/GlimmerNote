@@ -39,6 +39,7 @@ import path from 'path';
 import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
 import { libraryRoot } from './_库根.mjs';
 import { readJsonStrict } from './_安全写.mjs';
+import { indexFiles } from './_题库发现.mjs';
 
 /* ---------- 参数（--data 必须在任何 libraryRoot() 之前落 env，与全仓同口径） ---------- */
 const { action, opt } = parseArgs(process.argv.slice(2), {
@@ -62,15 +63,8 @@ const usage = () => {
 /* ---------- 与 _盲解复核.mjs 同构的只读枚举（两处同步纪律见文件头） ---------- */
 const IDX_SHAPE = j => Array.isArray(j.items) || (!!j.subjects && typeof j.subjects === 'object' && !Array.isArray(j.subjects));
 const readIndexFile = p => readJsonStrict(p, { shape: IDX_SHAPE, what: 'items 数组或 subjects 对象', label: path.basename(p) });
-function indexFiles(dir, acc = []) {
-  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (!e.isDirectory()) { if (e.name === '_索引.json') acc.push(path.join(dir, e.name)); continue; }
-    if (e.name.startsWith('_') || e.name.startsWith('.')) continue;
-    if (/(作业|假期)/.test(e.name)) continue;
-    indexFiles(path.join(dir, e.name), acc);
-  }
-  return acc;
-}
+/* 2026-11-12（审计 F05）：本函数已收敛到 `_题库发现.mjs`（零副作用共享模块）。
+   原先 8 个工具各抄一份，实测 3 种实现（本文件那份与 SB 口径不同）⇒ 改一处漏一处且各自测试全绿。 */
 function itemsOfJson(j, base) {
   const out = [];
   if (Array.isArray(j.items)) {

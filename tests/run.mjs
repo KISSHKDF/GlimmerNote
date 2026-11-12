@@ -906,6 +906,10 @@ const unitTests = [
      而 CONTRIBUTING 与 `docs\数据区规范.md` 都把它写成必跑步骤 ⇒ 整族数据区规则事实上无人执行。
      它零库依赖（自建 %TEMP% 合成库 + `allocTempDir` 登记清扫），可直接进 unitTests。 */
   ['neg-data-area-rules.mjs'],
+  /* ★ 2026-11-12（审计 F05）：`indexFiles` 原先 8 个工具各抄一份（实测 3 种实现，入库侧漏了
+     「作业/假期」跳过行 ⇒ 会往"其余门禁扫不到"的目录里写卡）。收敛到零副作用 `_题库发现.mjs`，
+     本用例守：8 个工具都已收敛 / 共享模块口径与零副作用 / 行为正反对照。零库依赖。 */
+  ['neg-libfind-convergence.cjs'],
   ['neg-snapshot-text-and-force.cjs'],    // ★ 2026-11-05 合并评审 P1-5/P0-4：md/html 掏空不许直接恢复；--force-restore 二次确认 + 审计
   /* ★ 2026-11-12：`_快照.mjs` 自 2026-11-08 起**完全不可用** —— 纳管清单里的 glob 允许"当前零匹配"
      （`_收件箱/**\/_来源映射.csv`：收件箱清空后该文件就不在了），而 `git add -A -- <pattern>` 对

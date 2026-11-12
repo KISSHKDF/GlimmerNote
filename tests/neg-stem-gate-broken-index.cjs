@@ -29,9 +29,10 @@ function A(name, ok, detail) {
   else { worst++; console.log('[FAIL] ' + name + (detail ? '  → ' + detail : '')); }
 }
 
-/* ⚠ 依赖要跟住：`_题干门禁.mjs` 从 2026-11-12 起还 import `_划线.mjs`（零副作用共享判据）——
-   副本目录缺它会在 `ModuleJob.link` 阶段直接失败（本次实测踩到）。 */
-const TOOL_FILES = ['_题干门禁.mjs', '_库根.mjs', '_参数.mjs', '_划线.mjs'];
+/* ⚠ 依赖**自动解析**（`E.toolDeps` 递归读相对 import），不再手写清单：
+   2026-11-12 连续两次踩到"给 `_题干门禁.mjs` 加了新依赖（`_划线.mjs`、`_题库发现.mjs`），
+   副本目录没跟 ⇒ 在 `ModuleJob.link` 阶段直接失败"。手写清单必然滞后于源码。 */
+const TOOL_FILES = E.toolDeps(['_题干门禁.mjs']);
 const MUTATE_FROM = "catch (e) { indexErrors.push({ file: f, error: String((e && e.message) || e) }); continue; }";
 const MUTATE_TO = 'catch { continue; }';
 

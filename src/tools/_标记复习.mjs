@@ -43,6 +43,7 @@ import { fileURLToPath } from 'url';
 import { libraryRoot, toolPath } from './_库根.mjs';
 import { readJsonStrict, writeJsonAtomic, acquireLibLock, openTransaction } from './_安全写.mjs';
 import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
+import { indexFiles } from './_题库发现.mjs';
 
 /* ★ 2026-10-23 程序与数据分家：ROOT 现在是**用户库根**，不再是"本脚本所在目录"。
    兄弟工具一律用 toolPath(...)，见 _库根.mjs。 */
@@ -140,18 +141,8 @@ const IDX_SHAPE = j => Array.isArray(j.items) || (!!j.subjects && typeof j.subje
 function readIndex(p) { return readJsonStrict(p, { shape: IDX_SHAPE, what: 'items 数组或 subjects 对象', label: path.basename(p) }); }
 
 /** 递归找 _索引.json（跳过工作/收件箱目录） */
-function indexFiles(dir, acc = []) {
-  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (!e.isDirectory()) {
-      if (e.name === '_索引.json') acc.push(path.join(dir, e.name));
-      continue;
-    }
-    if (e.name.startsWith('_') || e.name.startsWith('.')) continue;   // _收件箱/_work-xx 不是题库
-    if (/(作业|假期)/.test(e.name)) continue;                          // 原始试卷档案目录
-    indexFiles(path.join(dir, e.name), acc);
-  }
-  return acc;
-}
+/* 2026-11-12（审计 F05）：本函数已收敛到 `_题库发现.mjs`（零副作用共享模块）。
+   原先 8 个工具各抄一份，实测 3 种实现（本文件那份与 SB 口径不同）⇒ 改一处漏一处且各自测试全绿。 */
 
 /** 索引 → [{item, subject}]，兼容学生级(subjects)与学科级(items)两种形态 */
 function itemsOf(j) {

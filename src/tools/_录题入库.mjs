@@ -39,6 +39,7 @@ import { displaySize } from './_图尺寸.mjs';
    ⚠ 不能改成 `import './_题干门禁.mjs'`：它是 CLI，顶层解析 `process.argv`，
    被本文件 import 时会拿**调用方的**命令行去解析并报「未知参数」退出（实测踩到）。 */
 import { mentionsUnderlineSense, hasUnderlineMark, hasUnderlineMarkEntity } from './_划线.mjs';
+import { indexFiles } from './_题库发现.mjs';
 
 /* ───────────────── 参数 ───────────────── */
 const { action: _cmd, opt, positional } = parseArgs(process.argv.slice(2), {
@@ -109,17 +110,8 @@ function loadTask(id) {
  *   ① 单学科：{student, grade, subject:'数学', items:[]}      文件在 <库根>\<小名>\<学科>\_索引.json
  *   ② 多学科：{student, grade, subjects:{ 数学:{items:[]} }}  文件在 <库根>\<小名>\_索引.json
  * 落点查找：先按「学生+学科」精确找索引文件，再决定卡目录挂在哪。 */
-function indexFiles(dir, acc = []) {
-  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-    /* ⚠ 目录名以 `_`/`.` 开头 ⇒ 跳过**目录**；但**文件**要单独判 `_索引.json`
-       （否则 `_索引.json` 自己被 `_` 前缀规则挡掉 ⇒ 一个学生都找不到）。
-       判据与 `_盲解复核.mjs:168-176` 逐字同口径。 */
-    if (!e.isDirectory()) { if (e.name === '_索引.json') acc.push(path.join(dir, e.name)); continue; }
-    if (e.name.startsWith('_') || e.name.startsWith('.')) continue;
-    indexFiles(path.join(dir, e.name), acc);
-  }
-  return acc;
-}
+/* 2026-11-12（审计 F05）：本函数已收敛到 `_题库发现.mjs`（零副作用共享模块）。
+   原先 8 个工具各抄一份，实测 3 种实现（本文件那份与 SB 口径不同）⇒ 改一处漏一处且各自测试全绿。 */
 
 function readIdx(p) {
   return readJsonStrict(p, {

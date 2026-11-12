@@ -50,6 +50,7 @@ import { readJsonStrict, writeJsonAtomic, backupJson, writeTextAtomic, acquireLi
 import { slotsOf, slotCount, needEm, blankWidthEm, alignedAnswers, fitSlots, applySlotWidths, BLANK_MAX_EM, CHILD_FACTOR } from './_空位.mjs';
 /* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。 */
 import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
+import { indexFiles } from './_题库发现.mjs';
 
 const ROOT = libraryRoot();
 /* ★ 2026-10-30（外部审计 D02）：跨进程写锁（壳 / HTTP 服务端 / 命令行三条通道共用同一把，见 _安全写.mjs）。
@@ -83,15 +84,8 @@ const today = () => dstr(new Date());
 const fail = m => { console.error('✖ ' + m); process.exit(2); };
 
 /* ---------- 题库发现（与 _配图门禁 / _盲解复核 同规则） ---------- */
-function indexFiles(dir, acc = []) {
-  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (!e.isDirectory()) { if (e.name === '_索引.json') acc.push(path.join(dir, e.name)); continue; }
-    if (e.name.startsWith('_') || e.name.startsWith('.')) continue;
-    if (/(作业|假期)/.test(e.name)) continue;
-    indexFiles(path.join(dir, e.name), acc);
-  }
-  return acc;
-}
+/* 2026-11-12（审计 F05）：本函数已收敛到 `_题库发现.mjs`（零副作用共享模块）。
+   原先 8 个工具各抄一份，实测 3 种实现（本文件那份与 SB 口径不同）⇒ 改一处漏一处且各自测试全绿。 */
 const IDX_SHAPE = j => Array.isArray(j.items) || (!!j.subjects && typeof j.subjects === 'object' && !Array.isArray(j.subjects));
 const readIndexFile = p => readJsonStrict(p, { shape: IDX_SHAPE, what: 'items 数组或 subjects 对象', label: path.basename(p) });
 
