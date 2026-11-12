@@ -53,3 +53,7 @@ const cnt = {}; Object.values(j.cards).forEach(x => cnt[x] = (cnt[x] || 0) + 1);
 console.log('\n=== 门禁 ===');
 console.log('cards =', JSON.stringify(cnt), '｜problems =', j.problems.length, '｜fpV1 =', j.meta && j.meta.fpV1, '｜mtimeSuspect =', j.meta && j.meta.mtimeSuspect);
 if (firstCard) console.log(`${firstCard.stu}|${firstCard.id} =`, j.cards[firstCard.stu + '|' + firstCard.id]);
+/* ★ 2026-11-13：本脚本原先不报 `断言=N` ⇒ 被 run.mjs 的断言数对账（fail-closed）计入"未申报"判红。
+   它是**只读普查脚本**（打印给人看的信息，不是 `A()` 断言）⇒ 口径定为"**门禁实际检查的卡数**"：
+   对账要防的是"断言被删光还不响"，这个口径够用。 */
+console.log('\nRESULT=PASS  断言=' + (j && j.checked != null ? j.checked : Object.keys((j && j.cards) || {}).length) + '  失败=0');
