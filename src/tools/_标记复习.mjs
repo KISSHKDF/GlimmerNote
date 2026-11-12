@@ -44,6 +44,8 @@ import { libraryRoot, toolPath } from './_库根.mjs';
 import { readJsonStrict, writeJsonAtomic, acquireLibLock, openTransaction } from './_安全写.mjs';
 import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
 import { indexFiles } from './_题库发现.mjs';
+/* ★ 2026-11-12（审计 F04）：`answerSource` 取值契约的唯一真源（原先三处各一份 + 两种语义）。 */
+import { isAcceptableSource, isRetiredSource } from './_来源.mjs';
 
 /* ★ 2026-10-23 程序与数据分家：ROOT 现在是**用户库根**，不再是"本脚本所在目录"。
    兄弟工具一律用 toolPath(...)，见 _库根.mjs。 */
@@ -190,8 +192,9 @@ const teacherConflictOpen = it => !!(it && it.teacherConflict && typeof it.teach
  *      不误伤（它们的答案绝大多数已被盲解独立验证过），但如实报告"归属未记录"。
  *
  *  唯一实现（准入与组卷共用一份，避免两处口径漂移）。 */
-const SRC_PREFIX_OK = ['独立判卷', '官方答案'];
-const SRC_EXACT_OK = ['红笔订正+官方答案页核对'];
+/* ★ 2026-11-12（审计 F04）：取值契约与"合格性"判据已收敛到 `_来源.mjs`（原先本文件与
+   `_盲解复核.mjs` 各抄一份，后者注释自己就写着"两处各抄一份必然漂移"）。
+   本文件只保留"独立来源怎么证"（`blindVerified`），作为 `independentProof` 注入进去。 */
 const blindVerified = it => ['已通过', '已修正'].includes(String((it && it.blindStatus) || ''));
 const inkAttrOf = it => String((it && it.inkAttribution) || '').trim();
 const inkHasText = it => typeof (it && it).teacherAnswer === 'string' && String(it.teacherAnswer).trim() !== '';
@@ -220,20 +223,15 @@ const answerIsRedInk = it => inkHasText(it) && normAns(it.teacherAnswer) === nor
 function answerSourceOk(it) {
   const s = String((it && it.answerSource) || '').trim();
   if (!s) return false;
-  if (SRC_PREFIX_OK.some(p => s.startsWith(p))) return true;
-  if (SRC_EXACT_OK.includes(s)) return true;
-  if (s.startsWith('老师定案')) {
-    /* 红字来源：只有"答案另有独立出处"时才成立 */
-    return blindVerified(it);
-  }
-  return false;
+  /* 合格性判据 → `_来源.mjs`（唯一真源）；本文件只提供"独立来源怎么证"。 */
+  return isAcceptableSource(s, { independentProof: blindVerified(it) });
 }
 /** 为什么不合格（给人看的理由；合格返回空串） */
 function answerSourceWhy(it) {
   const s = String((it && it.answerSource) || '').trim();
   if (!s) return '缺第二来源：answerSource 字段为空';
   if (answerSourceOk(it)) return '';
-  if (s.startsWith('老师定案')) {
+  if (isRetiredSource(s)) {
     if (answerIsRedInk(it)) return '答案就是红字原文 —— 红字只作参考，不能作定案标准（即使确认是老师写的也不成立）';
     return '答案来源=老师定案（红字来源），但该答案没有与红笔无关的独立来源（双路盲解未通过）';
   }

@@ -39,6 +39,9 @@ import { displaySize } from './_图尺寸.mjs';
    ⚠ 不能改成 `import './_题干门禁.mjs'`：它是 CLI，顶层解析 `process.argv`，
    被本文件 import 时会拿**调用方的**命令行去解析并报「未知参数」退出（实测踩到）。 */
 import { mentionsUnderlineSense, hasUnderlineMark, hasUnderlineMarkEntity } from './_划线.mjs';
+/* ★ 2026-11-12（审计 F04）：`answerSource` 取值契约的**唯一真源**（原先 3 处代码 + 2 份配方 schema
+   各写一份，且精确集/前缀集两种语义并存 ⇒ `_盲解复核` 自己写的带限定值会被本文件判非法）。 */
+import { isInContract, isRetiredSource, isOfficialSource } from './_来源.mjs';
 import { indexFiles } from './_题库发现.mjs';
 
 /* ───────────────── 参数 ───────────────── */
@@ -865,8 +868,12 @@ function cmdLand() {
           有红字且与采用答案不一致 ⇒ 挂 teacherConflict，组卷前人工裁决；
           裁决只有两个方向：`--as 官方答案`（保留采用答案）/ `--as 红字参考`（只记参考，不改答案）。
        ⇒ 契约取值表相应收缩为：独立判卷 / 官方答案 / 红笔订正+官方答案页核对 / 未能确认。 */
-    if (c.answerSource && !['独立判卷', '官方答案', '红笔订正+官方答案页核对', '未能确认'].includes(c.answerSource)) {
-      const isRetired = /^老师定案/.test(String(c.answerSource));
+    /* ★ 2026-11-12（审计 F04）：判据收敛到 `_来源.mjs`，并由**精确集改为前缀式**（按基础值比对）。
+       改前这里是精确集，而 `_盲解复核.mjs` 自己写入的值是 `独立判卷（双路盲解×2 一致）`（带括号限定）
+       ⇒ 前缀门禁放行、本处判「取值不在契约内」—— 于是 `改卡` 对这类卡直接失败（真缺陷）。
+       带限定的后缀是合法且更信息丰富的（说明"哪一路判的"），不该被拒。 */
+    if (c.answerSource && !isInContract(c.answerSource)) {
+      const isRetired = isRetiredSource(c.answerSource);
       problems.push(id + ' 的 answerSource 取值不在契约内：' + c.answerSource +
         (isRetired
           ? ' —— 「老师定案」已废除：**红字只作参考，不能作定案标准**（卷面红字绝大部分不是老师批的；' +
@@ -880,7 +887,7 @@ function cmdLand() {
        现在补上机械判据：answerSource 是「官方答案」或「红笔订正+官方答案页核对」时，
        answerSourceNote **必须**指出具体出处（站点名 / 答案页页码 / 文件名）。
        判据刻意宽松：认出的是"有没有指向一个可复核的地方"，不是"格式对不对"。 */
-    const isOfficial = /^(官方答案|红笔订正\+官方答案页核对)/.test(String(c.answerSource || ''));
+    const isOfficial = isOfficialSource(c.answerSource);
     if (isOfficial) {
       const note = String(c.answerSourceNote || '');
       const hasSource = /菁优|jyeoo|21世纪|21cnjy|教习网|51jiaoxi|作业帮|zuoyebang|青果|精英家教|题库|网站|站点|答案\s*\.?\s*pdf|答案页|答案\s*PDF|第\s*\d+\s*页|真题|同题页|讲义|同步|教辅|练习册|卷/i.test(note);

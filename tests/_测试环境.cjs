@@ -497,9 +497,16 @@ function makeTempLib(extraDirs, opts) {
     fs.copyFileSync(src, dst);
     try { const st = fs.statSync(src); fs.utimesSync(dst, st.atime, st.mtime); } catch { }
   };
-  /* 卡片级文件：指纹/渲染要用，但影像（1.4GB+）不复制。
-     opts.copyCardFiles=true 时才复制 —— 组卷/批改类测试需要它（否则指纹判失效、题干渲染为空）。 */
-  const CARD_FILES = ['题干.html', '错题记录.md', '配图.svg'];
+  /* 卡片级文件：指纹/渲染/配图判据要用，但影像（1.4GB+）不复制。
+     opts.copyCardFiles=true 时才复制 —— 组卷/批改类测试需要它（否则指纹判失效、题干渲染为空）。
+     ⚠ 2026-11-12 修（真实踩到）：原先这里是一张**写死的全名清单** `['题干.html','错题记录.md','配图.svg']`，
+     漏了 **`题图.jpg`** ⇒ 副本里"图上作答"的卡被判 `answerMode=figure 但题干里没有图`，
+     而**同一份真库直跑门禁是 656/656 全过**（本次实测：4 张卡的图都叫 `题图.jpg`）。
+     影响面比一个用例大得多：**凡基于 makeTempLib 且涉及"卡有没有图/有没有证据图"的判据**，
+     都会出现同族假红/假绿。故改为**按名字正则匹配**，未来新增命名只需改这一处正则。
+     ⚠ 仍**刻意不复制** `原卷截图.jpg` 与整页扫描（那才是 copyCardFiles 要省的东西）：
+     当前没有任何门禁依赖副本里有它们；若将来有判据要，必须显式加进来并说明代价。 */
+  const CARD_FILE_RE = /^(?:题干\.html|错题记录\.md|_裁图记录\.json|配图\.(?:svg|png|jpe?g)|题图\.(?:svg|png|jpe?g))$/i;
   const copySidecars = (idxAbs, relDir) => {
     if (!o.copyCardFiles) return;
     let j;
@@ -513,7 +520,10 @@ function makeTempLib(extraDirs, opts) {
       if (!sub) continue;
       const srcDir = path.join(LIB, rel, sub);
       const dstDir = path.join(dir, rel, sub);
-      for (const f of CARD_FILES) {
+      let ents = [];
+      try { ents = fs.readdirSync(srcDir); } catch { continue; }
+      for (const f of ents) {
+        if (!CARD_FILE_RE.test(f)) continue;
         const s = path.join(srcDir, f);
         if (!fs.existsSync(s)) continue;
         try { fs.mkdirSync(dstDir, { recursive: true }); copyKeepTime(s, path.join(dstDir, f)); } catch { }

@@ -59,6 +59,8 @@ import { readJsonStrict, writeJsonAtomic, acquireLibLock, writeTextAtomic } from
 /* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。 */
 import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
 import { indexFiles } from './_题库发现.mjs';
+/* ★ 2026-11-12（审计 F04）：`answerSource` 取值契约与合格性判据的唯一真源。 */
+import { isAcceptableSource } from './_来源.mjs';
 
 /* ★ 2026-10-23 程序与数据分家：ROOT 现在是**用户库根**，不再是"本脚本所在目录"。
    兄弟工具一律用 toolPath(...)，见 _库根.mjs。 */
@@ -119,8 +121,9 @@ const blindVerified = it => VERIFIED.includes(it.blindStatus) && !!it.blindFinge
  *   ③ 只写与准入判据同前缀的词。红笔不是来源（base.md 第 13 条），绝不臆造
  *      「老师批改」这类会被门禁拒、又无法指着证据复核的值。
  */
-const AS_PREFIX_OK = ['独立判卷', '官方答案'];
-const AS_EXACT_OK = ['红笔订正+官方答案页核对'];
+/* ★ 2026-11-12（审计 F04）：`AS_PREFIX_OK` / `AS_EXACT_OK` 两个常量与下面的 `answerSourceOk`
+   已收敛到 `_来源.mjs`（本文件与 `_标记复习.mjs` 原先各抄一份同一判据 —— 那段注释自己就写着
+   "两处各抄一份必然漂移 —— 见 L-530 族"）。本文件只保留"独立来源怎么证"（双路盲解均通过）。 */
 /* ★ 2026-11-07（红字归属，用户裁定 · 第二次收紧）：**卷面红字绝大部分不是老师批的**
  *  （孩子自己批改/订正、同学互批、家长帮批）⇒ 红字**只能作普通参考，不能作定案标准**。
  *  ⇒ 「老师定案」**即使确认是老师写的也不能单独成立**：老师也会抄错题本、也会批漏。
@@ -138,13 +141,8 @@ const answerIsRedInk = it => inkHasText(it) && normAns(it.teacherAnswer) === nor
 function answerSourceOk(it) {
   const s = String((it && it.answerSource) || '').trim();
   if (!s) return false;
-  if (AS_PREFIX_OK.some(p => s.startsWith(p))) return true;
-  if (AS_EXACT_OK.includes(s)) return true;
-  if (s.startsWith('老师定案')) {
-    /* 红字来源：只有"答案另有独立出处"时才成立 */
-    return VERIFIED.includes(String((it && it.blindStatus) || ''));
-  }
-  return false;
+  /* 合格性判据 → `_来源.mjs`（唯一真源）；本文件只提供"独立来源怎么证"（双路盲解均通过）。 */
+  return isAcceptableSource(s, { independentProof: VERIFIED.includes(String((it && it.blindStatus) || '')) });
 }
 function fillAnswerSource(it, rec, { dry = false } = {}) {
   if (!it || !rec) return null;
