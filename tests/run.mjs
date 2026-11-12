@@ -515,23 +515,38 @@ if (mode === 'fixture') {
   ];
   let worst = 0;
   for (const [name] of HERMETIC) {
-    worst = Math.max(worst, run(name));
-    if (worst !== 0) { console.log('✖ 零依赖自检未过（' + name + '）'); process.exit(worst); }
+    {
+      const rc = run(name);
+      worst = Math.max(worst, rc);
+      if (rc !== 0) { console.log('✖ 零依赖自检未过（' + name + '）'); process.exit(worst); }
+    }
   }
   /* ★ 2026-10-25：三道数据门禁（干净克隆可跑版）。库来自 _测试环境 的物化合成库。
      verify-stem-shape 是普查脚本（不设退出判据），fixture 下不跑；它跑真库时也只是打印。 */
   if (!E.isFrozen(E.LIB)) {
-    worst = Math.max(worst, runTool('_原卷台账.mjs', ['门禁']));
-    if (worst !== 0) { console.log('✖ 原卷台账门禁未过（合成库形状与门禁口径漂移）'); process.exit(worst); }
-    worst = Math.max(worst, runTool('_待确认.mjs', ['证据']));
-    if (worst !== 0) { console.log('✖ 待办证据图门禁未过'); process.exit(worst); }
-    worst = Math.max(worst, runTool('_配图门禁.mjs', ['门禁']));
-    if (worst !== 0) { console.log('✖ 配图门禁未过'); process.exit(worst); }
+    {
+      const rc = runTool('_原卷台账.mjs', ['门禁']);
+      worst = Math.max(worst, rc);
+      if (rc !== 0) { console.log('✖ 原卷台账门禁未过（合成库形状与门禁口径漂移）'); process.exit(worst); }
+    }
+    {
+      const rc = runTool('_待确认.mjs', ['证据']);
+      worst = Math.max(worst, rc);
+      if (rc !== 0) { console.log('✖ 待办证据图门禁未过'); process.exit(worst); }
+    }
+    {
+      const rc = runTool('_配图门禁.mjs', ['门禁']);
+      worst = Math.max(worst, rc);
+      if (rc !== 0) { console.log('✖ 配图门禁未过'); process.exit(worst); }
+    }
     /* ★ 2026-10-25：作答契约门禁也进这份白名单。合成库里的空位题必须带 answerSlots
        （fixtures\库-形状 的 _索引.json 已补），否则干净克隆一上手就被这条门禁判红 ——
        "新克隆能跑测试"是硬要求，夹具必须跟上门禁口径（同 F-06 那一类缺陷）。 */
-    worst = Math.max(worst, runTool('_作答门禁.mjs', ['门禁']));
-    if (worst !== 0) { console.log('✖ 作答契约门禁未过（合成库没带逐空答案）'); process.exit(worst); }
+    {
+      const rc = runTool('_作答门禁.mjs', ['门禁']);
+      worst = Math.max(worst, rc);
+      if (rc !== 0) { console.log('✖ 作答契约门禁未过（合成库没带逐空答案）'); process.exit(worst); }
+    }
   } else {
     console.log('\n────────── fixture 模式：数据门禁因 LIB 指向真库而跳过（quick 会以只读方式跑）──────────');
   }
@@ -638,29 +653,53 @@ function runTool(script, args) {
   });
   return r.status ?? 1;
 }
-worst = Math.max(worst, runTool('_原卷台账.mjs', ['门禁']));
-if (worst !== 0) { console.log('✖ 原卷台账门禁未过（有卡回不到整页原卷），先修台账再跑界面回归'); process.exit(worst); }
-/* v2.5（2026-10-10）：待办证据图门禁也挂进来。
+  /* ★ 2026-11-13（批次 4 收尾）：原卷台账门禁**收集但不阻断**（整条链上唯一一条例外）。
+     为什么单它例外：它不过的后果是「不能从卡跳回整页、不能做整页视觉复核」——那是**功能缺失**，
+     不会让界面印出坏东西；而下面几道（证据图 / 配图 / 作答契约）不过时界面**真的会显示坏的**
+     （破图、"如图"却没图、白留答题区），所以它们保持 fail-fast。
+     改前这里是 `process.exit(worst)`：404 条未定位**一条**就把它后面 4 道门禁 + 整段**界面回归**全挡住
+     —— 而"一条数据欠账让整条链停摆"比欠账本身更贵（本会话 29 个版本里 e2e 从没跑过，就是这么来的）。
+     ⚠ 它**仍然判红**（`worst` 会被带到最后的退出码），只是不再挡住别人。 */
+  {
+    const unloc = runTool('_原卷台账.mjs', ['门禁']);
+    if (unloc !== 0) {
+      worst = Math.max(worst, unloc);
+      console.log('⚠ 原卷台账门禁未过（有卡回不到整页原卷）——**不阻断**后续门禁与界面回归，但最终仍判红');
+    }
+  }
+  /* v2.5（2026-10-10）：待办证据图门禁也挂进来。
    起因：T086 的证据图路径是通配符，界面上就是一张破图（用户：「没有图形链接」），
    而这条门禁此前只在有人手动跑时才生效 ⇒ 坏数据一路漏到界面。 */
-worst = Math.max(worst, runTool('_待确认.mjs', ['证据']));
-if (worst !== 0) { console.log('✖ 待办证据图门禁未过（缺图/通配符/文件不在），待办会显示破图，先修再跑界面回归'); process.exit(worst); }
+{
+  const rc = runTool('_待确认.mjs', ['证据']);
+  worst = Math.max(worst, rc);
+  if (rc !== 0) { console.log('✖ 待办证据图门禁未过（缺图/通配符/文件不在），待办会显示破图，先修再跑界面回归'); process.exit(worst); }
+}
 /* 配图门禁（v2.2）：题干提到图却没图 → 卷面印出"如图"却空着（用户 2026-10-07 的原始投诉）。
    此前只在有人手动跑时才生效，2026-10-10 挂进门禁。 */
-worst = Math.max(worst, runTool('_配图门禁.mjs', ['门禁']));
-if (worst !== 0) { console.log('✖ 配图门禁未过（该有图的题拿不出图），组卷会印出"如图…"却没图，先修再跑界面回归'); process.exit(worst); }
+{
+  const rc = runTool('_配图门禁.mjs', ['门禁']);
+  worst = Math.max(worst, rc);
+  if (rc !== 0) { console.log('✖ 配图门禁未过（该有图的题拿不出图），组卷会印出"如图…"却没图，先修再跑界面回归'); process.exit(worst); }
+}
 /* 作答契约门禁（2026-10-25 建）：用户同一天三条报障——答案不全 / 图上作答的题白留答题区 /
    下横线写不下答案。判据＝题干空位数（客观可数）× 卡片逐空答案登记。
    为什么必须是硬门禁：这三类缺陷**印出来才被发现**（孩子卷面/家长答案册），
    以前没有任何机器检查，只能靠用户一题一题点出来。 */
-worst = Math.max(worst, runTool('_作答门禁.mjs', ['门禁']));
-if (worst !== 0) { console.log('✖ 作答契约门禁未过（答案不全 / 图上作答未登记 / 横线写不下），组卷会印出残缺答案册，先修再跑界面回归'); process.exit(worst); }
+{
+  const rc = runTool('_作答门禁.mjs', ['门禁']);
+  worst = Math.max(worst, rc);
+  if (rc !== 0) { console.log('✖ 作答契约门禁未过（答案不全 / 图上作答未登记 / 横线写不下），组卷会印出残缺答案册，先修再跑界面回归'); process.exit(worst); }
+}
 /* 着重号门禁（2026-10-25 晚建）：用户指着印出来的 Y0001 说「打点能力很差，全库都是这样」。
    根因是 `.rd` 标记在 app.css 里**从来没有样式**（新旧两版都没有）⇒ 加点字被当普通字印出来。
    判据：题面要加点必须有标记 / 一字一个标记 / 标记不许写进 svg / `.rd` 必须有可见样式
    （样式被删就被这条判据当场抓住——这是这次事故唯一能自动复现的形态）。 */
-worst = Math.max(worst, runTool('_着重号门禁.mjs', ['门禁']));
-if (worst !== 0) { console.log('✖ 着重号门禁未过（加点字印不出来 / 一个字点两处 / 样式被删），卷面会缺"加点"这个条件，先修再跑界面回归'); process.exit(worst); }
+{
+  const rc = runTool('_着重号门禁.mjs', ['门禁']);
+  worst = Math.max(worst, rc);
+  if (rc !== 0) { console.log('✖ 着重号门禁未过（加点字印不出来 / 一个字点两处 / 样式被删），卷面会缺"加点"这个条件，先修再跑界面回归'); process.exit(worst); }
+}
 /* 题干门禁（2026-11-07 建）：用户指着 E0017 的单题预览说「你转换出来的题干莫名其妙，谁能看得懂？
    这样的题干也能通过双盲解答？也能进库？」
    事故根因两件叠加：① **转义层套了两次**（AI 回传的 questionText 已含真标签 `<u>`，
@@ -669,19 +708,28 @@ if (worst !== 0) { console.log('✖ 着重号门禁未过（加点字印不出�
    门禁盲区：作答契约门禁查空位/答案、着重号门禁查 `.rd` 样式、配图门禁查图资产
    —— **没有任何一道门禁看"题面本身能不能读懂"**；盲解的指纹还恰恰算在乱码题面上，
    乱码反而成了"已通过"的凭据。 */
-worst = Math.max(worst, runTool('_题干门禁.mjs', ['门禁']));
-if (worst !== 0) { console.log('✖ 题干门禁未过（题干里有实体化标签 / 字面标签 / 标记不配对 / 孤儿题号却没带大题指令 / 语篇残篇 / 该画线却没画线），卷面会印出读不懂的题，先修再跑界面回归'); process.exit(worst); }
+{
+  const rc = runTool('_题干门禁.mjs', ['门禁']);
+  worst = Math.max(worst, rc);
+  if (rc !== 0) { console.log('✖ 题干门禁未过（题干里有实体化标签 / 字面标签 / 标记不配对 / 孤儿题号却没带大题指令 / 语篇残篇 / 该画线却没画线），卷面会印出读不懂的题，先修再跑界面回归'); process.exit(worst); }
+}
 /* 机器通道契约（2026-10-10 建）：各工具 --json 的**外部形状**。
    起因：`_盲解复核.mjs 门禁 --json` 的信封里卡片字典在 .cards，而两个消费方都按"顶层就是字典"取值
    ⇒ 指纹新鲜度门禁在工具组卷口与 v1 首页**双双静默失效**（门禁看着在、实际永远放行）。
    形状漂移没有测试兜底 = 同一类 bug 必然复发，所以把它变成断言；--selftest 顺带自证这条断言真会红。 */
-worst = Math.max(worst, run('gates-contract.mjs', ['--selftest']));
-if (worst !== 0) { console.log('✖ 门禁契约漂移（有消费方会静默失效），先修再跑界面回归'); process.exit(worst); }
+{
+  const rc = run('gates-contract.mjs', ['--selftest']);
+  worst = Math.max(worst, rc);
+  if (rc !== 0) { console.log('✖ 门禁契约漂移（有消费方会静默失效），先修再跑界面回归'); process.exit(worst); }
+}
 /* 安全写底座自检（2026-10-10 建）：原子写 + 拒绝"形状不对当空库" + 写前备份。
    起因：全库 JSON 真源都是 writeFileSync 就地截断覆盖（写一半被杀留半截），
    且 load() 用"形状不对就重置为空"兜底后又写回 ⇒ 真源可能被一次正常操作静默清空（BUG-01/02）。 */
-worst = Math.max(worst, run('safe-write.test.mjs'));
-if (worst !== 0) { console.log('✖ 安全写底座自检未过（真源的原子写/形状防护有问题）'); process.exit(worst); }
+{
+  const rc = run('safe-write.test.mjs');
+  worst = Math.max(worst, rc);
+  if (rc !== 0) { console.log('✖ 安全写底座自检未过（真源的原子写/形状防护有问题）'); process.exit(worst); }
+}
 /* ============ 静态/单元级断言（2026-10-11 新增） ============
    起因：本轮新增了 6 条断言脚本，但**没挂进门禁 = 能绿但没人看**（同 L-175「可选工具 ≠ 机械化」）。
    这些都是纯 node、不起壳的：跑得动、够快，就全部前置为硬门禁。
@@ -1200,29 +1248,41 @@ const unitTests = [
   ['neg-server-cold-library.cjs'],
 ];
 for (const [name] of unitTests) {
-  worst = Math.max(worst, run(name));
-  if (worst !== 0) { console.log('✖ 单元级断言未过（' + name + '），先修再跑界面回归'); process.exit(worst); }
+  {
+    const rc = run(name);
+    worst = Math.max(worst, rc);
+    if (rc !== 0) { console.log('✖ 单元级断言未过（' + name + '），先修再跑界面回归'); process.exit(worst); }
+  }
 }
 if (mode === 'full') {
   /* 会临时写真源（测毕撤批/还原）的对照，放在 full 里跑 */
   for (const name of ['neg-interval-and-axis.cjs', 'interleave-check.cjs', 'neg-paper-order-blank.cjs']) {
-    worst = Math.max(worst, run(name));
-    if (worst !== 0) { console.log('✖ 对照未过（' + name + '）'); process.exit(worst); }
+    {
+      const rc = run(name);
+      worst = Math.max(worst, rc);
+      if (rc !== 0) { console.log('✖ 对照未过（' + name + '）'); process.exit(worst); }
+    }
   }
   /* ★ 2026-10-12 把 neg-datahealth 从"游离"升为门禁项。
      它此前一直游离 ⇒ "能绿却常被跳过"（同 L-175），而它守的正是 BUG-03 那个真缺陷：
      **数据源读不到时会不会静默变成"一切正常"**。
      实测只跑 5 秒（它自己带备份+还原，实测前后真源 sha 不变），完全够格进链。
      挂链前先修了它自己的判据缺陷（红条容器是常驻空容器，原判据恒红 ⇒ 它一直 FAIL）。 */
-  worst = Math.max(worst, run('neg-datahealth.cjs'));
-  if (worst !== 0) { console.log('✖ 数据源降级红条对照未过（降级又被静默了？）'); process.exit(worst); }
+  {
+    const rc = run('neg-datahealth.cjs');
+    worst = Math.max(worst, rc);
+    if (rc !== 0) { console.log('✖ 数据源降级红条对照未过（降级又被静默了？）'); process.exit(worst); }
+  }
   /* ★ 2026-10-12 把 neg-figure-fingerprint 也升为门禁项（只跑 0.6 秒）。
      它守 BUG-08：「只改图形、不改文字」是否会让盲解结论失效。
      挂链前修了它两处问题：① 它一律按 v2 指纹判读，而存量 201/202 张卡还是 v1 指纹
      ⇒ 必然报红（把"存量现状"误报成"机制坏了"）；现按卡的真实指纹版本分别判读，
      v1 卡显式 SKIP 并打印存量缺口。② 补 skipped 计数，符合"跳过必须可见"的门禁纪律。 */
-  worst = Math.max(worst, run('neg-figure-fingerprint.cjs'));
-  if (worst !== 0) { console.log('✖ 图形指纹对照未过（有 v2 卡改了图形却没失效？）'); process.exit(worst); }
+  {
+    const rc = run('neg-figure-fingerprint.cjs');
+    worst = Math.max(worst, rc);
+    if (rc !== 0) { console.log('✖ 图形指纹对照未过（有 v2 卡改了图形却没失效？）'); process.exit(worst); }
+  }
   /* ★ 2026-11-02 R11：把游离的发布链路演练挂进门禁。
      改前 `selftest-pipeline.ps1` 在 run.mjs 里**只有 fixture 的 SKIP 展示行、0 个调用点**
      ——任何模式都不跑它（"能绿但没人跑"，L-175 同族）。
@@ -1245,8 +1305,11 @@ if (mode === 'full') {
       const sp = spawnSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
         path.join(ROOT, 'scripts', 'selftest-pipeline.ps1')], { cwd: ROOT, stdio: 'inherit' });
       if (recBak) fs.writeFileSync(rec, recBak); else if (fs.existsSync(rec)) fs.unlinkSync(rec);
-      worst = Math.max(worst, sp.status == null ? 1 : sp.status);
-      if (worst !== 0) { console.log('✖ 发布链路自检未过（升级/回滚动了数据，或耗时超上限）'); process.exit(worst); }
+      /* ★ 判**这道**自检自己的码（不是累计的 worst）——否则前面任何一条红过，
+         这条自检即使通过也会被印成"未过"，把人引去修错的东西。 */
+      const rcPipe = sp.status == null ? 1 : sp.status;
+      worst = Math.max(worst, rcPipe);
+      if (rcPipe !== 0) { console.log('✖ 发布链路自检未过（升级/回滚动了数据，或耗时超上限）'); process.exit(worst); }
     }
   }
 }
