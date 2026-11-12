@@ -609,6 +609,32 @@ textarea{width:100%;resize:vertical;min-height:64px;line-height:1.7}
 .stem-opts.cols-1{grid-template-columns:minmax(0,1fr)}
 .stem-opts .opt{min-width:0;overflow-wrap:break-word}
 @media print{.stem-opts{break-inside:avoid;page-break-inside:avoid}}
+/* ═══ 家长只读报告（2026-11-13 批次 4）════════════════════════════════════════════
+   它是**打印件**：单栏、黑白可读；条形图与柱图**纯 CSS**（不引任何 JS 库、任何外链）。
+   ⚠ 报告**不含答案**——它是"薄弱点与下一步计划"，不是答案册（答案册另有专门单元）。
+   ⚠ 字号一律 rem（可访问性底线：用户改浏览器字号时报告跟着变）。 */
+.rp{color:#111;font-size:0.9375rem;line-height:1.7}
+.rp h1{font-size:1.375rem;margin:0 0 2mm}
+.rp h2{font-size:1.0625rem;margin:5mm 0 2mm;padding-bottom:1mm;border-bottom:1px solid #999}
+.rp .rp-sub{color:#555;font-size:0.8125rem;margin-bottom:3mm}
+.rp .rp-callout{border-left:4px solid #333;background:#f4f4f4;padding:2mm 3mm;border-radius:0 4px 4px 0}
+.rp .rp-2col{display:grid;grid-template-columns:1fr 1fr;gap:2mm 8mm}
+.rp .rp-cap{display:block;margin:3mm 0 1mm;font-size:0.875rem}
+.rp .rp-row{display:grid;grid-template-columns:6.5em minmax(0,1fr) 2.5em;align-items:center;gap:6px;margin:1mm 0}
+.rp .rp-k{font-size:0.8125rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rp .rp-n{font-size:0.8125rem;text-align:right;color:#444}
+.rp .rp-bar{background:#e6e6e6;height:8px;border-radius:4px;overflow:hidden}
+.rp .rp-bar i{display:block;height:100%;background:#444;min-width:1px}
+.rp-trend{display:flex;align-items:flex-end;gap:2px;height:26mm;border-bottom:1px solid #999}
+.rp-col{flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;height:100%}
+.rp-col i{display:block;width:70%;background:#666;min-height:1px}
+.rp-col span{font-size:0.6875rem;color:#666;margin-top:1mm}
+.rp-note{color:#555;font-size:0.8125rem;margin-top:2mm}
+.rp-tb{width:100%;border-collapse:collapse;font-size:0.875rem}
+.rp-tb th,.rp-tb td{border:1px solid #999;padding:1.2mm 2mm;text-align:left}
+.rp-tb th{background:#f0f0f0}
+.rp-foot{margin-top:5mm;padding-top:2mm;border-top:1px solid #bbb;color:#666;font-size:0.8125rem}
+@media print{.rp h2{break-after:avoid}}
 /* ★ 2026-11-13（批次 4 / 答案册「错在哪一步」）：转折点是**给人讲题用的旁注**，
    所以视觉上要"看得见但不抢主线"（答案与错因仍是主体），打印时也不许把它拆到下一页。 */
 .sheet .trace{margin-top:2mm;padding:1.5mm 2mm;border-left:3px solid var(--focus);background:var(--surface2);

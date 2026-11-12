@@ -437,6 +437,42 @@
     if (el) el.hidden = true;
   };
 
+  /* ══════════ 打印注入的**唯一出口**（2026-11-13 从 paper.js 搬来共用）══════════
+     为什么搬：家长报告（stats 视图）也要走同一条打印通道。这段逻辑原先私有在 paper.js 里，
+     别的视图想打印只能再抄一份——而它是**修过两次真实报障**的代码，抄一份就是等着漂。
+     原始记录（2026-10-11 用户两次实测报障「点打印没反应」）：
+     ⚠ 根因是 **WebView2 里 `window.print()` 是空操作**：浏览器打印对话框必须由宿主实现
+       （官方 API `ICoreWebView2_16::ShowPrintUI`）。原来只调 window.print() ⇒ 在壳里点了
+       没有任何反应（不弹框也不报错）；而穷举扫描把 print 打桩了，这条路径从没被真跑过。
+     现在：① 壳通道 → 调宿主 `print` op（C# 侧 ShowPrintUI 弹系统打印对话框）；
+           ② 服务端/离线通道（真浏览器）→ 仍用 `window.print()`；
+           ③ 宿主失败**不静默**：提示"请按 Ctrl+P"，并**保留**打印区不清空。
+     ⚠⚠ 铁律：壳通道下**绝不自动清空** `#printArea`。曾因 400ms 后清空 ⇒ 送进打印队列的是
+       **空白作业**（Windows 打印服务日志实证：作业页数 0、字节 0，而打印机与驱动一切正常）。
+       清空只发生在"下一次注入新内容"时（赋值覆盖），这样 Ctrl+P 这条退路也始终能印出正确内容。 */
+  S.printHtml = function (html, tip) {
+    const area = U.$id('printArea');
+    area.innerHTML = html;
+    const isShell = (typeof H !== 'undefined') && H.mode === 'shell' && typeof H.print === 'function';
+    if (isShell) {
+      S.toast(tip || '已送入打印视图，正在打开打印预览…', 'ok');
+      /* 预览打开的同时盖打印遮罩（S.printLock）——预览层开着时主窗口输入全被它吃掉，
+         不遮住说明，用户只会觉得「点了没反应」（详见 S.printLock 注释）。
+         预览关闭（主窗口重新获焦）后遮罩自动解除。 */
+      S.printLock(true);
+      H.print().then(r => {
+        if (r && r.ok === false) throw new Error(r.error || '宿主打印不可用');
+      }).catch(e => {
+        S.printLock(false);   /* 没弹成预览就没有「看不见的层」，遮罩立即撤 */
+        S.toast('没能打开打印预览（' + ((e && e.message) || e) + '）——请按 Ctrl+P 打印，内容已备好', 'warn', 12000);
+        try { console.error('[print] 宿主打印失败：', e); } catch (_) { }
+      });
+      return;
+    }
+    S.toast(tip || '已送入打印视图（Ctrl+P 可存 PDF）', 'ok');
+    setTimeout(() => { window.print(); setTimeout(() => { area.innerHTML = ''; }, 600); }, 120);
+  };
+
   /* ================= 页内确认框（替代 window.confirm） =================
      ⚠ 2026-10-25 修（用户报障「点台账/回录必卡一阵」的根因）：
      WebView2 WinForms 壳里 `window.confirm` / `alert` 的原生对话框**不渲染**——

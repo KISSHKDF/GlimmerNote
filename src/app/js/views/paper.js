@@ -562,40 +562,12 @@
            ② 服务端/离线通道（真浏览器）→ 仍用 `window.print()`；
            ③ 宿主失败**不静默**：提示"请按 Ctrl+P"，并**保留**打印区不清空（WebView2 默认启用浏览器快捷键，Ctrl+P 能弹同一界面）。
      清空时机也改了：壳通道等对话框**关闭后**再清，否则卷面可能在对话框还开着时被清掉、印出空白。 */
-  function printHtml(html, tip) {
-    const area = U.$id('printArea');
-    area.innerHTML = html;
-    const isShell = (typeof H !== 'undefined') && H.mode === 'shell' && typeof H.print === 'function';
-    if (isShell) {
-      S.toast(tip || '已送入打印视图，正在打开打印预览…', 'ok');
-      /* ★ 2026-10-25：预览打开的同时盖打印遮罩（S.printLock）——预览层开着时主窗口输入
-         全被它吃掉，不遮住说明，用户只会觉得「点了没反应」（详见 shell.js S.printLock 注释）。
-         预览关闭（主窗口重新获焦）后遮罩自动解除。 */
-      S.printLock(true);
-      H.print().then(r => {
-        if (r && r.ok === false) throw new Error(r.error || '宿主打印不可用');
-        /* ⚠⚠ 2026-10-11 修（用户第二次报障「点左下角打印之后没反应」的真凶）：
-           **这里原来有 `setTimeout(() => { area.innerHTML = ''; }, 400)` —— 必须删掉。**
-           因为宿主 `ShowPrintUI` 是「对话框刚弹出就返回」，而 Edge 打印预览是**之后**才去渲染页面内容的；
-           400ms 就把 `#printArea` 清空 ⇒ 送进队列的是**空白作业**。
-           铁证（Windows 打印服务日志 `Microsoft-Windows-PrintService/Operational`）：
-             作业 14/18/19/21/23/24 全部 `打印页数: 0`、`大小(以字节为单位): 0`，
-             而打印机与驱动一切正常（Word/WPS 能打）⇒ 空白是应用造成的。
-           现在的规矩：**壳通道下绝不自动清空打印区**（它 `display:none`，屏幕上不占位、只对打印可见）。
-           清空只在"下一次注入新的打印单元"时发生（`fillPrintArea` 是赋值覆盖），
-           顺带让 Ctrl+P 这条退路也始终能印出正确卷面。 */
-      }).catch(e => {
-        S.printLock(false);   /* 没弹成预览就没有「看不见的层」，遮罩立即撤 */
-        S.toast('没能打开打印预览（' + ((e && e.message) || e) + '）——请按 Ctrl+P 打印，卷面已备好', 'warn', 12000);
-        try { console.error('[print] 宿主打印失败：', e); } catch (_) { }
-      });
-      return;
-    }
-    S.toast(tip || '已送入打印视图（Ctrl+P 可存 PDF）', 'ok');
-    setTimeout(() => { window.print(); setTimeout(() => { area.innerHTML = ''; }, 600); }, 120);
-  }
+  /* ★ 2026-11-13（批次 4 / 家长报告）：上面这段打印通道的实现已搬到 `S.printHtml`（shell.js）
+     —— 家长报告（stats 视图）也要走同一条通道，而它是**修过两次真实报障**的代码，抄一份就是等着漂。
+     事故全记录（含"400ms 清空打印区 ⇒ 送进队列的是空白作业"那条 Windows 打印服务日志铁证）
+     随代码一起搬到了 shell.js。本文件只保留 `printUnit` / `fillPrintArea` 这些**卷面特有**的部分。 */
   function doPrint(kind) {
-    printHtml(V.printUnit(kind), kind === 'ans'
+    S.printHtml(V.printUnit(kind), kind === 'ans'
       ? '已送入打印视图：只有答案册（家长批改用，别给孩子）'
       : '已送入打印视图：只有试卷（不含答案册）');
   }
@@ -660,7 +632,7 @@
       footer: '<button class="btn" id="spClose">关闭</button><button class="btn primary" id="spPrint">🖨 打印这一题</button>',
       onMount: d => {
         d.querySelector('#spClose').onclick = S.closeDrawer;
-        d.querySelector('#spPrint').onclick = () => printHtml(html);
+        d.querySelector('#spPrint').onclick = () => S.printHtml(html);
       },
     });
   };
