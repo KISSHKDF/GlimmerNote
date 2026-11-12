@@ -119,8 +119,17 @@ console.log('\n══ ⑤ 链路三处：壳转发 / 前端派生 / 流水显示
   const review = fs.readFileSync(path.join(E.REPO, 'src', 'app', 'js', 'views', 'review.js'), 'utf8');
   const tool = fs.readFileSync(E.tool('_标记复习.mjs'), 'utf8');
   A('★ 壳透明转发 --by（白名单在工具侧校验）', /AddFlag\(args, payload, "by", "--by"\)/.test(cs), '');
+  /* ★ 2026-11-13 修（本用例是我自己写的，判据写脆了）：原先要求**字面串**
+     `CTB.shell.kidMode() ? '孩子' : '家长'`。而实现后来为了**防御**改成了
+       `(CTB && CTB.shell && typeof CTB.shell.kidMode === 'function' && CTB.shell.kidMode()) ? '孩子' : '家长'`
+     —— 那个前置判断是必要的：Node 侧直接 require `model.js` 时 `CTB.shell` 可能是 undefined
+     （`neg-v2-smoke.cjs` 实测 `TypeError: Cannot read properties of undefined (reading 'kidMode')`）。
+     ⇒ 字面串不再出现，这条断言**假红**（而它守的口径其实没坏）。
+     改成匹配**语义**：同一个三元里出现 `kidMode()` 与 `'孩子' / '家长'` 两支。
+     既守住"孩子 ⇒ 自评、否则家长"，又不把实现钉死成某一种写法。 */
   A('★ 前端按孩子模式派生（孩子 ⇒ 自评，否则家长）',
-    /CTB\.shell\.kidMode\(\) \? '孩子' : '家长'/.test(model), '');
+    /kidMode\(\)\s*\)?\s*\?\s*'孩子'\s*:\s*'家长'/.test(model),
+    (model.match(/[^\n]*kidMode\(\)[^\n]*/) || ['(源码里没有 kidMode 调用)'])[0].trim().slice(0, 140));
   A('★ 复习流水里显示「谁判」', /r\.by \? '<span class="muted rv-by"/.test(review) || /\.by \? .*rv-by/.test(review), '');
   A('★ 工具侧白名单含四值（家长/孩子/AI辅助/空）',
     /GRADERS = \['家长', '孩子', 'AI辅助', ''\]/.test(tool), '');

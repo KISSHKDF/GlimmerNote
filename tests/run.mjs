@@ -76,6 +76,18 @@ function run(script, args = []) {
   return r.status ?? 1;
 }
 
+/* ★ 2026-11-13：给**不是断言用例**的脚本用（目前只有 `launch-dev.cjs` —— 它只负责拉起开发壳，
+   fire-and-forget，本来就没有任何断言）。`run()` 会把它记进断言对账 ⇒ 因"未申报断言数"判红
+   （full 实测：`有 1 个用例没报 断言=N：launch-dev.cjs`）。
+   本函数只转发输出与退出码，**不参与对账** —— 对账的对象是"跑断言的用例"，不是"帮忙起环境的脚本"。 */
+function runRaw(script, args = []) {
+  console.log('\n═══ ' + script + ' ' + args.join(' ') + '（环境准备，不计入断言对账）═══');
+  const r = spawnSync(process.execPath, [path.join(ROOT, 'tests', script), ...args],
+    { cwd: ROOT, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
+  process.stdout.write(String(r.stdout || '') + String(r.stderr || ''));
+  return r.status ?? 1;
+}
+
 function settleAssertionBudget() {
   const names = Object.keys(ASSERT_SEEN).sort();
   const total = names.reduce((a, k) => a + ASSERT_SEEN[k], 0);
@@ -1314,8 +1326,8 @@ if (mode === 'full') {
   }
 }
 if (mode === 'full') {
-  // launch-dev 是 fire-and-forget（spawn 新壳后自身退出），跑完等端口
-  const l = run('launch-dev.cjs');
+  // launch-dev 是 fire-and-forget（spawn 新壳后自身退出），跑完等端口；它没有断言 ⇒ 用 runRaw
+  const l = runRaw('launch-dev.cjs');
   worst = Math.max(worst, l);
   if (l !== 0) { console.log('launch 失败，中止'); process.exit(1); }
   if (!await waitPort(60000)) { console.log('✖ 9223 调试口 60s 未就绪'); process.exit(1); }
@@ -1327,7 +1339,7 @@ if (mode === 'full') {
       但界面回归连不上 9223）。现在：端口不通就自动拉起开发壳，省掉手工步骤。 */
   if (!await waitPort(1500)) {
     console.log('\n═══ 未检测到开发壳，自动拉起（node tests\\launch-dev.cjs）═══');
-    const l = run('launch-dev.cjs');
+    const l = runRaw('launch-dev.cjs');   /* 环境准备，不比断言数 —— 见 runRaw 的注释 */
     worst = Math.max(worst, l);
     if (l !== 0) { console.log('launch 失败，中止'); process.exit(1); }
     if (!await waitPort(60000)) { console.log('✖ 9223 调试口 60s 未就绪'); process.exit(1); }
