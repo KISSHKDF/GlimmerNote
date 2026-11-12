@@ -924,6 +924,9 @@ const unitTests = [
   /* ★ 2026-11-12（批次 3 / 可访问性）：字号 px→rem（视觉逐值不变）+ prefers-reduced-motion
      + 动态状态 aria-live。改前实测：58 处 px 字号、reduced-motion 0 处、aria-live 0 处。 */
   ['neg-a11y-baseline.cjs'],
+  /* ★ 2026-11-12（批次 3 / README 用户视角重构）：守一级标题唯一 / 内部锚点都能落地 /
+     用户区在开发者区之前 / 被 run.mjs 引用的章节名还在。零库依赖。 */
+  ['neg-readme-structure.cjs'],
   /* ★ 2026-11-12：`_快照.mjs` 自 2026-11-08 起**完全不可用** —— 纳管清单里的 glob 允许"当前零匹配"
      （`_收件箱/**\/_来源映射.csv`：收件箱清空后该文件就不在了），而 `git add -A -- <pattern>` 对
      不匹配的 pathspec 会 fatal（exit 128），`git add` 又**没有** `--ignore-unmatch`（实测 2.54.0）。
