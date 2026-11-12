@@ -281,7 +281,14 @@ console.log('\n══ 五、组装：原图路径按库根解析（用户实测�
   /* 指纹里必须含 sha256（溯源锚），且两次一致 */
   A('组装产物带 sourceImageSha256', /[0-9a-f]{64}/.test(okRelSlash.stdout || ''), '');
   A('任务单不出现库根绝对路径（数据目录隐私红线）', !(okRelSlash.stdout || '').includes(LIB), '');
-
+  /* ★ 2026-11-12（批次 3 / UX-02）：任务单**不许**把用户指到 `docs\` ——
+     发行包（`build-release.ps1` 的 stage）只拷 `app\` + `tools\*.mjs` + `recipes\`，**没有 `docs\`**；
+     改前那句「按 `docs\作答契约.md` 建卡入库」等于把用户指到一个**不存在的文件**，
+     而界面第 4 步**本来就有**一个「📥 建卡入库」按钮。 */
+  A('★ 任务单不出现 `docs\\` 路径（发行包里没有 docs\\）',
+    !/docs\\/.test(okRelSlash.stdout || ''), ((okRelSlash.stdout || '').match(/[^\n]*docs\\[^\n]*/) || [''])[0].slice(0, 120));
+  A('★ 任务单指向界面可达的第 4 步按钮（不是指路到仓库文档）',
+    (okRelSlash.stdout || '').includes('建卡入库'), '');
   /* ══ 任务单是「交给别人家 AI」的文档。2026-10-27 用户拿第一版去问 WorkBuddy，对方直接拒绝执行。
      三处缺陷逐条钉住 —— 这些断言比「能生成」重要：生成得出来但交不出去，等于没有。 ══ */
   const ticket = okRelSlash.stdout || '';

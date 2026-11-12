@@ -666,7 +666,7 @@ export function loadCard(sel, explicitRoot) {
   if (!isDir(root)) {
     return {
       ok: false, code: 2, reason: 'packs-root-missing',
-      why: '经验包根不存在：' + root + '\n  安装=把包文件夹**手工复制**成 <经验包根>/<packId>/<version>/（见 docs\\经验包规范.md）',
+      why: '经验包根不存在：' + root + '\n  安装=把包文件夹**手工复制**成 <经验包根>/<packId>/<version>/（见 仓库文档 docs\\经验包规范.md）',
     };
   }
   const packDir = path.join(root, ...p.packId.split('/'), p.version);

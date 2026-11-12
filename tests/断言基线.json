@@ -5,7 +5,7 @@
  "neg-shell-args.mjs": 57,
  "chunk-roundtrip.cjs": 24,
  "safe-write.test.mjs": 12,
- "neg-recipe-contract.cjs": 166,
+ "neg-recipe-contract.cjs": 168,
  "neg-stem-sanitize.cjs": 75,
  "neg-shell-source-and-reparse.cjs": 89,
  "neg-write-lock-and-txn.cjs": 22,

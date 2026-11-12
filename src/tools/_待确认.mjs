@@ -1443,7 +1443,7 @@ if (action === '清单') {
     if (bad.length) {
       console.error(`✖ 候选 ${candId} 的正文是修订包，但没通过校验（${bad.length} 处）：`);
       for (const b of bad) console.error('   · ' + b);
-      console.error('   形状与判据见 docs\\录题任务契约.md「候选与修订链」。台账与库**一字未动**。');
+      console.error('   形状与判据见 仓库文档 docs\\录题任务契约.md「候选与修订链」。台账与库**一字未动**。');
       process.exit(1);
     }
     console.log(`   ✔ 正文是修订包：坐标与页引用校验通过（${['regions', 'origBox', 'box', 'page', 'origPage', 'pageSha'].filter(k => pack.obj[k] !== undefined).join('/') || '（没给坐标或页字段）'}）`);

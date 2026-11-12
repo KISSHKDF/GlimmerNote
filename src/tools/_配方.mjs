@@ -1468,9 +1468,13 @@ async function cmdCompose() {
   head.push('');
   head.push('## 三、回来之后（这一步在本机做，**不用发给 AI**）');
   head.push('');
+  /* ★ 2026-11-12（批次 3 / UX-02）：这两行原先让用户"按 `docs\作答契约.md` 建卡入库"——
+     但**发行包里没有 `docs\`**（`build-release.ps1` 的 stage 只拷 `app\` + `tools\*.mjs` + `recipes\`），
+     所以那是把用户指到一个不存在的文件；而且界面第 4 步**早就有一个「📥 建卡入库」按钮**。
+     改成本页可达的按钮指引。判据见 `tests\neg-recipe-contract.cjs`（任务单里不许出现 `docs\` 路径）。 */
   head.push('1. 把 AI 回的 JSON **原样**粘回程序「📥 录题」页第 3 步的输入框');
   head.push('2. 点「校验」→ 程序按契约逐条检查（结构、枚举、必填、溯源锚）');
-  head.push('3. 校验通过后，按 `docs\\作答契约.md` 建卡入库（程序不自动入库，要过三道门禁）');
+  head.push('3. 按提示补全并**人工确认**，再点 **「📥 建卡入库」**（第 4 步的按钮）—— 程序不自动入库，要过三道门禁');
   head.push('');
   head.push('## 四、本机留痕（仅供排查，**不用发给 AI**）');
   head.push('');
