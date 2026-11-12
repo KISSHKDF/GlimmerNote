@@ -25,17 +25,28 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
+const { execFileSync } = require('child_process');
 const E = require('./_测试环境.cjs');
 
-/* ★ 2026-11-13 诊断记录（本用例在 full 档长期红，此前被前面的门禁挡着从没跑到）：
-   它取真台账里"未到期题最多"的批次当素材，**只按"未到期"挑**，没管"可组卷"三态
-   （盲解已通过 且 答案有**红笔之外**的可靠第二来源）。实测真库现状：**36 张卡缺第二来源**
-   ⇒ 组卷被**答案来源门禁**拦（exit 2）⇒ 前置断言与后面几段连锁红。
-   ⚠ 它自己那句注释早就写明了这个陷阱：「否则后面'被拦'可能只是别的门禁在拦」。
-   我一度想用 `_标记复习.mjs 状态 --json` 的 `admit` 清单来过滤素材，**结果发现那个 `--json` 根本不输出 JSON**
-   （659 行全是人类可读，含 `{` 的行数 = 0）—— 那本身是个待修缺陷（已记入 CHANGELOG）。
-   **决定：不为变绿而掩盖** —— 本用例的红反映的是**数据侧欠账（缺答案第二来源）**，
-   保留它红着（并在此写明为什么），等数据清账后自动恢复真跑。 */
+/* ★ 2026-11-13：素材必须**先过准入三态**（盲解已通过 **且** 答案有**红笔之外**的可靠第二来源）。
+   改前只按"未到期"挑卡 ⇒ 真库里有卡缺第二来源，组卷被**答案来源门禁**拦（exit 2）
+   ⇒ 前置断言与后段连锁红。它自己的注释早就写明了这个陷阱：「否则后面'被拦'可能只是别的门禁在拦」。
+   实测真库准入：可组卷 **547/656**（两位学生分别是 309/381 与 238/275）。过滤后素材充足。
+   ⚠ **动作名是 `准入`，不是 `状态`**：我第一版写成 `状态 --json`，而 `状态` 根本不认 `--json`
+   （它只打印逐题状态列表）⇒ 我一度误判成"工具不输出 JSON、是个产品缺陷"（**已在 CHANGELOG 里更正**）。
+   `准入` 才是准入判定的**唯一实现**（见 `_标记复习.mjs` 的 case 注释），`--json` 出
+   `{"ok":true,"can":547,"total":656,"admit":{"学生|编号":{ok,why}}}` —— 单行、纯 JSON、可直接 parse。 */
+const ADMIT = (() => {
+  try {
+    const r = execFileSync(process.execPath, [E.tool('_标记复习.mjs'), '准入', '--json'],
+      { encoding: 'utf8', maxBuffer: 64e6, env: Object.assign({}, process.env, { CTB_DATA: E.LIB }) });
+    return (JSON.parse(String(r).trim()).admit) || {};
+  } catch (e) {
+    console.log('  ⚠ 取准入清单失败（' + String(e.message).slice(0, 80) + '）——本次不过滤素材');
+    return {};
+  }
+})();
+const isAdmissible = (student, id) => { const k = student + '|' + id; return ADMIT[k] === undefined ? true : !!ADMIT[k].ok; };
 
 const ROOT = path.resolve(__dirname, '..');
 let pass = 0, fail = 0;
@@ -86,7 +97,7 @@ function loadNextDue(student) {
   return out;
 }
 const isDueOn = (due, id, date) => { const nd = due[id]; return !!(nd && String(nd) <= String(date)); };
-const undDueIds = (b) => { const due = loadNextDue(b.student); return (b.items || []).filter(id => !isDueOn(due, id, b.date)); };
+const undDueIds = (b) => { const due = loadNextDue(b.student); return (b.items || []).filter(id => !isDueOn(due, id, b.date) && isAdmissible(b.student, id)); };
 const ranked = batches.map(b => ({ b, ids: undDueIds(b) })).sort((x, y) => y.ids.length - x.ids.length);
 const seed = ranked.length ? ranked[0].b : null;
 if (!seed) { console.log('✖ 真台账里没有批次，无法取素材'); process.exit(1); }
