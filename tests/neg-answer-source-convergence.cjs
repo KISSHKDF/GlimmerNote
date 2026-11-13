@@ -14,7 +14,7 @@
  *   ② 共享模块零副作用（不解析 argv、不读库根）——它被多个 CLI import（L-729）；
  *   ③ 行为：带括号限定的值是**在册**的（修前入库器判非法）；`老师定案` 及其限定形态**不在册**；
  *      `isAcceptableSource` 对「老师定案」只在 `independentProof=true` 时放行；
- *   ④ 阴性自证：把 `baseSourceOf` 的"剥后缀"掏成恒等 ⇒ 带限定值必须变回"不在册"。
+ *   ④ 阴性自证（P0-B 后双锚点）：掏掉"剥全部括号"⇒ 带限定值变回"不在册"；掏掉"复合切段"⇒ 复合值变回"不在册"。
  * 退出码 0=PASS / 1=FAIL。
  */
 'use strict';
@@ -66,19 +66,55 @@ console.log('\n══ ③ 行为 ══');
     M.isAcceptableSource('独立判卷') && M.isAcceptableSource('红笔订正+官方答案页核对') && !M.isAcceptableSource('未能确认'), '');
   A('★ 「老师定案」只在 independentProof=true 时放行（放行理由是"答案另有独立出处"）',
     M.isAcceptableSource('老师定案') === false && M.isAcceptableSource('老师定案', { independentProof: true }) === true, '');
-  A('baseSourceOf 只剥末尾括号限定', M.baseSourceOf('独立判卷（双路盲解×2＋第三路独立复核一致）') === '独立判卷', M.baseSourceOf('独立判卷（双路盲解×2＋第三路独立复核一致）'));
+  A('baseSourceOf 剥全部括号（含复合值中部的）——P0-B 后不再只剥末尾', M.baseSourceOf('独立判卷（双路盲解×2＋第三路独立复核一致）') === '独立判卷' && M.baseSourceOf('独立判卷（双路）＋老师红笔一致（核对）') === '独立判卷 ＋老师红笔一致', M.baseSourceOf('独立判卷（双路）＋老师红笔一致（核对）'));
 
-  console.log('\n══ ④ 阴性自证：掏掉"剥后缀"⇒ 带限定值必须变回不在册 ══');
+  console.log('\n══ ③b P0-B 复合值矩阵（2026-11-13，决策点 1）══');
+  A('★ `独立判卷+红笔一致` 复合值**在册**（修前 103 张被误拒）',
+    M.isInContract('独立判卷+红笔一致') === true, '');
+  A('★ 复合值合格性：任一段独立/双源即合格（红笔段只加强、不否决）',
+    M.isAcceptableSource('独立判卷+红笔一致') === true &&
+    M.isAcceptableSource('独立判卷（双路盲解×2 一致）+老师红笔一致（与答案页核对）') === true, '');
+  A('★ 括号里的 ＋ 不许切段（先剥全部括号→整体匹配→才切段，顺序不可反）',
+    M.basePartsOf('独立判卷（双路盲解×2＋第三路独立复核一致）').length === 1 &&
+    M.isInContract('独立判卷（双路盲解×2＋第三路独立复核一致）') === true, '');
+  A('★ 合法单值 `红笔订正+官方答案页核对` 不被切段打散（整体在册优先）',
+    M.basePartsOf('红笔订正+官方答案页核对').length === 1 &&
+    M.isInContract('红笔订正+官方答案页核对') === true, '');
+  A('★ 红笔段**单独**不在册（红笔不是独立证据，不能单靠它确立契约）',
+    M.isInContract('红笔一致') === false && M.isAcceptableSource('红笔一致') === false, '');
+  A('★ 纯红笔段复合不在册（无独立/双源段的复合＝红字想单独定案）',
+    M.isInContract('红笔一致+红笔复核') === false, '');
+  A('★ 佐证段特征认（真库枚举：红笔一致/红笔订正/老师红笔一致/老师红笔解答一致/整页照片核验/整页照片逐图复核）',
+    M.isInContract('独立判卷（双路盲解×2 一致）+老师红笔一致（答题纸2 24(2)红圈×旁改"＝"）') === true &&
+    M.isInContract('独立判卷+整页照片核验（转向按图中 C 在左、D 在右判定）') === true, '');
+  A('★ `官方答案比对（…）` 仍**不在册**（决策点 1b：改数据，不扩契约别名）',
+    M.isInContract('官方答案比对（与菁优网一致）') === false &&
+    M.isAcceptableSource('官方答案比对（与菁优网一致）') === false, '');
+  A('★ 废除值保持原语义：`老师定案+红笔一致` 仍走废除通道（红字不因复合而洗白）',
+    M.isRetiredSource('老师定案+红笔一致') === true &&
+    M.isAcceptableSource('老师定案+红笔一致') === false &&
+    M.isAcceptableSource('老师定案+红笔一致', { independentProof: true }) === true, '');
+
+  console.log('\n══ ④ 阴性自证：掏掉"复合值切段"⇒ 复合值必须变回不在册/不合格 ══');
   {
-    const mutated = gsrc.replace(
-      "return String(v == null ? '' : v).trim().replace(/[（(][^）)]*[）)]\\s*$/, '').trim();",
-      "return String(v == null ? '' : v).trim();");
-    A('变异点命中（判据没被改名）', mutated !== gsrc, '');
-    const tmp = path.join(E.allocTempDir('gn-src-mut-'), '_来源.mjs');
-    fs.writeFileSync(tmp, mutated, 'utf8');
-    const M2 = await import(pathToFileURL(tmp).href);
-    A('★ 掏掉后 `独立判卷（…）` 变回"不在册"（这条判据确实有牙齿）',
-      M2.isInContract('独立判卷（双路盲解×2 一致）') === false, '');
+    /* P0-B（2026-11-13）：变异点绑定新实现——两个锚点缺一不可：
+       掏 stripAllParens 的迭代剥括号 ⇒ 带括号限定值变回"不在册"；
+       掏 splitCompound 的切段 ⇒ 复合值变回"不在册"。
+       只绑一个锚点会让另一条判据失去阴性对照（评审终稿 §2.4 教训）。 */
+    const m1 = gsrc.replace('do { prev = s; s = s.replace(/[（(][^（()）]*[）)]/g, \' \'); } while (s !== prev);', '');
+    const m2 = gsrc.replace('return s.split(/[+＋]/).map(x => x.trim()).filter(Boolean);', 'return [s];');
+    A('变异点①命中（剥括号判据没被改名）', m1 !== gsrc, '');
+    A('变异点②命中（切段判据没被改名）', m2 !== gsrc, '');
+    const tmp1 = path.join(E.allocTempDir('gn-src-mut1-'), '_来源.mjs');
+    const tmp2 = path.join(E.allocTempDir('gn-src-mut2-'), '_来源.mjs');
+    fs.writeFileSync(tmp1, m1, 'utf8');
+    fs.writeFileSync(tmp2, m2, 'utf8');
+    const M1 = await import(pathToFileURL(tmp1).href);
+    const M2 = await import(pathToFileURL(tmp2).href);
+    A('★ 掏掉剥括号后 `独立判卷（…）` 变回"不在册"（判据①有牙齿）',
+      M1.isInContract('独立判卷（双路盲解×2 一致）') === false, '');
+    A('★ 掏掉切段后 `独立判卷+红笔一致` 变回"不在册"（判据②有牙齿）',
+      M2.isInContract('独立判卷+红笔一致') === false, '');
   }
 
   console.log(`\n[neg-answer-source-convergence] 断言=${passed} 失败=${worst}`);
