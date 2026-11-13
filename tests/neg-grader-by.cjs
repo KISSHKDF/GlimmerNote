@@ -140,9 +140,15 @@ console.log('\n══ ⑤ 链路三处：壳转发 / 前端派生 / 流水显示
 console.log('\n══ ⑥ 阴性自证：把写入掏掉 ⇒ ① 必须红 ══');
 {
   const tool = fs.readFileSync(E.tool('_标记复习.mjs'), 'utf8');
+  /* ★ 2026-11-14（批次 4-1 revlog）：actGrading 判分行现在还有 revlog 的 by 落行（revlogAppend
+     里 `by: byOf(by)`），所以变异后源码里仍可能有一处匹配 —— 断言改为**变异点所在的那一行**
+     不再含 byOf（流水写入点被掏掉），而不是全文无匹配。 */
   const broken = tool.replace('note: note || \'\', by: byOf(by) }', 'note: note || \'\' }');
   A('变异点命中', broken !== tool, '');
-  A('★ 掏掉后流水里就不会有 by（这条判据确实有牙齿）', !/by: byOf\(by\)/.test(broken), '');
+  const mutatedLine = broken.split('\n').find(l => l.includes('note: note') && l.includes('paper: paperId'));
+  A('★ 掏掉后判分流水行里没有 by（这条判据确实有牙齿）',
+    mutatedLine ? !/by: byOf\(by\)/.test(mutatedLine) : !/concat\(\[\{ date: day, paper: paperId, result: res, note: note \|\| '' \}\]\)/.test(broken),
+    mutatedLine ? mutatedLine.trim().slice(0, 80) : '判分行整体替换形态');
 }
 
 /* ⚠ 必须报 `断言=N`：`tests\run.mjs` 的断言数对账把"没报断言数的用例"计入**未申报** ⇒ 直接判红

@@ -19,7 +19,7 @@
  "neg-confirm-html-sanitize.cjs": 37,
  "neg-contrib-templates.cjs": 63,
  "neg-create-student.cjs": 41,
- "neg-data-area-rules.mjs": 226,
+ "neg-data-area-rules.mjs": 227,
  "neg-datahealth.cjs": 13,
  "neg-deps-lock.cjs": 32,
  "neg-difficulty-elo.cjs": 19,
@@ -144,5 +144,6 @@
  "verify-v2-route-cta.cjs": 23,
  "verify-variant-retrieval.cjs": 23,
  "neg-healthcheck-weblauncher.cjs": 17,
- "neg-original-mtime-invariant.cjs": 4
+ "neg-original-mtime-invariant.cjs": 4,
+ "neg-revlog-appendonly.cjs": 18
 }
