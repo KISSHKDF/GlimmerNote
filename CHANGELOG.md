@@ -15,6 +15,71 @@
 
 版本号遵循日期制 `YYYY.MM.DD.NN`。版本号唯一真源：`VERSION.json`。
 
+## [2026.11.13.27] - 2026-11-13 · 定案 `full` 里那两项「未定位」：一个是**假红**，一个是**误读**
+
+**变更分类**：Fixed
+**升级影响**：**只改测试**。产品代码一行未动。受影响的是三条界面用例挑「量哪一页」的方式，
+以及 `verify-shell-visual.cjs` 多了一条 `boot 完成` 断言（13 → 14）。
+
+### 背景
+
+上一版收尾时留了两项「`full` 里未定位」：① 某用例 `RESULT=FAIL(1) 断言=13 失败=1`；
+② 界面回归段打印 `Runtime 异常/console 全量（共 2 条，判据只看这个）`。
+本版把两项**都定案**，结论是：① 是**测试自己在竞态里量错了对象**（假红）；
+② 根本不是缺陷，是**打印措辞把读日志的人带偏了**。
+
+### ① `断言=13 失败=1` = `verify-shell-visual.cjs` 挑错了页面（假红）
+
+根因叠了两层，都在这个用例里：
+
+| # | 缺陷 | 后果 |
+|---|---|---|
+| a | 挑页面的第一选择器写的是 `/v2\/index\.html/` —— **老布局**（该文件 L15 的注释早就写明它已搬到 `src\app\index.html`） | 第一选择器**永远不匹配**，实际一直靠后面的兜底在工作 |
+| b | 兜底是 `find(t => t.type === 'page')` | WebView2 壳刚起来时列表里**先是 `about:blank`**，页面导航完成才变成 `index.html` ⇒ 拿到空白页量测 |
+
+**实证**（可复现）：`launch-dev.cjs` 拉起壳后**不睡**直接跑，必得
+`[FAIL] 真实壳是 file:// 通道 → about:blank` + `RESULT=FAIL(1) 断言=13 失败=1`
+—— 与本会话第 38 轮 `full` 里那行形状**完全一致**。这也解释了它为什么"偶发"：
+`run.mjs` 在 `launch-dev` 之后 `sleep(2500)`，多数时候足够导航完成；不够时就红，
+而且红在一句跟产品毫无关系的话上。
+
+**同一个兜底在另外三处也在**：`verify-v2-route-cta.cjs`、`smoke-shell.mjs`、
+`neg-v2-ingest-task-e2e.cjs`（后者 full 日志里能看到 `拿到 page target → about:blank`）。
+
+### 改法：把「等真正的 app 页面」收成一个唯一实现
+
+新增 `tests\_测试环境.cjs` 的 `waitAppPageTarget(base, opts)`：**只认 `E.isAppUrl`
+（认三种布局，本来就是这个仓库的唯一实现）+ 有界等待**，等不到返回 `null` 让调用方
+**显式判红**（不再静默退化成空白页）。四处调用点全部改用它。
+
+`verify-shell-visual.cjs` 另修**第二层**——「URL 对了 ≠ 页面能用了」：
+拿到 `index.html` 只用了 ~2.8s，但此刻还在 boot（`ctbMode` 仍是 `boot`、`CTB.model.cards` 为空），
+于是又有三条断言红成 `走的是桌面壳通道 → boot` / `可见 undefined 条` / `{"found":false}`。
+现在**先有界等 boot 完成（≤25s，判据与 `e2e-ui` / `neg-v2-pagesmoke` 同口径）**，
+并把等待结果作为一条显式断言；等不到就红在它上面，不把"没准备好"伪装成"功能坏了"。
+
+### ② `2 条 console 异常` = 阴性自证，**不是缺陷**；错的是打印措辞
+
+那两条是 `R1 SWEEP-NEG-PROOF-视图抛错` / `R2 SWEEP-NEG-PROOF-吞掉的错`，
+由 `verify-v2-interactive-sweep.cjs` 第 5 段**故意造出来**（不造就没法证明判据有牙）。
+后台判的也确实是 `UNACCOUNTED`（已剔掉它们）⇒ `RESULT=PASS 断言=24`。
+但打印写的是「共 N 条，**判据只看这个**」，读起来就是"这 N 条都会判红"——
+于是它被人当成"界面回归还剩 2 条 console 异常待修"，记进待办追了两轮。
+
+现在每条都标出归属：`（本用例阴性自证，故意造的 —— 不判红）` /
+`（台账竞态，已由上面那条断言单独认领 —— 不判红）` / `★★ 未归属 —— 判红`，
+并在汇总行写明「其中未归属 N 条」。**允许 ≠ 静默**（同"真库零写入"那条派生件的口径）。
+
+### 回归断言（可证伪，两条都真跑了）
+
+| 场景 | 改前 | 改后 |
+|---|---|---|
+| 拉壳后**不睡**立刻跑 `verify-shell-visual` | `[FAIL] 真实壳是 file:// 通道 → about:blank`，`RESULT=FAIL(1) 断言=13` | `等 app page target 用了 2790ms` → 通道正确 → `等了 1000ms，卡片 656 张` → **`RESULT=PASS 断言=14`** |
+| 壳**没起**时跑同一用例 | 抛 `fetch failed`，无说明 | `[FAIL] 20s 内没等到真正的 app page target —— 现有 target：[]` + 一句说清判据，`RESULT=FAIL(1) 断言=1` |
+| `smoke-shell.mjs` | `拿到 page target → about:blank` | `拿到 app page target（只认 index.html，不许退化成 about:blank）→ …（等了 3095ms）`，PASS |
+| `neg-v2-ingest-task-e2e.cjs` | `拿到 page target → about:blank`，后续受阻 | `拿到 app page target …`，**PASS 断言=44** |
+| `verify-v2-interactive-sweep.cjs` 汇总 | 「共 2 条，判据只看这个」→ 会被误读成待修 | 「共 2 条（其中未归属 **0** 条）」+ 每条标 `（本用例阴性自证…不判红）` + `⇒ 全部有归属` |
+
 ## [2026.11.13.26] - 2026-11-13 · 补上批次 2 里**最后一条未修的假绿**（手抄常量）+ 批次 2 收口核实
 
 **变更分类**：Fixed
