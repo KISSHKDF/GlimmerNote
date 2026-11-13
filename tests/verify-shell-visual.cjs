@@ -24,8 +24,8 @@ const BASE = 'http://127.0.0.1:' + PORT;
 const OUT = path.join(ROOT, '_probe', 'shell-shots');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const dec = u => { try { return decodeURIComponent(u || ''); } catch { return u || ''; } };
-let fails = 0, skips = 0;
-const A = (n, ok, d) => { console.log(`${ok ? '[OK]  ' : '[FAIL]'} ${n}${d !== undefined ? '  → ' + String(d).slice(0, 200) : ''}`); if (!ok) fails++; };
+let fails = 0, skips = 0, total = 0;   /* ★ 2026-11-13：total 供 `断言=N` 对账用（run.mjs 的断言数对账 fail-closed） */
+const A = (n, ok, d) => { total++; console.log(`${ok ? '[OK]  ' : '[FAIL]'} ${n}${d !== undefined ? '  → ' + String(d).slice(0, 200) : ''}`); if (!ok) fails++; };
 const S = (n, why) => { skips++; console.log(`[SKIP]${n}  → ${why}`); };
 
 async function listTargets() { const r = await fetch(BASE + '/json/list'); if (!r.ok) throw new Error('list ' + r.status); return r.json(); }
@@ -215,6 +215,6 @@ class Cdp {
 
   console.log('\n截图：'); shots.forEach(s => console.log('  ' + s));
   c.close();
-  console.log(`\nRESULT=${fails ? 'FAIL(' + fails + ')' : 'PASS'}`);
+  console.log(`\nRESULT=${fails ? 'FAIL(' + fails + ')' : 'PASS'}  断言=${total}  失败=${fails}`);
   process.exit(fails ? 1 : 0);
 })().catch(e => { console.log('EXC ' + (e && e.stack || e)); process.exit(1); });

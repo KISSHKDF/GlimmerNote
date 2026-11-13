@@ -29,7 +29,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { libraryRoot, toolPath } from './_库根.mjs';
-import { readJsonStrict } from './_安全写.mjs';
+import { readJsonStrict, writeTextAtomic } from './_安全写.mjs';
 import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
 
 /* ══════════════ 参数 ══════════════ */
@@ -428,7 +428,8 @@ function cmdJudge() {
   if (out && out !== '-') {
     const abs = path.resolve(out);
     fs.mkdirSync(path.dirname(abs), { recursive: true });
-    fs.writeFileSync(abs, text, 'utf8');
+    /* ★ 2026-11-12（审计 D-01）：改原子写（`_分流结果.json` 是分流链的真源） */
+    writeTextAtomic(abs, text);
     console.log('已写待判科清单：' + abs + '（' + items.length + ' 张待判，' + plan.skipped.length + ' 张已判重跳过）');
   } else {
     process.stdout.write(text);
@@ -542,7 +543,8 @@ function cmdGroup() {
         while (usedTaskFiles.has(fname)) fname = base + '__' + (k++) + '.任务单.md';
         usedTaskFiles.add(fname);
         const f = path.join(dir, fname);
-        fs.writeFileSync(f, t.text, 'utf8');
+        /* ★ 2026-11-12（审计 D-01）：任务单也是"给外部 AI 的唯一输入"，半截文件会让它读到残题 */
+        writeTextAtomic(f, t.text);
         item.taskFile = path.join(subj, fname);
       }
       composed.push(item);
@@ -564,7 +566,8 @@ function cmdGroup() {
   const text = JSON.stringify(summary, null, 2);
   if (outDir && !DRY) {
     const p = path.join(path.resolve(outDir), '_分流结果.json');
-    fs.writeFileSync(p, text, 'utf8');
+    /* ★ 2026-11-12（审计 D-01）：原子写（同上）—— 这个文件是下一页流程的输入 */
+    writeTextAtomic(p, text);
   }
   if (JSON_OUT) { process.stdout.write(text); return 0; }
   console.log('分流完成：');

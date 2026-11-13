@@ -163,12 +163,21 @@ console.log('\n══ 二·补、公开题库比对流程（2026-11-05 家长定
   const logged = m => (m.changelog || []).some(e => /题库/.test(e.note || ''));
   A('ingest-page 升版 ≥2.2.0 且 changelog 记了题库比对', semverGte(meta1.version, '2.2.0') && logged(meta1), meta1.version);
   A('ingest-single 升版 ≥2.1.0 且 changelog 记了题库比对', semverGte(meta2.version, '2.1.0') && logged(meta2), meta2.version);
-  /* 2026-11-05（合并评审 P1-6）：老师红笔 vs 站点答案的优先级必须写进配方，teacherAnswer 字段两份 schema 都有 */
-  A('★ base.md 写明老师红笔算打架一方', /老师红笔[\s\S]{0,40}打架的一方|算打架的一方/.test(read('_core/base.md')), '');
+  /* ★ 2026-11-07（用户两次强调，最高权威）：**卷面红字绝大部分不是老师批的**，
+     红字只能作普通参考、**不能作定案标准**（即使确认是老师写的也不行）。
+     ⇒ 契约里不许再出现「老师定案」这个来源；答案只能来自独立判卷或官方答案页。 */
+  A('★★ base.md 写明红字只作参考、不作定案标准', /红字[^\n]{0,40}不作定案标准|只作参考，不作定案标准/.test(read('_core/base.md')), '');
+  A('★★ base.md 写明「老师定案」已废除', /老师定案[^\n]{0,30}废除|废除[^\n]{0,30}老师定案/.test(read('_core/base.md')), '');
+  A('★★ base.md 写明卷面红字绝大部分不是老师批的', /绝大部分不是[^\n]{0,20}老师|红字[^\n]{0,30}孩子自己批/.test(read('_core/base.md')), '');
   A('★ base.md 写明试卷抬头信息不进检索词', /抬头/.test(read('_core/base.md')), '');
   for (const id of ['ingest-page', 'ingest-single']) {
-    A(`★ ${id}/prompt.md 写明不许以官方答案覆盖老师`, /不许[\s\S]{0,20}官方答案[\s\S]{0,10}覆盖老师/.test(read(id + '/prompt.md')), '');
-    A(`★ ${id}/schema.json 有 teacherAnswer 字段`, !!JSON.parse(read(id + '/schema.json')).properties.cards.items.properties.teacherAnswer, '');
+    const sch = JSON.parse(read(id + '/schema.json'));
+    const srcEnum = sch.properties.cards.items.properties.answerSource.enum;
+    A(`★★ ${id}/schema.json 的 answerSource 枚举里没有「老师定案」`, !srcEnum.includes('老师定案'), srcEnum.join('/'));
+    A(`★★ ${id}/schema.json 写明红字不作定案标准`, /[不不能]作定案标准/.test(sch.properties.cards.items.properties.answerSource.description || ''), '');
+    A(`★★ ${id}/prompt.md 写明没有「老师定案」这个选项`, /没有「老师定案」/.test(read(id + '/prompt.md')), '');
+    A(`★ ${id}/schema.json 有 teacherAnswer 字段`, !!sch.properties.cards.items.properties.teacherAnswer, '');
+    A(`★ ${id}/schema.json 有 inkAttribution 字段`, !!sch.properties.cards.items.properties.inkAttribution, '');
   }
 }
 
@@ -272,7 +281,14 @@ console.log('\n══ 五、组装：原图路径按库根解析（用户实测�
   /* 指纹里必须含 sha256（溯源锚），且两次一致 */
   A('组装产物带 sourceImageSha256', /[0-9a-f]{64}/.test(okRelSlash.stdout || ''), '');
   A('任务单不出现库根绝对路径（数据目录隐私红线）', !(okRelSlash.stdout || '').includes(LIB), '');
-
+  /* ★ 2026-11-12（批次 3 / UX-02）：任务单**不许**把用户指到 `docs\` ——
+     发行包（`build-release.ps1` 的 stage）只拷 `app\` + `tools\*.mjs` + `recipes\`，**没有 `docs\`**；
+     改前那句「按 `docs\作答契约.md` 建卡入库」等于把用户指到一个**不存在的文件**，
+     而界面第 4 步**本来就有**一个「📥 建卡入库」按钮。 */
+  A('★ 任务单不出现 `docs\\` 路径（发行包里没有 docs\\）',
+    !/docs\\/.test(okRelSlash.stdout || ''), ((okRelSlash.stdout || '').match(/[^\n]*docs\\[^\n]*/) || [''])[0].slice(0, 120));
+  A('★ 任务单指向界面可达的第 4 步按钮（不是指路到仓库文档）',
+    (okRelSlash.stdout || '').includes('建卡入库'), '');
   /* ══ 任务单是「交给别人家 AI」的文档。2026-10-27 用户拿第一版去问 WorkBuddy，对方直接拒绝执行。
      三处缺陷逐条钉住 —— 这些断言比「能生成」重要：生成得出来但交不出去，等于没有。 ══ */
   const ticket = okRelSlash.stdout || '';

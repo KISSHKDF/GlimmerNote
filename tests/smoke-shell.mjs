@@ -29,8 +29,8 @@ if (/(^|[\\/])错题本([\\/]|$)/.test(exe)) {
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-let fails = 0;
-const A = (n, ok, d) => {
+let fails = 0, total = 0;   /* ★ 2026-11-13：total 供 `断言=N` 对账用 */
+const A = (n, ok, d) => { total++;
   console.log((ok ? '  [OK]  ' : '  [FAIL] ') + n + (d !== undefined && d !== '' ? '  → ' + String(d).slice(0, 300) : ''));
   if (!ok) fails++;
 };
@@ -194,7 +194,7 @@ const evalJs = async (c, expr) => {
 
   if (!KEEP) { console.log('=== ④ 关掉壳 ==='); killShell(); }
 
-  console.log('\nRESULT=' + (fails ? 'FAIL(' + fails + ')' : 'PASS'));
+  console.log('\nRESULT=' + (fails ? 'FAIL(' + fails + ')' : 'PASS') + '  断言=' + total + '  失败=' + fails);
   process.exit(fails ? 1 : 0);
 })().catch(e => {
   console.log('EXC ' + (e && e.stack || e));

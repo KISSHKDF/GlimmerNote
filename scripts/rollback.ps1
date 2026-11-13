@@ -108,6 +108,11 @@ if (Test-Path $manifestPath) {
 try {
   Get-ChildItem $appDir -Force | Remove-Item -Recurse -Force
   Copy-Item (Join-Path $prevDir '*') $appDir -Recurse -Force
+  # ★ 2026-11-12（审计 R-04）：拷回后再剔除一遍运行期产物 —— 防"旧备份是加这份逻辑之前做的"，
+  #   那里面可能带着 shell.log / wv2-profile；它们一旦落地就会被下面的 Write-DeployManifest
+  #   按落地内容写进基线（洗白）。白名单真源 = scripts\运行期产物.json。
+  $rtRemoved = Remove-RuntimeArtifacts -Root $appDir
+  if ($rtRemoved -gt 0) { Write-Host "  已剔除 $rtRemoved 个运行期产物（不进基线）" -ForegroundColor Yellow }
   $now = CurVer
   if ($now -ne $pv) { throw "回滚后版本号不符：期望 $pv，实际 $now" }
 

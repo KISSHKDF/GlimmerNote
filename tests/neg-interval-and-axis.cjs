@@ -15,8 +15,8 @@ const E = require('./_测试环境.cjs');
 /* 副本要带 题干.html（含 mtime）——否则盲解指纹判「题干在盲解后改过」，组卷会被门禁拦下 */
 const LIB = E.makeTempLib(null, { copyCardFiles: true });
 const lib = (...p) => path.join(LIB, ...p);
-let fails = 0;
-const A = (n, ok, d) => { console.log(`${ok ? '[OK]  ' : '[FAIL]'} ${n}${d !== undefined ? '  → ' + d : ''}`); if (!ok) fails++; };
+let fails = 0, total = 0;   /* ★ 2026-11-13：total 供 `断言=N` 对账用 */
+const A = (n, ok, d) => { total++; console.log(`${ok ? '[OK]  ' : '[FAIL]'} ${n}${d !== undefined ? '  → ' + d : ''}`); if (!ok) fails++; };
 /* ★ 2026-10-23：显式传 CTB_DATA —— 工具住在 <仓库>\src\tools\，它自己算库根会算成 src\，
    只有靠环境变量才能跟本测试看同一份库（与 run.mjs / gates-contract 同法）。 */
 const run = (a) => execFileSync(process.execPath, [E.tool('_标记复习.mjs'), ...a],
@@ -105,5 +105,5 @@ function run3(list, axis) {           // axis: 'kp' | 'code'
   A(`${stu}/${sj} 新轴不劣于旧轴（相邻考点交集不增多）`, st.shareKp <= st.sameCause, `${st.shareKp} ≤ ${st.sameCause}`);
 }
 
-console.log(`\nRESULT=${fails ? 'FAIL(' + fails + ')' : 'PASS'}`);
+console.log(`\nRESULT=${fails ? 'FAIL(' + fails + ')' : 'PASS'}` + '  断言=' + total + '  失败=' + fails);
 process.exit(fails ? 1 : 0);

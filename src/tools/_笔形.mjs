@@ -30,7 +30,7 @@
  */
 import fs from 'fs';
 import path from 'path';
-import { readJsonStrict, writeJsonAtomic, acquireLibLock } from './_安全写.mjs';
+import { readJsonStrict, writeJsonAtomic, acquireLibLock, writeTextAtomic } from './_安全写.mjs';
 import { libraryRoot } from './_库根.mjs';
 /* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。 */
 import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
@@ -241,7 +241,8 @@ function render() {
       for (const it of c) L.push(`| ${it.id} | ${esc(it.material)} | ${esc(it.ink) || '—'} | ${esc(it.metric)} | ${esc(it.range)} | ${it.sample ? '🖼 ' + esc(it.sample) : '—'} | ${esc(it.note)} |`);
       L.push('');
     }
-    fs.writeFileSync(path.join(DIR, safeName(s) + '.md'), L.join('\n').replace(/\n+$/, '\n'), 'utf8');
+    /* ★ 2026-11-12（审计 D-01）：库内真源改原子写（理由同 `_生成队列.mjs` 处注释） */
+    writeTextAtomic(path.join(DIR, safeName(s) + '.md'), L.join('\n').replace(/\n+$/, '\n'));
   }
   const R = [];
   R.push('# 笔形库 · 总览');
@@ -257,7 +258,8 @@ function render() {
     R.push(`| ${esc(s)} | ${rows.length} | ${rows.filter(x => x.type === '字形').length} | ${rows.filter(x => x.type === '标定').length} | ${rows.filter(x => x.sample).length} | [${esc(s)}.md](${encodeURIComponent(safeName(s))}.md) |`);
   }
   R.push('');
-  fs.writeFileSync(path.join(DIR, 'README.md'), R.join('\n'), 'utf8');
+  /* ★ 2026-11-12（审计 D-01）：原子写（同上） */
+  writeTextAtomic(path.join(DIR, 'README.md'), R.join('\n'));
   return j;
 }
 

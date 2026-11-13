@@ -44,10 +44,10 @@
  *                                    空集（筛选 0 条）也判失败，除非显式 --allow-empty
  *                                    `--json` 与人类模式同一次判定、同一退出码，输出
  *                                    { ok, problems:[id[原因]], cards:{"学生|编号":新鲜度} }
- *   任意动作加 --refresh 会顺带重跑 _生成首页.ps1
+ *   任意动作加 --refresh 完成后自动重建状态包（生成状态.mjs）
  *
  * ⚠ 2026-10-09 修：`门禁 --json` 原先在判定之前 break，人类模式 exit 1 而机器通道 exit 0——
- *   消费方（_标记复习.mjs 的组卷口、_生成首页.ps1 的准入徽章）看到的是永远绿灯。见 §门禁五律。
+ *   消费方（_标记复习.mjs 的组卷口、生成状态.mjs 的准入徽章）看到的是永远绿灯。见 §门禁五律。
  */
 import fs from 'fs';
 import path from 'path';
@@ -55,9 +55,12 @@ import crypto from 'crypto';
 import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { libraryRoot, toolPath } from './_库根.mjs';
-import { readJsonStrict, writeJsonAtomic, acquireLibLock } from './_安全写.mjs';
+import { readJsonStrict, writeJsonAtomic, acquireLibLock, writeTextAtomic } from './_安全写.mjs';
 /* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。 */
 import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
+import { indexFiles } from './_题库发现.mjs';
+/* ★ 2026-11-12（审计 F04）：`answerSource` 取值契约与合格性判据的唯一真源。 */
+import { isAcceptableSource } from './_来源.mjs';
 
 /* ★ 2026-10-23 程序与数据分家：ROOT 现在是**用户库根**，不再是"本脚本所在目录"。
    兄弟工具一律用 toolPath(...)，见 _库根.mjs。 */
@@ -118,11 +121,28 @@ const blindVerified = it => VERIFIED.includes(it.blindStatus) && !!it.blindFinge
  *   ③ 只写与准入判据同前缀的词。红笔不是来源（base.md 第 13 条），绝不臆造
  *      「老师批改」这类会被门禁拒、又无法指着证据复核的值。
  */
-const AS_PREFIX_OK = ['独立判卷', '老师定案', '官方答案'];
-const AS_EXACT_OK = ['红笔订正+官方答案页核对'];
+/* ★ 2026-11-12（审计 F04）：`AS_PREFIX_OK` / `AS_EXACT_OK` 两个常量与下面的 `answerSourceOk`
+   已收敛到 `_来源.mjs`（本文件与 `_标记复习.mjs` 原先各抄一份同一判据 —— 那段注释自己就写着
+   "两处各抄一份必然漂移 —— 见 L-530 族"）。本文件只保留"独立来源怎么证"（双路盲解均通过）。 */
+/* ★ 2026-11-07（红字归属，用户裁定 · 第二次收紧）：**卷面红字绝大部分不是老师批的**
+ *  （孩子自己批改/订正、同学互批、家长帮批）⇒ 红字**只能作普通参考，不能作定案标准**。
+ *  ⇒ 「老师定案」**即使确认是老师写的也不能单独成立**：老师也会抄错题本、也会批漏。
+ *  修前：AS_PREFIX_OK 含「老师定案」——那**就是**红字来源，等于把红字当第二来源放行；
+ *        后来一版改成"归属=老师且原文落库即可过" —— 仍是同一个错：**把红字当权威**。
+ *  修后：「老师定案」是红字来源，**单靠自己一律不合格**；只有当这张卡的答案另有
+ *        与红笔无关的独立来源（双路盲解已验证）时才成立 —— 放行理由是"答案本身站得住"，
+ *        不是"老师写的所以对"。
+ *  `inkAttribution` 降级为"如实记录红字是谁写的"，不再参与答案权威性判定。
+ *  与 `_标记复习.mjs` 的 answerSourceOk 同口径（两处各抄一份必然漂移 —— 见 L-530 族）。 */
+const normAns = v => String(v || '').normalize('NFKC').replace(/\s+/g, '');
+const inkAttrOf = it => String((it && it.inkAttribution) || '').trim();
+const inkHasText = it => typeof (it && it).teacherAnswer === 'string' && String(it.teacherAnswer).trim() !== '';
+const answerIsRedInk = it => inkHasText(it) && normAns(it.teacherAnswer) === normAns(it.answer);
 function answerSourceOk(it) {
   const s = String((it && it.answerSource) || '').trim();
-  return !!s && (AS_PREFIX_OK.some(p => s.startsWith(p)) || AS_EXACT_OK.includes(s));
+  if (!s) return false;
+  /* 合格性判据 → `_来源.mjs`（唯一真源）；本文件只提供"独立来源怎么证"（双路盲解均通过）。 */
+  return isAcceptableSource(s, { independentProof: VERIFIED.includes(String((it && it.blindStatus) || '')) });
 }
 function fillAnswerSource(it, rec, { dry = false } = {}) {
   if (!it || !rec) return null;
@@ -168,15 +188,8 @@ function writeJson(p, o) { writeJsonAtomic(p, o, { backup: true }); }
 const IDX_SHAPE = j => Array.isArray(j.items) || (!!j.subjects && typeof j.subjects === 'object' && !Array.isArray(j.subjects));
 const readIndexFile = p => readJsonStrict(p, { shape: IDX_SHAPE, what: 'items 数组或 subjects 对象', label: path.basename(p) });
 
-function indexFiles(dir, acc = []) {
-  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (!e.isDirectory()) { if (e.name === '_索引.json') acc.push(path.join(dir, e.name)); continue; }
-    if (e.name.startsWith('_') || e.name.startsWith('.')) continue;
-    if (/(作业|假期)/.test(e.name)) continue;
-    indexFiles(path.join(dir, e.name), acc);
-  }
-  return acc;
-}
+/* 2026-11-12（审计 F05）：本函数已收敛到 `_题库发现.mjs`（零副作用共享模块）。
+   原先 8 个工具各抄一份，实测 3 种实现（本文件那份与 SB 口径不同）⇒ 改一处漏一处且各自测试全绿。 */
 /** 索引（已解析对象）→ [{item, subject, student, dirAbs}]，兼容学科级(items)与学生级(subjects)两种形态。
  *  注意：必须传已解析对象，传入文件路径会返回副本、改动不落盘（曾因此静默丢写）。 */
 function itemsOfJson(j, base) {
@@ -401,7 +414,9 @@ switch (action) {
       // --ids 是"定点重盲解"，写到单独文件，避免把整册清稿覆盖成子集；--lane 2 也单独落文件
       const suffix = opt.ids ? '-重盲解' : (String(opt.lane || '1') === '2' ? '-第2路' : '');
       const out = path.join(OUTDIR, `${student}-${subject}-盲解清稿${suffix}.md`);
-      fs.writeFileSync(out, lines.join('\n') + '\n', 'utf8');
+      /* ★ 2026-11-12（审计 D-01）：库内真源改原子写（盲解清稿是"回传答案的唯一凭据"，
+         半截文件会让复核者按残缺题面判卷） */
+      writeTextAtomic(out, lines.join('\n') + '\n');
       console.log(`已生成清稿（${list.length} 题 · ${laneTag}）：${out}`);
     }
     break;
@@ -593,7 +608,7 @@ switch (action) {
     }
     for (const x of rows) cards[x.student + '|' + x.item.id] = freshState(x);
     /* ⚠ 计数**不能塞进 `cards`**：那本字典的契约是「键=学生|编号、值=新鲜度字符串」，
-       且它会被 `_生成首页.ps1` 直接注入 `BLINDFRESH` 给前端按卡查表。
+       且它会被 `生成状态.mjs` 直接注入 `BLINDFRESH` 给前端按卡查表。
        塞进去会让键集合多出 `__fpV1` 之类（**契约门禁当场抓到，2026-10-11**），也污染下发给前端的字典。
        故统一放信封的独立字段 `meta`。 */
     const meta = {};
@@ -689,6 +704,8 @@ switch (action) {
 }
 
 if (opt.refresh) {
-  const r = spawnSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', toolPath('_生成首页.ps1')], { stdio: 'ignore' });
-  console.log(r.status === 0 ? '首页已刷新' : '首页刷新失败，请手动重跑 _生成首页.ps1');
+  /* ★ 2026-11-09 清债：PS1 生成器已退役删除，改跑 Node 生成器（镜像 _服务端.mjs runGen 参数）。 */
+  const r = spawnSync(process.execPath, [toolPath('生成状态.mjs')],
+    { stdio: 'ignore', cwd: ROOT, env: Object.assign({}, process.env, { CTB_DATA: ROOT }) });
+  console.log(r.status === 0 ? '状态包已刷新' : '状态包刷新失败，请手动重跑：node 生成状态.mjs');
 }

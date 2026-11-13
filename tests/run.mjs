@@ -44,11 +44,96 @@ if (/fixtures/.test(String(E.LIB_SOURCE || ''))) {
   console.log('  要对着真库跑：设 GLIMMERNOTE_PROD 指向运行区根（或 CTB_TEST_LIB 指向 <运行区>\\数据）。');
 }
 
+/* ★ 2026-11-12 新增（审计 T-01）：**断言数对账**。
+   改前 `run()` 是 `stdio:'inherit'` + 只取退出码 —— 全仓**没有任何一处解析 `RESULT=… 断言=N`**，
+   于是「把某个用例的断言删光」「让它走 `RESULT=SKIP 断言=0`」与「真跑过」在门禁眼里完全一样
+   （AGENTS.md 却写着"断言数以 run.mjs 输出为准"）。实测仓内确有 `RESULT=SKIP 断言=0` 形态。
+   现在：捕获子进程输出（仍原样转发给终端）、解析每个用例的断言数，与随仓库版本化的
+   `tests\断言基线.json` 对账 —— **只许涨不许跌**（跌 = 判据被删的典型形态）；
+   没报 `断言=N` 的用例也计入"未申报"。退出前统一结算，不达标则 `process.exitCode = 1`。
+   更新基线：`node tests\run.mjs --update-baseline`（会打印差异，便于提交时审阅）。 */
+const BASELINE_FILE = path.join(ROOT, 'tests', '断言基线.json');
+let ASSERT_BASELINE = {};
+try { ASSERT_BASELINE = JSON.parse(fs.readFileSync(BASELINE_FILE, 'utf8').replace(/^\uFEFF/, '')); }
+catch { ASSERT_BASELINE = {}; }
+const ASSERT_SEEN = {};        // script → 本轮实测断言数（取最大，容忍同文件多档）
+const ASSERT_UNREPORTED = [];  // 跑了但没报 `断言=N` 的用例
+const UPDATE_BASELINE = process.argv.includes('--update-baseline');
+
 function run(script, args = []) {
   console.log('\n═══ ' + script + ' ' + args.join(' ') + ' ═══');
-  const r = spawnSync(process.execPath, [path.join(ROOT, 'tests', script), ...args], { cwd: ROOT, stdio: 'inherit', encoding: 'utf8' });
+  const r = spawnSync(process.execPath, [path.join(ROOT, 'tests', script), ...args],
+    { cwd: ROOT, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
+  const out = String(r.stdout || '') + String(r.stderr || '');
+  process.stdout.write(out);                     // 输出仍可见（滞后到本例结束，但完整）
+  const hits = out.match(/断言=(\d+)/g);
+  if (hits && hits.length) {
+    const n = Number(String(hits[hits.length - 1]).replace('断言=', ''));
+    ASSERT_SEEN[script] = Math.max(ASSERT_SEEN[script] || 0, n);
+  } else {
+    ASSERT_UNREPORTED.push(script);
+  }
   return r.status ?? 1;
 }
+
+/* ★ 2026-11-13：给**不是断言用例**的脚本用（目前只有 `launch-dev.cjs` —— 它只负责拉起开发壳，
+   fire-and-forget，本来就没有任何断言）。`run()` 会把它记进断言对账 ⇒ 因"未申报断言数"判红
+   （full 实测：`有 1 个用例没报 断言=N：launch-dev.cjs`）。
+   本函数只转发输出与退出码，**不参与对账** —— 对账的对象是"跑断言的用例"，不是"帮忙起环境的脚本"。 */
+function runRaw(script, args = []) {
+  console.log('\n═══ ' + script + ' ' + args.join(' ') + '（环境准备，不计入断言对账）═══');
+  const r = spawnSync(process.execPath, [path.join(ROOT, 'tests', script), ...args],
+    { cwd: ROOT, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
+  process.stdout.write(String(r.stdout || '') + String(r.stderr || ''));
+  return r.status ?? 1;
+}
+
+function settleAssertionBudget() {
+  const names = Object.keys(ASSERT_SEEN).sort();
+  const total = names.reduce((a, k) => a + ASSERT_SEEN[k], 0);
+  console.log('\n────────── 断言数对账（' + mode + '）──────────');
+  console.log('  本轮跑过 ' + names.length + ' 个用例、合计断言 ' + total +
+    (ASSERT_UNREPORTED.length ? '、**未申报断言数 ' + ASSERT_UNREPORTED.length + ' 个**' : ''));
+
+  if (UPDATE_BASELINE) {
+    const next = Object.assign({}, ASSERT_BASELINE, ASSERT_SEEN);
+    fs.writeFileSync(BASELINE_FILE, JSON.stringify(next, null, 1) + '\n', 'utf8');
+    console.log('  ✔ 已更新基线：' + BASELINE_FILE + '（' + Object.keys(next).length + ' 个用例）');
+    return;
+  }
+
+  const dropped = [], unknown = [];
+  for (const k of names) {
+    const base = ASSERT_BASELINE[k];
+    if (base === undefined) { unknown.push(k + '（' + ASSERT_SEEN[k] + '）'); continue; }
+    if (ASSERT_SEEN[k] < base) dropped.push(k + '：' + base + ' → ' + ASSERT_SEEN[k]);
+    else if (ASSERT_SEEN[k] > base) console.log('  ↑ ' + k + ' 断言增加 ' + base + ' → ' + ASSERT_SEEN[k] + '（跑 --update-baseline 登记）');
+  }
+  let bad = 0;
+  if (dropped.length) {
+    bad++;
+    console.log('  ✖ 断言数**下降**（判据被删或被改窄的典型形态）：');
+    for (const d of dropped) console.log('      ' + d);
+    console.log('    确认是有意删除后再跑 `node tests\\run.mjs --update-baseline` 登记。');
+  }
+  if (ASSERT_UNREPORTED.length) {
+    bad++;
+    console.log('  ✖ 有 ' + ASSERT_UNREPORTED.length + ' 个用例没报 `断言=N`（无法对账）：' +
+      ASSERT_UNREPORTED.slice(0, 8).join('、') + (ASSERT_UNREPORTED.length > 8 ? ' …' : ''));
+  }
+  if (unknown.length) {
+    console.log('  ○ 基线里还没有这些用例（首次入库请跑 --update-baseline）：' + unknown.slice(0, 8).join('、') +
+      (unknown.length > 8 ? ' …' : ''));
+  }
+  if (bad) {
+    console.log('  ✖ 断言数对账未过（fail-closed）');
+    process.exitCode = 1;
+  } else {
+    console.log('  ✔ 断言数对账通过（无一例下降、无未申报）');
+  }
+}
+process.on('exit', () => { try { settleAssertionBudget(); } catch (e) { console.log('断言数对账自身异常：' + (e && e.message)); process.exitCode = 1; } });
+
 
 /* ════════ 运行区部署一致性（两种模式都跑，2026-10-25 用户定规）════════
  * 用户原话：「我需要你以后只能走正确链路：dev 改 → dev 测 → build-release.ps1 打包 →
@@ -358,6 +443,23 @@ if (mode === 'fixture') {
        ★ 2026-11-01：离机镜像功能整体移除（用户决策不做异盘镜像），原"镜像 sha1 判据/
        陈旧件只报告"各条与"未配镜像判红"随之删除（40 → 27 断言）。 */
     ['neg-image-backup-coverage.cjs', '「`_影像备份` 已退休」的机械证明：桩拒绝执行（exit 2）/不建目录/源码里没有重建实现（14 断言）'],
+    /* ★ 2026-11-12：两个新用例已按仓规在**干净克隆**（`git clone --no-hardlinks` 到 %TEMP%，
+       无 exe、无真库）实测通过 ⇒ 进 CI 白名单。它们守的恰好是"没有库也能判红"的那些缺陷：
+       ① 数据区门禁整族的阴性对照（224 断言，此前不在任何门禁链上）；
+       ② 题干门禁在索引损坏 / 空真时不许报绿（9 断言，此前 `catch { continue }` 会 ok:true）。 */
+    ['neg-data-area-rules.mjs', '数据区门禁阴性对照：G 系列判据真会红 + 判据改永假必须红（224 断言）'],
+    ['neg-stem-gate-broken-index.cjs', '题干门禁：索引读不出 / 空真时不许报绿（9 断言 + 阴性自证）'],
+    /* ★ 2026-11-12（第二轮扩容）：F05 / F04 / R-04 / F02 四个用例，**已按仓规在干净克隆实测通过**
+       （`git clone --no-hardlinks` 到 %TEMP%，无 exe、无真库；实测 13+13+16+9=51 断言、exit 0）：
+         · F05 题库发现收敛（8 工具 / 共享口径 / 零副作用 / 行为正反对照）；
+         · F04 `answerSource` 契约收敛（含"老师定案"只在有独立证明时放行 + 阴性自证）；
+         · R-04 运行期产物白名单一份真源（含 deploy/rollback 都走同一函数）；
+         · F02 壳子进程超时**真实证伪**（抽真源码 + csc 编最小宿主 + 永不退出的 node；
+           改回同步读必须挂住）—— 它需要本机 csc.exe，缺失时用例自己 SKIP。 */
+    ['neg-libfind-convergence.cjs', '题库发现单一真源：8 工具已收敛 / 共享模块零副作用 / 行为正反对照（13 断言）'],
+    ['neg-answer-source-convergence.cjs', '`answerSource` 契约单一真源：带限定值在册 / 老师定案不在册 / 阴性自证（13 断言）'],
+    ['neg-runtime-artifacts.cjs', '运行期产物白名单一份真源：verify-deploy 不再硬编码 + deploy/rollback 同函数（16 断言）'],
+    ['neg-shell-subprocess-timeout.cjs', '壳子进程超时判据可达性真实证伪：永不退出的 node 必须被 124 结束（9 断言）'],
     ['neg-orig-fallback.cjs', '原图兜底寻址：路径失效后按内容从保全库找回（不判红）/内容对不上不许顶替（25 断言）'],
     /* ★ 2026-11-04（外部复核整改）：两个新用例**零库依赖**（只读本仓源码 / 自建 %TEMP% 夹具），
        已按规矩在**干净克隆**（`git clone --no-hardlinks` 到 %TEMP%，无真库、无 exe）上实测通过，
@@ -376,6 +478,28 @@ if (mode === 'fixture') {
        外加题面级跨任务去重；含正向对照（未处理过的照片不许被误藏）与阴性自证
        （摘掉批次级判据 ⇒ 同批次照片必须回到待判科清单）。 */
     ['neg-triage-dedupe.cjs', '分流器判重：路径/指纹/批次三判据 + 题面级跨任务去重（15 断言，含阴性自证）'],
+    /* ★ 2026-11-13（本会话批次 3 / 批次 4 的 14 个新用例）：**已按仓规在干净克隆实测通过**
+       （`git clone --no-hardlinks` 到 %TEMP%，清掉 `GLIMMERNOTE_PROD`，库自动选 `fixtures\库-形状`，
+       无 exe、无真库；逐个实跑 14/14 exit 0，合计 258 断言）⇒ 进 CI 白名单。
+       它们守的恰好是"**没有库、没有 exe 也能判红**"的那些东西：可访问性底线、README 结构、
+       捆绑说明、孩子模式、批改键盘、答案遮罩、打印规则、来源 ID 链、答案册转运折点、
+       Elo 方向、相似度归一化、家长报告（含"无外链"判据）、教辅版本字段、错因阶段维。
+       ⚠ 这 14 条的**设计说明注释**仍留在 unitTests 段（各有来历）；本清单只做"哪些能在干净克隆跑"的声明。
+       ⚠ 同批的 `neg-grader-by.cjs` **不在这里**：它要真跑 组卷→批改（写临时库），不属于"零依赖"。 */
+    ['neg-a11y-baseline.cjs', ''],
+    ['neg-readme-structure.cjs', ''],
+    ['neg-bundled-notes.cjs', ''],
+    ['neg-kid-mode.cjs', ''],
+    ['neg-grade-keyboard.cjs', ''],
+    ['neg-answer-mask.cjs', ''],
+    ['neg-print-rules.cjs', ''],
+    ['neg-print-source-id.cjs', ''],
+    ['neg-answer-trace.cjs', ''],
+    ['neg-difficulty-elo.cjs', ''],
+    ['neg-similarity-dedupe.cjs', ''],
+    ['neg-parent-report.cjs', ''],
+    ['neg-source-edition-field.cjs', ''],
+    ['neg-cause-stage.cjs', ''],
     /* ★ 2026-11-05：录题入库的三道新闸门（都是真库实测踩到后补的）。
        ① 裁图空白检测（bbox 框到页边留白 ⇒ 裁出近全白图，三道门禁全绿却混进库）；
        ② figBbox 必填（hasFigure=true 却没说清"图在哪儿" ⇒ 裁不出题图.jpg）；
@@ -388,6 +512,12 @@ if (mode === 'fixture') {
        删掉就断链；当时两条找回路径都兜不住（保全库没进过、影像备份有但**根本不去查**）。
        判据：保全库查不到 ⇒ 按**同路径**去影像备份找，并**核对内容 sha**（不只看路径/字节数）。 */
     ['neg-orig-backup-fallback.cjs', 'P10「一个字节一个家」：原图必须有两个家 / 非原图影像只能有一个家（含两条阴性对照与「镜像不会回来」证明，16 断言）'],
+    /* ★ 2026-11-09：变式题 Phase 1 检索工具（_变式.mjs）。零库依赖（%TEMP% 自建迷你库），
+       守：确定性（--json 两次逐字节相同）/ 七条候选门禁逐条生效 / 单门禁隔离 /
+       跨学生重号硬失败（BUG-05 同源）/ 两种索引形态＋fixture 形状库（旧错因码）兼容。
+       顺带抓过真 bug：首版门禁读 item 层的 student/subject（真库这两个字段在包装层），
+       跨学生卡静默过闸——本用例的"跨学生候选"断言即由此而来。 */
+    ['verify-variant-retrieval.cjs', '变式 Phase 1：检索确定性 + 七门禁逐条 + 重号硬失败 + 形状库兼容（23 断言）'],
   ];
   const SKIPPED = [
     ['portability.cjs', '需要已构建的 src\\app\\拾光小册.exe（gitignored）'],
@@ -397,23 +527,38 @@ if (mode === 'fixture') {
   ];
   let worst = 0;
   for (const [name] of HERMETIC) {
-    worst = Math.max(worst, run(name));
-    if (worst !== 0) { console.log('✖ 零依赖自检未过（' + name + '）'); process.exit(worst); }
+    {
+      const rc = run(name);
+      worst = Math.max(worst, rc);
+      if (rc !== 0) { console.log('✖ 零依赖自检未过（' + name + '）'); process.exit(worst); }
+    }
   }
   /* ★ 2026-10-25：三道数据门禁（干净克隆可跑版）。库来自 _测试环境 的物化合成库。
      verify-stem-shape 是普查脚本（不设退出判据），fixture 下不跑；它跑真库时也只是打印。 */
   if (!E.isFrozen(E.LIB)) {
-    worst = Math.max(worst, runTool('_原卷台账.mjs', ['门禁']));
-    if (worst !== 0) { console.log('✖ 原卷台账门禁未过（合成库形状与门禁口径漂移）'); process.exit(worst); }
-    worst = Math.max(worst, runTool('_待确认.mjs', ['证据']));
-    if (worst !== 0) { console.log('✖ 待办证据图门禁未过'); process.exit(worst); }
-    worst = Math.max(worst, runTool('_配图门禁.mjs', ['门禁']));
-    if (worst !== 0) { console.log('✖ 配图门禁未过'); process.exit(worst); }
+    {
+      const rc = runTool('_原卷台账.mjs', ['门禁']);
+      worst = Math.max(worst, rc);
+      if (rc !== 0) { console.log('✖ 原卷台账门禁未过（合成库形状与门禁口径漂移）'); process.exit(worst); }
+    }
+    {
+      const rc = runTool('_待确认.mjs', ['证据']);
+      worst = Math.max(worst, rc);
+      if (rc !== 0) { console.log('✖ 待办证据图门禁未过'); process.exit(worst); }
+    }
+    {
+      const rc = runTool('_配图门禁.mjs', ['门禁']);
+      worst = Math.max(worst, rc);
+      if (rc !== 0) { console.log('✖ 配图门禁未过'); process.exit(worst); }
+    }
     /* ★ 2026-10-25：作答契约门禁也进这份白名单。合成库里的空位题必须带 answerSlots
        （fixtures\库-形状 的 _索引.json 已补），否则干净克隆一上手就被这条门禁判红 ——
        "新克隆能跑测试"是硬要求，夹具必须跟上门禁口径（同 F-06 那一类缺陷）。 */
-    worst = Math.max(worst, runTool('_作答门禁.mjs', ['门禁']));
-    if (worst !== 0) { console.log('✖ 作答契约门禁未过（合成库没带逐空答案）'); process.exit(worst); }
+    {
+      const rc = runTool('_作答门禁.mjs', ['门禁']);
+      worst = Math.max(worst, rc);
+      if (rc !== 0) { console.log('✖ 作答契约门禁未过（合成库没带逐空答案）'); process.exit(worst); }
+    }
   } else {
     console.log('\n────────── fixture 模式：数据门禁因 LIB 指向真库而跳过（quick 会以只读方式跑）──────────');
   }
@@ -520,40 +665,83 @@ function runTool(script, args) {
   });
   return r.status ?? 1;
 }
-worst = Math.max(worst, runTool('_原卷台账.mjs', ['门禁']));
-if (worst !== 0) { console.log('✖ 原卷台账门禁未过（有卡回不到整页原卷），先修台账再跑界面回归'); process.exit(worst); }
-/* v2.5（2026-10-10）：待办证据图门禁也挂进来。
+  /* ★ 2026-11-13（批次 4 收尾）：原卷台账门禁**收集但不阻断**（整条链上唯一一条例外）。
+     为什么单它例外：它不过的后果是「不能从卡跳回整页、不能做整页视觉复核」——那是**功能缺失**，
+     不会让界面印出坏东西；而下面几道（证据图 / 配图 / 作答契约）不过时界面**真的会显示坏的**
+     （破图、"如图"却没图、白留答题区），所以它们保持 fail-fast。
+     改前这里是 `process.exit(worst)`：404 条未定位**一条**就把它后面 4 道门禁 + 整段**界面回归**全挡住
+     —— 而"一条数据欠账让整条链停摆"比欠账本身更贵（本会话 29 个版本里 e2e 从没跑过，就是这么来的）。
+     ⚠ 它**仍然判红**（`worst` 会被带到最后的退出码），只是不再挡住别人。 */
+  {
+    const unloc = runTool('_原卷台账.mjs', ['门禁']);
+    if (unloc !== 0) {
+      worst = Math.max(worst, unloc);
+      console.log('⚠ 原卷台账门禁未过（有卡回不到整页原卷）——**不阻断**后续门禁与界面回归，但最终仍判红');
+    }
+  }
+  /* v2.5（2026-10-10）：待办证据图门禁也挂进来。
    起因：T086 的证据图路径是通配符，界面上就是一张破图（用户：「没有图形链接」），
    而这条门禁此前只在有人手动跑时才生效 ⇒ 坏数据一路漏到界面。 */
-worst = Math.max(worst, runTool('_待确认.mjs', ['证据']));
-if (worst !== 0) { console.log('✖ 待办证据图门禁未过（缺图/通配符/文件不在），待办会显示破图，先修再跑界面回归'); process.exit(worst); }
+{
+  const rc = runTool('_待确认.mjs', ['证据']);
+  worst = Math.max(worst, rc);
+  if (rc !== 0) { console.log('✖ 待办证据图门禁未过（缺图/通配符/文件不在），待办会显示破图，先修再跑界面回归'); process.exit(worst); }
+}
 /* 配图门禁（v2.2）：题干提到图却没图 → 卷面印出"如图"却空着（用户 2026-10-07 的原始投诉）。
    此前只在有人手动跑时才生效，2026-10-10 挂进门禁。 */
-worst = Math.max(worst, runTool('_配图门禁.mjs', ['门禁']));
-if (worst !== 0) { console.log('✖ 配图门禁未过（该有图的题拿不出图），组卷会印出"如图…"却没图，先修再跑界面回归'); process.exit(worst); }
+{
+  const rc = runTool('_配图门禁.mjs', ['门禁']);
+  worst = Math.max(worst, rc);
+  if (rc !== 0) { console.log('✖ 配图门禁未过（该有图的题拿不出图），组卷会印出"如图…"却没图，先修再跑界面回归'); process.exit(worst); }
+}
 /* 作答契约门禁（2026-10-25 建）：用户同一天三条报障——答案不全 / 图上作答的题白留答题区 /
    下横线写不下答案。判据＝题干空位数（客观可数）× 卡片逐空答案登记。
    为什么必须是硬门禁：这三类缺陷**印出来才被发现**（孩子卷面/家长答案册），
    以前没有任何机器检查，只能靠用户一题一题点出来。 */
-worst = Math.max(worst, runTool('_作答门禁.mjs', ['门禁']));
-if (worst !== 0) { console.log('✖ 作答契约门禁未过（答案不全 / 图上作答未登记 / 横线写不下），组卷会印出残缺答案册，先修再跑界面回归'); process.exit(worst); }
+{
+  const rc = runTool('_作答门禁.mjs', ['门禁']);
+  worst = Math.max(worst, rc);
+  if (rc !== 0) { console.log('✖ 作答契约门禁未过（答案不全 / 图上作答未登记 / 横线写不下），组卷会印出残缺答案册，先修再跑界面回归'); process.exit(worst); }
+}
 /* 着重号门禁（2026-10-25 晚建）：用户指着印出来的 Y0001 说「打点能力很差，全库都是这样」。
    根因是 `.rd` 标记在 app.css 里**从来没有样式**（新旧两版都没有）⇒ 加点字被当普通字印出来。
    判据：题面要加点必须有标记 / 一字一个标记 / 标记不许写进 svg / `.rd` 必须有可见样式
    （样式被删就被这条判据当场抓住——这是这次事故唯一能自动复现的形态）。 */
-worst = Math.max(worst, runTool('_着重号门禁.mjs', ['门禁']));
-if (worst !== 0) { console.log('✖ 着重号门禁未过（加点字印不出来 / 一个字点两处 / 样式被删），卷面会缺"加点"这个条件，先修再跑界面回归'); process.exit(worst); }
+{
+  const rc = runTool('_着重号门禁.mjs', ['门禁']);
+  worst = Math.max(worst, rc);
+  if (rc !== 0) { console.log('✖ 着重号门禁未过（加点字印不出来 / 一个字点两处 / 样式被删），卷面会缺"加点"这个条件，先修再跑界面回归'); process.exit(worst); }
+}
+/* 题干门禁（2026-11-07 建）：用户指着 E0017 的单题预览说「你转换出来的题干莫名其妙，谁能看得懂？
+   这样的题干也能通过双盲解答？也能进库？」
+   事故根因两件叠加：① **转义层套了两次**（AI 回传的 questionText 已含真标签 `<u>`，
+   入库器再转义一遍 ⇒ 落盘成 `&lt;u&gt;` ⇒ 印出来是字面的 "<u>a</u>" 垃圾）；
+   ② **大题指令没带进来**（只抄小题 ⇒ 题号成孤儿号，读者不知道要做什么）。
+   门禁盲区：作答契约门禁查空位/答案、着重号门禁查 `.rd` 样式、配图门禁查图资产
+   —— **没有任何一道门禁看"题面本身能不能读懂"**；盲解的指纹还恰恰算在乱码题面上，
+   乱码反而成了"已通过"的凭据。 */
+{
+  const rc = runTool('_题干门禁.mjs', ['门禁']);
+  worst = Math.max(worst, rc);
+  if (rc !== 0) { console.log('✖ 题干门禁未过（题干里有实体化标签 / 字面标签 / 标记不配对 / 孤儿题号却没带大题指令 / 语篇残篇 / 该画线却没画线），卷面会印出读不懂的题，先修再跑界面回归'); process.exit(worst); }
+}
 /* 机器通道契约（2026-10-10 建）：各工具 --json 的**外部形状**。
    起因：`_盲解复核.mjs 门禁 --json` 的信封里卡片字典在 .cards，而两个消费方都按"顶层就是字典"取值
    ⇒ 指纹新鲜度门禁在工具组卷口与 v1 首页**双双静默失效**（门禁看着在、实际永远放行）。
    形状漂移没有测试兜底 = 同一类 bug 必然复发，所以把它变成断言；--selftest 顺带自证这条断言真会红。 */
-worst = Math.max(worst, run('gates-contract.mjs', ['--selftest']));
-if (worst !== 0) { console.log('✖ 门禁契约漂移（有消费方会静默失效），先修再跑界面回归'); process.exit(worst); }
+{
+  const rc = run('gates-contract.mjs', ['--selftest']);
+  worst = Math.max(worst, rc);
+  if (rc !== 0) { console.log('✖ 门禁契约漂移（有消费方会静默失效），先修再跑界面回归'); process.exit(worst); }
+}
 /* 安全写底座自检（2026-10-10 建）：原子写 + 拒绝"形状不对当空库" + 写前备份。
    起因：全库 JSON 真源都是 writeFileSync 就地截断覆盖（写一半被杀留半截），
    且 load() 用"形状不对就重置为空"兜底后又写回 ⇒ 真源可能被一次正常操作静默清空（BUG-01/02）。 */
-worst = Math.max(worst, run('safe-write.test.mjs'));
-if (worst !== 0) { console.log('✖ 安全写底座自检未过（真源的原子写/形状防护有问题）'); process.exit(worst); }
+{
+  const rc = run('safe-write.test.mjs');
+  worst = Math.max(worst, rc);
+  if (rc !== 0) { console.log('✖ 安全写底座自检未过（真源的原子写/形状防护有问题）'); process.exit(worst); }
+}
 /* ============ 静态/单元级断言（2026-10-11 新增） ============
    起因：本轮新增了 6 条断言脚本，但**没挂进门禁 = 能绿但没人看**（同 L-175「可选工具 ≠ 机械化」）。
    这些都是纯 node、不起壳的：跑得动、够快，就全部前置为硬门禁。
@@ -603,6 +791,13 @@ const unitTests = [
      待办门禁两通道同码、v1 题干净化、壳的 JSON 取值与参数转义。 */
   ['neg-v2-identity-and-session.mjs'], // ★ 组卷篮串题 / 判定丢失 / 跳过撤销不同步 / 剔除误删（28 断言）
   ['neg-pending-gate-parity.mjs'],     // ★ 门禁 --json 与人类模式必须同码同判（临时副本构造场景，跑完还原）
+  /* ★ 2026-11-09（用户选 B：先钉根因再修数据）：应做动作映射**只能有一份**，且
+     「处置」写盘前必须挡住与判定不符的取值。守的是当晚 25 条 RED 的确切形状：
+     04:00 夜间链第一次吃到「不适用」条目，把 16 条登记成「无需处置」——
+     根因是稽核算「不适用⇒已核销」、而 _待确认.mjs 注释另写一份「固定为无需处置」，
+     两边从首次公开导入起就相反（触发点：11-08 08:57 夜间派发 MAX 20→50）。
+     30 断言：映射语义 + 单一真源源码级断言 + 准入闸正/负例（含"台账没被写脏"）。 */
+  ['neg-disposition-mapping.cjs'],
   ['neg-shell-args.mjs'],              // ★ 壳的取值 + 参数转义：带引号的备注必须逐字送达 node（真 node.exe 验证）
   ['neg-stem-img-fit.cjs'],            // ★ 题图不得撑破卷面/抽屉：卡片行内 max-width 必须被 !important 压住（P0035 溢出 39mm）
   /* ★ 2026-10-27（用户实测 P20261027-01：「刚组的卷打印有问题，应该是受了 M0111 的影响」）：
@@ -630,6 +825,15 @@ const unitTests = [
      本用例守四段：样式画得出点 / 净化链路不吞 class / 清稿保留加点语义 / 真库无漏标，
      外加 6 条**阴性自证**（删样式、藏样式、漏标、一字点两处、标记写进 svg 都必须红）。 */
   ['neg-emphasis-mark.cjs'],
+  /* ★ 2026-11-07（用户指着 E0017 的单题预览：「你转换出来的题干莫名其妙，谁能看得懂？
+     这样的题干也能通过双盲解答？也能进库？」）：
+     事故根因两件叠加 —— ① **转义层套了两次**（questionText 已含真标签 `<u>`，
+     入库器再 escapeHtml 一遍 ⇒ 落盘成 `&lt;u&gt;` ⇒ 印出来是字面 "<u>a</u>" 垃圾）；
+     ② **大题指令没带进来**（只抄小题 ⇒ 题号成孤儿号，读者不知道要做什么）。
+     本用例守五段：判据能力（**含已知事故样本**）/ 判据**不误报**（数学不等号、合法内联标记、
+     卡片外壳都判绿 —— 第一版写宽了会全库 590 张误报）/ 题号抽取必须命中 `( ) 3.` 形态
+     （不剥行首括号就命中不了事故样本 ⇒ 自证失败）/ 入库器拒收 + 保真 / 阴性自证。 */
+  ['neg-stem-readability.cjs'],
   ['neg-paper-count-and-ledger-filter.mjs'], // ★ 组卷角标/配卷屏同口径 + 台账按学生过滤 + 行可读性 + 未入账打印警告 + 回录题号 + 台账复原卷 + 操作条吸顶（75+ 断言）
   /* ★ 2026-10-24（用户报障「我给学生A出了两次试卷，发现第一次与第二次题目是一样的」）：
      实测两批交集 30/30。两层根因各一条断言：① 工具侧没有"这题最近印过"的概念 → 新增防重复组卷门禁（默认 7 天）；
@@ -790,7 +994,77 @@ const unitTests = [
      （台账旧、索引新，两边都报成功）。本用例用一个真持锁者占库，断言 restore 在锁释放前
      不写目标文件、且释放后才完成；阴性自证：摘掉取锁后它当场插队改写。 */
   ['neg-snapshot-restore-lock.cjs'],
+  /* ★ 2026-11-12：把「数据区门禁」整族的阴性对照接进链。此前 `neg-data-area-rules.mjs`
+     （223 断言、61 KB 门禁的守卫）**不在 run.mjs、不在三个钩子、也不在 CI** ——
+     而 CONTRIBUTING 与 `docs\数据区规范.md` 都把它写成必跑步骤 ⇒ 整族数据区规则事实上无人执行。
+     它零库依赖（自建 %TEMP% 合成库 + `allocTempDir` 登记清扫），可直接进 unitTests。 */
+  ['neg-data-area-rules.mjs'],
+  /* ★ 2026-11-12：F05 / F04 / R-04 / F02 四个新用例**已按仓规在干净克隆实测通过**
+     （`git clone --no-hardlinks` 到 %TEMP%，无 exe、无真库；实测 13+13+16+9=51 断言、exit 0）
+     ⇒ 已搬进上面的 HERMETIC 白名单，此处不再重复挂（unitTests 循环不去重，挂了会跑两遍）。 */
   ['neg-snapshot-text-and-force.cjs'],    // ★ 2026-11-05 合并评审 P1-5/P0-4：md/html 掏空不许直接恢复；--force-restore 二次确认 + 审计
+  /* ★ 2026-11-12（批次 3 / 可访问性）：字号 px→rem（视觉逐值不变）+ prefers-reduced-motion
+     + 动态状态 aria-live。改前实测：58 处 px 字号、reduced-motion 0 处、aria-live 0 处。 */
+  /* ★ 2026-11-12（批次 3 / README 用户视角重构）：守一级标题唯一 / 内部锚点都能落地 /
+     用户区在开发者区之前 / 被 run.mjs 引用的章节名还在。零库依赖。 */
+  /* ★ 2026-11-12（批次 3 / UX-02 + 包内说明书）：任务单不再指路到包里没有的 `docs\`；
+     `怎么试用.txt` 讲清"程序自己不带 AI"并补全日志三级落点（与壳源码对拍）。零库依赖。 */
+  /* ★ 2026-11-12（批次 3 / UX-11 孩子模式）：家长向元素一律带 `adm`，隐藏只由 CSS 一处收口
+     （防"新增元素忘了加判断"）；开关要能记住（S.mount 恢复）；做题屏那几处家长向信号逐条点名。 */
+  /* ★ 2026-11-12（批次 3 / UX-14）：批改回录 30 题原要点 30 次。现在键盘一条龙（↑↓ / 1-2-3 / Ctrl+Enter）
+     + 「剩余全判对」（带二次确认）+「清空本次」。守：点选与键盘**共用同一个 pick 入口** / 输入框守卫 /
+     当前行可见（CSS） / 批量必过确认。 */
+  /* ★ 2026-11-12（批次 4 / 答案遮罩）：长答案（>400 字）折叠 / 模糊风格（点一下才清晰，用 filter
+     不替换文字）/ 「重新遮住」退回题面；守：换卡与判分时必须重置两个开关 / 新控件绑定判空。 */
+  /* ★ 2026-11-12（批次 4 / 打印硬规则）：①选项按内容宽度自动 4/2/1 列（本次实现，把 optsGrid
+     抽出来**真跑**做行为验证）；②括号排到行末——本仓单栏直排**不适用**，明知不适用不照抄；
+     ③按题型留白——本仓**已有**且更细（按 answerMode 契约）。 */
+  /* ★ 2026-11-13（批次 4 / 教辅版本字段）：`srcBook`/`srcEdition`（答案冲突的根因字段）。
+     本用例**用真校验器**跑三连（不含新字段通过 / 含合法字段通过 / 类型错被点名拒绝），
+     另守：不在 required / 入库器三条路径（新卡·改卡·**幂等摘要**）都写 / 配方版本与 changelog 一致。 */
+  /* ★ 2026-11-13（批次 4 / 相似度判重）：`_配方.mjs` 里那份 bigram Dice 抽成零副作用 `_相似度.mjs`；
+     入库器用它提示"库里可能已经有这道题了"（**只提示、不拦、不自动合并**，也不按审计建议去动 errorCount
+     —— 那是"复习里重做错了几次"的语义）。本用例真跑相似度函数（含 NFKC 归一化）。 */
+  /* ★ 2026-11-13（批次 4 / 来源 ID）：审计建议的"打印件标注来源 ID"本仓四个环节都已在位
+     （卷面印号 / 答案册印号 / 题库搜索匹配 id / 卷头信息齐）⇒ 本用例把这条**跨三个文件**的链钉住：
+     谁把搜索改成"只搜题干"，界面上看不出来，但纸上的号就回不到原题了。 */
+  /* ★ 2026-11-13（批次 4 / 答案册「错在哪一步」）：复习流水的"转折点"（reviews[].note）改前只在
+     复习屏悬停可见，**家长手里那份答案册一个字都没有**。本用例**真跑** traceLines()：
+     无 note 不产生空块 / 带日期 / **只显示最近 2 次**并写明总次数 / HTML 转义 / 超长截断 /
+     打印不许拆页 / **卷面不带**（那是答案册内容，印到卷面等于泄答案）。 */
+  /* ★ 2026-11-13（批次 4 / 后接 Elo）：难度与能力的在线估计。守**方向**（答对 ⇒ 能力升、
+     题目难度估计降 —— 最容易写反的地方）、数学性质（期望 0.5 / 确定性 / 收敛）、
+     人工档位只做先验且算法不碰它、契约仍是三档、阴性自证。 */
+  /* ★ 2026-11-13（批次 4 / 错因阶段维）：`causeStage`（审题/转化/求解/书写，与 K/L/S **正交**）。
+     动机：真库 K1 一码占 39% ⇒ 一个维度没有分辨率；而"错在哪一步"此前只能写在 causeNote 自由文本里。
+     本用例**用真校验器**跑四连（合法通过 / 非法被拒点名 / 空串通过 / 缺字段通过）+ 前端筛选已兑现。 */
+  /* ★ 2026-11-13（批次 4 / 家长只读报告）：薄弱点+趋势+待复习清单排成可打印单页；
+     走既有通道（`S.printHtml` 已收敛到 shell.js、`H.pdf` 出单文件 PDF，**不依赖打印机**）；
+     守 **无外链/无脚本/无 img**（"不上云"的机械判据）+ 空库不崩 + 数字与转义。 */
+  /* ★ 2026-11-13（UX-10 独立项）：「谁判的」记进复习流水（`reviews[].by`）。
+     动机：孩子模式自评时会诱导"挑好判的判对"；记下来是**数据自证**（自评正确率是否异常偏高）。
+     真跑工具端到端（临时库 组卷→批改）：--by 落库 / 重复回录按最后一次修正且不双计 /
+     **非法值拒收且不写坏已有记录** / 省略⇒空串。 */
+  ['neg-grader-by.cjs'],
+  /* ★ 2026-11-13（批次 4 收尾 / 派生物可重算）：库根的 `_原卷待定位-按批次.md` 改前是一次性脚本的
+     产物（定位进展一变就悄悄过期，而"派生物可随时重算"是数据区纪律）。现在由
+     `_原卷台账.mjs 工单` 生成，走原子写 + 库锁。本用例真跑：三大区块 / 明细条数==自报条数 /
+     **幂等（除生成时间外逐字节相同）** / 未定位为 0 时不造空文件 / 阴性自证。
+     ⚠ 它要临时库 + 写盘 ⇒ 只能住 unitTests（不进 HERMETIC）。 */
+  ['neg-workorder-regen.cjs'],
+  /* ★ 2026-11-12：`_快照.mjs` 自 2026-11-08 起**完全不可用** —— 纳管清单里的 glob 允许"当前零匹配"
+     （`_收件箱/**\/_来源映射.csv`：收件箱清空后该文件就不在了），而 `git add -A -- <pattern>` 对
+     不匹配的 pathspec 会 fatal（exit 128），`git add` 又**没有** `--ignore-unmatch`（实测 2.54.0）。
+     代价：数据区连续 4 天没有快照回滚点，期间一次提交只能"定向手工提交"。
+     本用例四条判据：零匹配模式不许报错 / --dry 不留暂存 / 未跟踪新真源仍要被纳入 / 换回旧写法必须复现 128。
+     零库依赖（自建 %TEMP% 迷你 git 仓 + 只读本仓源码）。 */
+  ['neg-snapshot-pathspec.cjs'],
+  /* ★ 2026-11-12：`_题干门禁` 的 `allCards()` 原先 `catch { continue; }` ⇒ 索引读不出时
+     收集到 0 张卡、`judgeLibrary` 直接 ok:true，体检还会报「✔ 扫描 0 张，阻断 0」——
+     一份全绿但什么都没查的报告（兄弟门禁 `_作答门禁` 用的是会抛错的 readJsonStrict）。
+     本用例守四条：好库不误伤 / 坏索引判红并点名 / 空真判红 / 空库不误伤，并带阴性自证。
+     零库依赖（自建 %TEMP% 合成库 + 工具副本动态 import）。 */
+  ['neg-stem-gate-broken-index.cjs'],
   /* ★ 2026-11-07 规范 W6「改盘别改格式」进程序：`writeJsonAtomic` 的缩进过去写死默认 2，
      而台账缩进是**每份文件自己定的**（`_原卷台账.json`/`_录题任务.json` 用 1）⇒ 一次纯路径改写
      把 `_原卷台账.json` 从 410,280 B 重排到 451,899 B（+41.6 KB）。修法：不传 indent/newline 时
@@ -986,29 +1260,41 @@ const unitTests = [
   ['neg-server-cold-library.cjs'],
 ];
 for (const [name] of unitTests) {
-  worst = Math.max(worst, run(name));
-  if (worst !== 0) { console.log('✖ 单元级断言未过（' + name + '），先修再跑界面回归'); process.exit(worst); }
+  {
+    const rc = run(name);
+    worst = Math.max(worst, rc);
+    if (rc !== 0) { console.log('✖ 单元级断言未过（' + name + '），先修再跑界面回归'); process.exit(worst); }
+  }
 }
 if (mode === 'full') {
   /* 会临时写真源（测毕撤批/还原）的对照，放在 full 里跑 */
   for (const name of ['neg-interval-and-axis.cjs', 'interleave-check.cjs', 'neg-paper-order-blank.cjs']) {
-    worst = Math.max(worst, run(name));
-    if (worst !== 0) { console.log('✖ 对照未过（' + name + '）'); process.exit(worst); }
+    {
+      const rc = run(name);
+      worst = Math.max(worst, rc);
+      if (rc !== 0) { console.log('✖ 对照未过（' + name + '）'); process.exit(worst); }
+    }
   }
   /* ★ 2026-10-12 把 neg-datahealth 从"游离"升为门禁项。
      它此前一直游离 ⇒ "能绿却常被跳过"（同 L-175），而它守的正是 BUG-03 那个真缺陷：
      **数据源读不到时会不会静默变成"一切正常"**。
      实测只跑 5 秒（它自己带备份+还原，实测前后真源 sha 不变），完全够格进链。
      挂链前先修了它自己的判据缺陷（红条容器是常驻空容器，原判据恒红 ⇒ 它一直 FAIL）。 */
-  worst = Math.max(worst, run('neg-datahealth.cjs'));
-  if (worst !== 0) { console.log('✖ 数据源降级红条对照未过（降级又被静默了？）'); process.exit(worst); }
+  {
+    const rc = run('neg-datahealth.cjs');
+    worst = Math.max(worst, rc);
+    if (rc !== 0) { console.log('✖ 数据源降级红条对照未过（降级又被静默了？）'); process.exit(worst); }
+  }
   /* ★ 2026-10-12 把 neg-figure-fingerprint 也升为门禁项（只跑 0.6 秒）。
      它守 BUG-08：「只改图形、不改文字」是否会让盲解结论失效。
      挂链前修了它两处问题：① 它一律按 v2 指纹判读，而存量 201/202 张卡还是 v1 指纹
      ⇒ 必然报红（把"存量现状"误报成"机制坏了"）；现按卡的真实指纹版本分别判读，
      v1 卡显式 SKIP 并打印存量缺口。② 补 skipped 计数，符合"跳过必须可见"的门禁纪律。 */
-  worst = Math.max(worst, run('neg-figure-fingerprint.cjs'));
-  if (worst !== 0) { console.log('✖ 图形指纹对照未过（有 v2 卡改了图形却没失效？）'); process.exit(worst); }
+  {
+    const rc = run('neg-figure-fingerprint.cjs');
+    worst = Math.max(worst, rc);
+    if (rc !== 0) { console.log('✖ 图形指纹对照未过（有 v2 卡改了图形却没失效？）'); process.exit(worst); }
+  }
   /* ★ 2026-11-02 R11：把游离的发布链路演练挂进门禁。
      改前 `selftest-pipeline.ps1` 在 run.mjs 里**只有 fixture 的 SKIP 展示行、0 个调用点**
      ——任何模式都不跑它（"能绿但没人跑"，L-175 同族）。
@@ -1031,14 +1317,17 @@ if (mode === 'full') {
       const sp = spawnSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
         path.join(ROOT, 'scripts', 'selftest-pipeline.ps1')], { cwd: ROOT, stdio: 'inherit' });
       if (recBak) fs.writeFileSync(rec, recBak); else if (fs.existsSync(rec)) fs.unlinkSync(rec);
-      worst = Math.max(worst, sp.status == null ? 1 : sp.status);
-      if (worst !== 0) { console.log('✖ 发布链路自检未过（升级/回滚动了数据，或耗时超上限）'); process.exit(worst); }
+      /* ★ 判**这道**自检自己的码（不是累计的 worst）——否则前面任何一条红过，
+         这条自检即使通过也会被印成"未过"，把人引去修错的东西。 */
+      const rcPipe = sp.status == null ? 1 : sp.status;
+      worst = Math.max(worst, rcPipe);
+      if (rcPipe !== 0) { console.log('✖ 发布链路自检未过（升级/回滚动了数据，或耗时超上限）'); process.exit(worst); }
     }
   }
 }
 if (mode === 'full') {
-  // launch-dev 是 fire-and-forget（spawn 新壳后自身退出），跑完等端口
-  const l = run('launch-dev.cjs');
+  // launch-dev 是 fire-and-forget（spawn 新壳后自身退出），跑完等端口；它没有断言 ⇒ 用 runRaw
+  const l = runRaw('launch-dev.cjs');
   worst = Math.max(worst, l);
   if (l !== 0) { console.log('launch 失败，中止'); process.exit(1); }
   if (!await waitPort(60000)) { console.log('✖ 9223 调试口 60s 未就绪'); process.exit(1); }
@@ -1050,7 +1339,7 @@ if (mode === 'full') {
       但界面回归连不上 9223）。现在：端口不通就自动拉起开发壳，省掉手工步骤。 */
   if (!await waitPort(1500)) {
     console.log('\n═══ 未检测到开发壳，自动拉起（node tests\\launch-dev.cjs）═══');
-    const l = run('launch-dev.cjs');
+    const l = runRaw('launch-dev.cjs');   /* 环境准备，不比断言数 —— 见 runRaw 的注释 */
     worst = Math.max(worst, l);
     if (l !== 0) { console.log('launch 失败，中止'); process.exit(1); }
     if (!await waitPort(60000)) { console.log('✖ 9223 调试口 60s 未就绪'); process.exit(1); }

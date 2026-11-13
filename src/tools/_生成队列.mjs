@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { readJsonStrict } from './_安全写.mjs';
+import { readJsonStrict, writeTextAtomic } from './_安全写.mjs';
 import { libraryRoot } from './_库根.mjs';
 /* 复习队列文本镜像刷新器：从 _索引.json + _词表.md 生成 _复习队列.md
    用法：node _生成队列.mjs   （真源永远是索引；本镜像只为纯文本可读/可 diff） */
@@ -63,6 +63,10 @@ for (const r of rows) {
   out += `## ${r.grade}-${r.student}（共 ${r.its.length} 题：` + Object.entries(g).map(([k, v]) => `${k} ${v}`).join('、') + '）\n\n';
   out += (r.its.length ? tbl(r.its, r.subjOf) : '（空库，尚未录入）') + '\n\n';
 }
-fs.writeFileSync(path.join(ROOT, '_复习队列.md'), out.replace(/\n+$/, '\n'), 'utf8');
+/* ★ 2026-11-12（审计 D-01）：改前是裸 `fs.writeFileSync` —— 断电 / `taskkill` / 磁盘满时会留下
+   **半截文件**，而 `_复习队列.md` 是给人看且被工具读的回显真源。改用 `writeTextAtomic`
+   （同目录临时文件 + fsync + rename）。⚠ 仍未取库写锁：并发写同一文件的场景由调用方保证不重叠；
+   要不要纳入 `acquireLibLock`，须单独评估并发语义，别在这里顺手加。 */
+writeTextAtomic(path.join(ROOT, '_复习队列.md'), out.replace(/\n+$/, '\n'));
 console.log('_复习队列.md 已刷新：' + out.length + ' 字符');
 rows.forEach(r => console.log('  ' + r.student + ' ' + r.its.length + ' 题'));

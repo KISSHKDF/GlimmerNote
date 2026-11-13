@@ -25,7 +25,28 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
+const { execFileSync } = require('child_process');
 const E = require('./_测试环境.cjs');
+
+/* ★ 2026-11-13：素材必须**先过准入三态**（盲解已通过 **且** 答案有**红笔之外**的可靠第二来源）。
+   改前只按"未到期"挑卡 ⇒ 真库里有卡缺第二来源，组卷被**答案来源门禁**拦（exit 2）
+   ⇒ 前置断言与后段连锁红。它自己的注释早就写明了这个陷阱：「否则后面'被拦'可能只是别的门禁在拦」。
+   实测真库准入：可组卷 **547/656**（两位学生分别是 309/381 与 238/275）。过滤后素材充足。
+   ⚠ **动作名是 `准入`，不是 `状态`**：我第一版写成 `状态 --json`，而 `状态` 根本不认 `--json`
+   （它只打印逐题状态列表）⇒ 我一度误判成"工具不输出 JSON、是个产品缺陷"（**已在 CHANGELOG 里更正**）。
+   `准入` 才是准入判定的**唯一实现**（见 `_标记复习.mjs` 的 case 注释），`--json` 出
+   `{"ok":true,"can":547,"total":656,"admit":{"学生|编号":{ok,why}}}` —— 单行、纯 JSON、可直接 parse。 */
+const ADMIT = (() => {
+  try {
+    const r = execFileSync(process.execPath, [E.tool('_标记复习.mjs'), '准入', '--json'],
+      { encoding: 'utf8', maxBuffer: 64e6, env: Object.assign({}, process.env, { CTB_DATA: E.LIB }) });
+    return (JSON.parse(String(r).trim()).admit) || {};
+  } catch (e) {
+    console.log('  ⚠ 取准入清单失败（' + String(e.message).slice(0, 80) + '）——本次不过滤素材');
+    return {};
+  }
+})();
+const isAdmissible = (student, id) => { const k = student + '|' + id; return ADMIT[k] === undefined ? true : !!ADMIT[k].ok; };
 
 const ROOT = path.resolve(__dirname, '..');
 let pass = 0, fail = 0;
@@ -57,19 +78,26 @@ if (!new RegExp("num\\(opt\\['no-repeat-days'\\]\\) \\|\\| " + REPEAT_WINDOW_DAY
    pristine HEAD（1ccd1d35）上跑同样红（已实测）。现在改成"挑未到期题最多的批次"，
    测试意图一字不变：依然只测"未到期时必须拦"。 */
 const dueCache = {};
+/* ★ 2026-11-07（修 BUG：索引结构迁移后未同步）：真实库的索引是 **subjects 分组结构**
+   （`{subjects:{数学:{items:[…]},…}}`），旧写法只读扁平的 `j.items` ⇒ 一张卡都改不到
+   （实测 setNextDue 改到 0/6，前置失败后整段断言连锁红）。现在两种结构都认。 */
+function eachIndexItem(j, fn) {
+  if (Array.isArray(j.items)) for (const it of j.items) fn(it);
+  if (j.subjects) for (const v of Object.values(j.subjects)) for (const it of (v.items || [])) fn(it);
+}
 function loadNextDue(student) {
   if (dueCache[student]) return dueCache[student];
   const out = {};
   for (const rel of E.findIndexes(E.LIB)) {
     let j; try { j = JSON.parse(fs.readFileSync(path.join(E.LIB, rel), 'utf8').replace(/^\uFEFF/, '')); } catch { continue; }
     if (j.student !== student) continue;
-    for (const it of (j.items || [])) out[it.id] = it.nextDue || '';
+    eachIndexItem(j, it => { out[it.id] = it.nextDue || ''; });
   }
   dueCache[student] = out;
   return out;
 }
 const isDueOn = (due, id, date) => { const nd = due[id]; return !!(nd && String(nd) <= String(date)); };
-const undDueIds = (b) => { const due = loadNextDue(b.student); return (b.items || []).filter(id => !isDueOn(due, id, b.date)); };
+const undDueIds = (b) => { const due = loadNextDue(b.student); return (b.items || []).filter(id => !isDueOn(due, id, b.date) && isAdmissible(b.student, id)); };
 const ranked = batches.map(b => ({ b, ids: undDueIds(b) })).sort((x, y) => y.ids.length - x.ids.length);
 const seed = ranked.length ? ranked[0].b : null;
 if (!seed) { console.log('✖ 真台账里没有批次，无法取素材'); process.exit(1); }
@@ -96,7 +124,7 @@ function setNextDue(libDir, student, idList, date) {
     let j; try { j = JSON.parse(fs.readFileSync(p, 'utf8').replace(/^\uFEFF/, '')); } catch { continue; }
     if (j.student !== student) continue;
     let changed = false;
-    for (const it of (j.items || [])) if (idList.includes(it.id)) { it.nextDue = date; changed = true; n++; }
+    eachIndexItem(j, it => { if (idList.includes(it.id)) { it.nextDue = date; changed = true; n++; } });
     if (changed) fs.writeFileSync(p, JSON.stringify(j, null, 2), 'utf8');
   }
   return n;

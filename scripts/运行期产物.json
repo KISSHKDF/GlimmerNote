@@ -1,0 +1,9 @@
+{
+  "note": "运行期产物白名单（唯一真源，2026-11-12 立）。app\\ 既是「发布包镜像」、又被运行中的程序写：桌面壳在日志/用户数据降级落点会往程序目录写东西（CTBShellV2.cs 的 LogTarget ② 与 wv2-profile 降级）。这三处必须**同一份口径**，否则会出现「一处豁免、另一处照旧」：① scripts\\verify-deploy.mjs（比对时单列 runtimeArtifacts，不算漂移）② scripts\\deploy.ps1（备份 _app-上一版 时剔除，否则回滚会把它们『洗白』成基线的一部分）③ scripts\\rollback.ps1（拷回 app\\ 后同样剔除，防旧备份里带着）。patterns 是**正则**（与 JS/PowerShell 双方都兼容的最小子集）。加一条必须同时说明『哪个代码路径会产出它』。",
+  "patterns": [
+    "^shell\\.log$",
+    "^shell\\.log\\.\\d+$",
+    "^wv2-profile[\\\\/]",
+    "^[^\\\\/]+\\.tmp-\\d+-\\d+$"
+  ]
+}

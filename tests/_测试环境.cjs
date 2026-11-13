@@ -497,9 +497,16 @@ function makeTempLib(extraDirs, opts) {
     fs.copyFileSync(src, dst);
     try { const st = fs.statSync(src); fs.utimesSync(dst, st.atime, st.mtime); } catch { }
   };
-  /* 卡片级文件：指纹/渲染要用，但影像（1.4GB+）不复制。
-     opts.copyCardFiles=true 时才复制 —— 组卷/批改类测试需要它（否则指纹判失效、题干渲染为空）。 */
-  const CARD_FILES = ['题干.html', '错题记录.md', '配图.svg'];
+  /* 卡片级文件：指纹/渲染/配图判据要用，但影像（1.4GB+）不复制。
+     opts.copyCardFiles=true 时才复制 —— 组卷/批改类测试需要它（否则指纹判失效、题干渲染为空）。
+     ⚠ 2026-11-12 修（真实踩到）：原先这里是一张**写死的全名清单** `['题干.html','错题记录.md','配图.svg']`，
+     漏了 **`题图.jpg`** ⇒ 副本里"图上作答"的卡被判 `answerMode=figure 但题干里没有图`，
+     而**同一份真库直跑门禁是 656/656 全过**（本次实测：4 张卡的图都叫 `题图.jpg`）。
+     影响面比一个用例大得多：**凡基于 makeTempLib 且涉及"卡有没有图/有没有证据图"的判据**，
+     都会出现同族假红/假绿。故改为**按名字正则匹配**，未来新增命名只需改这一处正则。
+     ⚠ 仍**刻意不复制** `原卷截图.jpg` 与整页扫描（那才是 copyCardFiles 要省的东西）：
+     当前没有任何门禁依赖副本里有它们；若将来有判据要，必须显式加进来并说明代价。 */
+  const CARD_FILE_RE = /^(?:题干\.html|错题记录\.md|_裁图记录\.json|配图\.(?:svg|png|jpe?g)|题图\.(?:svg|png|jpe?g))$/i;
   const copySidecars = (idxAbs, relDir) => {
     if (!o.copyCardFiles) return;
     let j;
@@ -513,7 +520,10 @@ function makeTempLib(extraDirs, opts) {
       if (!sub) continue;
       const srcDir = path.join(LIB, rel, sub);
       const dstDir = path.join(dir, rel, sub);
-      for (const f of CARD_FILES) {
+      let ents = [];
+      try { ents = fs.readdirSync(srcDir); } catch { continue; }
+      for (const f of ents) {
+        if (!CARD_FILE_RE.test(f)) continue;
         const s = path.join(srcDir, f);
         if (!fs.existsSync(s)) continue;
         try { fs.mkdirSync(dstDir, { recursive: true }); copyKeepTime(s, path.join(dstDir, f)); } catch { }
@@ -647,8 +657,49 @@ async function serverBase() {
   return s.base;
 }
 
+/* ---------- 库遍历（2026-11-07 新增） ----------
+ * 起因：库结构从「<学生>/<学科>/<卡目录>」迁移过来之后，一批测试仍按老结构（或硬编码
+ * 旧学生名）取卡，直接 ENOENT / 取到空集 ⇒ 整段断言连锁红。
+ * 这里给出**唯一一份**遍历实现：认两种索引形状（扁平 items / subjects 分组），
+ * 返回 {student, subject, item, dirAbs, key}，调用方不再自己拼路径。 */
+function eachCard(libDir, fn) {
+  const base = libDir || LIB;
+  for (const rel of findIndexes(base)) {
+    const abs = path.join(base, rel);
+    let j; try { j = JSON.parse(fs.readFileSync(abs, 'utf8').replace(/^\uFEFF/, '')); } catch { continue; }
+    const student = j.student || (path.basename(path.dirname(abs)) || '?');
+    const dirBase = path.dirname(abs);
+    if (Array.isArray(j.items)) {
+      for (const it of j.items) fn({ student, subject: j.subject || '', item: it, dirAbs: path.join(dirBase, it.dir || it.id || ''), key: student + '|' + it.id });
+    }
+    if (j.subjects && typeof j.subjects === 'object') {
+      for (const [sub, v] of Object.entries(j.subjects)) {
+        for (const it of (v.items || [])) fn({ student, subject: sub, item: it, dirAbs: path.join(dirBase, sub, it.dir || it.id || ''), key: student + '|' + it.id });
+      }
+    }
+  }
+}
+/** 库里第一个有卡的学生（不写死名字——学生名会变） */
+function firstStudentWithCards(libDir) {
+  const seen = new Map();
+  eachCard(libDir, c => { seen.set(c.student, (seen.get(c.student) || 0) + 1); });
+  for (const [s, n] of seen) if (n > 0) return s;
+  return null;
+}
+/** 按前缀取某学生的卡（prefix 形如 'M'） */
+function cardsOfStudent(libDir, student, prefix) {
+  const out = [];
+  eachCard(libDir, c => {
+    if (c.student !== student) return;
+    if (prefix && !String(c.item.id || '').startsWith(prefix)) return;
+    out.push(c);
+  });
+  return out;
+}
+
 module.exports = {
   REPO, TOOLS, LIB, LIB_SOURCE, isFrozen, findIndexes,
+  eachCard, firstStudentWithCards, cardsOfStudent,
   lib, tool, makeTempLib, runToolSync,
   /* ★ 2026-11-03（批次 2）：隔离树复制 —— 把工具**及其相对 import 的传递闭包**一起搬走，
      免得"新增一个兄弟模块"就让别人的对照实例 ERR_MODULE_NOT_FOUND（已踩两次）。 */

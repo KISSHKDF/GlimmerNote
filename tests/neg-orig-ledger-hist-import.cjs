@@ -20,8 +20,8 @@ const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 const E = require('./_测试环境.cjs');
 
-let fails = 0;
-const A = (n, ok, d) => { console.log(`${ok ? '[OK]  ' : '[FAIL]'} ${n}${d !== undefined ? '  → ' + d : ''}`); if (!ok) fails++; };
+let fails = 0, total = 0;   /* ★ 2026-11-13：total 供 `断言=N` 对账用 */
+const A = (n, ok, d) => { total++; console.log(`${ok ? '[OK]  ' : '[FAIL]'} ${n}${d !== undefined ? '  → ' + d : ''}`); if (!ok) fails++; };
 
 const LIB = E.allocTempDir('gn-ledger-hist-');
 const TMP = E.allocTempDir('gn-ledger-histsrc-');
@@ -148,5 +148,5 @@ A('①a 基线：两张卡都还没定位', card('学生A|M0001').page === null 
   A('⑥c 不给 --from ⇒ exit 2 + 用法', r3.code === 2 && /用法/.test(r3.out), 'exit=' + r3.code);
 }
 
-console.log(`\nRESULT=${fails ? 'FAIL(' + fails + ')' : 'PASS'}`);
+console.log(`\nRESULT=${fails ? 'FAIL(' + fails + ')' : 'PASS'}  断言=${total}  失败=${fails}`);
 process.exit(fails ? 1 : 0);

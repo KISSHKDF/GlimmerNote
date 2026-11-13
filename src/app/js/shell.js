@@ -154,6 +154,32 @@
   };
   S.toggleTheme = function () { S.applyTheme(S.theme() === 'dark' ? 'light' : 'dark'); S.render(); };
 
+  /* ================= 孩子模式（2026-11-12 批次 3 / UX-11）=================
+     为什么要有：做题屏原先混着**家长向**信息 —— 错因码 K/L/S、入册天数、批次号、难度标签、
+     工具名，以及「下次≈N 天后」这种排程承诺（审计 UX-11）。孩子看这些既看不懂，
+     又会被"还有几天"带偏；而家长恰恰需要它们。⇒ 一套界面两种视图：
+     孩子模式只留「题面 / 答案 / 对错」三件事，并把题干与按钮放大。
+
+     ⚠ 收口方式：家长向元素**一律带 class `adm`**，由 CSS 的
+     `body[data-kid="1"] .adm{display:none}` **一处**隐藏 —— 不散写成 `style="display:none"`，
+     否则以后新增的家长向元素会因为"忘了加判断"而漏进孩子视图（本仓 L-286 族）。
+     状态存 localStorage（下次进做题屏仍生效），**不落库、不写索引**。 */
+  S.kidMode = () => U.lsGet('gn.kidMode', false) === true;
+  S.applyKidMode = function (on) {
+    if (on) document.body.dataset.kid = '1'; else delete document.body.dataset.kid;
+    U.lsSet('gn.kidMode', !!on);
+  };
+  S.toggleKidMode = function () { S.applyKidMode(!S.kidMode()); S.render(); };
+
+  /* ================= 答案遮罩风格（2026-11-12 批次 4）=================
+     为什么要有：翻开答案后"扫一眼就算会了"是复习里最常见的自欺。两种风格：
+       · `full`（默认）：答案直接显示（与改前一致）；
+       · `blur`：答案先糊着，**点一下才清晰** —— 那一次点击是明确的"我要看了"。
+     另有一条与风格无关的：长答案（>400 字）默认**折叠**，避免把整屏撑满（见 review.js）。
+     偏好存 localStorage，不落库。 */
+  S.maskStyle = () => (U.lsGet('gn.maskStyle', 'full') === 'blur' ? 'blur' : 'full');
+  S.toggleMaskStyle = function () { U.lsSet('gn.maskStyle', S.maskStyle() === 'blur' ? 'full' : 'blur'); S.render(); };
+
   /* ================= 渲染主流程 ================= */
   S.render = function () {
     try {
@@ -409,6 +435,42 @@
     }
     clearTimeout(printLockTimer);
     if (el) el.hidden = true;
+  };
+
+  /* ══════════ 打印注入的**唯一出口**（2026-11-13 从 paper.js 搬来共用）══════════
+     为什么搬：家长报告（stats 视图）也要走同一条打印通道。这段逻辑原先私有在 paper.js 里，
+     别的视图想打印只能再抄一份——而它是**修过两次真实报障**的代码，抄一份就是等着漂。
+     原始记录（2026-10-11 用户两次实测报障「点打印没反应」）：
+     ⚠ 根因是 **WebView2 里 `window.print()` 是空操作**：浏览器打印对话框必须由宿主实现
+       （官方 API `ICoreWebView2_16::ShowPrintUI`）。原来只调 window.print() ⇒ 在壳里点了
+       没有任何反应（不弹框也不报错）；而穷举扫描把 print 打桩了，这条路径从没被真跑过。
+     现在：① 壳通道 → 调宿主 `print` op（C# 侧 ShowPrintUI 弹系统打印对话框）；
+           ② 服务端/离线通道（真浏览器）→ 仍用 `window.print()`；
+           ③ 宿主失败**不静默**：提示"请按 Ctrl+P"，并**保留**打印区不清空。
+     ⚠⚠ 铁律：壳通道下**绝不自动清空** `#printArea`。曾因 400ms 后清空 ⇒ 送进打印队列的是
+       **空白作业**（Windows 打印服务日志实证：作业页数 0、字节 0，而打印机与驱动一切正常）。
+       清空只发生在"下一次注入新内容"时（赋值覆盖），这样 Ctrl+P 这条退路也始终能印出正确内容。 */
+  S.printHtml = function (html, tip) {
+    const area = U.$id('printArea');
+    area.innerHTML = html;
+    const isShell = (typeof H !== 'undefined') && H.mode === 'shell' && typeof H.print === 'function';
+    if (isShell) {
+      S.toast(tip || '已送入打印视图，正在打开打印预览…', 'ok');
+      /* 预览打开的同时盖打印遮罩（S.printLock）——预览层开着时主窗口输入全被它吃掉，
+         不遮住说明，用户只会觉得「点了没反应」（详见 S.printLock 注释）。
+         预览关闭（主窗口重新获焦）后遮罩自动解除。 */
+      S.printLock(true);
+      H.print().then(r => {
+        if (r && r.ok === false) throw new Error(r.error || '宿主打印不可用');
+      }).catch(e => {
+        S.printLock(false);   /* 没弹成预览就没有「看不见的层」，遮罩立即撤 */
+        S.toast('没能打开打印预览（' + ((e && e.message) || e) + '）——请按 Ctrl+P 打印，内容已备好', 'warn', 12000);
+        try { console.error('[print] 宿主打印失败：', e); } catch (_) { }
+      });
+      return;
+    }
+    S.toast(tip || '已送入打印视图（Ctrl+P 可存 PDF）', 'ok');
+    setTimeout(() => { window.print(); setTimeout(() => { area.innerHTML = ''; }, 600); }, 120);
   };
 
   /* ================= 页内确认框（替代 window.confirm） =================
@@ -897,6 +959,7 @@
   S.mount = function () {
     const savedTheme = U.lsGet('ctb2.theme', null) || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
     S.applyTheme(savedTheme);
+    S.applyKidMode(S.kidMode());          // ★ 批次 3 / UX-11：孩子模式随上次选择恢复（只读 localStorage）
     if (U.lsGet('ctb2.side', 'full') === 'mini') document.documentElement.dataset.side = 'mini';
     const h = (location.hash || '#dash').slice(1);
     route = CTB.views[h] ? h : 'dash';

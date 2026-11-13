@@ -37,8 +37,8 @@ const E = require('./_测试环境.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const LIB = E.LIB;
-let fails = 0;
-const A = (n, ok, d) => { console.log(`${ok ? '[OK]  ' : '[FAIL]'} ${n}${d !== undefined ? '  → ' + String(d).slice(0, 200) : ''}`); if (!ok) fails++; };
+let fails = 0, total = 0;   /* ★ 2026-11-13：total 供 `断言=N` 对账用 */
+const A = (n, ok, d) => { total++; console.log(`${ok ? '[OK]  ' : '[FAIL]'} ${n}${d !== undefined ? '  → ' + String(d).slice(0, 200) : ''}`); if (!ok) fails++; };
 
 /* ---------- 装载浏览器侧真实代码（与 neg-paper-order-blank.cjs 同法） ---------- */
 function loadV2() {
@@ -150,8 +150,14 @@ function runAll() {
       const m = src.match(/function ansHtml\(title, refs\) \{[\s\S]*?\n  \}/);
       A('A5.0 ansHtml 可抽取', !!m);
       if (m) {
-        const ansHtml = new Function('U', 'M', 'H', 'shHead', 'return (' + m[0].replace(/^function ansHtml/, 'function') + ')')(
-          U, M, CTB.host, (t) => '<div class="sh-h"></div>');
+        /* ★ 2026-11-13 修（本会话"答案册错在哪一步"引出的连带）：`ansHtml` 现在会调 **`traceLines`**
+           （把复习流水的转折点打进答案册）—— 这里只注入 U/M/H/shHead ⇒ `ReferenceError`，本条当场红。
+           教训：**抽内部函数做测试时，依赖清单必须跟着被抽函数一起长**（本会话第三次踩同一形态）。 */
+        const mT = src.match(/function traceLines\(c\) \{[\s\S]*?\n  \}/);
+        A('A5.0b ansHtml 的新依赖 traceLines 可抽取', !!mT);
+        const traceLines = mT ? new Function('U', 'return (' + mT[0].replace(/^function traceLines/, 'function') + ')')(U) : (() => '');
+        const ansHtml = new Function('U', 'M', 'H', 'shHead', 'traceLines', 'return (' + m[0].replace(/^function ansHtml/, 'function') + ')')(
+          U, M, CTB.host, (t) => '<div class="sh-h"></div>', traceLines);
         const refs = [{ kid: '学生A', card: { id: 'X1', type: '填空', answer: '总答案', answerSlots: ['甲', '乙', '丙'] } }];
         const h = ansHtml('卷', refs);
         A('A5 答案册逐空打印（第1/2/3空都在）', /第1空：甲/.test(h) && /第2空：乙/.test(h) && /第3空：丙/.test(h), h.slice(0, 240));
@@ -161,6 +167,26 @@ function runAll() {
         A('A7 图上作答卡在答案册上有明确提示', /在图上|按图形批改/.test(hf), hf.slice(0, 240));
       }
     }
+    /* A8–A14 逐空行必须被三个界面共用（2026-11-08 用户报障：「E0042 题干给了 3 个空，
+       答案只给出一个」——答案册印了逐空，题库抽屉与复习流只印 `answer` 那条文字）。
+       判据两层：① 纯函数行为（每个空都在、空号对）；② **源码级**——三个视图都必须调
+       `M.slotAnswerLine`，少一处就红（否则同一个事实又会在某个面上静默消失）。 */
+    {
+      const multi = { id: 'X4', answer: '总答案', answerSlots: ['Does', 'love', 'he does'] };
+      A('A8 非 partial 按顺序定空号 1..k', JSON.stringify(M.slotAnswerItems(multi).map(i => i.n)) === '[1,2,3]', JSON.stringify(M.slotAnswerItems(multi)));
+      const line = M.slotAnswerLine(multi);
+      A('A9 逐空行含全部三个空', /第1空：Does/.test(line) && /第2空：love/.test(line) && /第3空：he does/.test(line), line);
+      A('A10 逐空纯文本同源（灯泡箱 detail 用）', M.slotAnswerText(multi) === '第1空：Does　｜　第2空：love　｜　第3空：he does', M.slotAnswerText(multi));
+      const part = { id: 'X5', answerScope: 'partial', answerSlots: ['甲'], answerSlotsAt: [3], answerNote: '只考第3空' };
+      A('A11 partial 按 answerSlotsAt 定空号并带说明', /第3空：甲/.test(M.slotAnswerLine(part)) && /只考第3空/.test(M.slotAnswerLine(part)), M.slotAnswerLine(part));
+      A('A12 没有逐空答案就不出行（不凭空造行）', M.slotAnswerLine({ id: 'X6', answer: '一段话' }) === '', JSON.stringify(M.slotAnswerLine({ id: 'X6', answer: '一段话' })));
+      for (const rel of [['views', 'bank.js'], ['views', 'review.js'], ['views', 'paper.js']]) {
+        const src = fs.readFileSync(path.join(ROOT, 'src', 'app', 'js', rel[0], rel[1]), 'utf8');
+        A('A13 ' + rel[1] + ' 调 M.slotAnswerLine（不是各拼各的）', /M\.slotAnswerLine\(/.test(src), '');
+      }
+      const css = fs.readFileSync(path.join(ROOT, 'src', 'app', 'css', 'app.css'), 'utf8');
+      A('A14 屏幕侧逐空行有样式（.sect/.reveal）', /\.sect \.ans-slot,\.reveal \.ans-slot\{/.test(css), '');
+    }
   }
 
   /* ================= B. 图上作答不留答题区 ================= */
@@ -169,7 +195,12 @@ function runAll() {
     const src = fs.readFileSync(path.join(ROOT, 'src', 'app', 'js', 'views', 'paper.js'), 'utf8');
     const m = src.match(/function qHtml\(x, i, form\) \{[\s\S]*?\n  \}/);
     A('B0 qHtml 可抽取', !!m);
-    const qHtml = new Function('U', 'M', 'H', 'return (' + m[0].replace(/^function qHtml/, 'function') + ')')(U, M, CTB.host);
+    /* ★ 2026-11-13 修：`qHtml` 现在会调 `optsGrid`（打印硬规则①：选项按内容宽度排 4/2/1 列）
+       ⇒ 只注入 U/M/H 会 ReferenceError。同 A5.0b 的教训：依赖清单跟着被抽函数一起长。 */
+    const mOB = src.match(/function optsGrid\(html\) \{[\s\S]*?\n  \}/);
+    A('B0b qHtml 的新依赖 optsGrid 可抽取', !!mOB);
+    const optsGridB = mOB ? new Function('return (' + mOB[0].replace(/^function optsGrid/, 'function') + ')')() : (x => x);
+    const qHtml = new Function('U', 'M', 'H', 'optsGrid', 'return (' + m[0].replace(/^function qHtml/, 'function') + ')')(U, M, CTB.host, optsGridB);
     const mk = (card) => ({ key: '学生A|' + card.id, kid: '学生A', subject: '数学', card });
     const render = c => qHtml(mk(c), 0, 'stem');
 
@@ -182,9 +213,15 @@ function runAll() {
     const selCard = { id: 'T-SEL', type: '选择题', question: '（　）', stemHtml: '<p>选</p>', answerMode: 'none' };
     A('B4 none：0 高匿名区（选择/判断）', render(selCard).indexOf('height:0') >= 0, render(selCard).slice(-120));
     /* 真库回归：上一轮点名卡必须已是 figure */
-    const m0011 = cards.find(x => x.key.endsWith('|M0011'));
+    /* ★ 2026-11-07（修 BUG：选择器用 id 尾匹配 ⇒ 命中错卡）：
+       真实库里**两个学生各有一张 M0011**（一张是"集合填数·图里下笔"，answerMode=figure；
+       另一张是"方程解漏根"，answerMode=blank）。`endsWith('|M0011')` 只按 id 尾匹配，
+       谁先被 indexFiles 遍历到就选谁 ⇒ 断言结果随目录遍历顺序漂移（实测命中另一张）。
+       修法：按**学生|id 精确匹配**，并在本断言里点名"集合填数·图里下笔"那张。
+       （学生化名不写进仓库——隐私门禁 repo-hygiene 会判红。） */
+    const m0011 = cards.find(x => x.item && x.item.dir === 'M0011-集合填数交集');
     if (m0011) A('B5 M0011（集合填数·图里下笔）已判 figure', m0011.item.answerMode === 'figure', m0011.item.answerMode || '(未登记)');
-    else A('B5 M0011 存在（夹具库可能没有）', true, 'SKIP 库中无 M0011');
+    else A('B5 M0011 存在（夹具库可能没有）', true, 'SKIP 库中无该卡');
     /* 反例：库里所有 figure 卡，渲染都不得留大答题区 */
     const figAll = cards.filter(x => x.item.answerMode === 'figure');
     const leak = figAll.filter(x => { const h = render(x.item); return /anszone" style="height:(?!0)/.test(h); });
@@ -399,6 +436,28 @@ function runAll() {
     }
     A('E0 临时库有可测样板卡（有答案 + id 唯一）', Boolean(t), t ? `${t.id}` : '无');
 
+    /* ★ 2026-11-12 修（本轮查出的真实失败 E1/E7 —— 它在 HEAD 上就已红、被 quick 档的数据侧红掩盖）：
+       本段要测的是**答案契约指纹**，而上面的 `makeTempLib(null, { copyCardFiles: true })`
+       把**真库整库**复制了进来 ⇒ 真库里任何与本判据无关的数据问题都会让本段判红：
+       实测真库有 4 张卡报 `answerMode=figure 但题干里没有图`（编号 M0061/M0071/P0149/P0151 等），
+       于是 E1「老卡无指纹 → 不阻断」与 E7「重新登记后恢复绿」恒红，红点与被测判据毫无关系。
+       这也违反 AGENTS.md 红线 5「测试不依赖真实用户数据」。
+       修法：拿到样板卡后把临时库**瘦身为只含这一张卡**（只改索引，不动文件系统）——
+       本段后续所有断言都只关心这张卡。 */
+    if (t) {
+      /* 彻底解耦：**所有**索引都瘦身 —— 含样板卡的那份只留它，其余清空 items。
+         只清一份是不够的：临时库有多份学科级索引，真库任意一份出现数据问题都会让本段恒红。 */
+      for (const p of indexFiles(tmp)) {
+        const jj = JSON.parse(fs.readFileSync(p, 'utf8'));
+        if (jj.subjects) for (const v of Object.values(jj.subjects)) { if (Array.isArray(v.items)) v.items = v.items.filter(x => x && x.id === t.id); }
+        else if (Array.isArray(jj.items)) jj.items = jj.items.filter(x => x && x.id === t.id);
+        fs.writeFileSync(p, JSON.stringify(jj, null, 2) + '\n', 'utf8');
+      }
+      const left = itemsOf(readIdx());
+      A('E0.5 临时库已瘦身为只含样板卡（全库解耦，红点只可能来自被测判据）',
+        left.length === 1, left.length + ' 张（' + left.map(x => x.id).join(',') + '）');
+    }
+
     if (t) {
       const sp = stemPathOf(t);
       const before = fs.readFileSync(sp, 'utf8');
@@ -459,6 +518,6 @@ function runAll() {
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { }
   }
 
-  console.log(`\nRESULT=${fails ? 'FAIL(' + fails + ')' : 'PASS'}`);
+  console.log(`\nRESULT=${fails ? 'FAIL(' + fails + ')' : 'PASS'}` + '  断言=' + total + '  失败=' + fails);
   process.exit(fails ? 1 : 0);
 }

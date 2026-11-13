@@ -45,6 +45,8 @@ import { APP_ROOT, libraryRoot, toolPath } from './_库根.mjs';
 import { createTask, newTaskId } from './_录题任务.mjs';
 /* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。 */
 import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
+/* ★ 2026-11-13（批次 4）：文本相似度抽到零副作用模块 —— 入库器的"疑似重复"提示也要用它。 */
+import { dice } from './_相似度.mjs';
 
 /* ⚠ 2026-10-31：**不要**在模块顶层 import `_路径护栏.mjs`。
  *   那个模块在**导入时**就求值 `libraryRoot()` 并缓存，于是它会抢在下面
@@ -448,25 +450,9 @@ function validateAgainst(recipeId, obj) {
 
 /* ══════════════ 自检：与 examples 的期望比对（给"别人的 AI"打分） ══════════════
  * 这不是回归测试，是**评分卡**：用户拿自己的 AI 跑同一配方，用这里告诉他"你的 AI 在
- * 这套配方上能打多少分"。原型只比 5 项且忽略 pageSummary —— 这里补上结构差异。 */
-const norm = (s) => String(s == null ? '' : s)
-  .replace(/\s+/g, '')
-  .replace(/[，。；：、]/g, (m) => ({ '，': ',', '。': '.', '；': ';', '：': ':', '、': ',' }[m]))
-  .replace(/（/g, '(').replace(/）/g, ')')
-  .replace(/[Ａ-Ｚａ-ｚ０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
-  .toLowerCase();
-
-function dice(a, b) {
-  const A = norm(a), B = norm(b);
-  if (!A || !B) return 0;
-  if (A === B) return 1;
-  const grams = (s) => { const m = new Map(); for (let i = 0; i < s.length - 1; i++) { const g = s.slice(i, i + 2); m.set(g, (m.get(g) || 0) + 1); } return m; };
-  const ga = grams(A), gb = grams(B);
-  let inter = 0, total = 0;
-  for (const [g, n] of ga) { total += n; inter += Math.min(n, gb.get(g) || 0); }
-  for (const [, n] of gb) total += n;
-  return total ? (2 * inter) / total : 0;
-}
+ * 这套配方上能打多少分"。原型只比 5 项且忽略 pageSummary —— 这里补上结构差异。
+ * ★ 2026-11-13（批次 4）：文本相似度（原地的 `norm` + `dice`）已抽到零副作用模块 `_相似度.mjs`
+ *   —— 入库器的"疑似重复"提示也要用它，而本文件是 **CLI**（被 import 会继承 argv 解析，见 L-874）。 */
 
 function selfTest(recipeId, actual) {
   const { dir, meta } = loadMeta(recipeId);
@@ -1468,9 +1454,13 @@ async function cmdCompose() {
   head.push('');
   head.push('## 三、回来之后（这一步在本机做，**不用发给 AI**）');
   head.push('');
+  /* ★ 2026-11-12（批次 3 / UX-02）：这两行原先让用户"按 `docs\作答契约.md` 建卡入库"——
+     但**发行包里没有 `docs\`**（`build-release.ps1` 的 stage 只拷 `app\` + `tools\*.mjs` + `recipes\`），
+     所以那是把用户指到一个不存在的文件；而且界面第 4 步**早就有一个「📥 建卡入库」按钮**。
+     改成本页可达的按钮指引。判据见 `tests\neg-recipe-contract.cjs`（任务单里不许出现 `docs\` 路径）。 */
   head.push('1. 把 AI 回的 JSON **原样**粘回程序「📥 录题」页第 3 步的输入框');
   head.push('2. 点「校验」→ 程序按契约逐条检查（结构、枚举、必填、溯源锚）');
-  head.push('3. 校验通过后，按 `docs\\作答契约.md` 建卡入库（程序不自动入库，要过三道门禁）');
+  head.push('3. 按提示补全并**人工确认**，再点 **「📥 建卡入库」**（第 4 步的按钮）—— 程序不自动入库，要过三道门禁');
   head.push('');
   head.push('## 四、本机留痕（仅供排查，**不用发给 AI**）');
   head.push('');

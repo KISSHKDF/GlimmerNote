@@ -10,7 +10,7 @@
  *   pending         : 重跑 _待确认.mjs 门禁 --json，替换 .pending 分区并写盘（办结/新增待办后调用，毫秒级）
  *   pending-if-stale: 同上，但先比对 `_待确认.json` 的内容哈希——没变就**不 spawn、不写盘**（BUG-16 修；
  *                     服务端 GET 走这一支，杜绝"读接口每次写 1.35MB"）
- *   all     : 重跑 _生成首页.ps1（全量，秒级；数据/组卷台账变化时由服务端直接调生成器，不走这里）
+ *   all     : 重跑生成状态.mjs（全量重建状态包；数据/组卷台账变化时由服务端直接调生成器，不走这里）
  *
  * stdout = 刷新后的完整 _状态.json（严格 JSON，服务端/桌面壳直接当响应体回给页面）。
  * 单一实现原则：各分区数据仍由对应工具（门禁 --json 等）产出，这里只做拼装，不复制业务逻辑。
@@ -157,10 +157,12 @@ if (section === 'pending' || section === 'pending-if-stale') {
     if (healed) process.stderr.write('[pending] 原图路径自愈 ' + healed + ' 处（按内容从保全库找回，台账未改）\n');
   }
 } else if (section === 'all') {
-  const r = execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', toolPath('_生成首页.ps1')],
-    { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 180000 });
+  /* ★ 2026-11-09 清债：PS1 生成器已退役删除，`--all` 改跑 Node 生成器——参数镜像 _服务端.mjs runGen
+     （cwd=库根 + 显式 CTB_DATA=库根），不新造口径。旧写法无条件 spawn 已不存在的 _生成首页.ps1，一碰即崩。 */
+  const r = execFileSync(process.execPath, [toolPath('生成状态.mjs')],
+    { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 180000, cwd: ROOT, env: Object.assign({}, process.env, { CTB_DATA: ROOT }) });
   state = readState();           // 生成器已重写 _状态.json，重读即可
-  process.stderr.write(r.slice(-400));
+  process.stderr.write(String(r).slice(-400));
 } else {
   process.stderr.write('未知分区：' + section + '（可用 pending|pending-if-stale|all）\n');
   process.exit(2);

@@ -93,6 +93,15 @@ const dotGate = tryJson('_着重号门禁.mjs', ['门禁', '--json']);
 H('着重号门禁', dotGate.code === 0,
   dotGate.json ? `带标记 ${(dotGate.json.stats || {}).withMarks || 0} 张，阻断 ${(dotGate.json.stats || {}).block || 0}${(dotGate.json.style || {}).ok ? '' : '，样式缺失'}` : lastLine(dotGate.out));
 
+/* 题干门禁（2026-11-07 建）：用户指着 E0017 的单题预览说「你转换出来的题干莫名其妙，谁能看得懂？
+   这样的题干也能通过双盲解答？也能进库？」
+   根因两件叠加：① 转义层套了两次 ⇒ 印出字面的 "<u>a</u>" 垃圾；② 大题指令没带进来 ⇒ 题号成孤儿号。
+   和上面三道同一地位：红了就是"印出来是一道**读不懂**的题"，不是进度欠账。
+   ⚠ 与 `_着重号门禁` 分工：那个管 `.rd` 加点的**样式**，这个管**题面本身能不能读懂**。 */
+const stemGate = tryJson('_题干门禁.mjs', ['门禁', '--json']);
+H('题干门禁（可读性）', stemGate.code === 0,
+  stemGate.json ? `扫描 ${(stemGate.json.stats || {}).total || 0} 张，阻断 ${(stemGate.json.stats || {}).block || 0}` : lastLine(stemGate.out));
+
 const ev = tryJson('_待确认.mjs', ['证据', '--json']);
 H('待办证据图门禁', ev.code === 0, ev.json ? `未确认 ${ev.json.open || 0} 条｜缺图 ${(ev.json.missing || []).length} / 通配符 ${(ev.json.wildcard || []).length} / 失效 ${(ev.json.broken || []).length}` : lastLine(ev.out));
 
@@ -151,7 +160,7 @@ if (STATE_OBJ) {
   if (STATE_OBJ.dataHealth) {
     const bad = Object.entries(STATE_OBJ.dataHealth).filter(([, v]) => v !== 'ok');
     H('数据源健康（dataHealth）', bad.length === 0, bad.length ? bad.map(([k, v]) => `${k}: ${v}`).join(' ｜ ') : JSON.stringify(STATE_OBJ.dataHealth));
-  } else H('数据源健康（dataHealth）', false, '状态包缺 dataHealth 字段——生成器没带健康台账（重跑 node _生成首页.ps1）');
+  } else H('数据源健康（dataHealth）', false, '状态包缺 dataHealth 字段——生成器没带健康台账（重跑 node 生成状态.mjs）');
 } else H('数据源健康（dataHealth）', false, '读不到 _状态.json（缺失或不是合法 JSON）——本项判定不了，按红处理');
 
 /* 方案文档完整性：U+FFFD 是**真腐损**（读坏了才出现），必须为 0 */

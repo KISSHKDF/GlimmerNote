@@ -439,6 +439,23 @@
       (opts.req === false ? '' : '<div class="sh-meta" style="margin-top:2mm"><span>要求：先独立思考再写；卡住 5 分钟以上的题号圈出来</span></div>') +
       '</div>';
   }
+  /* ★ 2026-11-13（批次 4 / 答案册「错在哪一步」）：把复习流水里的**转折点**打进答案册。
+     为什么：家长批改时要看的不是"错了"（卷面上就有红叉），而是"**孩子当时是怎么想错的**"——
+     `reviews[].note` 正是判分时问的那句"我想到哪一步、在哪拐错？"（复习屏收的口述）。
+     改前这份数据只在复习屏以"✎ 转折点"图标悬停可见、并被拼进批改备注落库，
+     **家长手里那份答案册上一个字都没有**。
+     ⚠ 只显示**最近 2 次**：旧记录常已被后来的理解推翻（"当时以为是单位换算，后来发现是公式记错"），
+       全量列出来会让家长照着过时的判断去讲题；超过 2 次时明确写出"共 N 次记录"。 */
+  function traceLines(c) {
+    const rs = (Array.isArray(c && c.reviews) ? c.reviews : []).filter(r => r && String(r.note || '').trim());
+    if (!rs.length) return '';
+    const shown = rs.slice(-2);
+    return '<div class="trace"><b>错在哪一步：</b>' +
+      shown.map(r => '（' + U.esc(r.date || '未记日期') + '）' + U.esc(String(r.note).slice(0, 140))).join('　') +
+      (rs.length > shown.length
+        ? '<span class="muted">　（共 ' + rs.length + ' 次记录，只显示最近 ' + shown.length + ' 次）</span>' : '') +
+      '</div>';
+  }
   /* 打印单元（纯函数，e2e 直接断言用；title 由这里 esc 一次，调用方传原文） */
   function paperHtml(title, refs, form) {
     let h = '<div class="sheet">' + shHead(title, refs);
@@ -454,23 +471,15 @@
     let h = '<div class="sheet">' + shHead(title, refs, { h1: '答案册（家长批改用）', score: false, req: false });
     refs.forEach((x, i) => {
       const c = x.card;
-      const slots = M.slotAnswers(c);
-      const at = Array.isArray(c.answerSlotsAt) ? c.answerSlotsAt : null;
-      const partial = String(c.answerScope || '') === 'partial';
-      let slotLine = '';
-      if (slots && slots.length) {
-        const items = slots.map((a, k) => {
-          const n = partial && at && at[k] ? at[k] : k + 1;
-          return '第' + n + '空：' + U.esc(a || '—');
-        });
-        slotLine = '<div class="ans-slot"><b>逐空：</b>' + items.join('　｜　') +
-          (partial ? '<span class="small muted">（' + U.esc(c.answerNote || '本卡只列部分空') + '）</span>' : '') + '</div>';
-      }
+      /* 逐空行改走**唯一实现** M.slotAnswerLine（2026-11-08：原先三个界面各拼各的，
+         抽屉与复习流漏掉了逐空 ⇒ 用户看到"题干 3 个空、答案只给一个"）。 */
+      const slotLine = M.slotAnswerLine(c);
       const modeTip = String(c.answerMode || '') === 'figure'
         ? '<div class="small muted">（本题答案写在图上／按图形批改，卷面不留答题区）</div>' : '';
       h += '<div class="q"><div class="q-hd">' + (i + 1) + '．' + U.esc(c.id) + '　<span style="font-weight:400">' + U.esc(c.type || '') + '</span></div>' +
         '<div class="ans-a"><b>答案：</b>' + U.esc(c.answer || '—') + '</div>' + slotLine + modeTip +
-        '<div class="why"><b>当时错答：</b>' + U.esc(c.studentAnswer || '—') + '　<b>错因：</b>' + U.esc((c.causeLayer || '') + (c.causeCode || '')) + '　' + U.esc(c.causeDesc || '') + '</div></div>';
+        '<div class="why"><b>当时错答：</b>' + U.esc(c.studentAnswer || '—') + '　<b>错因：</b>' + U.esc((c.causeLayer || '') + (c.causeCode || '')) + '　' + U.esc(c.causeDesc || '') + '</div>' +
+        traceLines(c) + '</div>';
     });
     return h + '</div>';
   }
@@ -480,6 +489,27 @@
     if (!sheet) return '';
     return kind === 'ans' ? ansHtml(sheet.title, sheet.refs) : paperHtml(sheet.title, sheet.refs, sheet.form);
   };
+  /* ★ 2026-11-12（批次 4 / 打印硬规则①）：选项按**内容宽度**自动 4 / 2 / 1 列。
+     为什么在**打印期**做、不改数据：题干是净化过的 HTML，屏幕观感不该因此变化；而打印是"要落在纸上"
+     的场景，列数排错就白费纸。规则借 [exam-zh] 的思路（**只借规则不抄代码**）：
+     把同一段里的 A./B./C./D. 四个选项拆成独立项，按**最长选项的字数**决定列数——
+       ≤8 字 ⇒ 4 列；≤16 字 ⇒ 2 列；更长 ⇒ 1 列。
+     ⚠ 只在**四个选项齐全**时动手；识别不确定就**原样返回**（宁可不变，也不许把一道题排错）。
+       选项内可能带 <i>/<sub> 等标签，所以量长度前先剥标签与实体。 */
+  function optsGrid(html) {
+    return String(html).replace(/<p class="stem-q">([\s\S]*?)<\/p>/g, function (m, inner) {
+      const parts = inner.split(/(?=[A-D][.．、]\s*)/).map(s => s.trim()).filter(Boolean);
+      const items = parts.filter(s => /^[A-D][.．、]/.test(s));
+      if (items.length < 4) return m;                       // 不足四个 ⇒ 原样
+      const plain = s => s.replace(/<[^>]+>/g, '').replace(/&[a-zA-Z#0-9]+;/g, 'x').trim();
+      const maxLen = Math.max.apply(null, items.map(s => plain(s).length));
+      const cols = maxLen <= 8 ? 4 : (maxLen <= 16 ? 2 : 1);
+      return '<div class="stem-opts cols-' + cols + '">' +
+        items.map(s => '<span class="opt">' + s + '</span>').join('') + '</div>';
+    });
+  }
+  /* 暴露给 e2e 断言（纯函数，不触发打印对话框）——与 V.printUnit 同一惯例 */
+  V.optsGrid = optsGrid;
   function qHtml(x, i, form) {
     const c = x.card;
     let stem;
@@ -487,7 +517,7 @@
        「裁净题干图」模式只许用 题干.jpg（stem），没有就降级印刷版题干/文字题干。
        F-27/F-57/F-58：题干走 M.stemHtmlSafe（唯一实现：白名单净化 + 相对图解析到卡片目录 + fig 兜底）。 */
     if (form === 'img' && c.stem) stem = '<div class="q-stem"><img src="' + U.esc(H.asset(c.stem)) + '"></div>';
-    else stem = '<div class="q-stem">' + (M.stemHtmlSafe(c) || M.stemFit(U.esc(c.question), c)) + '</div>';
+    else stem = '<div class="q-stem">' + optsGrid(M.stemHtmlSafe(c) || M.stemFit(U.esc(c.question), c)) + '</div>';
     const t = (c.type || '') + (c.question || '');
     /* 答题区自适应（2026-10-16 修，用户 P20261015-01 实测两条）：
        ① 填空题「题干里已有坑」的（ASCII 下划线或 blank span）不再另留 90px 大框——
@@ -532,40 +562,12 @@
            ② 服务端/离线通道（真浏览器）→ 仍用 `window.print()`；
            ③ 宿主失败**不静默**：提示"请按 Ctrl+P"，并**保留**打印区不清空（WebView2 默认启用浏览器快捷键，Ctrl+P 能弹同一界面）。
      清空时机也改了：壳通道等对话框**关闭后**再清，否则卷面可能在对话框还开着时被清掉、印出空白。 */
-  function printHtml(html, tip) {
-    const area = U.$id('printArea');
-    area.innerHTML = html;
-    const isShell = (typeof H !== 'undefined') && H.mode === 'shell' && typeof H.print === 'function';
-    if (isShell) {
-      S.toast(tip || '已送入打印视图，正在打开打印预览…', 'ok');
-      /* ★ 2026-10-25：预览打开的同时盖打印遮罩（S.printLock）——预览层开着时主窗口输入
-         全被它吃掉，不遮住说明，用户只会觉得「点了没反应」（详见 shell.js S.printLock 注释）。
-         预览关闭（主窗口重新获焦）后遮罩自动解除。 */
-      S.printLock(true);
-      H.print().then(r => {
-        if (r && r.ok === false) throw new Error(r.error || '宿主打印不可用');
-        /* ⚠⚠ 2026-10-11 修（用户第二次报障「点左下角打印之后没反应」的真凶）：
-           **这里原来有 `setTimeout(() => { area.innerHTML = ''; }, 400)` —— 必须删掉。**
-           因为宿主 `ShowPrintUI` 是「对话框刚弹出就返回」，而 Edge 打印预览是**之后**才去渲染页面内容的；
-           400ms 就把 `#printArea` 清空 ⇒ 送进队列的是**空白作业**。
-           铁证（Windows 打印服务日志 `Microsoft-Windows-PrintService/Operational`）：
-             作业 14/18/19/21/23/24 全部 `打印页数: 0`、`大小(以字节为单位): 0`，
-             而打印机与驱动一切正常（Word/WPS 能打）⇒ 空白是应用造成的。
-           现在的规矩：**壳通道下绝不自动清空打印区**（它 `display:none`，屏幕上不占位、只对打印可见）。
-           清空只在"下一次注入新的打印单元"时发生（`fillPrintArea` 是赋值覆盖），
-           顺带让 Ctrl+P 这条退路也始终能印出正确卷面。 */
-      }).catch(e => {
-        S.printLock(false);   /* 没弹成预览就没有「看不见的层」，遮罩立即撤 */
-        S.toast('没能打开打印预览（' + ((e && e.message) || e) + '）——请按 Ctrl+P 打印，卷面已备好', 'warn', 12000);
-        try { console.error('[print] 宿主打印失败：', e); } catch (_) { }
-      });
-      return;
-    }
-    S.toast(tip || '已送入打印视图（Ctrl+P 可存 PDF）', 'ok');
-    setTimeout(() => { window.print(); setTimeout(() => { area.innerHTML = ''; }, 600); }, 120);
-  }
+  /* ★ 2026-11-13（批次 4 / 家长报告）：上面这段打印通道的实现已搬到 `S.printHtml`（shell.js）
+     —— 家长报告（stats 视图）也要走同一条通道，而它是**修过两次真实报障**的代码，抄一份就是等着漂。
+     事故全记录（含"400ms 清空打印区 ⇒ 送进队列的是空白作业"那条 Windows 打印服务日志铁证）
+     随代码一起搬到了 shell.js。本文件只保留 `printUnit` / `fillPrintArea` 这些**卷面特有**的部分。 */
   function doPrint(kind) {
-    printHtml(V.printUnit(kind), kind === 'ans'
+    S.printHtml(V.printUnit(kind), kind === 'ans'
       ? '已送入打印视图：只有答案册（家长批改用，别给孩子）'
       : '已送入打印视图：只有试卷（不含答案册）');
   }
@@ -630,7 +632,7 @@
       footer: '<button class="btn" id="spClose">关闭</button><button class="btn primary" id="spPrint">🖨 打印这一题</button>',
       onMount: d => {
         d.querySelector('#spClose').onclick = S.closeDrawer;
-        d.querySelector('#spPrint').onclick = () => printHtml(html);
+        d.querySelector('#spPrint').onclick = () => S.printHtml(html);
       },
     });
   };
@@ -808,24 +810,81 @@
       body: '<div class="small muted" style="margin-bottom:10px">左列方块＝<b>这张卷上印的题号</b>：纸面上第 3 题，就找左边写 3 的那行；' +
         '后面 <span class="num">M0048</span> 是题库内部编号。按题给结果（与 _标记复习.mjs 批改一致：对/半对/错）。' +
         (doneN ? '本批已有 <b>' + doneN + '</b> 题录过（按钮已亮），不重点它就不会被重写。' : '') + '</div>' +
+        /* ★ 2026-11-12（批次 3 / UX-14）：30 题以前要点 30 次。现在键盘一条龙：
+           ↑↓ 移到某行、1/2/3 判对/半对/错并**自动跳下一行**、Ctrl+Enter 提交。
+           提示写在最显眼处 —— 键盘功能"藏起来"等于没有。 */
+        '<div class="small muted lg-keys" style="margin-bottom:10px">⌨ 键盘：<b>↑ ↓</b> 选题 · ' +
+        '<b>1 / 2 / 3</b> 判「对 / 半对 / 错」并跳到下一题 · <b>Ctrl+Enter</b> 提交</div>' +
         '<div class="stack" style="gap:8px">' + V.gradeRows(items, lookup, results) + '</div>' +
         '<div class="opt-item" style="margin-top:12px">备注 <input type="text" id="lgNote" style="flex:1" placeholder="可选：本次重做整体情况"></div>',
       footer: '<span class="small muted" style="flex:1">这次点了 <b id="lgDone">0</b> / ' + items.length +
         ' 题；只提交点过的（结果存本地临时，提交一次性写库）</span>' +
+        '<button class="btn ghost" id="lgClear" title="撤掉本次点过的全部选择（已入库的结果不受影响）">清空本次</button>' +
+        '<button class="btn" id="lgAllYes" title="把还没判的题全判成「对」——只在确实都对时用">剩余全判对</button>' +
         '<button class="btn" id="lgCancel">取消</button><button class="btn primary" id="lgSubmit">提交批改</button>',
       onMount: d => {
         const picked = {};
         const upd = () => { const el = U.$id('lgDone'); if (el) el.textContent = String(Object.keys(picked).length); };
+        const rows = Array.prototype.slice.call(d.querySelectorAll('.lg-gline'));
+        /* 判一题（点选与键盘共用**同一个**入口 —— 两条路各写一份必然漂，本仓 L-286 族） */
+        const pick = (row, v) => {
+          if (!row) return;
+          const seg = row.querySelector('.seg[data-res]'); if (!seg) return;
+          seg.querySelectorAll('button').forEach(x => x.classList.toggle('on', x.dataset.v === v));
+          picked[seg.dataset.res] = v;
+          row.classList.add('done');
+          upd();
+        };
         d.querySelectorAll('.seg[data-res]').forEach(seg => {
-          seg.querySelectorAll('button').forEach(btn => btn.onclick = () => {
-            seg.querySelectorAll('button').forEach(x => x.classList.remove('on')); btn.classList.add('on');
-            picked[seg.dataset.res] = btn.dataset.v;
-            upd();
-          });
+          seg.querySelectorAll('button').forEach(btn => btn.onclick = () => pick(btn.closest('.lg-gline'), btn.dataset.v));
         });
-        /* 续录（批次分几次判完）：直接把第一道**还没录**的题带到眼前，省得在 30 行里找 */
-        const first = d.querySelector('.lg-gline:not(.done)');
-        if (first && doneN) { try { first.scrollIntoView({ block: 'nearest' }); } catch (_) { } }
+
+        /* ★ 2026-11-12（批次 3 / UX-14）：当前行（键盘焦点）——原来是"30 题点 30 次"。
+           从第一道**还没录**的题开始（续录：批次分几次判完时，省得在 30 行里找）。 */
+        let curI = rows.findIndex(r => !r.classList.contains('done'));
+        if (curI < 0) curI = 0;
+        const setCur = i => {
+          if (!rows.length) return;
+          curI = Math.max(0, Math.min(rows.length - 1, i));
+          rows.forEach((r, k) => r.classList.toggle('cur', k === curI));
+          try { rows[curI].scrollIntoView({ block: 'nearest' }); } catch (_) { }
+        };
+        setCur(curI);
+
+        const KEY2V = { 1: '对', 2: '半对', 3: '错' };
+        const keyFn = e => {
+          /* 抽屉已被关掉 ⇒ 自行解绑（shell 的 closeDrawer 只管删节点，不会通知这里） */
+          if (!document.body.contains(d)) { document.removeEventListener('keydown', keyFn); return; }
+          const tag = (e.target && e.target.tagName) || '';
+          if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;   // 备注框里打字不许被判分吞掉
+          if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); setCur(curI + (e.key === 'ArrowDown' ? 1 : -1)); return; }
+          if (KEY2V[e.key]) { e.preventDefault(); pick(rows[curI], KEY2V[e.key]); setCur(curI + 1); return; }
+          if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); const b = U.$id('lgSubmit'); if (b) b.click(); return; }
+        };
+        document.addEventListener('keydown', keyFn);
+
+        /* 批量入口：只在"孩子确实都做对了"时用，所以给二次确认（判错会写进复习排程，重判要再来一次） */
+        U.$id('lgAllYes').onclick = async () => {
+          const rest = rows.filter(r => !picked[r.querySelector('.seg[data-res]').dataset.res]);
+          if (!rest.length) return S.toast('没有待判的题了', 'warn');
+          const ok = await S.confirm({
+            title: '把还没判的 ' + rest.length + ' 题全判成「对」？',
+            body: '只在孩子确实都做对了时用。判分会被写进复习排程（判「对」会推后下次复习日），判多了要整批重判。',
+            ok: '全判对', danger: true,
+          });
+          if (!ok) return;
+          rest.forEach(r => pick(r, '对'));
+          S.toast('已把 ' + rest.length + ' 题判为「对」——记得核对一遍再提交', 'warn', 6000);
+        };
+        U.$id('lgClear').onclick = () => {
+          Object.keys(picked).forEach(k => delete picked[k]);
+          rows.forEach(r => {
+            r.querySelectorAll('.seg button').forEach(x => x.classList.remove('on'));
+            r.classList.remove('done');
+          });
+          upd();
+          setCur(0);
+        };
         U.$id('lgCancel').onclick = S.closeDrawer;
         U.$id('lgSubmit').onclick = async () => {
           const pairs = Object.keys(picked).map(id => id + '=' + picked[id]);

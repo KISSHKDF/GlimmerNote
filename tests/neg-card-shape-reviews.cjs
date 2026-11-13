@@ -42,7 +42,8 @@ function detect(it) {
   return bad;
 }
 
-function A(cond, msg) { if (!cond) { console.log('FAIL ' + msg); process.exit(1); } }
+let nAssert = 0;   /* ★ 2026-11-13：供 `断言=N` 对账用（run.mjs 的断言数对账 fail-closed：没报=判红） */
+function A(cond, msg) { nAssert++; if (!cond) { console.log('FAIL ' + msg); process.exit(1); } }
 
 /* ---------- 阴性自证：检测器必须能抓坏卡、放好卡 ---------- */
 A(detect({ id: 'X', reviews: [null, { date: '2026-10-16', result: '对' }], reviewCount: 0, passStreak: 0 }).length === 1, '自证：合成坏卡（reviews 含 null）必须被抓到');
@@ -62,5 +63,11 @@ for (const { file, kind } of FILES) {
   }
 }
 A(problems === 0, '数据真源存在 ' + problems + ' 张复习字段形状不合规的卡（上方明细）——入库/生成器修好前 v2 随时可能再崩');
+/* ★ 2026-11-12 修（空真即缺陷）：改前只统计 `cards` 而**从不断言它 > 0** —— 库形状一变
+   （索引/状态包都没有、或形状对不上），循环 0 次仍会打印"PASS 复习字段形状：… 0 张卡、0 违规"
+   并 exit 0，而本文件守的是 2026-10-01「37 张卡的 reviews 含 null 导致 v2 启动崩溃」那次事故。
+   分母为 0 的"通过"没有信息量，本仓在 `_体检.mjs` 与 `_数据区门禁.mjs` 都已把空真当缺陷。 */
+A(cards > 0, '实扫必须真的扫到卡（扫到 0 张 = 判据空转，不算通过）：真源 ' + FILES.length + ' 个、卡 ' + cards + ' 张');
 console.log('PASS 复习字段形状：' + FILES.length + ' 个真源、' + cards + ' 张卡、0 违规');
+console.log('\nRESULT=PASS  断言=' + nAssert + '  失败=0');
 process.exit(0);

@@ -48,8 +48,8 @@ class Cdp {
   close() { try { this.ws.close(); } catch { } }
 }
 
-let fails = 0;
-const A = (name, ok, detail) => { P((ok ? '[OK]  ' : '[FAIL]') + name + (detail !== undefined ? '  → ' + String(detail).slice(0, 240) : '')); if (!ok) fails++; };
+let fails = 0, total = 0;   /* ★ 2026-11-13：total 供 `断言=N` 对账用 */
+const A = (name, ok, detail) => { total++; P((ok ? '[OK]  ' : '[FAIL]') + name + (detail !== undefined ? '  → ' + String(detail).slice(0, 240) : '')); if (!ok) fails++; };
 
 /* ★ 2026-11-02 批次0尾项：过程件（Edge profile / Edge 子进程 / CDP 连接）声明在模块级，
    好让**任何**退出路径都能在 finally 里收尾；profile 落 %TEMP% 并登记进统一切除表。 */
@@ -184,7 +184,7 @@ async function rmProfileEventually(dir) {
     try { if (child) child.kill(); } catch { }
     try { if (profile) await rmProfileEventually(profile); } catch { }
     try { if (__srv) await __srv.stop(); } catch { }
-    P('RESULT=' + ((exitCode || fails) ? 'FAIL(' + (exitCode || fails) + ')' : 'PASS'));
+    P('RESULT=' + ((exitCode || fails) ? 'FAIL(' + (exitCode || fails) + ')' : 'PASS') + '  断言=' + total);
     try { fs.writeFileSync(OUT, log.join('\r\n'), 'utf8'); } catch { }
   }
   process.exit(exitCode || (fails ? 1 : 0));

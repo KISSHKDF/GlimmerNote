@@ -86,6 +86,9 @@ import { readJsonStrict, writeJsonAtomic, writeTextAtomic, acquireLibLock, withL
 import { normEvidenceBox, evidenceAbs } from './_区域坐标.mjs';
 /* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。 */
 import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
+/* 2026-11-09：应做动作口径的**唯一真源**（与 `_闭环稽核.mjs` import 同一份）。
+   此前本文件注释里另写了一份口径且与稽核相反，夜间链据此登记错值 ⇒ 25 条 RED。 */
+import { DISPOSITIONS, VERDICT_BOUND_DISPOSITIONS, required } from './_应做动作.mjs';
 
 /* ★ 2026-10-23 程序与数据分家：ROOT 现在是**用户库根**，不再是"本脚本所在目录"。
    兄弟工具一律用 toolPath(...)，见 _库根.mjs。 */
@@ -668,6 +671,114 @@ function locateCardDir(cardId) {
   }
   return { hits };
 }
+/* ---------- 红字归属回填（2026-11-07，用户裁定） ----------
+ * 起因（实测）：台账里 5 条「笔迹归属」全部已确认，答案 4/5 是「孩子自己订正的 / 自己改的」，
+ *   但 `答` 动作**只写 `_待确认.json`**（改 status 与 answer），
+ *   **不碰 `_索引.json`、不碰 `错题记录.md`** ⇒ 问出来的真相**回不到卡上**：
+ *   Y0002 至今仍写 answerSource=独立判卷+红笔一致、notes 仍挂着那条待办；
+ *   某物理学科 30 张仍是「老师定案」——正是孩子自己改的那一整本。
+ *   台账问一万次也白问：这不是"数据欠账"，是**回路断了**。
+ *
+ * 修法：`答` 命中 kind=笔迹归属 时，把结论**回填到卡上**：
+ *   · 索引：写 `inkAttribution`（孩子/家长/同学/老师/未确认）；红字不是老师写的 ⇒
+ *     `answerSource` 不许再写「老师定案」，改为「独立判卷」并在 note 记明分歧。
+ *   · 卡面（错题记录.md）：红字那一行改成中性表述并标出归属（与入库器产出的格式对齐）。
+ *
+ * 边界：**只回填归属，不代人工改答案**。答案是什么是另一回事（可能另有独立判卷来源）；
+ *   本回填只负责把"红字是谁写的"这个事实落到卡上，让门禁能据此判断。
+ *   回填失败（找不到卡/卡面结构对不上）⇒ **响亮报错**，不静默跳过（静默跳过＝白问）。 */
+const INK_ATTRIBUTIONS = ['老师', '孩子', '家长', '同学', '未确认'];
+/** 从台账条目的回答里判出红字归属；判不出返回 ''（= 未确认，不猜） */
+function inkAttributionOfAnswer(answerText) {
+  const s = String(answerText || '');
+  if (!s.trim()) return '';
+  if (/老师|教师|批改人/.test(s)) return '老师';
+  if (/家长|父母|爸爸|妈妈/.test(s)) return '家长';
+  if (/同学|同桌|互相|互批/.test(s)) return '孩子';       // 同学互批 ⇒ 归属不是老师，归到"非老师"
+  if (/自己|本人|我/.test(s)) return '孩子';
+  return '';
+}
+/** 找到某张卡在索引里的位置（多学科/单学科两种索引形态都要认） */
+function findCardInIndexes(student, cardId) {
+  const out = [];
+  const walk = (dir) => {
+    let ents = [];
+    try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      if (e.isFile() && e.name === '_索引.json') {
+        const f = path.join(dir, e.name);
+        let j = null;
+        try { j = readJsonStrict(f); } catch { continue; }
+        if (j && String(j.student || '') === String(student)) {
+          const scan = (items, subj) => {
+            for (const it of (items || [])) {
+              if (it && String(it.id) === String(cardId)) out.push({ file: f, json: j, item: it, subject: subj });
+            }
+          };
+          if (j.subjects && typeof j.subjects === 'object') {
+            for (const p of Object.keys(j.subjects)) scan(j.subjects[p].items, p);
+          } else scan(j.items, j.subject);
+        }
+        continue;
+      }
+      if (e.isDirectory() && !e.name.startsWith('_') && !e.name.startsWith('.')) walk(path.join(dir, e.name));
+    }
+  };
+  walk(ROOT);
+  return out;
+}
+/** 把红字归属结论回填到卡（索引 + 卡面）；返回 {ok, note} */
+function applyInkAttribution(entry, attribution, answerText) {
+  if (!INK_ATTRIBUTIONS.includes(attribution)) return { ok: false, note: '归属取值非法：' + attribution };
+  const hits = findCardInIndexes(entry.student, entry.cardId);
+  if (!hits.length) return { ok: false, note: '库里找不到卡 ' + entry.student + '/' + entry.cardId + '（未回填）' };
+  if (hits.length > 1) return { ok: false, note: '卡号 ' + entry.cardId + ' 在库里命中 ' + hits.length + ' 个索引（未回填）' };
+  const hit = hits[0];
+  const it = hit.item;
+  const before = { as: it.answerSource, ink: it.inkAttribution };
+  it.inkAttribution = attribution;
+  /* ★ 2026-11-07（第二次收紧）：**「老师定案」这个来源已废除** —— 红字只作参考，不作定案标准，
+     即使确认是老师写的也一样。所以只要卡上还是这个标签，**一律降级**，
+     不看归属是不是「老师」。
+     改成「独立判卷」的前提是这张卡的答案另有出处（否则它本来就该是「未能确认」，
+     由双路盲解或官方答案页补上）。 */
+  const wasRetired = String(it.answerSource || '').startsWith('老师定案');
+  if (wasRetired) {
+    it.answerSource = '独立判卷';
+    it.answerSourceNote = (it.answerSourceNote ? it.answerSourceNote + '；' : '') +
+      '红字归属：' + attribution + '（' + entry.id + ' 回话：' + String(answerText || '').slice(0, 120) + '）' +
+      ' ⇒「老师定案」已废除（红字只作参考，不作定案标准），改按独立判卷';
+  } else if (it.answerSourceNote !== undefined) {
+    it.answerSourceNote = (it.answerSourceNote ? it.answerSourceNote + '；' : '') +
+      '红字归属：' + attribution + '（' + entry.id + ' 回话：' + String(answerText || '').slice(0, 120) + '）';
+  }
+  hit.json.updatedAt = today();
+  writeJsonAtomic(hit.file, hit.json, { backup: true, newline: true });
+  /* 卡面：红字那一行改成中性表述 + 标出归属（与入库器 `_录题入库.mjs` 的产出格式对齐） */
+  let mdNote = '';
+  try {
+    const dir = it.dir ? path.join(path.dirname(hit.file), String(it.dir)) : '';
+    const md = dir ? path.join(dir, '错题记录.md') : '';
+    if (md && fs.existsSync(md)) {
+      const lines = fs.readFileSync(md, 'utf8').split(/\r?\n/);
+      const ti = lines.findIndex(l => l.startsWith('> 老师红笔：') || l.startsWith('> 红字'));
+      if (ti >= 0) {
+        const rest = lines[ti].replace(/^> (老师红笔|红字[^：]*：)/, '');
+        const body = rest.replace(/^[^：]*：/, '').replace(/\s*⚠.*$/, '');
+        const inkTxt = attribution === '老师' ? '红字（老师批的）' : attribution === '未确认' ? '红字（**归属未确认**）' : ('红字（' + attribution + '写的）');
+        lines[ti] = '> ' + inkTxt + '：' + body;
+        writeTextAtomic(md, lines.join('\n'));
+        mdNote = '卡面已同步';
+      } else {
+        mdNote = '卡面没有红字行（未同步正文）';
+      }
+    } else mdNote = '卡面文件不存在（未同步正文）';
+  } catch (e) {
+    mdNote = '卡面同步失败：' + String(e && e.message || e).slice(0, 120);
+  }
+  return { ok: true, note: '归属=' + attribution + '｜来源 ' + String(before.as) + '→' + String(it.answerSource) + '｜' + mdNote };
+}
+
 function currentOf(kind, target) {
   if (kind === '卡') {
     const { hits } = locateCardDir(target);
@@ -863,7 +974,7 @@ function render() {
   L.push('| 老师漏判 | 老师 | 记进该卡 `错题记录.md` 的「老师批改」段；分数口径同步到方案文档账目 |');
   L.push('| 卷面辨认 | 原卷 | 放大原卷定稿后补/改该卡；该入卡的补入卡。**判字前先查笔形库**：`node _笔形.mjs 提示 --student <学生>`；定案后回填 `_笔形.mjs 加`（含反例） |');
   L.push('| 口径确认 | 老师 | 只改 `answer` 的注与判罚说明，不改变孩子是否算错 |');
-  L.push('| 系统维护 | 我 | 直接改索引字段 / 重裁图；改完 `node _生成队列.mjs` + `_生成首页.ps1` |');
+  L.push('| 系统维护 | 我 | 直接改索引字段 / 重裁图；改完 `node _生成队列.mjs` + `node 生成状态.mjs` |');
   L.push('');
 
   writeTextAtomic(MD, L.join('\n').replace(/\n+$/, '\n'));
@@ -1332,7 +1443,7 @@ if (action === '清单') {
     if (bad.length) {
       console.error(`✖ 候选 ${candId} 的正文是修订包，但没通过校验（${bad.length} 处）：`);
       for (const b of bad) console.error('   · ' + b);
-      console.error('   形状与判据见 docs\\录题任务契约.md「候选与修订链」。台账与库**一字未动**。');
+      console.error('   形状与判据见 仓库文档 docs\\录题任务契约.md「候选与修订链」。台账与库**一字未动**。');
       process.exit(1);
     }
     console.log(`   ✔ 正文是修订包：坐标与页引用校验通过（${['regions', 'origBox', 'box', 'page', 'origPage', 'pageSha'].filter(k => pack.obj[k] !== undefined).join('/') || '（没给坐标或页字段）'}）`);
@@ -1400,6 +1511,31 @@ if (action === '清单') {
   it.resolvedAt = opt.date || today();
   save(j);
   console.log(`${it.id} → ${it.status}：${it.answer}`);
+  /* ★ 2026-11-07（红字归属，用户裁定）：kind=笔迹归属 的回话**必须落到卡上**。
+     修前：`答` 只改台账，卡面与索引原封不动 ⇒ 问出来的真相回不去卡
+     （实测：Y0002 至今仍写「独立判卷+红笔一致」、某物理学科 30 张仍「老师定案」，
+       而台账里早已确认「孩子自己改的」）。台账问一万次也白问 —— 回路断了。
+     现在：答完自动回填 `inkAttribution`；红字不是老师写的 ⇒ 撤销「老师定案」标签。
+     回填失败**响亮报错**（exit 3），不静默跳过 —— 静默跳过＝白问，家长还以为生效了。 */
+  if (action === '答' && String(it.kind || '') === '笔迹归属') {
+    const attribution = inkAttributionOfAnswer(it.answer);
+    if (!attribution) {
+      console.error('⚠ 笔迹归属回填：认不出红字是谁写的 ⇒ 记为「未确认」');
+      console.error('   回话原文：' + String(it.answer || '').slice(0, 160));
+      console.error('   （「未确认」不是失败：红字归属不明时卡不该拿红字当权威答案，程序会把它挡在组卷池外。）');
+      const r0 = applyInkAttribution(it, '未确认', it.answer);
+      if (r0.ok) console.log('   ✔ 回填：' + r0.note); else console.error('   ✖ 回填失败：' + r0.note);
+    } else {
+      const r = applyInkAttribution(it, attribution, it.answer);
+      if (!r.ok) {
+        console.error('✖ 笔迹归属回填失败：' + r.note);
+        console.error('   台账已记（' + it.id + '），但**卡面没改** —— 红字归属仍不可查。');
+        console.error('   修法：确认卡号 ' + it.student + '/' + it.cardId + ' 在库中存在后重跑 `答`（或手工改该卡的 inkAttribution）。');
+        process.exit(3);
+      }
+      console.log('   ✔ 回填：' + r.note);
+    }
+  }
   render();
 } else if (action === '撤回') {
   const j = load();
@@ -1697,7 +1833,9 @@ if (action === '清单') {
      必须回原卷/原图（判字先查笔形库）把线索解释成 错/对/部分对/无法判定，并写下依据。
      没有本字段 → 门禁红（「结论落了库、判定没人做」）；有判定后由 _闭环稽核.mjs 算「应做动作」。
      `不适用` 用于**非题目类**条目（系统维护、纯笔迹归属追责等）：它们没有"这道题对错"可言，
-     应做动作固定为「无需处置」——不是"没法判"，是"判的对象不存在"。 */
+     应做动作固定为「已核销」——不是"没法判"，是"判的对象不存在"，但动作可能仍存在，
+      必须显式写下做了什么才算闭环。口径唯一真源=`_应做动作.mjs`
+      （2026-11-09 前这里误写成「无需处置」，与稽核不一致，夜间链据此登记错值 ⇒ 25 条 RED）。 */
   const VS = ['错', '对', '部分对', '无法判定', '不适用'];
   const j = load();
   const it = findById(j, opt.id);
@@ -1716,13 +1854,27 @@ if (action === '清单') {
      并把那道题补全吗？」。查明：结论落库后**没有任何机器可读的"该做什么"**，"若确认孩子确实错了，
      需补建卡"只写在 detail 文本里；于是"办结"被误当成"办完"，实际后续动作（补建卡/撤卡/核销）
      全靠人记得。本动作把"结论之后干了什么"变成必填字段，门禁据此点名。
-     取值：无需处置（结论=孩子对，确认在册库确无该卡）/ 已补建卡 / 已撤卡 / 已核销 / 待人工。 */
-  const AS = ['无需处置', '已补建卡', '已撤卡', '已核销', '待人工'];
+     取值：无需处置（结论=孩子对，确认在册库确无该卡）/ 已补建卡 / 已撤卡 / 已核销 / 待人工。
+     ⚠ 准入闸（2026-11-09）：与**判定强绑定**的两类判定只许登记规定取值 ——
+       判定=不适用 ⇒ 已核销 或 待人工；判定=无法判定 ⇒ 待人工 或 已核销。
+       口径唯一真源=`_应做动作.mjs` 的 VERDICT_BOUND_DISPOSITIONS；错/对/部分对
+       要看"在册与否"才能判，本命令放行、由 `_闭环稽核.mjs` 兜底判红。 */
+  const AS = DISPOSITIONS;
   const j = load();
   const it = findById(j, opt.id);
   if (!it) { console.error(`找不到 ${opt.id}`); process.exit(2); }
   if (open(it)) { console.error(`${it.id} 还没结论（status=${it.status}），先「答」再「处置」`); process.exit(2); }
   if (!AS.includes(opt.as)) { console.error('缺参数或取值非法：--as ' + AS.join(' | ')); process.exit(2); }
+  /* 准入闸（2026-11-09 事故的对策）：判定=不适用/无法判定 这两类，应做动作由判定唯一确定，
+     登记成别的值一定是错的 —— 只报"取值不非法"是不够的，2026-11-09 夜间链就是这么把
+     16 条「不适用」登记成「无需处置」，静默产出 25 条 RED。这里挡在写盘之前。 */
+  const bound = VERDICT_BOUND_DISPOSITIONS[it.verdict];
+  if (bound && !bound.includes(opt.as) && !opt.force) {
+    console.error(`处置取值与判定不符：${it.id} 判定「${it.verdict}」⇒ 应做「${required(it.verdict, false)}」。`);
+    console.error(`  允许登记：${bound.join(' / ')}（口径见 _应做动作.mjs）。`);
+    console.error('  确实有别的实情要如实记？加 --force 并在 --note 里写清为什么——但稽核仍会按机器口径判色。');
+    process.exit(2);
+  }
   it.disposition = opt.as;
   it.dispositionAt = opt.date || today();
   it.dispositionNote = opt.note || '';

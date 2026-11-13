@@ -51,7 +51,10 @@
   --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:32px;
   /* 字号阶梯（6 档）——KPI 大数字 / 卡头 / 正文 / 辅助 / 说明 / 微标 层级分明。
      之前正文 13~15.5px 混排，12/12.3/12.5/12.8/13.5 五种「小字」彼此差不到 1px。 */
-  --fs-xxl:28px; --fs-xl:20px; --fs-lg:16px; --fs-md:14px; --fs-sm:13px; --fs-xs:12px;
+  --fs-xxl:1.75rem; --fs-xl:1.25rem; --fs-lg:1rem; --fs-md:0.875rem; --fs-sm:0.8125rem; --fs-xs:0.75rem;
+  /* ★ 2026-11-12（批次 3 / 可访问性）：字号一律用 **rem**（基准 = 浏览器/系统的根字号，通常 16px）。
+     逐值换算后**视觉与改前完全一致**（28/16=1.75 等），但用户把系统字号调大时**整页跟着放大**。
+     用 px 写死的字号是"用户改不动"的字号 —— 最常被无视的一类无障碍缺陷。 */
   /* 焦点环（键盘可达性的唯一可见凭据，见 app.css 的 :focus-visible 段） */
   --focus:var(--brand-2);
   --shadow-s:0 1px 2px rgba(40,35,20,.06), 0 2px 8px -4px rgba(40,35,20,.10);
@@ -97,7 +100,7 @@ html,body{margin:0;padding:0;height:100%}
 body{
   background:var(--bg-grad) fixed,var(--bg);
   color:var(--text);
-  font:15px/1.7 var(--font-ui);
+  font:0.9375rem/1.7 var(--font-ui);
   -webkit-font-smoothing:antialiased;
   overflow:hidden;
 }
@@ -115,7 +118,7 @@ body{
 a{color:var(--brand);text-decoration:none}
 a:hover{text-decoration:underline}
 kbd{
-  font:11.5px/1 var(--font-num);color:var(--text2);
+  font:0.71875rem/1 var(--font-num);color:var(--text2);
   background:var(--surface2);border:1px solid var(--line2);border-bottom-width:2px;
   border-radius:5px;padding:2.5px 6px;white-space:nowrap;
 }

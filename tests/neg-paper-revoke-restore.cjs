@@ -168,7 +168,14 @@ console.log('\n═══ ④ 撤掉「当天最大号」再组新卷 → 拿更�
 {
   const t2 = mkTmp();
   const idsA = idsOfStudent(t2, CUR.student, 3);
-  const idsB = (seed.items || []).filter(id => !idsA.includes(id)).slice(0, 3);
+  /* ★ 2026-11-07（修 BUG：素材来自别的学生 ⇒ 组卷必然报「库中不存在编号」）：
+     idsB 原先取 `seed.items`（真实台账里那个批次的题号，**可能属于另一个学生**），
+     却拿去给 CUR.student 组卷 —— 那个库里根本没有别家学生的题号，
+     组卷直接抛错（实测「库中不存在编号 M0080」），③④⑤ 三段连锁红。
+     修法：idsB 也从**同一个学生**的库里取（多取几张，排除已用的 idsA）。
+     （学生化名不写进仓库——隐私门禁 repo-hygiene 会判红。） */
+  const idsAll = idsOfStudent(t2, CUR.student, 12);
+  const idsB = idsAll.filter(id => !idsA.includes(id)).slice(0, 3);
   const rA = run(t2, ['组卷', '--student', CUR.student, '--subject', seed.subject, '--ids', idsA.join(','), '--date', F]);
   const rB = run(t2, ['组卷', '--student', CUR.student, '--subject', seed.subject, '--ids', idsB.join(','), '--date', F]);
   const P_A = paperIdOf(rA.out), P_B = paperIdOf(rB.out);
@@ -192,7 +199,8 @@ console.log('\n═══ ⑤ 变异自证：掏掉水印后，被撤的号会被
 
   const t3 = mkTmp();
   const idsA = idsOfStudent(t3, CUR.student, 3);
-  const idsB = (seed.items || []).filter(id => !idsA.includes(id)).slice(0, 3);
+  const idsAll = idsOfStudent(t3, CUR.student, 12);
+  const idsB = idsAll.filter(id => !idsA.includes(id)).slice(0, 3);   // 同 ④：同一个学生的库
   const bak = TOOL + '.mutbak';
   try {
     fs.writeFileSync(bak, TOOL_SRC, 'utf8');

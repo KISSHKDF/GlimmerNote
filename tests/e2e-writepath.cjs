@@ -61,8 +61,13 @@ process.on('unhandledRejection', async e => { await cleanup('rejection ' + (e &&
      "已经走到组卷门口了，此刻目标还指向真库就绝对是事故"——那一处是真会抛错的硬点。
      ══════════════════════════════════════════════════════════════════════ */
   const gate = E.guardWriteTest('e2e-writepath.cjs');
+  /* ★ 2026-11-13 修：计数器必须声明在**任何使用它之前**。上一版我把 `断言= total` 加到了下面的
+     SKIP 分支里，而 `total` 要到更下面才 `let` ⇒ **暂时性死区**，冻结区上一跑就 `ReferenceError`，
+     结果**连 RESULT 行都不打印** ⇒ `neg-e2e-frozen-lib.cjs` 的"必须打印 RESULT=SKIP"当场红
+     （full 档实测）。教训：加计数时先看**所有**用到它的分支，别只盯主路径。 */
+  let fails = 0, total = 0;
   if (gate.skip) {
-    console.log('RESULT=SKIP(' + gate.reason + ')');
+    console.log('RESULT=SKIP(' + gate.reason + ')' + '  断言=' + total + '  失败=' + fails);
     console.log('  说明：本用例验的是"真写一次组卷+批改+撤批"的闭环，在冻结区上跑就等于用用户真库做实验，');
     console.log('        并且会通过 backupJson 轮转**吃掉真库的历史备份**（每跑一次 8 份/目录）。');
     console.log('        这不是"通过"，是"没跑"——所以打印 SKIP 而不是 PASS。');
@@ -86,8 +91,8 @@ process.on('unhandledRejection', async e => { await cleanup('rejection ' + (e &&
   const ev = async e => { const r = await send('Runtime.evaluate', { expression: e, returnByValue: true, awaitPromise: true }, cdpTimeout()); if (r.exceptionDetails) throw new Error('page exc: ' + JSON.stringify(r.exceptionDetails).slice(0, 300)); return r.result && r.result.value; };
   EV = ev;
   await send('Runtime.enable');
-  let fails = 0;
-  const A = (n, ok, d) => { console.log((ok ? '[OK]  ' : '[FAIL]') + n + (d !== undefined ? '  → ' + String(d).slice(0, 220) : '')); if (!ok) fails++; };
+  /* 计数器已在上面（SKIP 分支之前）声明 —— 见那条"暂时性死区"的注释。 */
+  const A = (n, ok, d) => { total++; console.log((ok ? '[OK]  ' : '[FAIL]') + n + (d !== undefined ? '  → ' + String(d).slice(0, 220) : '')); if (!ok) fails++; };
 
   console.log('--- [1] mark 状态（只读）---');
   const r1 = await ev(`CTB.host.mark('状态',{})`);

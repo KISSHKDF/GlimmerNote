@@ -548,6 +548,19 @@ $stageFix = Join-Path $stage '修复完整性标签.ps1'
 Copy-Item (Join-Path $root 'scripts\fix-integrity-user.ps1') $stageFix -Force
 Write-Host "  已放：网页版启动器.cmd、修复完整性标签.ps1"
 
+# ── 2.5c) 「怎么试用.txt」随包走（★ 2026-11-09 加）──
+# 旧版它是运行区根的**手工本机文件**，内容停在 2026.10.24 空库时代
+#   （"录题/组卷/统计都是空态"早已全部失效，用户照它理解会误判现状）。
+# 现在改为一条链：仓库 tracked 源文件 → 包根 → deploy 救急件白名单 → 运行区根，
+#   与上面两件救急件同通道 —— 运行区内容永远等于发布包内容。
+$trialSrc = Join-Path $root '怎么试用.txt'
+if (Test-Path -LiteralPath $trialSrc) {
+  Copy-Item -LiteralPath $trialSrc -Destination (Join-Path $stage '怎么试用.txt') -Force
+  Write-Host '  已放：怎么试用.txt'
+} else {
+  throw '打包失败：仓库根缺 怎么试用.txt（tracked 源文件）——先补齐再打包'
+}
+
 # ── 3) 把所有文件时间钉到提交时间（zip 条目会继承文件 mtime）──
 Get-ChildItem $stageApp -Recurse -File | ForEach-Object { $_.LastWriteTimeUtc = $stampUtc }
 Write-Host "  构建时间戳（钉死）：$stamp"
@@ -602,6 +615,7 @@ $hasVer = Test-Path (Join-Path $check 'app\版本.json')
    上一版直接写在清理之后，临时目录已删 ⇒ 恒 False ⇒ 假红。 #>
 $hasDataNote = Test-Path (Join-Path $check '数据\先看这里.txt')
 $hasReadme = Test-Path (Join-Path $check '使用说明.txt')
+$hasTrial = Test-Path (Join-Path $check '怎么试用.txt')
 $fileN = (Get-ChildItem (Join-Path $check 'app') -Recurse -File).Count
 $sizeMB = [math]::Round((Get-Item $zipPath).Length / 1MB, 2)
 
@@ -651,6 +665,7 @@ Remove-Item $stage -Recurse -Force
 if (-not $hasVer) { throw "产物自检失败：解包后没有 app\版本.json" }
 if (-not $hasDataNote) { throw "产物自检失败：包里缺 数据\先看这里.txt（新手会把数据写进程序目录，升级时丢库）" }
 if (-not $hasReadme) { throw "产物自检失败：包里缺 使用说明.txt" }
+if (-not $hasTrial) { throw "产物自检失败：包里缺 怎么试用.txt（deploy 靠它更新运行区根的用户说明）" }
 $zi3 = [IO.Compression.ZipFile]::OpenRead($zipPath)
 $badSep = @($zi3.Entries | Where-Object { $_.FullName.Contains([char]92) })
 $zi3.Dispose()

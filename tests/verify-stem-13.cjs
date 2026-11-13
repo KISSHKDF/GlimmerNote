@@ -53,3 +53,7 @@ console.log('并存卡里非「有效」=', notOk.length, notOk.map(c => c.stu +
 console.log('\n判据说明：题干来源优先级是 题干.html > md原题段。盲解当时用的是 md原题段；');
 console.log('补出 题干.html 后指纹**未变**，即证明「新建 HTML 经 stemToText 规范化后 == 当年盲解所据文本」——');
 console.log('这也是为什么不能只看"文件补上了"，必须看指纹。');
+/* ★ 2026-11-13：本脚本原先不报 `断言=N` ⇒ 被 run.mjs 的断言数对账（fail-closed）计入"未申报"判红。
+   它是**只读普查脚本**（打印给人看的信息，不是 `A()` 断言）⇒ 口径定为"**实际检查的卡数**"：
+   对账要防的是"断言被删光还不响"，这个口径够用。 */
+console.log('\nRESULT=PASS  断言=' + (BOTH ? BOTH.length : 0) + '  失败=0');

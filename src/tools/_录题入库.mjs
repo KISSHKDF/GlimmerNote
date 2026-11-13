@@ -33,6 +33,18 @@ import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
 import { extractJsonText } from './_配方.mjs';
 import { slotCount } from './_空位.mjs';
 import { displaySize } from './_图尺寸.mjs';
+/* ★ 2026-11-12（审计 F03）：判据⑦「该画线却没画线」的语境判定**唯一真源是 `_划线.mjs`**
+   （零副作用模块）。此前这里是**逐字抄的第二份**（3 个正则 + `mentionsUnderlineSense`），
+   而测试只覆盖门禁侧 ⇒ 两处一旦分叉：要么把好题拒收（入库侧），要么放过废题（门禁侧），**且测试全绿**。
+   ⚠ 不能改成 `import './_题干门禁.mjs'`：它是 CLI，顶层解析 `process.argv`，
+   被本文件 import 时会拿**调用方的**命令行去解析并报「未知参数」退出（实测踩到）。 */
+import { mentionsUnderlineSense, hasUnderlineMark, hasUnderlineMarkEntity } from './_划线.mjs';
+/* ★ 2026-11-12（审计 F04）：`answerSource` 取值契约的**唯一真源**（原先 3 处代码 + 2 份配方 schema
+   各写一份，且精确集/前缀集两种语义并存 ⇒ `_盲解复核` 自己写的带限定值会被本文件判非法）。 */
+import { isInContract, isRetiredSource, isOfficialSource } from './_来源.mjs';
+/* ★ 2026-11-13（批次 4 / 相似度判重）：录入时提示"库里可能已经有这道题了"（只提示，不拦）。 */
+import { findSimilar } from './_相似度.mjs';
+import { indexFiles } from './_题库发现.mjs';
 
 /* ───────────────── 参数 ───────────────── */
 const { action: _cmd, opt, positional } = parseArgs(process.argv.slice(2), {
@@ -53,12 +65,27 @@ if (explicitData) process.env.CTB_DATA = path.resolve(explicitData);
 let _root = null;
 const ROOT = () => (_root || (_root = libraryRoot()));
 
-const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
+const sha256 = s => crypto.createHash('sha256').update(s).digest('hex');
 /** 文件是否存在且是普通文件（改卡动作找原图时用） */
 const isFile = p => { try { return fs.statSync(p).isFile(); } catch { return false; } };
-/** 老师红笔与采用答案是否冲突（去空白、全半角归一后比；老师没写 ⇒ 不算冲突） */
+/** 红色批注与采用答案是否冲突（去空白、全半角归一后比；没写 ⇒ 不算冲突） */
 const normAns = v => String(v || '').normalize('NFKC').replace(/\s+/g, '');
 const teacherConflictOf = c => typeof c.teacherAnswer === 'string' && c.teacherAnswer.trim() !== '' && normAns(c.teacherAnswer) !== normAns(c.answer);
+
+/* ★ 2026-11-07（红字归属，用户裁定）：**卷面上的红字不一定是老师批的** ——
+ * 可能是孩子自己订正的、家长订改的、同学互批的。红字**单独不能当权威答案**。
+ * 修前：契约把"红字"与"老师的"焊成一个概念（schema 写"老师用红笔写出的正确答案"、
+ *   卡面落盘写死 "> 老师红笔："），全库**没有任何字段记录红字是谁写的** ——
+ *   归属在入库那一刻就被丢弃，机器再无据可查。
+ * 修后（第二次收紧）：`inkAttribution` 必填（有红色批注时），作用是**如实记录红字是谁写的**
+ *   （供人核对、供追责），**不参与答案权威性判定** ——
+ *   即使确认是老师写的，红字也不作定案标准。`老师定案` 这个 answerSource 取值**已废除**。 */
+const INK_ATTRIBUTIONS = ['老师', '孩子', '家长', '同学', '未确认'];
+/** 有红色批注吗（teacherAnswer 非空） */
+const hasRedInk = c => typeof c.teacherAnswer === 'string' && c.teacherAnswer.trim() !== '';
+/** 归属「未确认」⇒ 连"红字是谁写的"都不可查 */
+const inkUnclear = c => String((c && c.inkAttribution) || '').trim() === '未确认';
+
 const dstr = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const today = () => dstr();
 
@@ -88,23 +115,33 @@ function loadTask(id) {
  *   ① 单学科：{student, grade, subject:'数学', items:[]}      文件在 <库根>\<小名>\<学科>\_索引.json
  *   ② 多学科：{student, grade, subjects:{ 数学:{items:[]} }}  文件在 <库根>\<小名>\_索引.json
  * 落点查找：先按「学生+学科」精确找索引文件，再决定卡目录挂在哪。 */
-function indexFiles(dir, acc = []) {
-  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-    /* ⚠ 目录名以 `_`/`.` 开头 ⇒ 跳过**目录**；但**文件**要单独判 `_索引.json`
-       （否则 `_索引.json` 自己被 `_` 前缀规则挡掉 ⇒ 一个学生都找不到）。
-       判据与 `_盲解复核.mjs:168-176` 逐字同口径。 */
-    if (!e.isDirectory()) { if (e.name === '_索引.json') acc.push(path.join(dir, e.name)); continue; }
-    if (e.name.startsWith('_') || e.name.startsWith('.')) continue;
-    indexFiles(path.join(dir, e.name), acc);
-  }
-  return acc;
-}
+/* 2026-11-12（审计 F05）：本函数已收敛到 `_题库发现.mjs`（零副作用共享模块）。
+   原先 8 个工具各抄一份，实测 3 种实现（本文件那份与 SB 口径不同）⇒ 改一处漏一处且各自测试全绿。 */
 
 function readIdx(p) {
   return readJsonStrict(p, {
     shape: j => Array.isArray(j.items) || (!!j.subjects && typeof j.subjects === 'object' && !Array.isArray(j.subjects)),
     what: 'items 数组或 subjects 对象', label: path.basename(p),
   });
+}
+
+/** 全库卡片的题干文本（供"疑似重复"提示用）：[{kid, subject, id, text}]
+ *  ⚠ 只读**索引**（不读卡片文件）—— 几百张卡也就是几百 KB 的 JSON，入库前跑一遍是毫秒级。
+ *  ⚠ 只用于相似度**提示**；"同一道题"的硬判据仍是归一化题干的 sha256（见 `_分流器.mjs`）。 */
+function allCardTexts() {
+  const out = [];
+  for (const f of indexFiles(ROOT())) {
+    let j; try { j = readIdx(f); } catch { continue; }
+    const rows = (j.subjects && typeof j.subjects === 'object' && !Array.isArray(j.subjects))
+      ? Object.entries(j.subjects).flatMap(([sn, v]) => ((v && v.items) || []).map(it => [sn, it]))
+      : ((j.items || []).map(it => [String(j.subject || ''), it]));
+    for (const [sub, it] of rows) {
+      if (!it || !it.id) continue;
+      const t = String(it.question || '');
+      if (t) out.push({ kid: String(j.student || ''), subject: sub, id: String(it.id), text: t });
+    }
+  }
+  return out;
 }
 
 /** 找「学生+学科」的落点：返回 {idxFile, idx, subject, dirAbs, itemsOwner} */
@@ -169,16 +206,131 @@ function imageAbs(task) {
 /* ───────────────── 题干 HTML ─────────────────
  * 题干.html 必须是 `<div class="stem">…</div>`（既有卡的形态，见 `生成状态.mjs:173` 与
  * `_作答门禁.mjs` 的 stem 解析）。AI 给的是纯文本 `questionText`，这里做**最小**包装：
- * 段落按换行切，空位用 `<span class="blank">` 标出（横线题需要它才能算空位数）。 */
+ * 段落按换行切，空位用 `<span class="blank">` 标出（横线题需要它才能算空位数）。
+ *
+ * ★ 2026-11-07（E0017 事故）：**转义层套了两次**。
+ *   AI 回传的 `questionText` 里已含真标签（`<u>a</u>` 表示"画线部分"），
+ *   这里再 `escapeHtml()` 转一遍 ⇒ 落盘成 `&lt;u&gt;a&lt;/u&gt;` ⇒
+ *   浏览器解码后**印出字面的 "<u>a</u>" 垃圾文本**（E0017 全库唯一一张，实体 8 处）。
+ *   证据：同一张卡的**索引 `question` 字段里是真标签**、题干.html 里是实体化标签
+ *   —— 同一处标记两种编码 ⇒ 不是录入笔误，是转义层被套了两次。
+ *
+ *   修法（**白名单式**，不是"全转义"也不是"全放行"）：
+ *   ① 只放行**受控的内联标记**（画线 `<u>`、着重号 `<span class="rd">`、
+ *      上下标、分数、公式），其余一律转义；
+ *   ② **实体化标签残留**（`&lt;u&gt;` 这种）⇒ 判定为"上游已经转义过一次了"，
+ *      直接**报错拒收**，绝不静默落盘（静默落盘 = 印出来才发现，是本次事故的形态）。
+ *   ③ 契约要求 `questionText` 是**纯文本**；要标画线就按 ① 的白名单写标签，
+ *      不要自己先转义一遍（契约见 recipes 目录下的 ingest-single / ingest-page 提示词）。
+ */
 function buildStemHtml(text, hasBlank) {
-  const paras = String(text || '').split(/\n+/).map(s => s.trim()).filter(Boolean);
-  const body = paras.length ? paras.map(p => '<p class="stem-lead">' + escapeHtml(p) + '</p>').join('\n  ')
+  const raw = String(text || '');
+  checkEntityTags(raw);
+  /* ★ 2026-11-08（用户报障「单词画线的字母…没有体现出哪个字母画线了」）：
+     提到"画线"却一个 `<u>` 都没有 ⇒ 当场拒收（与实体化标签同一处、同一风格）。
+     这类题不标画线就没法作答，落盘等于造一道印不出来的废题。 */
+  checkUnderlineMarked(raw);
+  const paras = raw.split(/\n+/).map(s => s.trim()).filter(Boolean);
+  const body = paras.length ? paras.map(p => '<p class="stem-lead">' + escapeHtmlAllowMarkup(p) + '</p>').join('\n  ')
     : '<p class="stem-lead">（题干为空）</p>';
   const inner = hasBlank ? body.replace(/_{3,}|＿{2,}/g, '<span class="blank" style="min-width:7em"></span>') : body;
   return '<div class="stem">\n  ' + inner + '\n</div>\n';
 }
+/** 题干里**允许**原样保留的内联标记（受控白名单）。
+ *  这些是题型语义的一部分（画线/着重号/上下标/公式），丢了题就做不了；
+ *  不在白名单里的一切（含 <script>）照旧转义。 */
+function escapeHtmlAllowMarkup(s) {
+  /* 逐段切分：标签与文本交替。标签过白名单才原样留，其余（含属性里带 < 的）一律转义。
+     ⚠ 用**占位符**实现（摘出→转义→放回）："先转义、再按名字还原"会把 <script> 一起还原出来。 */
+  const INLINE_TAGS_OK = new Set(['u', 'b', 'i', 'strong', 'em', 's', 'sub', 'sup', 'span', 'fr', 'nu', 'de']);
+  const INLINE_CLASSES_OK = new Set(['rd', 'rd-above', 'fr', 'nu', 'de']);
+  const slots = [];
+  const masked = String(s).replace(/<[^<>]*>/g, m => {
+    const inner = m.replace(/^</, '').replace(/>$/, '').replace(/^\//, '');
+    const name = ((inner.match(/^([a-zA-Z][a-zA-Z0-9]*)/) || ['', ''])[1] || '').toLowerCase();
+    if (!INLINE_TAGS_OK.has(name)) return m;
+    const cls = (inner.match(/class\s*=\s*"([^"]*)"/i) || ['', ''])[1];
+    if (cls && !cls.split(/\s+/).filter(Boolean).every(c => INLINE_CLASSES_OK.has(c))) return m;
+    /* 除 class 外不许有别的属性（on* / style / src 一律拒）——属性串 = 去掉标签名与 class 后的残渣 */
+    const attrs = inner.replace(/^[a-zA-Z][a-zA-Z0-9]*/, '').replace(/class\s*=\s*"[^"]*"/gi, '').trim();
+    if (attrs) return m;
+    slots.push(m);
+    return '\u0000' + (slots.length - 1) + '\u0000';
+  });
+  let out = escapeHtml(masked);
+  out = out.replace(/\u0000(\d+)\u0000/g, (m, i) => slots[Number(i)] || '');
+  return out;
+}
 function escapeHtml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+/** 实体化标签 ⇒ 拒收（E0017 事故的判据，独立成函数以便入库前置检查直接调用）。
+ *  判据只认「**实体化的标签**」：`&lt;u&gt;` / 闭合的 u / `&lt;span …&gt;`。
+ *  数学不等号 `&lt;` / `&gt;`（后面跟数字/中文/空格）**不**算 —— 全库 52 处都是合法不等号。
+ *  ⚠ 注释里**不可**直接写闭合标签的实体（其中的斜杠会提前结束本注释）。 */
+export function assertNoEntityTags(text) {
+  const s = String(text || '');
+  /* 判据只认「**实体化的标签**」：`&lt;u&gt;` / `&lt;/u&gt;` / `&lt;span …&gt;`。
+     数学不等号 `&lt;` / `&gt;`（后面跟数字/中文/空格）**不**算 —— 全库 52 处都是合法不等号。
+     ⚠ **双重转义**（`&amp;lt;u&amp;gt;`）也要拦：那是"转义了两次"，落盘后浏览器解码一层仍是实体、
+       再解码一层才是标签 ⇒ 印出来还是垃圾。 */
+  const hit = s.match(/&(?:amp;)*lt;\/?[a-zA-Z][a-zA-Z0-9]*(\s[^&]*?)?\/?&(?:amp;)*gt;/g) || [];
+  if (!hit.length) return null;
+  const kinds = [...new Set(hit.map(x => x.replace(/&(?:amp;)*lt;\/?/, '').replace(/&(?:amp;)*gt;/, '').trim()))].slice(0, 6);
+  return '题干里出现**实体化的标签**（' + kinds.join(' / ') + '）——这是转义层被套了两次：' +
+    '浏览器解码后会把 "<u>a</u>" 当**字面文本**印在题面上（E0017 事故）。' +
+    '`questionText` 请写**纯文本 + 受控标记**：画线部分用真标签 <u>字</u>（不要自己先转义成 &lt;u&gt;），' +
+    '数学符号 < 与 > 直接写。';
+}
+/** 实体化标签 ⇒ **抛错拒收**（入库前置检查与 buildStemHtml 都走它）。
+ *  返回 null 表示通过；返回字符串表示有问题（给前置检查用，不抛）。 */
+export function checkEntityTags(text) {
+  const msg = assertNoEntityTags(text);
+  if (msg) throw new Error(msg);
+  return null;
+}
+/** 判据⑦真正要抓的语境：**画线/划线的对象是字母、单词或短语**（英文题的"画线部分"）。
+ *  物理作图题的「用笔画线代替导线」不是这一类 —— 那里要画的是一根导线，不是给字母加下划线。
+ *
+ *  ★ 2026-11-10 新增（Lead 实测卷二第16题踩到）：原判据是裸 `/画线|划线/`，
+ *    把物理作图题的固定说法「请用**画线**代替导线」「用**笔画线**代替绳」一起命中 ⇒
+ *    那 3 张**好卡**被入库器当场拒收（`buildStemHtml` 也抛错）。
+ *    收窄口径与 `_题干门禁.mjs` 判据⑦**同一条规则**（那边扫描存量、这边入库当场拦）：
+ *    只有「画线/划线」紧跟「部分|单词|字母|短语|词组|音标|读音」才算 underline 语境；
+ *    「用笔画线代替导线/绳/线」这种作图指令**不算**。
+ *    ⚠ 2026-11-12（审计 F03）：判据已**收敛到单一真源** `_划线.mjs`（本文件改为导入 + re-export），
+ *      "两处同步改"这条纪律不再靠人记 —— 分叉时是**同一函数引用**，不可能漂。 */
+/* 对外契约保持不变（re-export）；不要再在这里抄第二份正则。 */
+export { UNDERLINE_WORD, UNDERLINE_OBJECT, DRAW_WIRE_PHRASE, mentionsUnderlineSense, hasUnderlineMark, hasUnderlineMarkEntity } from './_划线.mjs';
+
+/** **该画线却没画线标记** ⇒ 拒收（2026-11-08，用户报障「单词画线的字母，你在印刷版中
+ *  没有体现出哪个字母画线了，这样的错误还不少」）。
+ *  判据：`questionText` 里出现「画线 / 划线」，却**一个 `<u>` 都没有**。
+ *  为什么是拒收而不是警告：这类题（判断读音异同 / 按画线部分归类 / 对画线部分提问 /
+ *  替换或翻译画线部分）**不标出画线就没法作答** —— 落盘等于造一道印不出来的废题。
+ *  ⚠ 判据与 `_题干门禁.mjs` 判据⑦同口径（那边是扫描存量、这里是入库当场拦），
+ *    两处**同一条规则**，改一处要同时改另一处。
+ *  ⚠ 只认**真标签** `<u>`：实体化形态（`&lt;u&gt;`）属"实体化标签"那条（assertNoEntityTags），
+ *    不在这里重复计（否则同一处问题报两条，修法还不同）。`<u>` 出现在**任意位置**即算已标
+ *    （不必与"画线"二字同段）——宁可漏判也不误报。 */
+export function assertUnderlineMarked(text) {
+  const s = String(text || '');
+  if (!mentionsUnderlineSense(s)) return null;      // ← 单一真源（_划线.mjs）
+  if (hasUnderlineMark(s)) return null;             // ← 同上（`<u>` / `<u class="…">`）
+  /* 实体化 / 双重转义形态（`&lt;u&gt;` / `&amp;lt;u&amp;gt;`）算"已标"——它归 assertNoEntityTags 管 */
+  if (hasUnderlineMarkEntity(s)) return null;
+  return '题干提到**画线**（"画线 / 划线"）却一个 `<u>` 标记都没有——读者看不出哪个字母/哪个短语被画了线，' +
+    '这类题（判断读音异同 / 按画线部分归类 / 对画线部分提问 / 替换或翻译画线部分）**不标画线就没法作答**。' +
+    '请把被画线的字母或短语**原样**用 `<u>` 括起来：' +
+    '`classm<u>a</u>te`、`6. y<u>e</u>s  h<u>e</u>lp`、`The woman is <u>80 years old</u>.`' +
+    '（画线的就是哪个字母/哪个短语，不要整词一起括）。';
+}
+/** 该画线却没画线标记 ⇒ **抛错拒收**（入库前置检查与 buildStemHtml 都走它）。
+ *  返回 null 表示通过；返回字符串表示有问题（给前置检查用，不抛）。 */
+export function checkUnderlineMarked(text) {
+  const msg = assertUnderlineMarked(text);
+  if (msg) throw new Error(msg);
+  return null;
 }
 
 /* ───────────────── 错题记录.md ───────────────── */
@@ -208,9 +360,15 @@ function buildRecord(id, c, meta) {
     L.push('> 答案来源：' + c.answerSource + ' —— ' + c.answerSourceNote);
     L.push('');
   }
-  /* ★ 2026-11-05（PR #13 复审 ③）：老师红笔写出的答案随卡落盘（修前只在入库那一刻比对，之后就丢了） */
+  /* ★ 2026-11-05（PR #13 复审 ③）：红色批注内容随卡落盘（修前只在入库那一刻比对，之后就丢了）。
+     ★ 2026-11-07（红字归属·第二次收紧）：**红字只作普通参考，不能作定案标准** ——
+     卡面不再断言"老师红笔"，改成中性表述「红字（谁写的）」，并**明写"仅作参考"**。
+     修前这行写死 "> 老师红笔：" = 机器替AI背书"这是老师批的、这就是正确答案"。 */
   if (typeof c.teacherAnswer === 'string') {
-    L.push('> 老师红笔：' + (c.teacherAnswer ? c.teacherAnswer : '（老师没写出正确答案）') +
+    const ink = String(c.inkAttribution || '').trim();
+    const inkTxt = ink === '老师' ? '红字（老师写的）' : ink === '未确认' ? '红字（**归属未确认**）' : ink ? ('红字（' + ink + '写的）') : '红字';
+    L.push('> ' + inkTxt + '：' + (c.teacherAnswer ? c.teacherAnswer : '（没有红色批注）') +
+      '　※ **仅作参考，不作定案标准**（卷面红字绝大部分不是老师批的）' +
       (meta.teacherConflict ? ' ⚠ 与采用答案不一致，组卷前须裁决（`_标记复习.mjs 异议裁决`）' : ''));
     L.push('');
   }
@@ -441,6 +599,15 @@ function cmdFix() {
   console.log('  原 question：' + String(hit.item.question || '').slice(0, 60));
   console.log('  新 question：' + String(c.questionText || '').slice(0, 60));
 
+  /* ★ 2026-11-07（E0017 事故）：改卡入口同样要拒**实体化的标签** —— 写盘前拦，
+     不让"转义层套两次"的题干再落一次盘。 */
+  const entityProblem = assertNoEntityTags(c.questionText);
+  if (entityProblem) return fail('改卡中止：' + entityProblem, 1);
+  /* ★ 2026-11-08（用户报障「单词画线的字母…没有体现出哪个字母画线了」）：改卡入口同样要拒
+     **提到"画线"却一个 `<u>` 都没有**的题干 —— 写盘前拦，别把废题改进来。 */
+  const underlineProblem = assertUnderlineMarked(c.questionText);
+  if (underlineProblem) return fail('改卡中止：' + underlineProblem, 1);
+
   /* ③ 找到原图：优先用回传的 sourceImageSha256 去台账/收件箱找；找不到就只改文本不动裁图 */
   let srcImg = null;
   const sha = String(c.sourceImageSha256 || '').toLowerCase();
@@ -539,16 +706,30 @@ function cmdFix() {
     const it = hit.item;
     if (c.source !== undefined) it.source = c.source || '';
     if (c.sourceDate !== undefined) it.sourceDate = c.sourceDate || '';
+    /* ★ 2026-11-13（批次 4 / 教辅版本字段）：**答案冲突的根因字段**。
+       同名教辅的「地区专版 / 印次」不同，同一道题的答案可能就不一样（2025 秋"3×8 vs 8×3"
+       那类争议就是这么来的）；答案对不上时，先要看的就是"我们说的是不是同一本书"。
+       **可选**：老卡没有这两个字段照样合法（不进 required，否则整库一夜变红）。
+       写入归属同 `source` —— 由本工具写，不由门禁写。 */
+    if (c.srcBook !== undefined) it.srcBook = String(c.srcBook || '').slice(0, 120);
+    if (c.srcEdition !== undefined) it.srcEdition = String(c.srcEdition || '').slice(0, 120);
     if (c.questionText !== undefined) it.question = String(c.questionText || '').replace(/\s+/g, ' ').trim();
     if (c.answer !== undefined) it.answer = c.answer || '';
     if (c.studentAnswer !== undefined) it.studentAnswer = c.studentAnswer || '';
     if (Array.isArray(c.kpoints)) it.kpoints = c.kpoints;
     if (c.causeCode !== undefined) { it.causeCode = c.causeCode || ''; it.causeLayer = String(c.causeCode || '')[0] || ''; }
+    /* ★ 2026-11-13（批次 4 / 错因阶段维）：`causeStage` 与 K/L/S **正交** ——
+       K/L/S 说"什么性质的错"，阶段说"错在解题的哪一步"（审题/转化/求解/书写）。**可选**。 */
+    if (c.causeStage !== undefined) it.causeStage = String(c.causeStage || '').slice(0, 8);
     if (c.causeNote !== undefined) it.causeDesc = c.causeNote || '';
     if (c.difficulty !== undefined) it.difficulty = c.difficulty || '中';
     if (c.answerSource !== undefined) it.answerSource = c.answerSource || '未能确认';
     if (c.answerSourceNote !== undefined) it.answerSourceNote = c.answerSourceNote || '';
     it.teacherAnswer = typeof c.teacherAnswer === 'string' ? c.teacherAnswer : (it.teacherAnswer || '');
+    /* ★ 2026-11-07（红字归属）：改卡时归属一并更新；没给归属但有红字 ⇒ 回落「未确认」，
+       不许默默沿用旧归属（红字内容变了，归属可能也变了）。 */
+    it.inkAttribution = typeof c.inkAttribution === 'string' ? c.inkAttribution
+      : (typeof c.teacherAnswer === 'string' && c.teacherAnswer.trim() !== '' ? '未确认' : (it.inkAttribution || ''));
     it.teacherConflict = teacherConflictOf(c) ? { teacher: c.teacherAnswer, adopted: c.answer || '', source: c.answerSource, note: String(c.notes || '').slice(0, 300), at: today() } : null;
     if (cropped) it.hasImage = true;
     else if (cropBlank) it.hasImage = false;
@@ -699,32 +880,88 @@ function cmdLand() {
     for (const k of need) {
       if (c[k] === undefined || c[k] === null || c[k] === '') problems.push(id + ' 缺必填字段「' + k + '」');
     }
-    if (c.answerSource && !['独立判卷', '老师定案', '官方答案', '红笔订正+官方答案页核对', '未能确认'].includes(c.answerSource)) {
-      problems.push(id + ' 的 answerSource 取值不在契约内：' + c.answerSource);
+    /* ★ 2026-11-07（E0017 事故）：题干里出现**实体化的标签** ⇒ 当场拒收，不写盘。
+       起因：AI 回传的 questionText 已含真标签 `<u>a</u>`，入库器再转义一遍 ⇒
+       落盘成 `&lt;u&gt;a&lt;/u&gt;` ⇒ 印出来是字面的 "<u>a</u>" 垃圾（E0017 全库唯一一张）。
+       前置检查拦 ⇒ 错在入库那一刻就看得见，而不是印出来才发现。 */
+    const entityProblem = assertNoEntityTags(c.questionText);
+    if (entityProblem) problems.push(id + ' 的 ' + entityProblem);
+    /* ★ 2026-11-08（用户报障「单词画线的字母，你在印刷版中没有体现出哪个字母画线了，
+       这样的错误还不少」）：`questionText` 提到"画线"却一个 `<u>` 都没有 ⇒ 当场拒收。
+       与上一条（实体化标签）同一处、同一风格：错在入库那一刻就看得见。 */
+    const underlineProblem = assertUnderlineMarked(c.questionText);
+    if (underlineProblem) problems.push(id + ' 的 ' + underlineProblem);
+    /* ★ 2026-11-07（红字归属·第二次收紧，用户裁定）：**卷面红字绝大部分不是老师批的**
+       （孩子自己批改/订正、同学互批、家长帮批）⇒ 红字**只能作普通参考，不能作定案标准**。
+       ⇒ 「老师定案」这个 answerSource 取值**被废除**：它等于"把红字当定案标准"。
+          即使确认是老师写的也不行 —— 老师也可能照着错题本抄、也可能批漏、也可能只写了个提示。
+       ⇒ 红字只能进 `teacherAnswer`（中性记录原文 + 归属），**永不单独确立答案**。
+          有红字且与采用答案不一致 ⇒ 挂 teacherConflict，组卷前人工裁决；
+          裁决只有两个方向：`--as 官方答案`（保留采用答案）/ `--as 红字参考`（只记参考，不改答案）。
+       ⇒ 契约取值表相应收缩为：独立判卷 / 官方答案 / 红笔订正+官方答案页核对 / 未能确认。 */
+    /* ★ 2026-11-12（审计 F04）：判据收敛到 `_来源.mjs`，并由**精确集改为前缀式**（按基础值比对）。
+       改前这里是精确集，而 `_盲解复核.mjs` 自己写入的值是 `独立判卷（双路盲解×2 一致）`（带括号限定）
+       ⇒ 前缀门禁放行、本处判「取值不在契约内」—— 于是 `改卡` 对这类卡直接失败（真缺陷）。
+       带限定的后缀是合法且更信息丰富的（说明"哪一路判的"），不该被拒。 */
+    if (c.answerSource && !isInContract(c.answerSource)) {
+      const isRetired = isRetiredSource(c.answerSource);
+      problems.push(id + ' 的 answerSource 取值不在契约内：' + c.answerSource +
+        (isRetired
+          ? ' —— 「老师定案」已废除：**红字只作参考，不能作定案标准**（卷面红字绝大部分不是老师批的；' +
+            '即使是老师写的，也可能照抄错题本或批漏）。改用：独立判卷 / 官方答案 / 未能确认；' +
+            '红字与答案不一致时写进 notes，入库后走「异议裁决」'
+          : ''));
     }
-    /* ★ 2026-11-05（合并评审 P1-6 → PR #13 复审 ③ → 二次复审 ③ 收紧）：老师红笔不得被悄悄覆盖。
-       口径：老师是"打架的一方"，由独立解法仲裁 —— **不是**"老师永远优先"。
-       ① **每张卡**都必须声明 teacherAnswer（老师没写出正确答案就填空串）—— 修前只查"官方答案"来源，
-          独立判卷 / 老师定案 漏填就全盲。
+    /* ★ 2026-11-07（先搜公开题库，用户裁定）：录题第一步应先上网与成熟错题库比对
+       （菁优网等），实在找不到再自己一点一点录 —— 这条规则**以前只写在提示词与人工 checklist 里**，
+       程序一处不查 ⇒ "假装查过"（没检索却写官方答案）没有任何拦截，是来源造假里最常见的一种。
+       现在补上机械判据：answerSource 是「官方答案」或「红笔订正+官方答案页核对」时，
+       answerSourceNote **必须**指出具体出处（站点名 / 答案页页码 / 文件名）。
+       判据刻意宽松：认出的是"有没有指向一个可复核的地方"，不是"格式对不对"。 */
+    const isOfficial = isOfficialSource(c.answerSource);
+    if (isOfficial) {
+      const note = String(c.answerSourceNote || '');
+      const hasSource = /菁优|jyeoo|21世纪|21cnjy|教习网|51jiaoxi|作业帮|zuoyebang|青果|精英家教|题库|网站|站点|答案\s*\.?\s*pdf|答案页|答案\s*PDF|第\s*\d+\s*页|真题|同题页|讲义|同步|教辅|练习册|卷/i.test(note);
+      if (!hasSource) {
+        problems.push(id + ' 的 answerSource=' + c.answerSource + '，但 answerSourceNote 里没有出处（站点名 / 答案页页码 / 文件名）—— ' +
+          '"官方答案"必须能指着某个地方复核。查了却没命中就写「未能确认」，没查就如实写"未联网检索，来源：独立判卷"，**不许假装查过**');
+      }
+    }
+    /* ★ 2026-11-07（红字归属）：红字不一定是老师写的，必须说清是谁写的。
+       ① inkAttribution 取值非法 ⇒ 拒（写错枚举值等于没说清）。
+       ② 有红色批注（teacherAnswer 非空）却没声明归属 ⇒ 拒：省略 = 归属不明 = 连"是谁写的"都不可查。
+       ③ 红字与采用答案不一致 ⇒ notes 必须交代分歧，否则拒（不许悄悄覆盖）。 */
+    if (c.inkAttribution !== undefined && !INK_ATTRIBUTIONS.includes(String(c.inkAttribution))) {
+      problems.push(id + ' 的 inkAttribution 取值不在契约内：' + JSON.stringify(c.inkAttribution) + '（只能是 ' + INK_ATTRIBUTIONS.join(' / ') + '）');
+    }
+    if (hasRedInk(c) && c.inkAttribution === undefined) {
+      problems.push(id + ' 照片上有红色批注却没声明 inkAttribution（红字是谁写的？）—— 红字可能是孩子自己订正的、家长订改的、同学互批的。补 inkAttribution（老师/孩子/家长/同学/未确认）；红字只作参考，永不单独确立答案');
+    }
+    /* ★ 2026-11-07（红字归属·第二次收紧）：**红色批注不得被悄悄覆盖，也不得单独确立答案**。
+       ① **每张卡**都必须声明 teacherAnswer（照片上红色批注的原文，没有就填空串）——
+          省略等于让"红字被覆盖"这条检查失明。
        ② 已填且与采用答案不一致：
-          · answerSource=老师定案 ⇒ 自相矛盾，直接拒（"按老师定案"却和老师写的不一样）；
-          · 其它来源：notes 没交代 ⇒ 拒；交代了 ⇒ 入库但挂 teacherConflict，组卷准入挡在池外，
-            直到 `_标记复习.mjs 异议裁决` 人工裁决。 */
+          · notes 没交代分歧 ⇒ 拒（不许悄悄覆盖）。
+          · 交代了 ⇒ 入库但挂 teacherConflict，组卷准入挡在池外，
+            直到 `_标记复习.mjs 异议裁决` 人工裁决（裁决只有 --as 官方答案 / --as 红字参考
+            两个方向；「老师定案」口径已废除）。 */
     if (typeof c.teacherAnswer !== 'string') {
-      problems.push(id + ' 没有声明 teacherAnswer —— 照片上老师写了正确答案就原样填，没写就填空串 ""（每张卡必填：省略等于让"老师红笔被覆盖"这条检查失明）');
-    } else if (/^老师定案/.test(String(c.answerSource || '')) && c.teacherAnswer.trim() === '') {
-      /* ★ 2026-11-05（PR #13 三次复审）：老师红笔为空却写"老师定案" —— 修前空串被 teacherConflictOf 视为"不冲突"，
-         两道检查都绕过、直接进组卷池，卡面还会同时出现"老师没写出正确答案"与"来源：老师定案"。 */
-      problems.push(id + ' 的 answerSource=老师定案，但 teacherAnswer 为空（老师没写出正确答案）—— 自相矛盾：没有老师答案就不能"按老师定案"，改成 独立判卷 / 官方答案 / 未能确认');
+      problems.push(id + ' 没有声明 teacherAnswer —— 照片上红色批注的内容就原样填，没写就填空串 ""（每张卡必填：省略等于让"红字被覆盖"这条检查失明）');
     } else if (teacherConflictOf(c)) {
-      if (/^老师定案/.test(String(c.answerSource || ''))) {
-        problems.push(id + ' 的 answerSource=老师定案，但答案（' + c.answer + '）与老师红笔（' + c.teacherAnswer + '）不一致 —— 自相矛盾，按老师就填老师的答案，不按老师就别写老师定案');
-      } else if (!/老师红笔不一致|与老师.*不一致/.test(String(c.notes || '') + String(c.answerSourceNote || ''))) {
-        problems.push(id + ' 的 answerSource=' + c.answerSource + '，但答案（' + c.answer + '）与老师红笔（' + c.teacherAnswer + '）不一致且未交代分歧 —— ' +
-          '老师批改不能被悄悄覆盖：独立解法裁决后改成 老师定案 / 未能确认，或在 notes 写明"与老师红笔不一致：…"（入库后仍须 异议裁决 才能组卷）');
+      if (!/红笔不一致|红字不一致|与红.*不一致|与老师.*不一致/.test(String(c.notes || '') + String(c.answerSourceNote || ''))) {
+        problems.push(id + ' 的 answerSource=' + c.answerSource + '，但答案（' + c.answer + '）与红色批注（' + c.teacherAnswer + '）不一致且未交代分歧 —— ' +
+          '红字批注不能被悄悄覆盖：在 notes 写明"与红字批注不一致：…"（入库后仍须 异议裁决 才能组卷）。' +
+          '注意：**红字只作参考，不能作定案标准** —— 即使确认是老师写的也一样');
       }
     }
     if (c.causeCode && !/^[KLS][1-7]$/.test(String(c.causeCode))) problems.push(id + ' 的 causeCode 非法：' + c.causeCode);
+    /* ★ 2026-11-13（批次 4 / 错因阶段维）：枚举外的值**一律拒**。
+       这一维的全部意义就是"可筛可统计"——放一个自由文本值进来等于没加，而且会**静默污染趋势**。
+       空串是合法的（"拿不准"是被允许的答案，总比猜一个强）。 */
+    if (c.causeStage !== undefined && !['审题', '转化', '求解', '书写', ''].includes(String(c.causeStage))) {
+      problems.push(id + ' 的 causeStage 非法：' + JSON.stringify(c.causeStage) +
+        '（只能 审题/转化/求解/书写，或空串表示拿不准）');
+    }
     if (c.confidence && !['high', 'medium', 'low'].includes(c.confidence)) problems.push(id + ' 的 confidence 非法：' + c.confidence);
     if (c.subject && c.subject !== subj) problems.push(id + ' 的 subject（' + c.subject + '）与本次入库的学科（' + subj + '）不符');
     if (c.bbox !== undefined) {
@@ -758,16 +995,41 @@ function cmdLand() {
     return fail('入库前置检查不通过（' + problems.length + ' 条）——未写任何文件', 1);
   }
 
+  /* ★ 2026-11-13（批次 4 / 相似度判重）：**只提示，不拦、不自动合并**。
+     为什么只提示：本仓"同一道题"的硬判据是**归一化题干的 sha256**（`_分流器.mjs` 的题面级判重，
+     完全一致才算命中）；相似度是模糊量 —— 用它自动合并会把"同题型的另一道题"误并掉，
+     那比漏判重复坏得多（孩子的两道错题被悄悄合成一道）。
+     为什么不按审计建议"自动累加 errorCount"：本仓 `errorCount` 的语义是
+     **"这张卡在复习里重做错了几次"**（复习流/批改累加，统计与组卷都读它），
+     拿它记"录入时见过几次"会搅乱语义 ⇒ 提示人自己决定（同一题走「改卡」，不是就忽略）。 */
+  if (!DRY) {
+    const pool = allCardTexts();
+    for (const c of cards) {
+      for (const h of findSimilar(c.questionText, pool, { limit: 2 })) {
+        console.log('  💡 疑似重复：本题与 ' + h.item.kid + '|' + h.item.id + ' 的题干相似度 ' +
+          (h.score * 100).toFixed(0) + '%（' + String(h.item.text).slice(0, 36) + '…）');
+        console.log('     若确是同一道题，**别新建**：走「改卡」更新它，或让它在复习里累加；' +
+          '不是同一题就忽略这行。');
+      }
+    }
+  }
+
   /* ⑨ 幂等判定（内容摘要不含卡号 ⇒ 同一份内容重跑必得同一个摘要） */
   const digest = sha256(JSON.stringify(cards.map(c => ({
     subject: c.subject, title: c.title, source: c.source, sourceDate: c.sourceDate,
+    /* ★ 2026-11-13（批次 4）：新字段必须进摘要 —— 否则"只改了教辅版本再重提"会被幂等跳过。
+       ⚠ 老内容没有这两个字段时 `JSON.stringify` 会**省略 undefined 属性** ⇒ 摘要与旧算法逐字相同，
+       存量任务的 `landedDigest` 依然匹配（幂等不会被这次改动打破）。 */
+    srcBook: c.srcBook, srcEdition: c.srcEdition,
     questionText: c.questionText, studentAnswer: c.studentAnswer, answer: c.answer,
     answerSource: c.answerSource, answerSourceNote: c.answerSourceNote,
     causeCode: c.causeCode, causeNote: c.causeNote, kpoints: c.kpoints,
+    causeStage: c.causeStage,   // ★ 2026-11-13（批次 4）：改了阶段也算新内容，不许被幂等跳过
     difficulty: c.difficulty, hasFigure: c.hasFigure, confidence: c.confidence,
     sourceImageSha256: c.sourceImageSha256, notes: c.notes, bbox: c.bbox,
     answerMode: c.answerMode, answerSlots: c.answerSlots,
     teacherAnswer: c.teacherAnswer,   // ★ 2026-11-05（PR #13 复审 ③）：改了老师红笔重提，必须被当成新内容，不许幂等跳过
+    inkAttribution: c.inkAttribution,   // ★ 2026-11-07（红字归属）：改了归属重提，同样是新内容
   }))));
   if (task.landedDigest && task.landedDigest === digest && Array.isArray(task.landedCardIds) && task.landedCardIds.length) {
     console.log('✔ 已入库过（幂等跳过）——任务 ' + taskId + ' 的这批内容已经进库：' + task.landedCardIds.join('、'));
@@ -878,6 +1140,8 @@ function cmdLand() {
         const it = {
           id, dir: dn,
           source: c.source || '', sourceDate: c.sourceDate || '',
+          /* ★ 2026-11-13（批次 4）：教辅版本字段（可选）。见上方"答案冲突的根因字段"注释。 */
+          srcBook: String(c.srcBook || '').slice(0, 120), srcEdition: String(c.srcEdition || '').slice(0, 120),
           type: c.type || '（未填）',
           question: String(c.questionText || '').replace(/\s+/g, ' ').trim(),
           answer: c.answer || '',
@@ -885,6 +1149,7 @@ function cmdLand() {
           kpoints: Array.isArray(c.kpoints) ? c.kpoints : [],
           causeLayer: String(c.causeCode || '')[0] || '',
           causeCode: c.causeCode || '',
+          causeStage: String(c.causeStage || ''),   // ★ 2026-11-13（批次 4）：错因阶段维（审题/转化/求解/书写）
           causeDesc: c.causeNote || '',
           causeConfirmed: false,
           difficulty: c.difficulty || '中',
@@ -897,6 +1162,9 @@ function cmdLand() {
           answerSourceNote: c.answerSourceNote || '',
           /* ★ 2026-11-05（PR #13 复审 ③）：老师红笔进索引；冲突挂 teacherConflict，组卷准入据此拦（见 _标记复习 准入） */
           teacherAnswer: typeof c.teacherAnswer === 'string' ? c.teacherAnswer : '',
+          /* ★ 2026-11-07（红字归属）：红字是谁写的 —— 修前**全库无此字段**，归属在入库那刻丢失。
+             组卷准入据此拦「归属未确认」的卡（见 _标记复习 准入）。 */
+          inkAttribution: typeof c.inkAttribution === 'string' ? c.inkAttribution : (c.teacherAnswer && String(c.teacherAnswer).trim() !== '' ? '未确认' : ''),
           teacherConflict: teacherConflictOf(c) ? { teacher: c.teacherAnswer, adopted: c.answer || '', source: c.answerSource, note: String(c.notes || '').slice(0, 300), at: today() } : null,
           answerNote: c.answerNote || '',
         };

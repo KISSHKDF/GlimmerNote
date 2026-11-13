@@ -91,6 +91,13 @@ const DATA_PATHS = [
   '_原卷台账.json', '_盲解双路.json', '_笔形台账.json',
   '_原图台账.json', '_页码映射.json',
   '*错题记录.md', '*题干.html', '_词表.md',
+  /* ★ 2026-11-12（审计 R-05）：库根**人工维护**的 .md 台账也要纳管 —— 它们不能从任何 json 推出来。
+     原先只纳管了 `_词表.md` 一个，其余靠"想起来才加"，于是 `_整改台账.md`（28 KB，整改决策的
+     唯一记录）与会话中新写的 `_原卷待定位-按批次.md`（134 KB 的分批工单）都**不在**快照里。
+     ⚠ 派生视图**刻意不纳管**（`_待确认清单.md` / `_复习队列.md`）——它们可由 `_待确认.json` 与
+     队列生成器重建，纳管只会让每次快照都产生无意义 diff（与 `_状态.json` 同理）。
+     新增人工维护的根层 .md 时，记得加到这里。 */
+  '_整改台账.md', '_原卷待定位-按批次.md',
   '_撤卡留档/**',
   /* 收件箱里的来源映射/人工判读（2026-10-31 实测：本机别处没有同字节副本，
      且它们不能从任何原图推出。清空收件箱前必须先被快照纳管。） */
@@ -99,6 +106,14 @@ const DATA_PATHS = [
 
 const git = (...a) => execFileSync('git', ['-C', ROOT, ...a], { encoding: 'utf8', maxBuffer: 64e6 });
 const gitBin = (...a) => execFileSync('git', ['-C', ROOT, ...a], { encoding: 'buffer', maxBuffer: 256e6 });
+/* 同理（2026-11-12 实测）：展开后的纳管路径有 1404 条 / 43 KB，直接进 argv 会撞 Windows 的
+   CreateProcess 上限（`spawnSync git ENAMETOOLONG`）。故凡是"路径条数随库增长"的调用，
+   一律走 `--pathspec-from-file=-` + NUL 分隔的 stdin（add / reset / commit 三个子命令都支持，
+   已逐条查 `git <cmd> -h` 确认）；不支持该选项的（如 `diff`）改用分批调用——两者都不改语义。 */
+const gitStdin = (input, ...a) => execFileSync('git', ['-C', ROOT, ...a], { encoding: 'utf8', input, maxBuffer: 64e6 });
+const PS_FROM_STDIN = ['--pathspec-from-file=-', '--pathspec-file-nul'];
+const nulList = list => list.join('\0') + '\0';
+function* batches(arr, n = 100) { for (let i = 0; i < arr.length; i += n) yield arr.slice(i, i + n); }
 
 /* ══════════════ 恢复流程（2026-10-12 建）══════════════
    起因：审计发现"全库没有任何一条可执行的恢复流程"——出事只能人工翻备份目录猜版本，
@@ -482,20 +497,37 @@ if (args.includes('--status')) {
   process.exit(dirty.length ? 1 : 0);
 }
 
-// 1) 只暂存数据路径（新文件纳入；被 ignore 的自动跳过）
-git('add', '-A', '--', ...DATA_PATHS);
-// 2) 看暂存区里数据路径的变化
-const staged = git('diff', '--cached', '--name-status', '--', ...DATA_PATHS);
+/* 1) 只暂存数据路径（新文件纳入；被 ignore 的自动跳过）。
+   ⚠ 2026-11-12 修（本工具自 2026-11-08 起**完全不可用**）：纳管清单里的 glob 允许"当前没有匹配"
+   （典型：`_收件箱/**\/_来源映射.csv` —— 收件箱清空后这个文件就不在了），而
+   `git add -A -- <pattern>` 对**不匹配的 pathspec 会 fatal 退出 128**：
+       fatal: pathspec '_收件箱/**\/_来源映射.csv' did not match any files
+   于是 `--dry` / 真跑 / 连 `--list` 之外的一切全挂，数据区连续 4 天拿不到快照回滚点
+   （期间 2026-11-08 的一次提交信息自陈"`_快照.mjs` 当前不可用故本次为定向手工提交"）。
+   修法：先把模式展开成**实际存在的路径**——`git ls-files` 对不匹配的 pathspec 是**静默返回空**
+   （2026-11-12 实测 exit 0、零输出），正好当展开器用——只把展开结果交给 git。
+   ⚠ 不要改用 `git add --ignore-unmatch`：**该选项不存在**（实测 git 2.54.0 报 `unknown option`，
+   它是 `git rm` / `git checkout` 的选项）。 */
+const namedDataPaths = () => [...new Set(
+  git('ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', ...DATA_PATHS)
+    .split('\0').filter(Boolean))];
+const NAMED = namedDataPaths();
+if (NAMED.length === 0) { console.log('纳管清单当前没有任何文件可暂存（模式全不匹配）。'); process.exit(0); }
+gitStdin(nulList(NAMED), 'add', '-A', ...PS_FROM_STDIN);
+// 2) 看暂存区里数据路径的变化（diff 不支持 --pathspec-from-file ⇒ 分批，每批 100 条）
+const staged = [...batches(NAMED)]
+  .map(b => git('diff', '--cached', '--name-status', '--', ...b))
+  .filter(Boolean).join('\n');
 if (!staged.trim()) { console.log('数据无变化，不必快照。'); process.exit(0); }
 const lines = staged.split(/\r?\n/).filter(Boolean);
 console.log('将快照 ' + lines.length + ' 个数据文件：');
 lines.slice(0, 15).forEach(l => console.log('  ' + l));
 if (lines.length > 15) console.log('  …共 ' + lines.length + ' 项');
-if (dry) { git('reset', '-q', '--', ...DATA_PATHS); console.log('（--dry：已回退暂存，未提交）'); process.exit(0); }
+if (dry) { gitStdin(nulList(NAMED), 'reset', '-q', ...PS_FROM_STDIN); console.log('（--dry：已回退暂存，未提交）'); process.exit(0); }
 
 const d = new Date();
 const pad = n => String(n).padStart(2, '0');
 const stamp = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
 // 提交带路径限定：只落数据路径，用户 index 里其它暂存内容原样保留
-git('commit', '-m', 'data: ' + reason + '（快照 ' + stamp + '）', '--', ...DATA_PATHS);
+gitStdin(nulList(NAMED), 'commit', '-m', 'data: ' + reason + '（快照 ' + stamp + '）', ...PS_FROM_STDIN);
 console.log('✔ 已快照提交：' + git('log', '-1', '--format=%h %s').trim());

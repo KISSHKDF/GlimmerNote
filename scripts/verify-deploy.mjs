@@ -165,12 +165,40 @@ const actual = {};
 })(APP);
 
 /* ---- 比对 ---- */
-const changed = [], missing = [], extra = [];
+/* 运行期产物白名单（2026-11-12 立；**唯一真源 = `scripts\运行期产物.json`**）。
+   背景：`app\` 既是"发布包镜像"，又被**运行中的程序**写——桌面壳在日志/用户数据降级落点会往
+   程序目录写东西（`src\shell\CTBShellV2.cs:159-164` 的 `LogTarget` ②、`:1499` 的 wv2-profile 降级）。
+   实测 2026-11-12：清单内 90 个文件 **changed=[] missing=[] verMismatch=false**，唯一差异是
+   壳自己写的 `app\shell.log`（内容与 `:405` 的 `Log("pendingResolve tmp="+…)` 逐字对应，
+   且 `.log` 进不了发行包——打包黑名单 + 解包复检双重排除），而门禁文案说「有人绕过 deploy.ps1
+   直接改了运行区」——**超出了判据能证明的范围**，且测试驱动的壳自己就能产出它（fixture 档因此
+   在本机必红、在 CI 必绿）。
+   判据收窄为三条，**牙齿不削**：
+     ① 只有清单文件 §patterns 显式列出的运行期产物才豁免（加一条必须说明"哪个代码路径产出它"）；
+     ② 它们不进 `extra`，单列 `runtimeArtifacts`（JSON 与人类可读输出都给）；
+     ③ **任何不在白名单里的多出文件仍然判红**——"有人往 app\ 里塞了东西"照样抓得住。
+   ⚠ 口径曾在本文件里硬编码过一版，2026-11-12 抽成 JSON：`deploy.ps1`（备份时剔除，否则回滚会把
+     它们"洗白"成基线）与 `rollback.ps1`（拷回后同样剔除）也要读同一份——同一规则多处实现必然漂。 */
+const RUNTIME_ARTIFACTS_FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), '运行期产物.json');
+let RUNTIME_ARTIFACTS = [];
+try {
+  RUNTIME_ARTIFACTS = JSON.parse(fs.readFileSync(RUNTIME_ARTIFACTS_FILE, 'utf8').replace(/^\uFEFF/, '')).patterns.map(p => new RegExp(p));
+} catch (e) {
+  die(RC.BAD_MANIFEST, '✖ 读不到运行期产物白名单：' + RUNTIME_ARTIFACTS_FILE, {
+    hint: '它是 `scripts\\运行期产物.json`（随仓库版本化）。读不到时**不豁免任何东西**（fail-closed，宁可多报一次漂移）。原因：' + (e && e.message),
+  });
+}
+const isRuntimeArtifact = rel => RUNTIME_ARTIFACTS.some(re => re.test(rel));
+
+const changed = [], missing = [], extra = [], runtimeArtifacts = [];
 for (const [rel, hash] of Object.entries(man.files)) {
   if (!(rel in actual)) missing.push(rel);
   else if (!sameHash(actual[rel], hash)) changed.push(rel);
 }
-for (const rel of Object.keys(actual)) if (!(rel in man.files)) extra.push(rel);
+for (const rel of Object.keys(actual)) {
+  if (rel in man.files) continue;
+  (isRuntimeArtifact(rel) ? runtimeArtifacts : extra).push(rel);
+}
 
 /* 版本号也要对得上（防"清单与 app 各自来自不同包"） */
 let landedVer = '(读不到)';
@@ -184,7 +212,7 @@ if (JSON_OUT) {
   process.stdout.write(JSON.stringify({
     ok, prod: PROD, manifestVersion: man.version, landedVersion: landedVer,
     manifestZip: man.zip || null, deployedAt: man.deployedAt || null,
-    checked: Object.keys(actual).length, drift, changed, missing, extra, verMismatch,
+    checked: Object.keys(actual).length, drift, changed, missing, extra, runtimeArtifacts, verMismatch,
   }, null, 2) + '\n');
   process.exit(ok ? RC.OK : RC.DRIFT);
 }
@@ -193,18 +221,30 @@ if (ok) {
   if (!QUIET) {
     console.log('✔ 运行区与部署清单一致（' + (man.zip || '?') + ' / ' + man.version +
       ' / ' + (man.deployedAt || '?') + ' / ' + Object.keys(actual).length + ' 个文件逐字节相符）');
+    if (runtimeArtifacts.length) {
+      console.log('  另有 ' + runtimeArtifacts.length + ' 个**运行期产物**（不参与比对，下次部署会随 app\\ 重建清掉）：' +
+        runtimeArtifacts.slice(0, 5).join('、') + (runtimeArtifacts.length > 5 ? ' …' : ''));
+    }
   }
   process.exit(RC.OK);
 }
 
-console.error('✖ 运行区与部署清单不一致 —— 说明有人**绕过 deploy.ps1** 直接改了运行区');
+console.error('✖ 运行区与清单不一致');
+console.error('  判据能证明的范围：清单内被改 ' + changed.length + ' / 被删 ' + missing.length +
+  ' / 多出（非运行期产物）' + extra.length + (verMismatch ? ' / 版本号不符' : ''));
 console.error('  运行区：' + PROD);
 console.error('  清单版本：' + (man.version || '?') + '（包 ' + (man.zip || '?') + '，部署于 ' + (man.deployedAt || '?') + '）');
 console.error('  实际版本：' + landedVer + (verMismatch ? '  ← 与清单不符' : ''));
 if (changed.length) console.error('  被改过（' + changed.length + '）：' + changed.slice(0, 10).join('、') + (changed.length > 10 ? ' …' : ''));
 if (missing.length) console.error('  被删掉（' + missing.length + '）：' + missing.slice(0, 10).join('、') + (missing.length > 10 ? ' …' : ''));
 if (extra.length) console.error('  凭空多出（' + extra.length + '）：' + extra.slice(0, 10).join('、') + (extra.length > 10 ? ' …' : ''));
+if (runtimeArtifacts.length) {
+  console.error('  （另有 ' + runtimeArtifacts.length + ' 个**运行期产物**已按白名单豁免：' +
+    runtimeArtifacts.slice(0, 5).join('、') + (runtimeArtifacts.length > 5 ? ' …' : '') + '）');
+}
 console.error('');
+console.error('  怎么办：清单内被改/被删 ⇒ 用 `powershell -File scripts\\deploy.ps1` 重新覆盖 app\\；');
+console.error('            凭空多出（非运行期产物）⇒ 查出是谁塞的，别直接删掉证据。');
 console.error('  正确链路（唯一允许的路径）：');
 console.error('    ① dev 改代码：<开发仓库>\\src\\…');
 console.error('    ② dev 测：node tools\\lint.mjs；node tests\\run.mjs fixture（发版前 quick）');

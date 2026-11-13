@@ -4,6 +4,16 @@
   const U = CTB.util;
   const H = CTB.host;        /* origOf 要把索引里的 URL 编码路径还原成壳能用的相对路径 */
 
+  /* ★ 2026-11-13（批次 4 / UX-10「谁判的」）：这次判分是谁做的 —— 孩子模式 ⇒ 孩子自评，否则家长。
+     ⚠ 必须**防御性**取 shell：`model.js` 会被 Node 直接加载做门禁（`neg-v2-smoke.cjs` 等），
+     那里根本没有 `CTB.shell` —— 首版直接写 `CTB.shell.kidMode()` 当场 TypeError，
+     整条 v2 冒烟用例崩在 `M.endSession`（真实踩到，不是假想）。 */
+  function gradByKid() {
+    try {
+      return (CTB && CTB.shell && typeof CTB.shell.kidMode === 'function' && CTB.shell.kidMode()) ? '孩子' : '家长';
+    } catch (_) { return '家长'; }
+  }
+
   /* ---------- 常量字典（与工具侧语义对齐，不自造含义） ---------- */
   /* ⚠ 2026-10-11（F-RB-1，高）：M.LADDER 是**工具侧的历史/文案表**
      （`_标记复习.mjs:39 LADDER`；该文件 `intervalOf` 的注释明确写着「LADDER 常量保留给文案/历史引用，
@@ -154,7 +164,7 @@
     return f === undefined ? true : f === '有效';   // 无登记时不误伤；登记了则以新鲜度为准
   };
   /* 组卷准入。判定的**唯一实现**在 `_标记复习.mjs 准入`（盲解 + 答案来源两道硬门禁的合成结论），
-     由 `_生成首页.ps1` 注入 _状态.json.admit，这里只读不重算。
+     由 `生成状态.mjs` 注入 _状态.json.admit，这里只读不重算。
      ⚠ 2026-10-10：此前 v2 自己写了一份判断、只镜了盲解门禁、漏了答案来源门禁
      ⇒ 界面上选得动、一提交就被工具拒（发布门禁实测踩到）。仍保留 blindOk 作为兜底：
      状态包里没有 admit（旧包）时退回"只看盲解"，宁可界面宽容一点，也绝不让界面比工具更严。 */
@@ -462,7 +472,12 @@
       }
       const noteParts = list.filter(x => x.note).map(x => x.id + '：' + x.note);
       const noteStr = ('屏幕复习·' + kid + subject + ' ' + stamp + (noteParts.length ? ' ｜转折点笔记 ' + noteParts.join('；') : '')).slice(0, 400);
-      const r2 = await CTB.host.mark('批改', { paper: paperId, results: resStr, date: stamp, note: noteStr });
+      const r2 = await CTB.host.mark('批改', { paper: paperId, results: resStr, date: stamp, note: noteStr,
+        /* ★ 2026-11-13（批次 4 / UX-10「谁判的」）：孩子模式下判分的是孩子自己（自评），否则是家长判。
+           **不让人手选**：这个派生本来就准（"孩子模式"的定义就是让孩子自己判），
+           多一个选择器只会多一处忘填/填错。记下来的用处是**数据自证**——
+           家长能看出哪些记录是自评、自评的正确率是否异常偏高（与 UX-11 同源的那点心思）。 */
+        by: gradByKid() });
       if (!r2 || r2.code !== 0) throw new Error('批改失败（批次 ' + paperId + ' 已建，重试只会补批改、不会重复组卷）：' + ((r2 && (r2.err || r2.out) || '').slice(-400)));
       out.push(paperId + '（' + list.length + ' 题）');
       delete s.committed[key];                    // 本组全链路完成
@@ -740,6 +755,41 @@
       if (pos >= 0 && pos < n) out[pos] = a;
     });
     return out;
+  };
+  /* ---------- 逐空答案的展示（**唯一实现**：答案册 / 题库抽屉 / 复习流三处共用，防漂移） ----------
+     起因（2026-11-08 用户报障）：「E0042，你的题干给了 3 个空，答案只给出一个」。
+     实测：E0042 的 `answerSlots` = ["Does","love","he does"]（三条齐全），但
+       · 答案册（views/paper.js）印「答案：II10：he does」**并**印逐空三行 ⇒ 看得全；
+       · 题库抽屉（views/bank.js）与复习流（views/review.js）**只印那条 `answer` 文字** ⇒ 只看到一个。
+     同一个事实在三个面上两种呈现 = 本仓最忌讳的"静默分叉"。现在把"空号怎么定、逐空行怎么拼"
+     收进这里一个家，三个面一律调它；`tests\neg-answer-slot-contract.cjs` 有单元断言 +
+     源码级断言（三处都必须调 `M.slotAnswerLine`），少一处就红。 */
+  /** 逐空条目：`[{ n: 第几空(1起), answer }]`。partial 卡按 answerSlotsAt 定空号，
+   *  非 partial 按顺序 1..k（与 _作答门禁.mjs 的 alignedAnswers 同口径）。 */
+  M.slotAnswerItems = function (card) {
+    const c = card || {};
+    const list = M.slotAnswers(c);
+    if (!list || !list.length) return [];
+    const at = Array.isArray(c.answerSlotsAt) ? c.answerSlotsAt : null;
+    const partial = String(c.answerScope || '') === 'partial';
+    return list.map((a, k) => ({ n: partial && at && at[k] ? at[k] : k + 1, answer: a }));
+  };
+  /** 逐空纯文本（灯泡箱 detail 这类只吃字符串的地方用） */
+  M.slotAnswerText = function (card, sep) {
+    const items = M.slotAnswerItems(card);
+    if (!items.length) return '';
+    return items.map(it => '第' + it.n + '空：' + (it.answer || '—')).join(sep || '　｜　');
+  };
+  /** 逐空 HTML 行（三个界面共用的那一行；partial 附 answerNote 说明为什么只列部分空） */
+  M.slotAnswerLine = function (card) {
+    const c = card || {};
+    const items = M.slotAnswerItems(c);
+    if (!items.length) return '';
+    const partial = String(c.answerScope || '') === 'partial';
+    return '<div class="ans-slot"><b>逐空：</b>' +
+      items.map(it => '第' + it.n + '空：' + U.esc(it.answer || '—')).join('　｜　') +
+      (partial ? '<span class="small muted">（' + U.esc(c.answerNote || '本卡只列部分空') + '）</span>' : '') +
+      '</div>';
   };
   /* 把每个空撑到够宽（渲染唯一实现；与 _空位.mjs applySlotWidths 同判） */
   M.applySlotWidths = function (html, answers, opts) {

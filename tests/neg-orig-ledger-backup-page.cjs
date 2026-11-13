@@ -30,8 +30,8 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 const E = require('./_测试环境.cjs');
 
-let fails = 0;
-const A = (n, ok, d) => { console.log(`${ok ? '[OK]  ' : '[FAIL]'} ${n}${d !== undefined ? '  → ' + d : ''}`); if (!ok) fails++; };
+let fails = 0, total = 0;   /* ★ 2026-11-13：total 供 `断言=N` 对账用 */
+const A = (n, ok, d) => { total++; console.log(`${ok ? '[OK]  ' : '[FAIL]'} ${n}${d !== undefined ? '  → ' + d : ''}`); if (!ok) fails++; };
 
 const LIB = E.allocTempDir('gn-ledger-backup-');
 const run = (args) => {
@@ -183,5 +183,5 @@ putInStore(png(2024, 2940));
   A('⑥a 库外上跳路径不许进 page', e.page === null, String(e.page));
 }
 
-console.log(`\nRESULT=${fails ? 'FAIL(' + fails + ')' : 'PASS'}`);
+console.log(`\nRESULT=${fails ? 'FAIL(' + fails + ')' : 'PASS'}  断言=${total}  失败=${fails}`);
 process.exit(fails ? 1 : 0);

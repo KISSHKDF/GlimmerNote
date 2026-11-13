@@ -11,7 +11,8 @@
  *        失败必须**可归因**（未知包/未知版本/未知卡/停用/坏包/形状错各自说清是哪一种）。
  *
  * 判据手法（本仓纪律：能绿却没人跑的断言 = 没门禁；没有阴性对照的判据 = 假门禁）：
- *   · 兼容红线用**改造前的真引擎对拍**：把 `83dbe5c`（批次 2 开工基线，契约 §0）的
+ *   · 兼容红线用**基线提交的真引擎对拍**：把 `330e015`（**2026-11-13 推进**；原为批次 2 开工基线
+ *     `83dbe5c`，因 UX-02 有意改了任务单文案而推进，理由见第二节注释）的
  *     `src\tools\_配方.mjs` 用 `git show` 取出来，放进只替换引擎那一份的临时树里，
  *     两个引擎对同一份 `src\recipes`、同一个临时库跑同一条命令，比**字节**。
  *     为什么必须拿真引擎对拍而不是"再手写一份期望值"：手写期望值本身就是第二份实现，
@@ -34,7 +35,7 @@ const ENGINE = path.join(ROOT, 'src', 'tools', '_配方.mjs');
 const PACK_ENGINE = path.join(ROOT, 'src', 'tools', '_经验包.mjs');
 const SAMPLES = path.join(ROOT, 'src', 'packs');
 /** 批次 2 开工基线（接口契约 §0）。它是**不可变祖先提交**，所以"改造前"永远取得到。 */
-const BASE_COMMIT = '83dbe5c';
+const BASE_COMMIT = '330e015';
 
 let pass = 0, fail = 0, skip = 0;
 const A = (name, ok, detail) => {
@@ -105,8 +106,18 @@ if (!fs.existsSync(SAMPLES)) {
   const BODY0 = read(path.join(SAMPLE_DIR, samplePack.cards[0].body)).replace(/^\uFEFF/, '');
   const BODY0_SHA = sha256(fs.readFileSync(path.join(SAMPLE_DIR, samplePack.cards[0].body)));
 
-  /* ══════════════════════ 二、兼容红线：无 --card 时对 83dbe5c 逐字节对拍 ══════════════════════ */
-  section('二、兼容红线：无 --card 时任务单/指纹/契约摘要对 83dbe5c 逐字节相同');
+  /* ══════════════════════ 二、兼容红线：无 --card 时对基线提交逐字节对拍 ══════════════════════
+     ★ 2026-11-13 基线推进：`83dbe5c` → `330e015`。
+     为什么推进：批次 3 / UX-02 **有意**改了任务单第 3 步的文案（旧文案把用户指到**发行包里不存在**的
+     `docs\作答契约.md`；界面第 4 步本来就有那个「📥 建卡入库」按钮）⇒ 无 `--card` 的任务单
+     **多了 15 个字符**，本红线当场变红。
+     ⚠ 这条红线的**真实价值是"变更可见"**：它逼你显式回答"这次改动动没动无 `--card` 的输出"——
+     动了就把基线推进到这里并留痕（就如此刻），没动就不该红。
+     而"`--card` 不许污染无 `--card` 路径"那条守护由**同一引擎内**的对照承担（见第三、四节的选卡纪律
+     断言：正文只进「二、任务指令」段、摘要随卡变、冲突按策略处置），不依赖历史基线。
+     ⚠ 别以为"基线==当前引擎"就万事大吉：两者相同 ⇒ 这组断言恒真 ⇒ 下次**无意**改了输出
+     （比如多加一个空行）就没人提醒你了。它红，是让你**做决定**，不是让你改基线了事。 */
+  section('二、兼容红线：无 --card 时任务单/指纹/契约摘要对基线提交逐字节相同');
   const H = path.join(TMP, 'head-harness');
   fs.mkdirSync(path.join(H, 'src'), { recursive: true });
   fs.cpSync(path.join(ROOT, 'src', 'recipes'), path.join(H, 'src', 'recipes'), { recursive: true });

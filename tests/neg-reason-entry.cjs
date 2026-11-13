@@ -29,10 +29,13 @@ const MODEL_REL = 'src/app/js/model.js';
 const PENDING_REL = 'src/app/js/views/pending.js';
 const NEW_TOOL = E.tool('_待确认.mjs');
 
-/* 对拍基线：批次 3 开工时的 HEAD。用**指纹钉住**取回来的旧实现——
-   否则「git 里那个对象换了/取错了」会让对拍变成"对着别的东西比"，而屏幕上看不出。 */
-const OLD_COMMIT = 'd5e9aef';
-const OLD_SHA256 = '7e6dcfbc2a6a83d1412ef4be5c4e0884bb235c8b71fd531231b1006fcf87e86e';
+/* 对拍基线：本批（2026.11.09.02 变式 Phase 1）开工时的 HEAD。用**指纹钉住**取回来的旧实现——
+   否则「git 里那个对象换了/取错了」会让对拍变成"对着别的东西比"，而屏幕上看不出。
+   ★ 基线推进史：d5e9aef（批次 3 开工）→ 069e5a2（.01「应做动作唯一真源 + 处置准入闸」落地后）。
+     .01 对 _待确认.mjs 的有意变更没有推进基线，基线红 7 条欠账（2026-11-09 发版门禁实跑发现）；
+     本批开工一并清账，对拍从此钉在 .01 后的既定行为上。 */
+const OLD_COMMIT = '069e5a2';
+const OLD_SHA256 = 'a0f7cafc8deae6fdca2dcc85ab63e75d57c0565af0370ed4dc6e7b4874be1d26';
 
 /* 夹具根：前缀 gn-testlib- 已在 `_测试环境.cjs` 的 TMP_PREFIXES 里登记（不新增前缀 = 不新增清扫面）。 */
 const BASE = E.allocTempDir('gn-testlib-');
@@ -66,6 +69,12 @@ function norm(t, libDir) {
   for (const v of [libDir, libDir.replace(/\\/g, '/'), libDir.replace(/\//g, '\\')]) {
     if (v) s = s.split(v).join('<LIB>');
   }
+  /* 已知差异④（2026-11-09 有意变更）：清单「系统维护」行的生成器指令从已退役的
+     `_生成首页.ps1` 改为 `node 生成状态.mjs` —— 两边归一成 <GENCMD>，专断言见下方④。
+     连带：「已刷新 N 字符」的计数随该行长度变化，一并归一。 */
+  s = s.split('`node _生成队列.mjs` + `_生成首页.ps1`').join('<GENCMD>');
+  s = s.split('`node _生成队列.mjs` + `node 生成状态.mjs`').join('<GENCMD>');
+  s = s.replace(/_待确认清单\.md 已刷新：\d+ 字符/g, '_待确认清单.md 已刷新：<N> 字符');
   return s;
 }
 function firstDiff(a, b) {
@@ -341,20 +350,28 @@ if (!OLD_SRC) {
     rawLedger(OLD_LIB).equals(rawLedger(NEW_LIB)),
     rawLedger(OLD_LIB).length + 'B vs ' + rawLedger(NEW_LIB).length + 'B');
   const mdNorm = p => {
-    try { return read(p).replace(/_更新于 \d{4}-\d{2}-\d{2}_/g, '_更新于 <DATE>_').replace(/\r\n/g, '\n'); }
+    try {
+      return read(p).replace(/_更新于 \d{4}-\d{2}-\d{2}_/g, '_更新于 <DATE>_')
+        /* 已知差异④ 同款归一（见 norm 内注） */
+        .split('`node _生成队列.mjs` + `_生成首页.ps1`').join('<GENCMD>')
+        .split('`node _生成队列.mjs` + `node 生成状态.mjs`').join('<GENCMD>')
+        .replace(/\r\n/g, '\n');
+    }
     catch (e) { return '(读不出：' + e.message + ')'; }
   };
   A('★ 对拍收尾：两库 _待确认清单.md 除「_更新于 <日期>」外逐字节相同',
     mdNorm(path.join(OLD_LIB, '_待确认清单.md')) === mdNorm(path.join(NEW_LIB, '_待确认清单.md')),
     firstDiff(mdNorm(path.join(OLD_LIB, '_待确认清单.md')), mdNorm(path.join(NEW_LIB, '_待确认清单.md'))));
 
-  /* ── 三处**必然存在**的既有输出差异：逐条钉住"只差新增项/新增行/新增能力"，不放过任何别的漂移 ── */
+  /* ── 原先这里的"已知差异①②③"是批次 3→4 时代的增量（经验线索 尚不在旧基线 KINDS 里）。
+     2026-11-09 基线推进到 069e5a2（.01 落地后）：「经验线索」两侧都在，那三处差异不复存在——
+     原断言集体改写为"两侧逐字一致"的同强度判据（宁可对拍变严，不许对着历史差异放水）。
+     唯一保留的有意差异 = 已知差异④（系统维护行的生成器指令，见下方专断言）。 ── */
   const badArgs = ['加', '--student', '学生D', '--q', '第1页第1题，「A」是你自己选的吗？', '--kind', '不存在的类型'];
   const ba = runTool(OLD_TOOL, OLD_LIB, badArgs), bb = runTool(NEW_TOOL, NEW_LIB, badArgs);
   const bea = norm(ba.err, OLD_LIB), beb = norm(bb.err, NEW_LIB);
-  A('已知差异①（加 --kind 非法）：两边都 exit 2（行为不变）', ba.code === 2 && bb.code === 2, ba.code + '/' + bb.code);
-  A('★ 已知差异① 逐字节只差新增成员「经验线索」',
-    beb.split(' / 经验线索').join('') === bea && /经验线索/.test(beb) && !/经验线索/.test(bea),
+  A('加 --kind 非法：两边都 exit 2（行为不变）', ba.code === 2 && bb.code === 2, ba.code + '/' + bb.code);
+  A('★ 逐字节相同（基线推进后「经验线索」已在两侧 KINDS 里）', bea === beb,
     '旧=' + firstLine(bea) + ' ｜ 新=' + firstLine(beb));
 
   const ua = runTool(OLD_TOOL, OLD_LIB, ['不存在的动作']), ub = runTool(NEW_TOOL, NEW_LIB, ['不存在的动作']);
@@ -376,32 +393,40 @@ if (!OLD_SRC) {
     return kept && strip(a) === strip(b);
   };
   const oldNames = namesIn(uea), newNames = namesIn(ueb);
-  A('已知差异②（未知动作）：两边都 exit 2（行为不变）', ua.code === 2 && ub.code === 2, ua.code + '/' + ub.code);
-  A('★ 已知差异② 差异只许出现在「可用列表 / 用法提示」，且列表**只增不减**（批次 4 加 4 个新子命令后仍成立）',
+  A('未知动作：两边都 exit 2（行为不变）', ua.code === 2 && ub.code === 2, ua.code + '/' + ub.code);
+  A('★ 可用列表与用法提示两侧一致（"只增不减"口径保留，此刻应零差异）',
     oldNames.filter(n => !newNames.includes(n)).length === 0 &&
-    newNames.filter(n => !oldNames.includes(n)).length > 0 &&
-    restSame(uea, ueb) && !/纠因/.test(uea),
-    '旧 ' + oldNames.length + ' 项 → 新 ' + newNames.length + ' 项　新增=[' +
-      newNames.filter(n => !oldNames.includes(n)).join(',') + ']　缺失=[' +
+    restSame(uea, ueb),
+    '旧 ' + oldNames.length + ' 项 → 新 ' + newNames.length + ' 项　缺失=[' +
       oldNames.filter(n => !newNames.includes(n)).join(',') + ']　其余行差异=' + (restSame(uea, ueb) ? '无' : firstDiff(uea, ueb)));
 
-  /* ── 已知差异③：`加 --kind 经验线索` —— 本批**新增能力本身**带来的必然差异 ──
-     它不能进对拍序列：旧实现不认识这个类型，会**拒收**（exit 2、不写盘）；新实现会落库。
-     这**正是**本批要的差异（也是 §2.1-3 的既定入口），所以这里单独把"两边分别是什么行为"钉死，
-     而不是假装它们一样 —— 一旦哪天旧实现也接受了它（说明 KINDS 被改回/对拍基线取错），这里先红。 */
+  /* ── 原"已知差异③"的退役声明：批次 4 把「经验线索」加进 KINDS，基线推进到 069e5a2 后
+     它两侧都在 ⇒ 不再是差异。反向钉住：两侧对它的接受行为一致（都 exit 0 且各 +1 条）；
+     收尾的"两库 _待确认.json 逐字节相同"兜住写入内容。哪天一侧开始拒收
+     （KINDS 被改回 / 基线取错），这里先红。 ── */
   const reasonAddArgs = ['加', '--student', '学生C', '--card', 'p09-1', '--kind', '经验线索', '--ask', '孩子',
     '--q', '第9页第1题，「C」是你自己选的吗？', '--date', '2026-11-03'];
   const cntOf = dir => (jsonLedger(dir).items || []).length;
   const kOld0 = cntOf(OLD_LIB), kNew0 = cntOf(NEW_LIB);
-  A('  差异③之前两库条数相同（下面的差异只由这一步引入）', kOld0 === kNew0, '旧 ' + kOld0 + ' / 新 ' + kNew0);
+  A('  两库条数相同（入场前）', kOld0 === kNew0, '旧 ' + kOld0 + ' / 新 ' + kNew0);
   const ka = runTool(OLD_TOOL, OLD_LIB, reasonAddArgs), kb = runTool(NEW_TOOL, NEW_LIB, reasonAddArgs);
-  A('已知差异③（加 --kind 经验线索）：旧实现 exit 2 且不写盘',
-    ka.code === 2 && cntOf(OLD_LIB) === kOld0, 'exit=' + ka.code + ' 条数 ' + kOld0 + '→' + cntOf(OLD_LIB));
-  A('★ 已知差异③：新实现 exit 0 且落库一条 kind=经验线索',
-    kb.code === 0 && cntOf(NEW_LIB) === kNew0 + 1 && (jsonLedger(NEW_LIB).items || []).some(x => x.kind === '经验线索'),
-    'exit=' + kb.code + ' 条数 ' + kNew0 + '→' + cntOf(NEW_LIB));
-  A('★ 已知差异③ 的唯一原因是 KINDS 成员变化（旧文案就是不带经验线索的那份枚举）',
-    /kind 必须是：/.test(norm(ka.err, OLD_LIB)) && !/经验线索/.test(norm(ka.err, OLD_LIB)), firstLine(ka.err));
+  A('加 --kind 经验线索：两侧一致接受（都 exit 0 且各 +1 条）',
+    ka.code === 0 && kb.code === 0 && cntOf(OLD_LIB) === kOld0 + 1 && cntOf(NEW_LIB) === kNew0 + 1,
+    'exit ' + ka.code + '/' + kb.code + '　条数 ' + kOld0 + '→' + cntOf(OLD_LIB) + ' / ' + kNew0 + '→' + cntOf(NEW_LIB));
+
+  /* ── 已知差异④（2026-11-09）：清单「系统维护」行的生成器指令 —— 有意变更，只许差这一行 ──
+     `_生成首页.ps1`（PowerShell 生成器）已退役删除，继续指示"重跑它"会指路指到不存在的文件；
+     新实现改指 `node 生成状态.mjs`。stdout/stderr 与收尾 mdNorm 已把两边归一成 <GENCMD>；
+     这里反向钉住"差异确实存在且只在这一行"——归一若把别的差异也吞掉，这条就是唯一的实锤。 */
+  {
+    const oldMd = read(path.join(OLD_LIB, '_待确认清单.md'));
+    const newMd = read(path.join(NEW_LIB, '_待确认清单.md'));
+    const lineOf = (t, re) => (t.split(/\r?\n/).find(l => re.test(l)) || '');
+    const ol = lineOf(oldMd, /系统维护/), nl = lineOf(newMd, /系统维护/);
+    A('已知差异④（清单系统维护行）：旧=已退役 _生成首页.ps1、新=node 生成状态.mjs',
+      /_生成首页\.ps1/.test(ol) && /node 生成状态\.mjs/.test(nl),
+      '旧=' + ol.slice(0, 60) + ' ｜ 新=' + nl.slice(0, 60));
+  }
 }
 
 /* ══════════════════════════════════════════════════════════════════════

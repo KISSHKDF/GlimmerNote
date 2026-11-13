@@ -86,6 +86,12 @@ if ((Get-ChildItem $appDir -Force -ErrorAction SilentlyContinue).Count -gt 0) {
   if (Test-Path $prevDir) { Remove-Item $prevDir -Recurse -Force }
   New-Item -ItemType Directory -Path $prevDir -Force | Out-Null
   Copy-Item (Join-Path $appDir '*') $prevDir -Recurse -Force
+  # ★ 2026-11-12（审计 R-04）：备份里**剔除运行期产物**（`app\shell.log`、`wv2-profile\`、`*.tmp-*`）。
+  #   否则回滚把它们拷回 app\ 时，它们会被 `Write-DeployManifest` 按落地内容写进**新基线** ——
+  #   等于把"运行期产物"洗白成"发布包的一部分"，此后 verify-deploy 再也报不出这类漂移。
+  #   白名单真源 = scripts\运行期产物.json（verify-deploy.mjs 读同一份）。
+  $rtRemoved = Remove-RuntimeArtifacts -Root $prevDir
+  if ($rtRemoved -gt 0) { Write-Host "  备份已剔除 $rtRemoved 个运行期产物（不进基线）" }
   $backupMade = $true
 }
 
@@ -124,9 +130,10 @@ try {
   #   结果（2026-11-04 实测）：包里有、app\tools\ 里也有那个 .mjs 引擎，
   #   但运行区根**两个都查不到** ⇒ 用户拿到运行区后照样"缺 WebView2 就没路可走"。
   #   做法：从**包**（不是源码树）复制到运行区根 ⇒ 运行区内容永远等于发布包内容。
-  #   ⚠ 只复制**这两个白名单文件**，不整目录搬包根（包根还有 使用说明.txt 等，
-  #     而运行区根已经有自己的「怎么试用.txt」等本机文件，整目录覆盖会误伤）。
-  $helperFiles = @('网页版启动器.cmd', '修复完整性标签.ps1')
+  #   ⚠ 只复制**白名单文件**，不整目录搬包根（包根还有 使用说明.txt 等，整目录覆盖会误伤）。
+  #   ★ 2026-11-09：「怎么试用.txt」从"运行区根手工本机文件"转为随包更新（源在仓库根 tracked，
+  #     build-release 装进包根；旧内容停在空库时代已重写）。
+  $helperFiles = @('网页版启动器.cmd', '修复完整性标签.ps1', '怎么试用.txt')
   $copiedHelpers = @()
   foreach ($hf in $helperFiles) {
     $srcHf = Join-Path $tmp $hf

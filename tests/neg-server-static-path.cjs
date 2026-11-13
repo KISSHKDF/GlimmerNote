@@ -164,7 +164,16 @@ const asJoined = rel => path.normalize(path.join(ROOT, rel));   // 服务端等�
       }
       if (zhDash) inside.push(['/' + zhDash.split('/').map(encodeURIComponent).join('/'), 200, '根内中文文件名 + 连字符']);
       else console.log('  [SKIP] 根内中文文件名 + 连字符 —— 库里找不到这类文件');
-      if (exists('首页.html')) inside.push(['/' + encodeURIComponent('首页.html'), 200, '根内中文文件名（首页）']);
+      /* ★ 2026-11-13 修（本会话解封门禁后暴露）：本段 ①② 已在 2026-10-23 / 2026-11-02 两次整改中更新，
+         **③ 这一条漏了** —— 它仍按 R8 **之前**的期望要求 `首页.html` 必须 200，
+         而 R8 整改③（`_服务端.mjs::staticAllowed`）明令"`.html`（题干/说明）一律 403"
+         （配套用例 `neg-server-static-whitelist.cjs`）。真库里有 `首页.html` ⇒ 本段**必然红**
+         （实测：`GET /%E9%A6%96%E9%A1%B5.html` → 403）。现在按现行设计改成**负对照**：
+         根内 `.html` 必须 403 —— 这既钉住了"R8 的类型准入没被放松"，
+         也把"包含性判据不误伤根内路径"的举证责任交回给①②（它们才是干这个的）。
+         ⚠ 顺带记一笔产品面：R8 收紧后"用手机浏览器打开库根 `首页.html`"这条路**已不通**；
+         手机侧要看的是**导出的报告/试卷**（这正是家长报告那条链的存在理由）。 */
+      if (exists('首页.html')) inside.push(['/' + encodeURIComponent('首页.html'), 403, '根内 .html：R8 类型准入明令 403（题干/说明不下发）']);
       else console.log('  [SKIP] 首页.html —— v3 起界面运行时取数，库里不再有它（发布包/运行区常态）');
 
       for (const [p, want, why] of inside) {

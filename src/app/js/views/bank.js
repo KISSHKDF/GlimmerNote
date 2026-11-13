@@ -3,7 +3,7 @@
   const U = CTB.util, M = CTB.model, H = CTB.host, S = CTB.shell;
   const V = CTB.views.bank = {};
 
-  const DEFAULT = { q: '', subject: '全部', diff: '全部', layer: '全部', state: '全部', blind: '全部', code: '', hasImg: false, sort: 'new' };
+  const DEFAULT = { q: '', subject: '全部', diff: '全部', layer: '全部', stage: '全部', state: '全部', blind: '全部', code: '', kp: '', hasImg: false, sort: 'new' };
   let f = Object.assign({}, DEFAULT, U.lsGet('ctb2.filters', {}));
   const save = () => U.lsSet('ctb2.filters', f);
 
@@ -12,6 +12,15 @@
   function filtered() {
     let cs = M.cardsOf();
     if (f.code) cs = cs.filter(x => M.causeKey(x.card) === f.code);
+    /* ★ 2026-11-13（批次 4 / 错因阶段维）：按"错在解题的哪一步"筛。
+       ⚠ 这里**不能**用空串表示"全部"：老卡与"拿不准"的卡恰好就是空值，
+         所以"未填"是一个**显式选项**（找那些还没定阶段的卡，正是要补录的清单）。 */
+    if (f.stage !== '全部') {
+      cs = cs.filter(x => f.stage === '未填' ? !x.card.causeStage : String(x.card.causeStage || '') === f.stage);
+    }
+    /* 考点筛选（2026-11-09）：stats 薄弱考点榜点进来就是这个值；与错因代码筛选同层级的精确匹配。
+       kpoints 缺失/为空的卡在选了考点后自然被滤掉——不是缺陷，是口径（有标签才谈得上按标签筛）。 */
+    if (f.kp) cs = cs.filter(x => (x.card.kpoints || []).includes(f.kp));
     if (f.subject !== '全部') cs = cs.filter(x => x.subject === f.subject);
     if (f.diff !== '全部') cs = cs.filter(x => x.card.difficulty === f.diff);
     if (f.layer !== '全部') cs = cs.filter(x => x.card.causeLayer === f.layer);
@@ -67,7 +76,12 @@
         '<span class="chip' + (f.layer === '全部' ? ' on' : '') + '" role="button" tabindex="0" data-k="layer" data-v="全部">全部</span>' +
         ['K', 'L', 'S'].map(k => '<span class="chip' + (f.layer === k ? ' on' : '') + '" role="button" tabindex="0" data-k="layer" data-v="' + k + '" title="' + M.LAYER[k].name + '"><span class="chip-dot" style="background:' + M.LAYER[k].color + '"></span>' + k + ' ' + M.LAYER[k].name + '</span>').join('') + '</div>') +
       row('状态', chipRow('state', ['全部', '未复习', '到期', '复习中', '待批改', '已掌握', '已归档'], f.state)) +
+      /* ★ 2026-11-13（批次 4 / 错因阶段维）：'未填' 是显式选项 —— 点它就是要一份"还没定阶段的清单"。
+         title 里写清这一维与 K/L/S 正交，免得用户以为它是错因层的别名。 */
+      row('阶段', chipRow('stage', ['全部', '审题', '转化', '求解', '书写', '未填'], f.stage,
+        v => v === '未填' ? '未填' : v === '全部' ? '全部' : v)) +
       row('盲解', chipRow('blind', ['全部', 'ok', 'no'], f.blind, v => v === 'ok' ? '已通过' : v === 'no' ? '未过 / 存疑' : '全部')) +
+      row('考点', kpSelect(all)) +
       '</div></div>' +
       '<div class="row bk-bar"><span class="small muted" id="bkCount">' + countHtml(fn) + '</span>' +
       '<span class="small muted">· 点击行看详情；勾选进组卷篮</span>' +
@@ -82,6 +96,9 @@
     renderList();
     U.$id('bkQ').oninput = U.debounce(e => { f.q = e.target.value; save(); renderList(); }, 200);
     U.$id('bkSort').onchange = e => { f.sort = e.target.value; save(); renderList(); };
+    /* 考点下拉（2026-11-09）：改动走 renderList 不整页重绘（与排序/搜索同口径）；来源面板词汇按频次排。 */
+    const kpEl = U.$id('bkKp');
+    if (kpEl) kpEl.onchange = e => { f.kp = e.target.value; save(); renderList(); };
     U.$id('bkReset').onclick = () => { f = Object.assign({}, DEFAULT); save(); S.render(); };
     /* 键盘可达（F-RB-7）：chip 此前是裸 span（tabIndex -1，实测 25/25 不可 Tab） */
     el.querySelectorAll('.chip[data-k]').forEach(c => {
@@ -96,7 +113,7 @@
     el.querySelectorAll('[data-a]').forEach(b => b.onclick = () => {
       const a = b.dataset.a;
       if (a === 'reset') { f = Object.assign({}, DEFAULT); save(); S.render(); }
-      else if (a === 'clearQ') { f.q = ''; f.code = ''; save(); S.render(); }
+      else if (a === 'clearQ') { f.q = ''; f.code = ''; f.kp = ''; save(); S.render(); }
       else if (a === 'allStu') { M.student('全部'); S.render(); }
       else if (a === 'reload') { S.reload(); }
     });
@@ -164,12 +181,24 @@
   V.onParam = function (p) {
     if (!p) return;
     if (p.code) { f.code = p.code; save(); S.render(); return; }
+    /* 考点联动入口（2026-11-09）：stats 薄弱知识点榜点击带 kp 进来（镜像 p.code 模式） */
+    if (p.kp) { f.kp = p.kp; save(); S.render(); return; }
     /* 复习流空态里的「看被拦的题」会带 blind=no 进来（此前没人消费这个参数 ⇒ 点了没反应） */
     if (p.blind) { f.blind = p.blind; f.q = ''; save(); S.render(); return; }
     if (p.openKey) { const x = M.cards.find(c => c.key === p.openKey); if (x) openCard(x); }
   };
 
   function opt(arr, sel) { return arr.map(([v, t]) => '<option value="' + U.esc(v) + '"' + (v === sel ? ' selected' : '') + '>' + U.esc(t) + '</option>').join(''); }
+  /* 考点下拉（2026-11-09）：词汇=当前学生范围卡的 kpoints 并集，按出现次数降序（同数按 zh 拼音）。
+     计数展示让"这个考点有几张卡"一眼可见；值进属性位必须 esc（F-48 同款纪律）。 */
+  function kpSelect(all) {
+    const freq = {};
+    for (const x of all) for (const k of (x.card.kpoints || [])) { if (k) freq[k] = (freq[k] || 0) + 1; }
+    const entries = Object.entries(freq).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh'));
+    return '<select id="bkKp" class="bk-sort"><option value=""' + (f.kp ? '' : ' selected') + '>全部考点</option>' +
+      entries.map(([k, n]) => '<option value="' + U.esc(k) + '"' + (k === f.kp ? ' selected' : '') + '>' + U.esc(k) + '（' + n + '）</option>').join('') +
+      '</select>';
+  }
   /* 一行筛选片（2026-10-26 重做）：标签由外层的 .bk-flabel 提供，这里只出胶囊。
      调用方用 row('学科', chipRow(...)) 把标签列与胶囊列拼起来 ⇒ 各行左边缘对齐。 */
   function chipRow(key, vals, cur, lb) {
@@ -246,12 +275,13 @@
     if (f.layer !== '全部') active.push('错因层 ' + U.esc(f.layer));
     if (f.state !== '全部') active.push('状态 ' + U.esc(f.state));
     if (f.blind !== '全部') active.push('盲解 ' + (f.blind === 'ok' ? '已通过' : '未过/存疑'));
+    if (f.kp) active.push('考点 ' + U.esc(f.kp));       // 2026-11-09：新筛选项必须同步空态清单（F-RB-3 空态不得说谎）
     if (f.hasImg) active.push('只有图');
     return '<div class="card"><div class="empty ready"><div class="e-ic">🔍</div><b>筛选把 ' + total + ' 题全挡掉了</b>' +
       '<div class="e-sub">这个范围<b>有</b> <b class="num">' + total + '</b> 张卡，是下面这 <b class="num">' + active.length + '</b> 个条件同时生效筛成了 0 条：' +
       active.join(' ＋ ') + '。放宽任意一条就会重新出现。</div>' +
       '<div class="e-act"><button class="btn sm primary" data-a="reset">重置全部筛选</button>' +
-      ((f.q.trim() || f.code) ? '<button class="btn sm" data-a="clearQ">只清搜索/错因代码</button>' : '') +
+      ((f.q.trim() || f.code || f.kp) ? '<button class="btn sm" data-a="clearQ">只清搜索/错因代码/考点</button>' : '') +
       '</div></div></div>';
   }
   function row(x) {
@@ -290,6 +320,9 @@
         '</div>' +
         '<div class="sect"><h4>答案与当时错答</h4>' +
         '<div class="ans"><b>正确：</b>' + U.esc(c.answer || '—') + '</div>' +
+        /* 逐空行（唯一实现 M.slotAnswerLine）：题干有 N 个空时，光一条 answer 文字看不出每空填什么
+           —— 2026-11-08 用户报障「题干给了 3 个空，答案只给出一个」指的就是这里。 */
+        M.slotAnswerLine(c) +
         '<div class="wrong-ans"><b>孩子错答：</b>' + U.esc(c.studentAnswer || '—') + '</div>' +
         '<div class="cause-box"><span class="' + layerCls(c.causeLayer) + '">' + U.esc((c.causeLayer || '') + (c.causeCode || '')) + '</span> ' +
         (c.causeConfirmed === false ? '<span class="tag warn">⚠ 待孩子口述确认</span>' : '<span class="tag ok">错因已确认</span>') +
@@ -336,7 +369,7 @@
           src: H.asset(rel), rel, title,
           chips: '<span class="tag warn">' + U.esc(c.id) + '</span><span class="' + layerCls(c.causeLayer) + '">' + U.esc((c.causeLayer || '') + (c.causeCode || '')) + '</span>',
           q: c.question,
-          detail: '正确答案：' + (c.answer || '—') + '　｜　当时错答：' + (c.studentAnswer || '—') + '　｜　错因：' + (c.causeDesc || '—'),
+          detail: '正确答案：' + (c.answer || '—') + (M.slotAnswerLine(c) ? '　｜　逐空：' + M.slotAnswerText(c) : '') + '　｜　当时错答：' + (c.studentAnswer || '—') + '　｜　错因：' + (c.causeDesc || '—'),
           hint: '这是从原图（整页）上按题裁下的单题图（含孩子黑笔作答与红笔订正），仅用于核对，勿用于重做（泄答案防线）。看细节用这张，看这题在第几页/旁边是什么就按 P 切原图。',
         }, M.origOf(c));
         d.querySelectorAll('[data-open]').forEach(t => t.onclick = () => S.lightbox([lbItem(t.dataset.open, c.id + ' 原卷')]));

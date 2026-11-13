@@ -21,7 +21,7 @@
  *          要工具代为交错排卷（Rohrer 2020，相邻两题不同族考点，d=0.83）须显式加 --interleave，
  *          仅限「ids 顺序尚未印成卷」的纯 CLI 场景；v2 桌面版从 v2.7 起界面洗牌后必须传此开关关闭。）；
  *          错误次数 ≥ --leech-at（默认 4）的题会额外提示「拆卡/补前置知识卡/标记题目问题」三选一）
- *   批改  --paper P20261006-01 --results "M0001=对,M0006=错,M0011=半对" [--date 2026-10-08] [--note 备注]
+ *   批改  --paper P20261006-01 --results "M0001=对,M0006=错,M0011=半对" [--date 2026-10-08] [--note 备注] [--by 家长|孩子|AI辅助]
  *   撤批  --paper P20261006-01
  *         （撤销整卷：批次从台账移除，卷上题目恢复**未组卷**——未批改的直接回池；
  *          已批改的把该卷判分流水一并回滚、错误次数回退、连对/建议复习日按剩余记录重算。
@@ -34,7 +34,7 @@
  *   状态  [--student 学生B]                              （只读：不写任何文件）
  *   准入  [--student 学生B]                              （只读：哪张卡进不了组卷池、卡在哪道门禁）
  *   同步  --file %USERPROFILE%\Downloads\ctb-sync-20261006.json   （合并首页导出的待同步包）
- *   任意动作加 --refresh 生成后自动重跑 _生成首页.ps1
+ *   任意动作加 --refresh 完成后自动重建状态包（生成状态.mjs）
  */
 import fs from 'fs';
 import path from 'path';
@@ -43,6 +43,11 @@ import { fileURLToPath } from 'url';
 import { libraryRoot, toolPath } from './_库根.mjs';
 import { readJsonStrict, writeJsonAtomic, acquireLibLock, openTransaction } from './_安全写.mjs';
 import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
+import { indexFiles } from './_题库发现.mjs';
+/* ★ 2026-11-12（审计 F04）：`answerSource` 取值契约的唯一真源（原先三处各一份 + 两种语义）。 */
+import { isAcceptableSource, isRetiredSource } from './_来源.mjs';
+/* ★ 2026-11-13（批次 4 / 后接 Elo）：难度在线估计（零副作用纯函数）。 */
+import { applyElo } from './_难度.mjs';
 
 /* ★ 2026-10-23 程序与数据分家：ROOT 现在是**用户库根**，不再是"本脚本所在目录"。
    兄弟工具一律用 toolPath(...)，见 _库根.mjs。 */
@@ -140,18 +145,8 @@ const IDX_SHAPE = j => Array.isArray(j.items) || (!!j.subjects && typeof j.subje
 function readIndex(p) { return readJsonStrict(p, { shape: IDX_SHAPE, what: 'items 数组或 subjects 对象', label: path.basename(p) }); }
 
 /** 递归找 _索引.json（跳过工作/收件箱目录） */
-function indexFiles(dir, acc = []) {
-  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (!e.isDirectory()) {
-      if (e.name === '_索引.json') acc.push(path.join(dir, e.name));
-      continue;
-    }
-    if (e.name.startsWith('_') || e.name.startsWith('.')) continue;   // _收件箱/_work-xx 不是题库
-    if (/(作业|假期)/.test(e.name)) continue;                          // 原始试卷档案目录
-    indexFiles(path.join(dir, e.name), acc);
-  }
-  return acc;
-}
+/* 2026-11-12（审计 F05）：本函数已收敛到 `_题库发现.mjs`（零副作用共享模块）。
+   原先 8 个工具各抄一份，实测 3 种实现（本文件那份与 SB 口径不同）⇒ 改一处漏一处且各自测试全绿。 */
 
 /** 索引 → [{item, subject}]，兼容学生级(subjects)与学科级(items)两种形态 */
 function itemsOf(j) {
@@ -181,6 +176,69 @@ function pendingMap(ledger) {
  *  teacherConflict 由 `_录题入库.mjs` 在"官方答案与老师红笔不一致、notes 交代了分歧"时挂上；
  *  只有 `异议裁决` 动作能把它标为已裁决（resolvedAt）。 */
 const teacherConflictOpen = it => !!(it && it.teacherConflict && typeof it.teacherConflict === 'object' && !it.teacherConflict.resolvedAt);
+
+/* ★ 2026-11-07（红字归属，用户裁定）：**卷面上的红字不一定是老师批的** ——
+ *  可能是孩子自己订正的、家长订改的、同学互批的。红字**单独不能当权威答案**。
+ *
+ *  修前：`SRC_PREFIX_OK` 把「老师定案」和「独立判卷」「官方答案」并列，当成"非红笔第二来源" ——
+ *  那正是这个误解的代码形态：老师定案**就是**红笔来源。
+ *
+ *  修后（口径）：
+ *    · `独立判卷` / `官方答案` ⇒ 红笔之外的第二来源，合格。
+ *    · `红笔订正+官方答案页核对` ⇒ 红笔 + 官方答案页双源，合格。
+ *    · `老师定案` ⇒ **红字来源**，单靠自己不合格。要成立须满足其一：
+ *        ① 红字确系老师所写（`inkAttribution === '老师'`）且原文落库（`teacherAnswer` 非空）；
+ *        ② 这张卡的答案另有独立来源（双路盲解已验证）—— 此时答案本身站得住，
+ *           「老师定案」这个标签不严谨，但不该误伤一张答案已被独立验证过的卡。
+ *    · `inkAttribution` 缺失 ⇒ **旧卡**：字段是本次才引入的，老卡没有。
+ *      不误伤（它们的答案绝大多数已被盲解独立验证过），但如实报告"归属未记录"。
+ *
+ *  唯一实现（准入与组卷共用一份，避免两处口径漂移）。 */
+/* ★ 2026-11-12（审计 F04）：取值契约与"合格性"判据已收敛到 `_来源.mjs`（原先本文件与
+   `_盲解复核.mjs` 各抄一份，后者注释自己就写着"两处各抄一份必然漂移"）。
+   本文件只保留"独立来源怎么证"（`blindVerified`），作为 `independentProof` 注入进去。 */
+const blindVerified = it => ['已通过', '已修正'].includes(String((it && it.blindStatus) || ''));
+const inkAttrOf = it => String((it && it.inkAttribution) || '').trim();
+const inkHasText = it => typeof (it && it).teacherAnswer === 'string' && String(it.teacherAnswer).trim() !== '';
+/** 答案归一化后比较（去空白、全半角归一）——与 `_录题入库.mjs` 同口径 */
+const normAns = v => String(v || '').normalize('NFKC').replace(/\s+/g, '');
+/** 这张卡的答案是不是"红字"本身（answer 与红字原文一致 ⇒ 答案只可能来自红字） */
+const answerIsRedInk = it => inkHasText(it) && normAns(it.teacherAnswer) === normAns(it.answer);
+/** 答案来源门禁（2026-11-07 **第二次收紧**后的唯一口径）
+ *
+ *  ⚠ 用户同日**再次强调**：不是"归属不明"的问题，是"红字本身就不行" ——
+ *  **卷面红字绝大部分不是老师批的**（孩子自己批改/订正、同学互批、家长帮批），
+ *  红字**只能起普通参考价值**，**根本不可以成为定案标准**。
+ *  ⇒ 因此「老师定案」**即使确认是老师写的**，也不能单独确立答案：
+ *    老师也可能照着错题本抄、也可能批漏、也可能只写了个提示。
+ *    「老师定案」不是"答案权威等级"，只是**批改痕迹的来源**。
+ *
+ *  口径：
+ *    · 「独立判卷」/「官方答案」 ⇒ 与红笔无关的独立来源，合格。
+ *    · 「红笔订正+官方答案页核对」 ⇒ **权威性来自官方答案页**（红笔只是对照片），双源，合格。
+ *    · 「老师定案」⇒ 红字来源，**单靠自己一律不合格**；
+ *        只有当答案另有与红笔无关的独立来源（双路盲解已验证）时才放行 ——
+ *        放行理由是"答案本身站得住"，**不是**"老师写的所以对"。
+ *
+ *  `inkAttribution` 的作用已从"决定红字能否作权威"**降级**为"如实记录红字是谁写的"
+ *  （供人看、供追责），**不再参与答案权威性判定**。 */
+function answerSourceOk(it) {
+  const s = String((it && it.answerSource) || '').trim();
+  if (!s) return false;
+  /* 合格性判据 → `_来源.mjs`（唯一真源）；本文件只提供"独立来源怎么证"。 */
+  return isAcceptableSource(s, { independentProof: blindVerified(it) });
+}
+/** 为什么不合格（给人看的理由；合格返回空串） */
+function answerSourceWhy(it) {
+  const s = String((it && it.answerSource) || '').trim();
+  if (!s) return '缺第二来源：answerSource 字段为空';
+  if (answerSourceOk(it)) return '';
+  if (isRetiredSource(s)) {
+    if (answerIsRedInk(it)) return '答案就是红字原文 —— 红字只作参考，不能作定案标准（即使确认是老师写的也不成立）';
+    return '答案来源=老师定案（红字来源），但该答案没有与红笔无关的独立来源（双路盲解未通过）';
+  }
+  return '缺第二来源：' + s;
+}
 const revsOf = it => (Array.isArray(it.reviews) ? it.reviews : []).filter(Boolean).sort((a, b) => String(a.date).localeCompare(String(b.date)));
 function passStreak(revs) {
   let p = 0;
@@ -325,7 +383,21 @@ function capReviews(list) {
 }
 const REVIEWS_CAP_NOTE = '（reviews 超过 ' + REVIEWS_KEEP + ' 条：已裁掉最旧的批次；按批次整留，条数可能略超 ' + REVIEWS_KEEP + '）';
 
-function actGrading(paperId, resultsStr, date, note) {
+/* ★ 2026-11-13（批次 4 / UX-10「谁判的」）：把"这次是谁判的"记进复习流水。
+   为什么：孩子模式下自评时，界面若暗示"判对就能少做"，就会诱导**挑好判的判对**（与 UX-11 同源）。
+   记下"谁判的"之后，家长一眼能看出哪些记录是自评、自评的正确率是否异常偏高——
+   这是**数据自证**，不是猜疑（判据摆在桌上，比"我觉得你在放水"好谈得多）。
+   取值白名单：家长 / 孩子 / AI辅助 / 空串（未记）。**非法值拒收**：
+   自由文本进来这一维就统计不了，与错因阶段维同一个道理。 */
+const GRADERS = ['家长', '孩子', 'AI辅助', ''];
+function byOf(v) {
+  const s = String(v == null ? '' : v).trim();
+  if (!GRADERS.includes(s)) {
+    throw new Error('批改 --by 非法：' + JSON.stringify(v) + '（只能 家长 / 孩子 / AI辅助，或省略表示未记）');
+  }
+  return s;
+}
+function actGrading(paperId, resultsStr, date, note, by) {
   /* ★ 2026-11-04（F02 纵深防御）：actGrading 还有别的调用方（同步路径 b.gradedAt || b.date），
      四个入口各自校验之外，这里再校验一次 —— 它拿到的 date 必须已合法。 */
   const day = validDate(date, '批改日期');
@@ -361,12 +433,22 @@ function actGrading(paperId, resultsStr, date, note) {
     const prevList = revsOf(it);
     const prev = prevList.find(r => r.paper === paperId);           // 同一批次重复回录时按最后一次结果修正，不双计
     const before = prev ? prev.result : null;
-    const merged = prevList.filter(r => r.paper !== paperId).concat([{ date: day, paper: paperId, result: res, note: note || '' }]);
+    const merged = prevList.filter(r => r.paper !== paperId).concat([{ date: day, paper: paperId, result: res, note: note || '', by: byOf(by) }]);
     const capped = capReviews(merged);
     if (capped.length < merged.length) console.log('   ' + id + REVIEWS_CAP_NOTE);
     it.reviews = capped;
     if (res === '错' && before !== '错') it.errorCount = num(it.errorCount) + 1;
     if (res !== '错' && before === '错') it.errorCount = Math.max(1, num(it.errorCount) - 1);
+    /* ★ 2026-11-13（批次 4 / 后接 Elo）：顺手更新"这道题有多难"与"这孩子在**这一科**上多强"。
+       只**加**两个字段（`it.elo` / `json.ability`），既有判据（errorCount / nextDue / passStreak /
+       reviewStatus）一个都没动 —— 它们是复习流的下游输入，不许被新算法搅动。
+       方向见 `_难度.mjs` 头注：答对 ⇒ 孩子能力升、**题目难度估计降**（题目是"对手"，孩子赢 ⇒ 对手显得弱）。
+       ⚠ `ability` 落在**学科索引**上 ⇒ 语义是"该生该科的能力"（数学能力 ≠ 英语能力，本来就不该混）。 */
+    {
+      const upd = applyElo({ elo: it.elo, ability: json.ability, difficulty: it.difficulty, result: res });
+      it.elo = upd.elo;
+      json.ability = upd.ability;
+    }
     const pass = passStreak(revsOf(it));
     it.nextDue = addDays(day, intervalOf(res, pass));
     b.results = b.results || {};
@@ -455,14 +537,8 @@ switch (action) {
        而拦的原因一半是"字段没写"，不是"真没做复核"）。
        三态：可组卷 / 缺第二来源 / 盲解未过。
        `--json` 输出 { "学生|编号": {ok,why} } —— **本文件是准入判定的唯一实现**，
-       `_生成首页.ps1` 把它注入 _状态.json.admit，v2 界面据此决定"这张卡能不能进篮子"，
+       `生成状态.mjs` 把它注入 _状态.json.admit，v2 界面据此决定"这张卡能不能进篮子"，
        从而杜绝"界面上选得动、工具一提交就拒"的口径漂移（2026-10-10 实测踩到）。 */
-    const SRC_PREFIX_OK = ['独立判卷', '老师定案', '官方答案'];
-    const SRC_EXACT_OK = ['红笔订正+官方答案页核对'];
-    const okSrc = it => {
-      const s = String((it && it.answerSource) || '').trim();
-      return !!s && (SRC_PREFIX_OK.some(p => s.startsWith(p)) || SRC_EXACT_OK.includes(s));
-    };
     const admit = {};
     let totalAll = 0, canAll = 0;
     for (const f of indexFiles(ROOT)) {
@@ -470,13 +546,13 @@ switch (action) {
       if (opt.student && j.student !== opt.student) continue;
       let can = 0; const noSrc = [], noBlind = [];
       for (const { item } of itemsOf(j)) {
-        const b = ['已通过', '已修正'].includes(item.blindStatus || '');
+        const b = blindVerified(item);
         const tc = teacherConflictOpen(item);
-        const a = okSrc(item) && !tc;
+        const a = answerSourceOk(item) && !tc;
         const key = j.student + '|' + item.id;
         const why = (b && a) ? '' : (!b ? ('盲解未过：' + (item.blindStatus || '未盲解'))
-          : tc ? ('教师异议待裁决：老师红笔 ' + item.teacherConflict.teacher + ' ≠ 采用 ' + item.teacherConflict.adopted)
-          : ('缺第二来源：' + (item.answerSource || 'answerSource 字段为空')));
+          : tc ? ('教师异议待裁决：红字 ' + item.teacherConflict.teacher + ' ≠ 采用 ' + item.teacherConflict.adopted)
+          : answerSourceWhy(item));
         admit[key] = { ok: b && a, why };
         if (b && a) can++; else if (!a) noSrc.push(item.id + '[' + (tc ? '教师异议待裁决' : (item.answerSource || '（缺字段）')) + ']'); else noBlind.push(item.id + '[' + (item.blindStatus || '未盲解') + ']');
       }
@@ -488,7 +564,10 @@ switch (action) {
       if (noSrc.length) console.log(`   ✖ 缺第二来源（${noSrc.length}）：${noSrc.slice(0, 12).join(' ')}${noSrc.length > 12 ? ' …' : ''}`);
     }
     if (opt.json) { console.log(JSON.stringify({ ok: true, can: canAll, total: totalAll, admit })); break; }
-    console.log('\n口径：可组卷＝盲解已通过 且 answerSource 有非红笔第二来源（独立判卷/老师定案/官方答案/官方答案页）；');
+    console.log('\n口径：可组卷＝盲解已通过 且 答案有**红笔之外**的可靠第二来源（独立判卷 / 官方答案 / 官方答案页核对）；');
+    console.log('      「老师定案」是**红字来源**，**单靠自己一律不合格** —— 卷面红字绝大部分不是老师批的');
+    console.log('      （孩子自批/订正、同学互批、家长帮批），红字只作参考不作定案标准；即使确认是老师写的也一样。');
+    console.log('      它要成立，必须另有与红笔无关的独立来源（双路盲解已验证）。');
     console.log('      「（缺字段）」是数据欠账——按铁律不放行，补法见《方案》四之九。');
     break;
   }
@@ -557,22 +636,22 @@ switch (action) {
        多出来的拦截不是因为"没有第二来源"，而是因为**措辞没对上白名单**。
        这比漏拦更坏：它把"改字符串"变成过门禁的捷径（正是门禁最该防的）。
        新判据按**语义**判：必须有非红笔的第二来源。
-         · 前缀命中「独立判卷 / 老师定案 / 官方答案」→ 过（后缀写清依据、留痕更细，不扣分）
+         · 前缀命中「独立判卷 / 官方答案」→ 过（后缀写清依据、留痕更细，不扣分）
          · 精确「红笔订正+官方答案页核对」→ 过（红笔 + 官方答案页双源）
+         · 「老师定案」是**红字来源** ⇒ 见上方 answerSourceOk 的口径（2026-11-07 红字归属）
          · 其余（含「仅红笔」与空值）→ 拦
        空值仍拦：字段缺失＝没人记录第二来源＝按铁律不放行（这是**数据欠账**，不是措辞问题）。 */
-    const SRC_PREFIX_OK = ['独立判卷', '老师定案', '官方答案'];
-    const SRC_EXACT_OK = ['红笔订正+官方答案页核对'];
-    const answerSourceOk = it => {
-      const s = String((it && it.answerSource) || '').trim();
-      if (!s) return false;
-      return SRC_PREFIX_OK.some(p => s.startsWith(p)) || SRC_EXACT_OK.includes(s);
-    };
+    /* ★ 2026-11-07（红字归属）：判据与 `准入` 共用**同一份实现**（上方 answerSourceOk）——
+       修前两处各抄一份白名单，改一处忘一处就是口径漂移（"界面选得动、工具一提交就拒"的老坑）。 */
     /* ★ 2026-11-05（PR #13 复审 ③）：教师异议未裁决的卡，官方答案不算合格第二来源（与 准入 同判据） */
     const noSrc = ids.filter(id => !answerSourceOk(byId[id]) || teacherConflictOpen(byId[id]));
     if (noSrc.length && !opt.force) {
-      console.error('✖ 答案来源门禁拦截（answerSource 无独立判卷/官方答案等第二来源，或教师异议待裁决）：' + noSrc.map(id => `${id}[${teacherConflictOpen(byId[id]) ? '教师异议待裁决' : (byId[id].answerSource || '（缺字段）')}]`).join(' '));
-      if (noSrc.some(id => teacherConflictOpen(byId[id]))) console.error('   → 教师异议：node _标记复习.mjs 异议裁决 --student ' + json.student + ' --ids <编号> --as 老师定案|官方答案 --note "<依据>"');
+      console.error('✖ 答案来源门禁拦截（答案没有红笔之外的可靠第二来源，或红字异议待裁决）：' +
+        noSrc.map(id => `${id}[${teacherConflictOpen(byId[id]) ? '教师异议待裁决' : (answerSourceWhy(byId[id]) || (byId[id].answerSource || '（缺字段）'))}]`).join(' '));
+      if (noSrc.some(id => teacherConflictOpen(byId[id]))) console.error('   → 红字异议裁决：node _标记复习.mjs 异议裁决 --student ' + json.student + ' --ids <编号> --as 官方答案|红字参考 --note "<依据>"');
+      console.error('   → 「老师定案」是**红字来源**，**单靠自己一律不合格**：卷面红字绝大部分不是老师批的');
+      console.error('     （孩子自批/订正、同学互批、家长帮批），红字只作参考不作定案标准 —— 即使确认是老师写的也一样。');
+      console.error('     它要成立，必须另有与红笔无关的独立来源（双路盲解已验证）。');
       console.error('   → 按《错题本系统方案》四之九做「全卷独立判卷复核」：转录无记号判卷清稿 → 无上下文子代理独立判卷 → 与红笔对照落 answerSource。');
       console.error('     查看全局：node _标记复习.mjs 准入 --student ' + json.student);
       process.exit(2);
@@ -637,6 +716,35 @@ switch (action) {
       }
     } else {
       console.log('⚠ --force 同时绕过作答契约门禁（答案册可能缺答案）');
+    }
+    /* ── 题干门禁（2026-11-07 建）：题面**读不懂**的题不得进组卷池 ──
+       用户原话（指着 E0017 的单题预览）：「你转换出来的题干莫名其妙，谁能看得懂？
+       这样的题干也能通过双盲解答？也能进库？」
+       根因两件叠加：① 转义层套了两次 ⇒ 印出来是字面的 "<u>a</u>" 垃圾；
+       ② 大题指令没带进来 ⇒ 题号成孤儿号（3、5），读者不知道要做什么。
+       盲解**拦不住**这件事：它的指纹恰恰算在乱码题面上（实测 fp=c397862e942c），
+       两路"一致"反而把乱码固化成"已通过"的凭据。
+       判据同 `_题干门禁.mjs`（唯一裁判），这里只做组卷口硬拦截。 */
+    if (!opt.force) {
+      let gate = null;
+      try {
+        const r = spawnSync(process.execPath, [toolPath('_题干门禁.mjs'), '门禁', '--json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+        if (r.stdout) gate = JSON.parse(String(r.stdout).trim());
+      } catch { gate = null; }
+      if (!gate || typeof gate.cards !== 'object') {
+        console.error('✖ 题干门禁结果不可用（_题干门禁.mjs 门禁 --json 没给出 cards 字典）。');
+        console.error('  这道门禁负责拦"题面读不懂"的题；取不到就不放行（静默降级正是 2026-10-10 修过的坑）。');
+        process.exit(2);
+      }
+      const bad = ids.filter(id => { const v = gate.cards[json.student + '|' + id]; return v && v.ok === false; });
+      if (bad.length) {
+        console.error('✖ 题干门禁拦截：' + bad.map(id => json.student + '|' + id).join(' '));
+        console.error('   → 这些题的题面读不懂（实体化标签 / 字面标签 / 标记不配对 / 孤儿题号却没带大题指令 / 语篇残篇 / 该画线却没画线）。');
+        console.error('     看详情：node _题干门禁.mjs 扫描；修完题干再组卷。确需绕过加 --force（不推荐，卷面会印出读不懂的题）。');
+        process.exit(2);
+      }
+    } else {
+      console.log('⚠ --force 同时绕过题干门禁（卷面可能印出读不懂的题）');
     }
     /* ── 交错组卷（v2.6 引入，v2.7 改为**显式选择**，2026-10-15）：相邻两题不同「同族考点」──
         依据：Rohrer et al. 2020 预注册整群 RCT（54 个七年级班，1 个月后无预告测验）
@@ -783,7 +891,7 @@ switch (action) {
   case '批改': {
     if (!opt.paper || !opt.results) throw new Error('批改需要 --paper 与 --results="M0001=对,M0002=错"');
     /* ★ 2026-11-04（F02）：批改 --date 四入口之一（actGrading 内还会再校验一次作纵深防御）。 */
-    const r = actGrading(opt.paper, opt.results, opt.date ? validDate(opt.date, '批改 --date') : today(), opt.note);
+    const r = actGrading(opt.paper, opt.results, opt.date ? validDate(opt.date, '批改 --date') : today(), opt.note, opt.by);
     console.log('已回录 ' + r.batch.paperId + '（批次状态：' + r.batch.status + '）');
     r.log.forEach(l => console.log('   ' + l.id + ' 结果=' + l.res + ' → ' + l.status + ' · 连对 ' + l.pass + ' 次 · 建议复习 ' + l.nextDue));
     if (r.batch.status === '已掌握' || r.log.some(l => l.status === '已掌握')) console.log('   ★ 有题连对 2 次 → 已掌握，默认退出组卷池；可说“归档 Mxxxx”永久沉淀');
@@ -881,28 +989,74 @@ switch (action) {
        --as 老师定案 ⇒ answer 改成老师红笔、answerSource=老师定案；--as 官方答案 ⇒ 保留采用答案。
        两种都要 --note 写依据（独立解法的关键步骤），裁决结果留在 teacherConflict 里（resolvedAt/resolvedAs/resolvedNote），不删历史。 */
     if (!opt.student || !opt.ids) throw new Error('异议裁决需要 --student 与 --ids');
-    if (!['老师定案', '官方答案'].includes(opt.as)) throw new Error('异议裁决需要 --as 老师定案 或 --as 官方答案');
+    /* ★ 2026-11-07（第二次收紧）：**「老师定案」这个裁决口径被废除**。
+       理由：它等于"把红字当定案标准"——而用户裁定「卷面红字绝大部分不是老师批的，
+       只能作普通参考，根本不可以成为定案标准」。老师写的红字也不例外：
+       老师也可能照着错题本抄、也可能批漏、也可能只写了个提示。
+       新的裁决只有两个方向：
+         · `--as 官方答案` ⇒ 保留采用答案（权威性来自官方答案页，与红笔无关）。
+         · `--as 红字参考` ⇒ **只把红字记为参考**，不改答案（答案仍须另有独立来源，
+           否则这张卡就是「未能确认」，挡在组卷池外）。
+       旧口径 `--as 老师定案` 响亮拒绝并说明原因 —— 留着它就是留着一个后门。 */
+    const AS_ALLOWED = ['官方答案', '红字参考'];
+    if (opt.as === '老师定案') {
+      console.error('✖ 异议裁决不再接受 --as 老师定案。');
+      console.error('   原因：红字只能作普通参考，不能作定案标准（卷面红字绝大部分不是老师批的 ——');
+      console.error('   孩子自己批改/订正、同学互批、家长帮批；即使是老师写的，也可能照抄错题本或批漏）。');
+      console.error('   改用：--as 官方答案（保留采用答案） 或 --as 红字参考（只记红字为参考，不改答案）。');
+      console.error('   若这道题除红字外没有别的来源，答案应是「未能确认」，由独立判卷或官方答案页补。');
+      process.exit(2);
+    }
+    if (!AS_ALLOWED.includes(opt.as)) throw new Error('异议裁决需要 --as 官方答案 或 --as 红字参考');
     if (!opt.note || opt.note === true) throw new Error('异议裁决需要 --note 写明裁决依据（独立解法的关键步骤）');
     const ids = splitIds(opt.ids);
     const { file, json } = findIndexFile(opt.student);
     const done = [], skipped = [];
-    for (const { item } of itemsOf(json)) {
+    for (const { item, subject } of itemsOf(json)) {
       if (!ids.includes(item.id)) continue;
       if (!teacherConflictOpen(item)) { skipped.push(item.id + ' 没有待裁决的教师异议'); continue; }
       const tc = item.teacherConflict;
       if (!opt.dry) {
-        if (opt.as === '老师定案') { item.answer = tc.teacher; item.answerSource = '老师定案'; }
+        if (opt.as === '红字参考') {
+          /* 只记参考，**不改答案** —— 红字不是定案标准。
+             若这张卡的答案只有红字这一个来源（answer == 红字原文）⇒ 答案降级为「未能确认」，
+             等独立来源补上（双路盲解/官方答案页）。 */
+          const adoptedIsRedInk = inkHasText(item) && normAns(item.teacherAnswer) === normAns(item.answer);
+          item.answerSourceNote = (item.answerSourceNote ? item.answerSourceNote + '；' : '') +
+            '红字参考（不作为定案标准）：红字「' + String(tc.teacher || '') + '」｜裁决依据：' + opt.note;
+          if (adoptedIsRedInk) {
+            item.answerSource = '未能确认';
+            item.answer = '';
+          }
+        } else if (opt.as === '官方答案') {
+          /* 采纳官方答案 ⇒ 权威性来自官方答案页；红字归属**仍然不明**（不等于"红字是老师写的"），
+             不许顺手写成「老师」。 */
+          item.inkAttribution = inkAttrOf(item) || '未确认';
+        }
         tc.resolvedAt = today(); tc.resolvedAs = opt.as; tc.resolvedNote = String(opt.note);
-        item.answerSourceNote = (item.answerSourceNote ? item.answerSourceNote + '；' : '') + '异议裁决(' + opt.as + ')：' + opt.note;
+        if (opt.as === '官方答案') {
+          item.answerSourceNote = (item.answerSourceNote ? item.answerSourceNote + '；' : '') + '异议裁决(' + opt.as + ')：' + opt.note;
+        }
         /* ★ 2026-11-05（PR #13 二次复审 ②）：卡面 错题记录.md 同步 —— 修前只改索引，卡面仍是原采用答案、
            还挂着"须裁决"的过期提示，索引与卡面对不上。改两处：「## 正确答案」下的答案行、「老师红笔」行的状态。
            md 找不到或结构对不上 ⇒ 不静默：整次裁决报错回滚（索引也不写），宁可不裁也不留分叉。 */
-        const md = path.join(path.dirname(file), String(item.dir || ''), '错题记录.md');
-        if (!item.dir || !fs.existsSync(md)) throw new Error(item.id + ' 的卡面 错题记录.md 不存在（' + md + '），裁决未写盘：先修卡面再裁决');
+        /* ★ 2026-11-07（修 BUG：卡目录在学科子目录下）：索引文件在 `<学生>/_索引.json`，
+           而绝大多数卡的目录在 `<学生>/<学科>/<卡号-标题>/`（实测 310 张里 305 张带学科层级），
+           少数老卡是 `<学生>/<卡号-标题>/`。修前只拼 `dirname(索引文件)/item.dir` ⇒ 找不到卡面，
+           异议裁决必报「错题记录.md 不存在」而**整次裁决写不进**（M0039 卡在这）。
+           现在两种布局都试：先 `<学生>/<学科>/<dir>`，再 `<学生>/<dir>`。 */
+        const stuRoot = path.dirname(file);
+        const cands = [
+          subject ? path.join(stuRoot, subject, String(item.dir || ''), '错题记录.md') : null,
+          path.join(stuRoot, String(item.dir || ''), '错题记录.md'),
+        ].filter(Boolean);
+        const md = cands.find(p => fs.existsSync(p));
+        if (!item.dir || !md) throw new Error(item.id + ' 的卡面 错题记录.md 不存在（试过：' + cands.join(' / ') + '），裁决未写盘：先修卡面再裁决');
         const lines = fs.readFileSync(md, 'utf8').split(/\r?\n/);
         const h = lines.findIndex(l => l.trim() === '## 正确答案');
         const ai = h < 0 ? -1 : lines.findIndex((l, i) => i > h && /^\*\*.*\*\*\s*$/.test(l.trim()));
-        const ti = lines.findIndex(l => l.startsWith('> 老师红笔：'));
+        /* ★ 2026-11-07：红字行前缀兼容新旧两种（旧卡写死「> 老师红笔：」，新卡写「> 红字（…）：」）。 */
+        const ti = lines.findIndex(l => l.startsWith('> 老师红笔：') || l.startsWith('> 红字'));
         if (ai < 0 || ti < 0) throw new Error(item.id + ' 的 错题记录.md 里找不到「## 正确答案」答案行或「老师红笔」行，裁决未写盘：卡面结构与入库器产出不符');
         lines[ai] = '**' + String(item.answer || '（未能确认）') + '**';
         /* ★ 2026-11-05（PR #13 三次复审）：来源行也要同步 —— 修前只改答案行与老师红笔行，
@@ -912,11 +1066,18 @@ switch (action) {
         const si = lines.findIndex(l => l.startsWith('> 答案来源：'));
         if (si >= 0) lines[si] = srcLine;
         else { lines.splice(ti, 0, srcLine, ''); }
-        const ti2 = lines.findIndex(l => l.startsWith('> 老师红笔：'));
-        lines[ti2] = '> 老师红笔：' + tc.teacher + ' ✔ 已裁决（' + opt.as + '，' + tc.resolvedAt + '）：' + String(opt.note).replace(/\s+/g, ' ');
+        const ti2 = lines.findIndex(l => l.startsWith('> 老师红笔：') || l.startsWith('> 红字'));
+        /* ★ 2026-11-07（红字归属·第二次收紧）：卡面红字行写成**中性表述 + 标出归属**，
+           且明确标注「仅作参考，不作定案标准」——
+           绝不再写死「老师红笔」并让读者以为那是权威答案。 */
+        const inkTxt = item.inkAttribution === '老师' ? '红字（老师写的）'
+          : item.inkAttribution === '未确认' ? '红字（**归属未确认**）'
+            : item.inkAttribution ? ('红字（' + item.inkAttribution + '写的）') : '红字';
+        lines[ti2] = '> ' + inkTxt + '：' + tc.teacher + ' ✔ 已裁决（' + opt.as + '，' + tc.resolvedAt + '）：' + String(opt.note).replace(/\s+/g, ' ') +
+          (opt.as === '红字参考' ? ' ｜ **仅作参考，不作定案标准**' : '');
         tx().writeText(md, lines.join('\n'));
       }
-      done.push(item.id + ' → ' + opt.as + '（老师 ' + tc.teacher + ' / 原采用 ' + tc.adopted + '）');
+      done.push(item.id + ' → ' + opt.as + '（红字 ' + tc.teacher + ' / 原采用 ' + tc.adopted + '）');
     }
     const notFound = ids.filter(id => !done.some(r => r.startsWith(id + ' ')) && !skipped.some(r => r.startsWith(id + ' ')));
     if (notFound.length) throw new Error(json.student + ' 库中不存在编号 ' + notFound.join(',') + '（未写盘）');
@@ -1011,6 +1172,8 @@ switch (action) {
 commitTx();
 
 if (opt.refresh) {
-  const r = spawnSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', toolPath('_生成首页.ps1')], { stdio: 'ignore' });
-  console.log(r.status === 0 ? '首页已刷新' : '首页刷新失败，请手动重跑 _生成首页.ps1');
+  /* ★ 2026-11-09 清债：PS1 生成器已退役删除，改跑 Node 生成器（镜像 _服务端.mjs runGen 参数）。 */
+  const r = spawnSync(process.execPath, [toolPath('生成状态.mjs')],
+    { stdio: 'ignore', cwd: ROOT, env: Object.assign({}, process.env, { CTB_DATA: ROOT }) });
+  console.log(r.status === 0 ? '状态包已刷新' : '状态包刷新失败，请手动重跑：node 生成状态.mjs');
 }
