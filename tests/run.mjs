@@ -671,12 +671,46 @@ function runTool(script, args) {
      （破图、"如图"却没图、白留答题区），所以它们保持 fail-fast。
      改前这里是 `process.exit(worst)`：404 条未定位**一条**就把它后面 4 道门禁 + 整段**界面回归**全挡住
      —— 而"一条数据欠账让整条链停摆"比欠账本身更贵（本会话 29 个版本里 e2e 从没跑过，就是这么来的）。
-     ⚠ 它**仍然判红**（`worst` 会被带到最后的退出码），只是不再挡住别人。 */
+     ★ 2026-11-14（P0-5 棘轮对账，决策点 3）：未定位欠账在本层按**同一个基线文件**
+     （tests\原卷定位欠账基线.json，与 e2e-ui 同源）对账：
+       · 未定位 ≤ 基线 **且无任何其他错误类别**（totalErrs == 未定位数）⇒ 黄灯放行（不进 worst），
+         黄灯行常驻打印欠账数与基线 —— 欠账可见，只是不再卡死整条发布链；
+       · 未定位 > 基线（新增欠账）**或出现其他类别错误**（越出库根/box 非法/区域非法/断链）
+         ⇒ 照旧判红进 worst。
+     与 e2e-ui 的分工：e2e 在 ≤5%·N 时自动恢复 ≥95% 硬断言；本侧棘轮一直护到未定位=0
+     （门禁自然 exit 0），届时删除基线文件即回到原硬判红。 */
   {
-    const unloc = runTool('_原卷台账.mjs', ['门禁']);
-    if (unloc !== 0) {
-      worst = Math.max(worst, unloc);
-      console.log('⚠ 原卷台账门禁未过（有卡回不到整页原卷）——**不阻断**后续门禁与界面回归，但最终仍判红');
+    console.log('\n═══ _原卷台账.mjs 门禁（棘轮对账） ═══');
+    const r = spawnSync(process.execPath, [E.tool('_原卷台账.mjs'), '门禁'], {
+      cwd: ROOT, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024,
+      env: Object.assign({}, process.env, { CTB_DATA: E.LIB }),
+    });
+    const gateOut = String(r.stdout || '') + String(r.stderr || '');
+    process.stdout.write(gateOut);
+    const rc = r.status ?? 1;
+    const sum = /门禁：卡 (\d+) ｜ 未定位 (\d+)/.exec(gateOut);
+    const nUnloc = sum ? Number(sum[2]) : NaN;
+    const cardN = sum ? Number(sum[1]) : NaN;
+    const totalM = /当前共 (\d+) 条错误/.exec(gateOut);
+    const totalErrs = totalM ? Number(totalM[1]) : (gateOut.match(/^  ✗ /gm) || []).length;
+    const otherErrs = (Number.isFinite(nUnloc) ? totalErrs - nUnloc : Infinity);
+    let ratchet = null;
+    try { ratchet = JSON.parse(fs.readFileSync(path.join(ROOT, 'tests', '原卷定位欠账基线.json'), 'utf8').replace(/^\uFEFF/, '')); } catch { }
+    const ratchetOk = !!(ratchet && Number.isFinite(ratchet.unresolvedBaseline)
+      && Number.isFinite(nUnloc) && otherErrs === 0
+      && nUnloc <= ratchet.unresolvedBaseline && nUnloc > 0
+      && nUnloc > Math.ceil(cardN * 0.05));   // ≤5% 时 e2e 已恢复硬断言，本侧仅在清账进行中护行
+    if (rc !== 0 && ratchetOk) {
+      console.log('⚠ 原卷台账门禁：未定位 ' + nUnloc + '/' + cardN + '（欠账棘轮生效中：≤基线 ' +
+        ratchet.unresolvedBaseline + '、其余错误 0 条）——**不判红不阻断**（只许降不许升；清账完成后恢复硬判红）');
+    } else {
+      if (rc !== 0) worst = Math.max(worst, rc);
+      console.log(rc !== 0
+        ? '⚠ 原卷台账门禁未过（' + (Number.isFinite(nUnloc) ? '未定位 ' + nUnloc + '/' + cardN +
+          (otherErrs > 0 ? '，另有其他类别错误 ' + otherErrs + ' 条' : '') +
+          (ratchet ? '，超过欠账基线 ' + ratchet.unresolvedBaseline : '，无欠账基线') : '输出不可解析') +
+          '）——**不阻断**后续门禁与界面回归，但最终仍判红'
+        : '✔ 原卷台账门禁通过');
     }
   }
   /* v2.5（2026-10-10）：待办证据图门禁也挂进来。
@@ -1259,12 +1293,24 @@ const unitTests = [
      阴性对照=重建也失败时仍 200，但必须挂 `degraded=state-missing-rebuild-failed` 并给原因。 */
   ['neg-server-cold-library.cjs'],
 ];
+/* ★ 2026-11-13（P0-C③，方案批次0-4）：单元级用例 **fail-soft**——逐用例跑完、末尾汇总点名。
+   改前这里一条红就 process.exit：R1 实测白名单只跑到 10/40，被遮的 5 条（fixtures-smoke /
+   answer-source-convergence / data-area-rules / image-backup-coverage / shell-writegate）
+   复测全部 PASS —— fail-fast 付出的是**可见性**代价（一条新红就遮住后面 ~30 条），不是止损。
+   上面那几道数据侧工具门禁保持 fail-fast：它们不过时界面**真的印坏东西**，且是界面回归的前置；
+   单元级用例各自自带 %TEMP% 夹具、互不依赖，跑完再汇总没有副作用。 */
+const unitFailures = [];
 for (const [name] of unitTests) {
   {
     const rc = run(name);
     worst = Math.max(worst, rc);
-    if (rc !== 0) { console.log('✖ 单元级断言未过（' + name + '），先修再跑界面回归'); process.exit(worst); }
+    if (rc !== 0) unitFailures.push(name);
   }
+}
+if (unitFailures.length) {
+  console.log('\n══ ✖ 单元级汇总：' + unitFailures.length + ' / ' + unitTests.length + ' 个用例未过（全部用例已跑完）══');
+  for (const n of unitFailures) console.log('   ✖ ' + n);
+  console.log('   （上面每条红都要修；下面的界面回归仍会跑完，最终退出码以 worst 为准）');
 }
 if (mode === 'full') {
   /* 会临时写真源（测毕撤批/还原）的对照，放在 full 里跑 */

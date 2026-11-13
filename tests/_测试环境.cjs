@@ -574,6 +574,51 @@ function isFileAppUrl(u) {
   return /^file:/i.test(String(u || '')) && isAppUrl(u);
 }
 
+/* ══════════════════════════════════════════════════════════════════════
+   「等真正的 app page target 出现」（唯一实现）—— 2026-11-13 新增
+
+   为什么要有：WebView2 壳刚起来时 `/json/list` 里**先**是一个 `about:blank` 的 page target，
+   页面导航完成之后它才变成 `file:///…/index.html`。四个界面用例各自这样挑页面：
+
+     verify-shell-visual.cjs:61   find(/v2\/index\.html/) || find(t.type==='page')
+     verify-v2-route-cta.cjs:50   find(isAppUrl) || find(t.type==='page')
+     smoke-shell.mjs:119          find(t.type==='page')
+     neg-v2-ingest-task-e2e:201   find(t.type==='page')
+
+   `|| find(t.type==='page')` 这个兜底就是**给竞态开了后门**：拿到 about:blank 之后，
+   用例连上去量的是空白页 ⇒ 断言红在一句完全无关的话上。
+
+   实证（2026-11-13）：`launch-dev.cjs` 拉起壳后**不睡**直接跑 verify-shell-visual，
+   得到 `[FAIL] 真实壳是 file:// 通道 → about:blank` + `RESULT=FAIL(1) 断言=13 失败=1`
+   —— 与本会话第 38 轮 full 里那行 `RESULT=FAIL(1) 断言=13 失败=1` 的形状**完全一致**
+   （那条被记为"未定位"，这里定案）。
+
+   顺带修掉另一半：`verify-shell-visual.cjs` 的第一选择器写的是 `/v2\/index\.html/`，
+   而该文件头部注释早写着"老布局 /v2/index.html 已搬到 src\app\index.html" ⇒
+   第一选择器**永远不匹配**，实际一直靠兜底在工作。现在统一走 isAppUrl。
+
+   口径：**只认 app 页面**，等不到就返回 null 让调用方显式判红（不静默退化成空白页）。
+   ══════════════════════════════════════════════════════════════════════ */
+async function waitAppPageTarget(base, opts) {
+  const o = opts || {};
+  const timeoutMs = o.timeoutMs == null ? 20000 : o.timeoutMs;
+  const gapMs = o.gapMs == null ? 300 : o.gapMs;
+  const t0 = Date.now();
+  let last = [];
+  while (Date.now() - t0 < timeoutMs) {
+    try {
+      const r = await fetch(base + '/json/list', { signal: AbortSignal.timeout(2000) });
+      if (r.ok) {
+        last = await r.json();
+        const p = (Array.isArray(last) ? last : []).find(t => t.type === 'page' && isAppUrl(t.url));
+        if (p) return { page: p, targets: last, waitedMs: Date.now() - t0 };
+      }
+    } catch { /* 还没起来，继续等 */ }
+    await new Promise(res => setTimeout(res, gapMs));
+  }
+  return { page: null, targets: last, waitedMs: Date.now() - t0 };
+}
+
 /** 统一的"跑工具"入口：永远带 CTB_DATA=LIB，永远用 TOOLS 里的路径 */function runToolSync(name, args, opts) {
   const { execFileSync } = require('child_process');
   const o = opts || {};
@@ -713,6 +758,6 @@ module.exports = {
   /* verify-deploy 退出码（E03）：两个调用方的唯一判据 */
   VERIFY_DEPLOY_CODES, VERIFY_DEPLOY_MEANING, classifyVerifyDeploy,
   startServer, serverBase, freePort,
-  isAppUrl, isFileAppUrl,
+  isAppUrl, isFileAppUrl, waitAppPageTarget,
   describe: () => '仓库=' + REPO + '　库=' + LIB + '（来源=' + LIB_SOURCE + '）',
 };

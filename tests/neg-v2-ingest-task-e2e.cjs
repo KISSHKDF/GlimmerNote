@@ -193,17 +193,22 @@ async function waitFor(cdp, expr, ok, tries, gap) {
     if (!up) { console.log('RESULT=FAIL'); process.exit(2); }
     /* ⚠ `waitPort()` 只看 `/json/list` **应答**（HTTP 200），而壳刚起来时那个列表可能是**空的**
        —— 2026-11-03 实测撞上：`拿到 page target → []`，整轮 quick 因此红（不是产品缺陷，是竞态）。
-       这里改成**有界轮询**等 page target 出现（最多 20s），拿到再断言。 */
+       这里改成**有界轮询**等 page target 出现（最多 20s），拿到再断言。
+       ★ 2026-11-13 再补一层：等到的必须是**真正的 app 页面**（`E.isAppUrl`）。
+       改前只要 `t.type === 'page'` 就算到手 —— 而 WebView2 起来瞬间先有的是 **about:blank**，
+       拿到它之后本用例会连着一个空白页清 localStorage / 等通道握手，红在与产品无关的地方。
+       实证：同一轮的 full 日志里 `拿到 page target → about:blank` 之后一路受阻；
+       同族的三处（verify-shell-visual / verify-v2-route-cta / smoke-shell）已一并收口到唯一实现。 */
     let page = null;
     for (let i = 0; i < 40 && !page; i++) {
       try {
         const list = await (await fetch('http://127.0.0.1:' + PORT + '/json/list')).json();
-        page = (Array.isArray(list) ? list : []).find((t) => t.type === 'page') || null;
+        page = (Array.isArray(list) ? list : []).find((t) => t.type === 'page' && E.isAppUrl(t.url)) || null;
       } catch { /* 还没起来，继续等 */ }
       if (!page) await sleep(500);
     }
-    A('拿到 page target（有界等待 ≤20s，允许壳先有 CDP 再有页面）', !!page,
-      page ? page.url.slice(0, 100) : '20s 内没等到 page（壳起来了但没建页面）');
+    A('拿到 app page target（有界等待 ≤20s：只认 index.html，不许退化成 about:blank）', !!page,
+      page ? page.url.slice(0, 100) : '20s 内没等到 app 页面（壳起来了但页面没导航完）');
     if (!page) { console.log('RESULT=FAIL'); process.exit(2); }
     cdp = await Cdp.connect(page.webSocketDebuggerUrl);
     await cdp.send('Runtime.enable');

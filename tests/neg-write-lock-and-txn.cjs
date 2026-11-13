@@ -138,8 +138,14 @@ function A(name, ok, detail) {
       encoding: 'utf8', env: Object.assign({}, process.env, { CTB_TXN_DIR: s.state }),
     });
     const m = /INHERITED:(\d+)/.exec(r.stdout);
-    A('父进程持锁时子进程不再等锁（继承即可用，不会自死锁）', !!m && Number(m[1]) < 800,
-      m ? m[1] + 'ms' : (r.stdout + r.stderr).trim().slice(-80));
+    /* ★ 2026-11-13（P0-C④，方案批次0-3）：判据从「<800ms」改为**行为判据**——
+     *  拿到锁 且 全程无等锁提示。继承生效时子进程在进入等锁循环**之前**就返回（不会打印等待文案）；
+     *  继承失效时必然进入等待循环（stderr 出现等锁提示，直至 1200ms 超时 DEADLOCK）。
+     *  旧毫秒阈值在负载下翻转假红（审计终稿 §三：5 次复测 876/884/898/907/871/891ms）。
+     *  耗时只作诊断信息展示，不参与判定。 */
+    A('父进程持锁时子进程不再等锁（继承即可用：拿到锁且无等锁提示，不限毫秒）',
+      !!m && !/等待另一个进程|等锁超时/.test(r.stderr),
+      m ? m[1] + 'ms（拿到，无等待）' : (r.stdout + r.stderr).trim().slice(-80));
 
     // 阴性自证：把继承关掉（清掉 token）同一个子进程必须卡住 —— 证明"是继承救了它"
     const r2 = spawnSync(process.execPath, ['--input-type=module', '-e', script], {

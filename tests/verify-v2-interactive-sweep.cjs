@@ -968,8 +968,29 @@ window.__SWSTUB = { calls: [], n: 0, dl: 0, confirms: 0, prints: 0 };
   A('★ 除阴性自证与已认领的台账竞态外，全程无任何未归属 Runtime 异常/console', UNACCOUNTED.length === 0,
     UNACCOUNTED.length ? UNACCOUNTED.slice(0, 3).map(m => m.slice(0, 200)).join(' || ') : '0 条');
 
-  console.log(`\n合计：断言 ${asserts}｜点击 ${clicks}｜问题 ${findings.length}｜跳过 ${skips}｜Runtime 异常/console = ${c.runtime.length}`);
-  if (c.runtime.length) { console.log('\n---- Runtime 异常/console 全量（共 ' + c.runtime.length + ' 条，判据只看这个）----'); c.runtime.forEach((m, i) => console.log('  R' + (i + 1) + ' ' + String(m).slice(0, 300))); }
+  console.log(`\n合计：断言 ${asserts}｜点击 ${clicks}｜问题 ${findings.length}｜跳过 ${skips}｜Runtime 异常/console = ${c.runtime.length}（其中**未归属 ${UNACCOUNTED.length} 条**）`);
+  /* ★ 2026-11-13：改了这两行打印。改前写的是
+   *     "Runtime 异常/console 全量（共 N 条，**判据只看这个**）"
+   *   —— 措辞把"全量"和"判据只看这个"并列，读起来就是"这 N 条都会判红"。
+   *   而后台实际判的是 `UNACCOUNTED`（剔掉阴性自证 + 已认领的台账竞态）。
+   *   后果实测（本会话）：日志里恒有 2 条
+   *     R1 SWEEP-NEG-PROOF-视图抛错 / R2 SWEEP-NEG-PROOF-吞掉的错
+   *   它们是**本用例第 5 段阴性自证故意造出来的**（不造就没法证明判据有牙），
+   *   却被人当成"界面回归还剩 2 条 console 异常待修"，记进待办追了两轮。
+   *   现在：每条都标出归属，让"要不要修"当场可见 —— **允许 ≠ 静默**（同真库零写入那条派生件的口径）。 */
+  if (c.runtime.length) {
+    console.log('\n---- Runtime 异常/console 全量（共 ' + c.runtime.length + ' 条；**判据只看下面标了「未归属」的**）----');
+    c.runtime.forEach((m, i) => {
+      const s = String(m);
+      const negProof = /SWEEP-NEG-PROOF/.test(s);
+      const ledgerClaim = !negProof && /ledgerView|views\/paper\.js/.test(s);
+      const tag = negProof ? '（本用例阴性自证，故意造的 —— 不判红）'
+        : ledgerClaim ? '（台账竞态，已由上面那条断言单独认领 —— 不判红）'
+          : '★★ 未归属 —— **判红**';
+      console.log('  R' + (i + 1) + ' ' + tag + ' ' + s.slice(0, 300));
+    });
+    if (UNACCOUNTED.length === 0) console.log('  ⇒ 全部有归属，无未归属项。');
+  }
   if (c.log.length) { console.log('\n---- Log 域（共 ' + c.log.length + ' 条，仅记录不判红）----'); c.log.slice(0, 12).forEach((m, i) => console.log('  L' + (i + 1) + ' ' + String(m).slice(0, 160))); }
   if (findings.length) {
     console.log('\n---- 问题清单 ----');

@@ -275,7 +275,29 @@ const S = (name, why) => { skipped++; P('[SKIP]' + name + '  → ' + why); };
   P('[i] 原卷溯源：卡 ' + OS.n + ' ｜ 有整页 ' + OS.withPage + ' ｜ 有红框 ' + OS.withBox + ' ｜ 未定位 ' + OS.noPage.length);
   A('每张卡的索引都有 origPage 或明确标未定位', OS.withPage + OS.noPage.length === OS.n, OS.n);
   A('origPage 不指向裁图（禁拿特写冒充原图）', OS.badTarget === 0, OS.badTarget);
-  A('整页原卷定位率 ≥ 95%', OS.withPage >= OS.n * 0.95, OS.withPage + '/' + OS.n);
+  /* ★ 2026-11-13（P0-5 棘轮欠账判据，决策点 3 用户批准）：定位率判据从「恒 ≥95%」改为
+     「欠账棘轮」——欠账基线文件存在时：未定位数 ≤ 基线 ⇒ PASS（黄灯行常驻打印欠账数）；
+     未定位数 > 基线 ⇒ FAIL（只许清账、不许新增）；未定位数已 ≤ 5%·N ⇒ 自动恢复 ≥95% 硬断言
+     （棘轮是清账期的过渡口径，不是永久放宽；清完删掉基线文件即回到原判据）。
+     基线文件不存在 ⇒ 保持原 ≥95% 硬断言（新克隆/夹具库不受影响）。
+     为什么不是"降阈值变绿"：终态判据 ≥95% 一字不改；欠账数只许降不许升有断言拦着；
+     黄灯行每轮可见（审计终稿 §五：38% vs 95% 的缺口是**数据侧欠账**，不是代码缺陷，
+     一条数据欠账不该让整条发布链长期停摆——批次 3 清账后自动回到硬断言）。 */
+  {
+    const RATCHET_FILE = path.join(ROOT, 'tests', '原卷定位欠账基线.json');
+    let ratchet = null;
+    try { ratchet = JSON.parse(fs.readFileSync(RATCHET_FILE, 'utf8').replace(/^\uFEFF/, '')); } catch { }
+    const unresolved = OS.noPage.length;
+    const hardTarget = Math.ceil(OS.n * 0.05);   // 允许的未定位上限（5%）
+    if (ratchet && Number.isFinite(ratchet.unresolvedBaseline) && unresolved > hardTarget) {
+      const base = ratchet.unresolvedBaseline;
+      A('整页原卷定位率（棘轮清账期）：未定位 ' + unresolved + '/' + OS.n + ' ≤ 欠账基线 ' + base +
+        '（欠账清单生效中，只许降不许升；清账完成后恢复 ≥95% 硬断言）',
+        unresolved <= base, '基线=' + base + '｜重算清单：node src\\tools\\_原卷台账.mjs 工单');
+    } else {
+      A('整页原卷定位率 ≥ 95%', OS.withPage >= OS.n * 0.95, OS.withPage + '/' + OS.n);
+    }
+  }
   /* ★ 2026-11-01：把"能不能显示"与"路径解析态"分开判。
      旧版只打 file:// 加载、且固定取前 3 张：历史上前 3 张恰好全是收件箱老路径，
      一旦状态包没重解析过 origPage（正是 2026-11-01 实测到的缺陷：包里有死路径、

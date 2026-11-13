@@ -44,12 +44,14 @@ class Cdp {
 }
 
 (async () => {
-  let pg = null;
-  try {
-    const list = await (await fetch(BASE + '/json/list')).json();
-    pg = list.find(t => E.isAppUrl(t.url) && t.type === 'page') || list.find(t => t.type === 'page');
-  } catch (e) { }
-  if (!pg) { S('页面内 CTA 路由回归', `CDP ${PORT} 上没有页面（壳没跑）。先 node tests\\launch-dev.cjs 再跑本脚本。`); console.log(`\nRESULT=SKIP 断言=0 跳过=${skips}`); process.exit(0); }
+  /* ★ 2026-11-13：改了这里。改前是
+   *     list.find(isAppUrl) || list.find(t => t.type === 'page')
+   * 那个兜底会拿到 WebView2 起来瞬间的 **about:blank**（URL 还不是 index.html），
+   * 随后本脚本是**强制 reload**（不导航）⇒ 就一直在空白页上点按钮 ⇒ 红在与产品无关的地方。
+   * 现在走唯一实现 `E.waitAppPageTarget`：只认 app 页面 + 有界等待。
+   * 注意语义没变：等不到仍是**显式 SKIP**（本用例的前置是"壳在跑"，那属环境缺失而非回归）。 */
+  const { page: pg } = await E.waitAppPageTarget(BASE, { timeoutMs: 20000 });
+  if (!pg) { S('页面内 CTA 路由回归', `CDP ${PORT} 上 20s 内没有 app 页面（壳没跑，或页面还没导航完）。先 node tests\\launch-dev.cjs 再跑本脚本。`); console.log(`\nRESULT=SKIP 断言=0 跳过=${skips}`); process.exit(0); }
 
   const c = await Cdp.connect(pg.webSocketDebuggerUrl);
   await c.send('Runtime.enable'); await c.send('Page.enable');

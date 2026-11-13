@@ -13,6 +13,11 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { fileURLToPath } from 'url';
+import { createRequire } from 'module';
+/* ★ 2026-11-13：要复用「等真正的 app page target」的唯一实现（见 _测试环境.cjs）。
+   本文件是 ESM，而该模块是 CommonJS ⇒ 用 createRequire 取，不复制一份判据
+   （复制就会漂移：本仓记过的同一类教训）。 */
+const E = createRequire(import.meta.url)('./_测试环境.cjs');
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const argv = process.argv.slice(2);
@@ -115,9 +120,12 @@ const evalJs = async (c, expr) => {
   if (!up) { if (!KEEP) killShell(); console.log('\nRESULT=FAIL'); process.exit(1); }
 
   console.log('=== ② 连 CDP，看页面到底渲染了什么 ===');
-  const list = await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json();
-  const page = list.find(t => t.type === 'page');
-  A('拿到 page target', !!page, page ? page.url.slice(0, 120) : JSON.stringify(list.map(t => t.type)));
+  /* ★ 2026-11-13：改前 `list.find(t => t.type === 'page')` —— WebView2 起来瞬间列表里
+     先是 **about:blank**，拿到它就等于在空白页上做冒烟（boot 段会一路等不到东西）。
+     现在走唯一实现 `E.waitAppPageTarget`：只认 app 页面 + 有界等待 ≤60s（空库首次启动较慢）。 */
+  const { page, waitedMs } = await E.waitAppPageTarget(`http://127.0.0.1:${PORT}`, { timeoutMs: 60000 });
+  A('拿到 app page target（只认 index.html，不许退化成 about:blank）', !!page,
+    page ? page.url.slice(0, 120) + '（等了 ' + waitedMs + 'ms）' : '60s 内没有 app 页面');
   if (!page) { if (!KEEP) killShell(); console.log('\nRESULT=FAIL'); process.exit(1); }
 
   const c = await connect(page.webSocketDebuggerUrl);

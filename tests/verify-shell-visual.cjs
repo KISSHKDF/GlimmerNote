@@ -57,14 +57,56 @@ class Cdp {
 
 (async () => {
   fs.mkdirSync(OUT, { recursive: true });
-  const targets = await listTargets();
-  const pg = targets.find(t => /v2\/index\.html/.test(dec(t.url)) && t.type === 'page') || targets.find(t => t.type === 'page');
-  if (!pg) { console.log('✘ 9223 上没有 page target'); process.exit(1); }
+  /* ★ 2026-11-13（定案「13 断言 1 失败」）：改了这里，改前是
+   *     find(t => /v2\/index\.html/.test(...)) || find(t => t.type === 'page')
+   *   两个缺陷叠在一起：
+   *     ① 第一选择器的 `/v2/index.html` 是**老布局**（本文件 L15 的注释早就写明它已搬到
+   *        src\app\index.html）⇒ 永远不匹配 ⇒ 实际一直靠兜底在工作；
+   *     ② 兜底 `find(t.type === 'page')` 会拿到 WebView2 起来瞬间那个 **about:blank**，
+   *        于是连上空白页 ⇒ `[FAIL] 真实壳是 file:// 通道` ⇒ `RESULT=FAIL(1) 断言=13 失败=1`。
+   *        实证：拉壳后不睡直接跑，必现（见 _测试环境.cjs 里 waitAppPageTarget 的注释）。
+   *   现在：只认 app 页面 + 有界等待（唯一实现 E.waitAppPageTarget），等不到就**显式判红**，
+   *   不再静默退化成空白页——"拿错页面"必须红在说清原因的那条断言上。 */
+  const { page: pg, targets, waitedMs } = await E.waitAppPageTarget(BASE, { timeoutMs: 20000 });
+  if (!pg) {
+    const seen = (Array.isArray(targets) ? targets : []).map(t => t.type + ':' + dec(t.url).slice(0, 60));
+    console.log('[FAIL] 20s 内没等到真正的 app page target（CDP ' + PORT + '）—— 现有 target：' + JSON.stringify(seen));
+    console.log('       判据只认 <…>/index.html（E.isAppUrl 唯一实现）。壳没起/页面没导航完，本用例无从量测。');
+    console.log('RESULT=FAIL(1) 断言=1');
+    process.exit(1);
+  }
+  if (waitedMs > 1500) console.log('（等 app page target 用了 ' + waitedMs + 'ms —— 壳刚起来时先有 about:blank，属正常现象）');
   console.log('通道 =', E.isFileAppUrl(dec(pg.url)) ? '真实桌面壳 file:// ✔' : '非壳页面：' + pg.url);
   console.log('URL =', dec(pg.url).slice(0, 120));
 
   const c = await Cdp.connect(pg.webSocketDebuggerUrl);
   await c.send('Runtime.enable'); await c.send('Page.enable');
+
+  /* ★ 2026-11-13（同一条纪律的第二层）：**URL 对了 ≠ 页面能用了**。
+     实测：拿到 file:///…index.html 只用了 2799ms，但此刻页面还在 boot
+     （`ctbMode` 仍是 `boot`、`CTB.model.cards` 为空、侧栏还没渲染）⇒
+     后面三条断言红成
+       · [FAIL] 走的是桌面壳通道 → boot
+       · [FAIL] 连点 5 次后提示不堆叠 → 可见 undefined 条
+       · [FAIL] 「学科盘面」标题不是一字一行 → {"found":false}
+     这三条**都不是产品缺陷**，是"在对象就绪之前就量它"。同族缺陷本会话已记过两次
+     （page target 选错、断言数清账），所以这里一次做对：
+     **先有界等 boot 完成（≤25s），并把等待结果作为一条显式断言**；等不到就红在它上面，
+     不会把"没准备好"伪装成"功能坏了"。判据与 e2e-ui / neg-v2-pagesmoke 同口径
+     （`CTB.model.cards` 非空 = 数据到位 = boot 真的走完）。 */
+  let booted = false, bootTries = 0;
+  for (; bootTries < 50 && !booted; bootTries++) {
+    try { booted = await c.evalJs('!!(window.CTB && CTB.model && CTB.model.cards && CTB.model.cards.length)'); } catch { }
+    if (!booted) await sleep(500);
+  }
+  A('★ 页面已完成 boot（拿到卡片数据，侧栏/视图才量得准）', booted,
+    booted ? ('等了 ' + (bootTries * 500) + 'ms，卡片 ' +
+      (await c.evalJs('CTB.model.cards.length')) + ' 张') : '25s 内 boot 未完成');
+  if (!booted) {
+    c.close();
+    console.log('\nRESULT=FAIL(' + fails + ')  断言=' + total + '  失败=' + fails);
+    process.exit(1);
+  }
 
   /* ① 真实窗口的 CSS 视口（这一步就是要量真壳，而不是 headless 设的）
    *
