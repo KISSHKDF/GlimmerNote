@@ -49,6 +49,56 @@ import { isAcceptableSource, isRetiredSource } from './_来源.mjs';
 /* ★ 2026-11-13（批次 4 / 后接 Elo）：难度在线估计（零副作用纯函数）。 */
 import { applyElo } from './_难度.mjs';
 
+/* ══════════════════════════════════════════════════════════════════════════
+   ★ 2026-11-14（方案批次 4-1，调研 Top10-2 Anki revlog）：**追加式复习日志**。
+   为什么：`reviews[]` 是"每卡当前状态"（会被 capReviews 裁剪、被撤批回滚），
+   而一切事后分析（FSRS 影子评估、统计、审计）需要的是**不可变的流水**——
+   Anki 用 revlog 表承载这个角色（官方手册 Statistics·Manual Analysis）。
+   落点：`<库根>\_复习日志\revlog-<YYYYMM>.jsonl`（按月分卷，只增不改；撤批**不删行**，
+   而是落一行 `type=undo` 反向记录——与"错题只改状态、永不删行"同一哲学）。
+   行契约（一个 JSON 一行）：
+     ts            ISO 时间戳（写日志的时刻）
+     cardId        卡号
+     student       学生（冗余落行：跨学生统计时不必反查索引）
+     paperId       批次号（manual/undo 也各有着落）
+     rating        对=1 半对=2 错=3（Anki Again/Hard/Good 的本地化映射，Good/Easy 不分——判分只有三档）
+     result        原值（对/半对/错；冗余，方便人读）
+     intervalBefore/intervalAfter   本次判分前后的建议复习间隔（天；intervalAfter=intervalOf 的新值）
+     dueBefore/dueAfter             本次判分前后的 nextDue（ISO 日期）
+     errorCountBefore/After        错误次数前后
+     type          normal（组卷批改）| manual（外部练习登记/手工标记）| undo（撤批反向）
+     by            家长|孩子|AI辅助|''（与 reviews[].by 同口径）
+   写法：fs.appendFileSync 一行即落盘（崩溃最多丢半行——行以 \n 结尾判完整性，
+   半行由 revlog 读取方按"最后一行 JSON.parse 失败即忽略并提示"处理）。
+   不走 _安全写 事务：append-only 文件没有"旧内容被写坏"的回滚需求，
+   且事务锁与组卷/批改共用同一把（见下 openTransaction 的调用点）——不新增锁序。
+   ══════════════════════════════════════════════════════════════════════════ */
+const REVLOG_DIR = () => path.join(ROOT, '_复习日志');
+function revlogAppend(entry) {
+  try {
+    const dir = REVLOG_DIR();
+    fs.mkdirSync(dir, { recursive: true });
+    const month = String(entry.ts).slice(0, 10).replace(/-/g, '').slice(0, 6);
+    const file = path.join(dir, 'revlog-' + month + '.jsonl');
+    fs.appendFileSync(file, JSON.stringify(entry) + '\n', 'utf8');
+    return file;
+  } catch (e) {
+    /* 日志失败不阻断主流程（批改是主账，revlog 是旁路账）——但要响亮：静默丢行=假账 */
+    console.error('⚠ 复习日志（revlog）写入失败（批改本身已落库，不受影响）：' + e.message);
+    return null;
+  }
+}
+/** 从索引条目取 revlog 需要的 before 快照（判分前调） */
+function revlogBeforeOf(it) {
+  const revs = revsOf(it);
+  const last = revs.length ? revs[revs.length - 1] : null;
+  return {
+    intervalBefore: last ? intervalOf(last.result, passStreak(revs)) : null,
+    dueBefore: it.nextDue || '',
+    errorCountBefore: num(it.errorCount),
+  };
+}
+
 /* ★ 2026-10-23 程序与数据分家：ROOT 现在是**用户库根**，不再是"本脚本所在目录"。
    兄弟工具一律用 toolPath(...)，见 _库根.mjs。 */
 const ROOT = libraryRoot();
@@ -245,19 +295,38 @@ function passStreak(revs) {
   for (let i = revs.length - 1; i >= 0; i--) { if (revs[i].result === '对') p++; else break; }
   return p;
 }
+/* ★ 2026-11-14（方案批次 4-5，掌握判定收敛·延迟连对）：两次"对"**相隔 ≥ 7 天** ⇒ 掌握证据升级。
+   依据（掌握度调研 D9-5 共存策略 + Anki 官方提醒"同一天内重复多次对长期记忆贡献有限"）：
+   连对 2 次但都在同一天/隔一天，蒙对与照答案默写的成分大；真正的保持证据是**间隔后的再现**。
+   判据：取最近两次 result==='对' 的日期差（≥7 天）⇒ delayedStreak=true。
+   用法：连对 ≥2 且 delayed ⇒ 掌握；连对 ≥3（不管间隔）⇒ 掌握（旧语义保留为高置信回退）。 */
+function delayedPassPair(revs) {
+  const passes = revs.filter(r => r && r.result === '对' && r.date).map(r => String(r.date)).sort();
+  if (passes.length < 2) return false;
+  const a = Date.parse(passes[passes.length - 2]), b = Date.parse(passes[passes.length - 1]);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return false;
+  return (b - a) >= 7 * 24 * 3600 * 1000;
+}
 function derive(it, pending) {
   const revs = revsOf(it);
   const pass = passStreak(revs);
   const last = revs.length ? revs[revs.length - 1] : null;
+  /* ★ 2026-11-14（批次 4-5）：掌握 = 连对 ≥2（旧语义，保持不变——存量兼容）
+     **或** 连对恰好 1 且最近两次"对"（可跨失败）相隔 ≥7 天（新增的延迟证据升级）。
+     语义澄清：旧判据"连对 2 次"在间隔 <7 天时保持原判定（已掌握的存量卡不降级）；
+     delayedPassPair 提供的是**额外**升级通道（两次"对"中间可以夹失败——
+     "7 天前对过一次、昨天错了、今天又对"同样构成间隔再现证据）。
+     只提前升级、从不推迟升级（对孩子已做功不没收）。 */
+  const mastery = pass >= 2 || delayedPassPair(revs);
   let rs;
   if (it.status === '已归档') rs = '已归档';
-  else if (pass >= 2) rs = '已掌握';
+  else if (mastery) rs = '已掌握';
   else if (pending && pending.has(it.id)) rs = '复习中·待批改';
   else if (!last) rs = '未复习';
   else if (last.result === '对') rs = '已复习·通过';
   else if (last.result === '半对') rs = '已复习·半对';
   else rs = '已复习·再错';
-  return { rs, count: revs.length, pass, lastDate: last ? last.date : '', lastResult: last ? last.result : '' };
+  return { rs, count: revs.length, pass, lastDate: last ? last.date : '', lastResult: last ? last.result : '', delayed: delayedPassPair(revs) };
 }
 /** 把派生字段写回每个 item（幂等） */
 function syncIndex(obj, pend) {
@@ -433,6 +502,8 @@ function actGrading(paperId, resultsStr, date, note, by) {
     const prevList = revsOf(it);
     const prev = prevList.find(r => r.paper === paperId);           // 同一批次重复回录时按最后一次结果修正，不双计
     const before = prev ? prev.result : null;
+    /* revlog：判分前抓 before 快照（重复回录同一批次也照记——流水允许同卡同批多行，undo 配对靠 paperId） */
+    const rlBefore = revlogBeforeOf(it);
     const merged = prevList.filter(r => r.paper !== paperId).concat([{ date: day, paper: paperId, result: res, note: note || '', by: byOf(by) }]);
     const capped = capReviews(merged);
     if (capped.length < merged.length) console.log('   ' + id + REVIEWS_CAP_NOTE);
@@ -451,6 +522,23 @@ function actGrading(paperId, resultsStr, date, note, by) {
     }
     const pass = passStreak(revsOf(it));
     it.nextDue = addDays(day, intervalOf(res, pass));
+    /* revlog：本次判分的正向记录（intervalAfter/dueAfter 用落库后的新值） */
+    revlogAppend({
+      ts: new Date().toISOString(),
+      cardId: id,
+      student: b.student,
+      paperId,
+      rating: res === '对' ? 1 : res === '半对' ? 2 : 3,
+      result: res,
+      intervalBefore: rlBefore.intervalBefore,
+      intervalAfter: intervalOf(res, pass),
+      dueBefore: rlBefore.dueBefore,
+      dueAfter: it.nextDue,
+      errorCountBefore: rlBefore.errorCountBefore,
+      errorCountAfter: num(it.errorCount),
+      type: 'normal',
+      by: byOf(by),
+    });
     b.results = b.results || {};
     b.results[id] = res;
     log.push({ id, res, pass, nextDue: it.nextDue, status: '' });
@@ -763,8 +851,20 @@ switch (action) {
     const kpOf = id => { const it = byId[id] || {}; return Array.isArray(it.kpoints) ? it.kpoints : []; };
     const sharesKp = (a, b) => { const A = kpOf(a), B = kpOf(b); return A.length > 0 && B.length > 0 && A.some(x => B.includes(x)); };
     const primaryCodeOf = id => { const it = byId[id] || {}; return it.causeCode || it.causeLayer || ''; };
+    /* ★ 2026-11-14（方案批次 4-3，交错三件套之一）：**学科白名单收窄**。
+       依据（两轮调研 + 审计三次提出，掌握度调研 L0-3）：交错的实证（Rohrer 2020 d=0.83）全部来自
+       数学/物理这类"按策略分类的题"；**英语词汇类（再认/回忆成对联想）交错无效甚至有害**——
+       单词回忆的干扰来源是语义近似而非解题策略，混排只会增加检索难度（Rohrer & Taylor 2007 的
+       "混合迫使重新识别方法"机制不适用于词汇）。白名单：数学/物理/化学交错；其它学科显式
+       --interleave 时不重排、打印一行"为什么没交错"（可见降级，不是静默）。
+       ⚠ 白名单判的是**卷的学科**（batch.subject），不是单卡——一张英语卷里混进数学卡的场景
+       由调用方控制素材，本工具不猜。 */
+    const INTERLEAVE_SUBJECTS = ['数学', '物理', '化学'];
+    const subjectBlocked = !INTERLEAVE_SUBJECTS.includes(subject);
     let ordered = ids.slice();
-    if (opt.interleave && !opt['no-interleave'] && ordered.length > 2) {
+    if (opt.interleave && !opt['no-interleave'] && ordered.length > 2 && subjectBlocked) {
+      console.log(`交错组卷跳过：${subject} 不在交错白名单（${INTERLEAVE_SUBJECTS.join('/')}）——词汇类/语言类混排无证据支持（Rohrer 2020 的实证全部来自数学策略题）；按调用方顺序记账`);
+    } else if (opt.interleave && !opt['no-interleave'] && ordered.length > 2) {
       const rest = ordered.slice();
       const out = [rest.shift()];
       while (rest.length) {
@@ -776,7 +876,13 @@ switch (action) {
       }
       const changed = out.filter((id, i) => id !== ordered[i]).length;
       ordered = out;
+      /* ★ 2026-11-14（交错三件套之二）：**显式短卷**。全同族时旧实现静默取原序第一个——
+         "要交错却没交错"没有任何信号（断言 A05 验收：挑不到不同族 ⇒ short=true 提示）。
+         现在：重排后若仍存在相邻同族对，打印 explicit short 提示（不改行为——顺序照样落台账，
+         但家长/审计一眼能看出"这张卷是同族短卷"）。 */
+      const sameAdj = out.slice(1).map((id, i) => sharesKp(out[i], id)).filter(Boolean).length;
       if (changed) console.log(`交错组卷：为避开「相邻同族考点」重排 ${changed} 题（--interleave 显式开启；不加则按调用方顺序记账）`);
+      if (sameAdj) console.log(`交错组卷·显式短卷：仍有 ${sameAdj} 处相邻同族（剩余素材全同族，禁用静默退回——本卷按同族短卷处理）`);
     }
     const ledger = loadLedger();
     /* ── 防重复组卷门禁（2026-10-24 用户报障）──
@@ -871,19 +977,36 @@ switch (action) {
     console.log('已入账 ' + paperId + '（' + json.student + ' · ' + subject + ' · ' + ordered.length + ' 题 · 待批改）');
     rows.filter(r => ids.includes(r.id)).forEach(r => console.log('   ' + r.id + ' → ' + r.status));
     if (dup.length) console.log('   提示：' + dup.join(',') + ' 已在其它待批改批次中（可正常叠加）');
-    /* ── leech 提醒（v2.6，2026-10-10）──
-       依据：Anki 官方 Leeches 文档 —— 同一张卡错到阈值（默认 8）时，"最有效的处置是改变信息的呈现方式"，
-       而不是继续重刷。现场已有「错误次数」计数与拆卡实证（22 题 → M0012/M0013），但缺"达阈值触发动作"这一步。
-       这里只**提醒**不阻断（改学习行为应由人来决定），把三个规定动作摆出来。 */
+    /* ── leech 提醒（v2.6，2026-10-10；★ 2026-11-14 升级为按 causeStage 路由，方案批次 4-4）──
+       依据：Anki 官方 Leeches 文档 —— 同一张卡错到阈值时，"最有效的处置是改变信息的呈现方式"。
+       ★ 升级（调研比对 Top10-4/6 + IRIS 错误分析）：旧版三条建议并列，让孩子/家长自己挑——
+       而 `causeStage`（错在审题/转化/求解/书写哪一步，2026.11.13.10 已采集）正是"该选哪条"的判据：
+         stage=审题/转化 ⇒ 先「补前置知识卡」（概念/方法缺失，重刷与拆卡都无效）；
+         stage=求解     ⇒ 先「拆卡」（过程卡壳，按步骤拆小最有实证）；
+         stage=书写/空  ⇒ 先「标记题目问题」（抄写/誊写型错误多半是题面或作答区的问题）。
+       无 stage 数据的卡回退为三条并列（旧行为，可见"未分类"）。只提醒不阻断（同旧行为）。 */
     const LEECH_AT = num(opt['leech-at']) || 4;
     const leeches = ordered.filter(id => num(byId[id].errorCount) >= LEECH_AT);
     if (leeches.length) {
+      const stageOf = id => String((byId[id] || {}).causeStage || '').trim();
+      const routeOf = stage => {
+        if (stage === '审题' || stage === '转化') return '② 补前置知识卡：查 _索引.json 的 kpoints，把缺的上游知识点单独建卡（错在读不懂题/不会转化——重刷与拆卡都无效，先补概念/方法）；';
+        if (stage === '求解') return '① 拆卡：把这一题拆成 2~3 个小卡片（按步骤/子问题），已实证有效路径（错在过程卡壳——拆小最有效）；';
+        if (stage === '书写') return '③ 标记题目表述问题：题干有歧义/缺条件/作答区不够 → 记进 _待确认.mjs 台账并回原卷核对（错在誊写/书写——多半不是不会）；';
+        return '';
+      };
       console.log('');
       console.log(`⚠ 「反复错」提醒（错误次数 ≥ ${LEECH_AT}）：` + leeches.map(id => `${id}(${num(byId[id].errorCount)}次)`).join('、'));
-      console.log('   重刷第 N 遍通常无效（Anki Leeches：最有效的处置是改变信息呈现方式）。三选一：');
-      console.log('     ① 拆卡：把这一题拆成 2~3 个小卡片（按步骤/子问题），已实证有效路径；');
-      console.log('     ② 补前置知识卡：查 _索引.json 的 kpoints，把缺的上游知识点单独建卡；');
-      console.log('     ③ 标记题目表述问题：题干有歧义/缺条件 → 记进 _待确认.mjs 台账并回原卷核对。');
+      const routed = leeches.filter(id => routeOf(stageOf(id)));
+      const unrouted = leeches.filter(id => !routeOf(stageOf(id)));
+      for (const id of routed) console.log(`   ${id}[错在${stageOf(id)}] → ` + routeOf(stageOf(id)));
+      if (unrouted.length) {
+        console.log('   以下卡没有 causeStage 数据（错因阶段未采集），按通用清单给三条（重刷第 N 遍通常无效——Anki Leeches：最有效的处置是改变信息呈现方式）：');
+        console.log('     ① 拆卡：把这一题拆成 2~3 个小卡片（按步骤/子问题），已实证有效路径；');
+        console.log('     ② 补前置知识卡：查 _索引.json 的 kpoints，把缺的上游知识点单独建卡；');
+        console.log('     ③ 标记题目表述问题：题干有歧义/缺条件 → 记进 _待确认.mjs 台账并回原卷核对。');
+        console.log('     （' + unrouted.slice(0, 12).join(',') + ' —— 下次批改建议同时记错因阶段，路由会更准）');
+      }
     }
     break;
   }
@@ -908,6 +1031,22 @@ switch (action) {
     for (const { item } of itemsOf(json)) {
       if (!Array.isArray(item.reviews)) continue;
       const drop = revsOf(item).filter(r => r.paper === opt.paper);
+      /* revlog：撤批不删正向行，落 type=undo 反向记录（流水账只增不改的另一半：撤销也是历史） */
+      if (drop.length) {
+        revlogAppend({
+          ts: new Date().toISOString(),
+          cardId: item.id,
+          student: b.student,
+          paperId: opt.paper,
+          rating: null,
+          result: null,
+          undidResults: drop.map(r => r.result),
+          dueBefore: item.nextDue || '',
+          errorCountBefore: num(item.errorCount),
+          type: 'undo',
+          by: '',
+        });
+      }
       item.reviews = revsOf(item).filter(r => r.paper !== opt.paper);
       const lostErr = drop.filter(r => r.result === '错').length;
       if (lostErr && num(item.errorCount) >= 1) item.errorCount = Math.max(1, num(item.errorCount) - lostErr);

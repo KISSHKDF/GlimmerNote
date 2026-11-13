@@ -19,7 +19,7 @@
  "neg-confirm-html-sanitize.cjs": 37,
  "neg-contrib-templates.cjs": 63,
  "neg-create-student.cjs": 41,
- "neg-data-area-rules.mjs": 224,
+ "neg-data-area-rules.mjs": 227,
  "neg-datahealth.cjs": 13,
  "neg-deps-lock.cjs": 32,
  "neg-difficulty-elo.cjs": 19,
@@ -68,7 +68,7 @@
  "neg-pending-reply-cases.cjs": 55,
  "neg-print-rules.cjs": 18,
  "neg-print-source-id.cjs": 11,
- "neg-proc-hygiene.cjs": 29,
+ "neg-proc-hygiene.cjs": 31,
  "neg-readme-structure.cjs": 11,
  "neg-reason-entry.cjs": 99,
  "neg-recipe-contract.cjs": 168,
@@ -142,5 +142,8 @@
  "verify-stem-shape.cjs": 656,
  "verify-v2-interactive-sweep.cjs": 24,
  "verify-v2-route-cta.cjs": 23,
- "verify-variant-retrieval.cjs": 23
+ "verify-variant-retrieval.cjs": 23,
+ "neg-healthcheck-weblauncher.cjs": 17,
+ "neg-original-mtime-invariant.cjs": 4,
+ "neg-revlog-appendonly.cjs": 18
 }

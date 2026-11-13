@@ -128,6 +128,28 @@ class Cdp {
     process.exit(0);
   }
 
+  /* ★ 2026-11-14：9333 探针端口的**残留 Edge 清理**（链上跑才暴露的坑）。
+     上轮 quick 被打断/崩溃时，headless Edge（--remote-debugging-port=9333）不会被
+     本进程 cleanup 收走 ⇒ 下一轮链上 spawn 新 Edge，9333 被旧进程占着，新实例 CDP
+     起不来 ⇒ 走「未就绪」分支（修前只打 [EXC] 无 RESULT 行 ⇒ 对账"未申报"判红）。
+     修法两层：① spawn 前按命令行认领并杀掉「msedge.exe 且 profile=ctb-neg-v2-ui-*」
+     的残留（只杀测试自己的，不动用户浏览器）；② 未就绪路径也打 RESULT=FAIL 断言=N。 */
+  try {
+    /* wmic 在 Win11 新版已移除（实测 ENOENT）⇒ Get-CimInstance 经 powershell 查询。
+     ⚠ 引号层级（三次实测）：execSync(字符串) 走 cmd.exe——嵌双引号断（'Name=' is not…），
+       带管道的裸命令也断（'Where-Object' is not…，cmd 把 | 先吃掉）。
+       可行形态：**execFileSync + 参数数组**（不经 cmd，PowerShell 拿到原样参数）。 */
+    const out = require('child_process').execFileSync('powershell',
+      ['-NoProfile', '-Command',
+        '(Get-CimInstance Win32_Process | Where-Object { $_.Name -eq \'msedge.exe\' }).ForEach({ Write-Output ([string]$_.ProcessId + [char]124 + $_.CommandLine) })'],
+      { encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'ignore'] });
+    for (const line of out.split(/\r?\n/)) {
+      if (!line.includes('ctb-neg-v2-ui-') || !line.includes('--remote-debugging-port=' + PORT)) continue;
+      const pid = Number(String(line).trim().split('|')[0]);
+      if (pid && pid !== process.pid) { try { process.kill(pid); console.log('[清理] 杀掉残留 Edge pid=' + pid); } catch { } }
+    }
+  } catch (e) { /* 查询不可用或无残留 ⇒ 继续；未就绪路径有显式红兜底 */ }
+
   const profile = path.join(os.tmpdir(), 'ctb-neg-v2-ui-' + process.pid);
   const proc = spawn(EDGE, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
     '--remote-debugging-port=' + PORT, '--user-data-dir=' + profile, '--window-size=1920,1010', 'about:blank'],
@@ -138,7 +160,7 @@ class Cdp {
     try { const ts = await (await fetch('http://127.0.0.1:' + PORT + '/json/list')).json(); home = ts.find(t => t.type === 'page'); } catch { }
     if (!home) await sleep(400);
   }
-  if (!home) { try { proc.kill(); } catch { } P('[EXC] Edge 调试口未就绪'); process.exit(2); }
+  if (!home) { try { proc.kill(); } catch { } P('[EXC] Edge 调试口未就绪（CDP 有界等待耗尽）'); P('RESULT=FAIL 断言=' + asserts); process.exit(2); }
 
   const cdp = await Cdp.connect(home.webSocketDebuggerUrl);
   await cdp.send('Runtime.enable'); await cdp.send('Page.enable');

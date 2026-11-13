@@ -125,6 +125,70 @@ const safe = TESTS_DIR
   : { code: 0, out: '（发布包不含 tests\\，本项跳过）', err: '' };
 H('安全写底座自检', safe.code === 0, lastLine(safe.out));
 
+/* ★ 2026-11-14（方案批次 2-1，P0-A 机制缺口第 2 条）：保全库**廉价不变式**——
+   盘上 LastWriteTime **晚于** 台账 addedAt（容差 10 分钟）即点名。
+   背景：P0-A 事故（2026-11-08）里外部程序（看图器）把 `_原图\` 的对象**就地改写**，
+   5 天后才被 `_原图.mjs 校验` 的逐字节比对抓到——而"时间戳被碰新"的弱信号
+   当天就在盘上，只是当时没有任何东西看它。
+   ⚠ 方向性（第一版双向判据在真库上误报 1116/1141 后修正，逐字节校验 1141/1141 全绿反证）：
+     addedAt 的语义是**登记进台账的时刻**，不是文件落盘时刻——本库 2026-10-31 建库迁移时
+     把早已存在的文件统一登记，addedAt(10-31) > mtime(10-06~10-22) 是**合法历史**（先有文件
+     后登记）。真正危险的只有一方向：**mtime > addedAt** = 文件在登记之后又被写盘 =
+     P0-A 的"就地改写"形态。所以判据是单向的：
+       mtime ≤ addedAt + 容差  ⇒ 放行（含全部"先有文件后登记"的历史）；
+       mtime > addedAt + 容差  ⇒ 点名（被碰新，必须跑 `_原图.mjs 校验` 逐字节定罪）。
+   这是**弱信号筛查**（便宜、每轮体检都跑）：mtime 漂新 ≠ 一定被改写（恢复/迁移也会动它），
+   但被点名的对象必须当场定罪。全量逐字节真校验（`_原图.mjs 校验`，2.6~19.4s）不在体检里
+   跑——它是 regress/full 档的事，体检的定位是"平时/收工前的轻检查"。 */
+try {
+  const origDir = path.join(ROOT, '_原图');
+  const ledgerFile = path.join(ROOT, '_原图台账.json');
+  if (fs.existsSync(origDir) && fs.existsSync(ledgerFile)) {
+    const led = readJsonStrict(ledgerFile, { label: '_原图台账.json' });
+    /* 台账形状（2026-11-14 实库核实）：{version, objects: {<大写sha256>: {bytes, ext, addedAt, ...}}}
+       兼容两种历史形态：objects 是字典（现行）或数组；sha 大写存储。 */
+    const rawObjs = led && led.objects;
+    const addedOf = new Map();
+    if (rawObjs && !Array.isArray(rawObjs) && typeof rawObjs === 'object') {
+      for (const [k, o] of Object.entries(rawObjs)) {
+        if (o && o.addedAt) addedOf.set(String(k).toLowerCase(), String(o.addedAt));
+      }
+    } else if (Array.isArray(rawObjs)) {
+      for (const o of rawObjs) {
+        if (o && typeof o.sha256 === 'string' && o.addedAt) addedOf.set(o.sha256.toLowerCase(), String(o.addedAt));
+      }
+    }
+    const TOLERANCE_MS = 10 * 60 * 1000;
+    const drifted = [];
+    let scanned = 0, driftedTotal = 0;
+    for (const bucket of fs.readdirSync(origDir, { withFileTypes: true })) {
+      if (!bucket.isDirectory()) continue;
+      const bDir = path.join(origDir, bucket.name);
+      for (const f of fs.readdirSync(bDir, { withFileTypes: true })) {
+        if (!f.isFile()) continue;
+        const m = f.name.match(/^([0-9a-f]{64})\./i);
+        if (!m) continue;                                  // 非对象文件（清单/说明）不是本项分母
+        const added = addedOf.get(m[1].toLowerCase());
+        if (!added) continue;                              // 台账没登记的不在本项判据面（校验工具管孤儿）
+        const ts = Date.parse(added);
+        if (!Number.isFinite(ts)) continue;
+        const full = path.join(bDir, f.name);
+        let mt = 0; try { mt = fs.statSync(full).mtimeMs; } catch { continue; }
+        scanned++;
+        if (mt > ts + TOLERANCE_MS) {                      // 单向：只抓"登记后又被写盘"
+          driftedTotal++;
+          if (drifted.length < 8) drifted.push(f.name.slice(0, 12) + '…（盘 ' + new Date(mt).toISOString() + ' 晚于 账 ' + added + '）');
+        }
+      }
+    }
+    H('保全库 mtime 不变式（LastWrite≈addedAt）', driftedTotal === 0,
+      driftedTotal ? `共 ${driftedTotal} 个对象 mtime 漂移（可能被外部程序就地改写——立刻跑 node src/tools/_原图.mjs 校验 逐字节定罪）。样例：` + drifted.slice(0, 5).join('；')
+        : `${scanned} 个对象全对齐（容差 10 分钟）`);
+  } else {
+    I('保全库 mtime 不变式', '库里还没有 _原图\\ 或台账（空库跳过，不是通过）');
+  }
+} catch (e) { H('保全库 mtime 不变式（LastWrite≈addedAt）', false, '检查本身出错（按红处理）：' + e.message); }
+
 /* 首页/状态包产物健康：占位符零残留 + 新鲜度 */
 const HOME = path.join(ROOT, '首页.html');
 const STATE = path.join(ROOT, '_状态.json');

@@ -358,9 +358,10 @@
     if (H.mode !== 'shell') throw new Error('「正式写入」需要桌面壳通道（拾光小册.exe）。');
     return reviewJson(await bridge('reviewAdopt', { pendingId: pendingId, candId: candId, dry: dry ? '1' : '' }, 300000), '正式写入');
   };
-  /* 全量重建（生成器重跑），返回新 state；生成器实测 ~5 分钟，超时给 10.5 分钟 */
+  /* 全量重建（生成器重跑），返回新 state；生成器实测十几秒（656 卡库 6.72s），超时给 2 分钟。
+     历史上曾按"约 5 分钟"给 630s：文案与实测差 45 倍，卡住的是失败反馈（真超时=壳侧已死）。 */
   H.regen = async function () {
-    if (H.mode === 'shell') return bridge('regen', {}, 630000);
+    if (H.mode === 'shell') return bridge('regen', {}, 120000);
     if (H.mode === 'server') {
       /* ★ 2026-10-30 S06：服务端现在只收 `application/json`（与 /api/pending 同口径），
          并且同一来源 1 秒内重复触发会 429。所以这里必须带 JSON 体 —— 改前是不带 body 的裸 POST，

@@ -403,7 +403,75 @@ const TMP_PREFIXES = [
   'gn-fixlib-',       // tests\fixtures-smoke.cjs 的合成库副本（它自己在末尾删，但被杀就漏）
   /* ★ 2026-11-03（批次 2「经验包试点」）：五条新用例各自的夹具前缀。登记的理由不是"好看"：
      本表的判据是"被杀之后下一轮能认领并清掉"，没登记的前缀会永久留在 %TEMP% 里
-     （2026-11-02 实测过一次 8.3 GB 残留）。新用例**必须**在这里登记自己的前缀。 */
+     （2026-11-02 实测过一次 8.3 GB 残留）。新用例**必须**在这里登记自己的前缀。
+     ★ 2026-11-14（T-05 全量清账，方案批次 1-4）：上表纪律自 11-03 后实际漂移——
+     全仓扫出 71 个 mkdtemp 前缀，其中 62 个没登记（11-02 那次 8.3GB 残留正是这么漏的）。
+     本轮全部补齐 + neg-proc-hygiene.cjs 加机械断言（源码里的 mkdtemp 前缀必须已登记），
+     把"必须登记"从纪律变成门禁。`gn-not-registered-` 是 neg-proc-hygiene ②h 的
+     阴性对照专用前缀（证明"没登记就不碰"），**故意**不登记。 */
+  'gn-tmp-',          // allocTempDir() 缺省前缀（本文件）
+  'ctb-dupid-',       // neg-dupid*.cjs 判重夹具
+  'ctb-neg-openfile-',
+  'ctb-neg-reswl-',
+  'ctb-pending-',
+  'ctb-restore-drill-',
+  'ctb-safewrite-',
+  'gn-asfill-',       // _配方.mjs 自动填充夹具
+  'gn-badsnap-',
+  'gn-conc-',
+  'gn-csp-lib-',
+  'gn-csp-mut-',
+  'gn-fmt-',
+  'gn-h08a-gen-',
+  'gn-h08a-genlib-',
+  'gn-h08a-lib-',
+  'gn-h08a-mut-',
+  'gn-h08a-port-',
+  'gn-h08b-',
+  'gn-h08b-mut-',
+  'gn-h08b-out-',
+  'gn-holder-',
+  'gn-ledger-',
+  'gn-libcsp-',
+  'gn-locate-',
+  'gn-lock-',
+  'gn-lockdir-',
+  'gn-mig-',
+  'gn-neg-buildlist-',
+  'gn-neg-cropfig-',
+  'gn-neg-deps-',
+  'gn-neg-frozen-',
+  'gn-neg-p10homes-',
+  'gn-neg-rb-',
+  'gn-neg-sem-',
+  'gn-neg-transposed-',
+  'gn-neg-triage-',
+  'gn-neg-vd-',
+  'gn-newstu-',
+  'gn-nolock-',
+  'gn-pfresh-',
+  'gn-pkg-',
+  'gn-proc-',
+  'gn-proc2-',
+  'gn-recipe-neg-',
+  'gn-refresh-',
+  'gn-s05-',
+  'gn-s05-mut-',
+  'gn-s07-',
+  'gn-s07-out-',
+  'gn-snap-pathspec-',
+  'gn-snap-text-',
+  'gn-snaplock-',
+  'gn-stategen-',
+  'gn-stategen-broken-',
+  'gn-stream-lib-',
+  'gn-stream-mut-',
+  'gn-tablefit-',
+  'gn-task-',
+  'gn-variant-',
+  'gn-whitelist-lib-',
+  'gn-whitelist-mut-',
+  /* ↑ 2026-11-14（T-05 全量清账）补登记的 62 个前缀。原有 21 个： */
   'gn-packneg-',      // tests\neg-pack-contract.cjs 的临时包根 + 临时库
   'gn-card-neg-',     // tests\neg-card-select.cjs 的临时包根 + 临时库
   'gn-rg-',           // tests\neg-region-contract.cjs 的临时库 / 合成图
