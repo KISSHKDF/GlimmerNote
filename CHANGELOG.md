@@ -80,6 +80,13 @@
 | `neg-v2-ingest-task-e2e.cjs` | `拿到 page target → about:blank`，后续受阻 | `拿到 app page target …`，**PASS 断言=44** |
 | `verify-v2-interactive-sweep.cjs` 汇总 | 「共 2 条，判据只看这个」→ 会被误读成待修 | 「共 2 条（其中未归属 **0** 条）」+ 每条标 `（本用例阴性自证…不判红）` + `⇒ 全部有归属` |
 
+### 附：同步登记断言基线
+
+`verify-shell-visual.cjs` 因新增一条 `boot 完成` 断言从 13 → 14，已随
+`node tests\run.mjs quick --update-baseline` 登记进 `tests\断言基线.json`（135 个用例）。
+`tests\` **不进发布包**（实测：`GlimmerNote-2026.11.13.27-win-x64.zip` 103 个条目里 tests 0 个），
+所以这一项只影响仓库内的门禁对账，不影响已部署的运行区（仍是 95 个文件）。
+
 ## [2026.11.13.26] - 2026-11-13 · 补上批次 2 里**最后一条未修的假绿**（手抄常量）+ 批次 2 收口核实
 
 **变更分类**：Fixed
