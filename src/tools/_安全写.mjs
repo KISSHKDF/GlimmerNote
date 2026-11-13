@@ -344,10 +344,15 @@ export function acquireLibLock(root, { label = '', timeoutMs = 120000, pollMs = 
   const lockPath = path.join(dir, LOCK_FILE);
   const inherited = inheritedToken();
 
-  // ① 子进程继承：token 与锁文件一致且持有者可信存活 ⇒ 放行（不自锁）
+  // ① 子进程继承：token 与锁文件一致且持有者 PID 存活 ⇒ 放行（不自锁）。
+  // ★ 2026-11-13（P0-C①，审计终稿 §三）：这里**只验 token + pidAlive**，不查启动时间——
+  //    24 位随机 token 只沿进程树继承（env 注入），PID 复用者不可能持有它；
+  //    之前走 lockHolderAlive 会付一次 PowerShell 冷启动（~0.9s，杀软/高负载时 1.5s+），
+  //    且 800ms 级判据在负载下翻转假红（5 次复测 876-907ms）。
+  //    外层普通取锁路径（②以下）仍走 lockHolderAlive——那条路没有 token 可验，必须防 PID 复用。
   if (inherited) {
     const cur = readLockFile(lockPath);
-    if (cur && cur.token === inherited && lockHolderAlive(cur)) return function () { };
+    if (cur && cur.token === inherited && pidAlive(cur.pid)) return function () { };
   }
 
   const myToken = crypto.randomBytes(12).toString('hex');
