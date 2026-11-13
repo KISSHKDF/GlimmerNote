@@ -175,6 +175,29 @@ A('③a2 源码：清理是"重试到真没了"，不是调一次就算数（Edg
 A('③b 源码：profile 不再落仓库 _probe\\（过程件不落库/仓库）', !/'_probe'/.test(psSrc));
 A('③c 源码：profile 经 E.allocTempDir 登记（前缀带 pid，可被清扫认出主已死）', /E\.allocTempDir\('v2fix-profile-'\)/.test(psSrc));
 A('③d 清扫表覆盖 pagesmoke 的 profile 前缀 v2fix-profile-', E.TMP_PREFIXES.includes('v2fix-profile-'));
+/* ③i（2026-11-14 T-05 全量清账，方案批次 1-4）：**清扫表覆盖全部实际前缀**——机械对账。
+ *  11-02 立的"新用例必须登记前缀"纪律到 11-14 实际漂移成 71 个前缀里 62 个没登记
+ *  （11-02 那次 8.3 GB 残留正是这么漏的）——纪律没有牙齿。本断言把纪律变成门禁：
+ *  全仓 grep mkdtemp 提取前缀字面量，逐个必须出现在 E.TMP_PREFIXES。
+ *  唯一豁免 `gn-not-registered-`（②h 的阴性对照专用前缀：它存在的意义就是"证明没登记的不碰"）。
+ *  注意本断言的 grep 不包含本文件自己拼 `gn-not-registered-` 之外动态生成的前缀——
+ *  mkdtemp 前缀一律是字面量（登记表设计的前提），动态拼前缀会让 ②h 的"非登记前缀"判据失效。 */
+const PREFIX_EXEMPT = new Set(['gn-not-registered-']);
+{
+  const greps = ['src/', 'tests/', 'tools/'];
+  const actual = new Set();
+  for (const d of greps) {
+    let out = '';
+    try { out = execFileSync('git', ['grep', '-h', 'mkdtemp', '--', d], { encoding: 'utf8' }); } catch (e) { out = String(e.stdout || ''); }
+    for (const m of out.matchAll(/mkdtemp(?:Sync)?\([^;\r\n]*?['"]([^'"]{2,40})['"]/g)) actual.add(m[1]);
+  }
+  const table = new Set(E.TMP_PREFIXES);
+  const missing = [...actual].filter(p => !table.has(p) && !PREFIX_EXEMPT.has(p));
+  A('③i 清扫表覆盖全仓全部 mkdtemp 前缀（豁免仅阴性对照 gn-not-registered-）',
+    missing.length === 0, missing.length ? '未登记：' + missing.join('、') : actual.size + ' 个前缀全覆盖');
+  A('③ii mkdtemp 前缀一律是字面量（登记表设计前提；动态拼接会让"非登记前缀"判据失效）',
+    [...actual].every(p => /^[a-z][a-z0-9-]*-$/.test(p)), actual.size + ' 个前缀全部匹配字面量形状');
+}
 /* ③e/③f：真跑一次 pagesmoke，逼它走**异常**路径（服务端不可达 + CDP 1ms 超时）——
    正常路径下 finally 与旧代码都会清；只有异常路径能分辨"清理在不在 finally"。
    ⚠ 它会覆写 tests\out\neg-v2-pagesmoke.txt（那是真 pagesmoke 用例的证据），跑完原样还回去。 */

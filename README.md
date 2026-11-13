@@ -457,17 +457,20 @@ node tests\run.mjs quick
 2. `CHANGELOG.md` 顶部加条目，**必须含两行**：`**变更分类**：…` 与 `**升级影响**：…`（门禁会逐版校验）
 3. 跑门禁：`node tests\run.mjs full` + `node tools\lint.mjs`（`quick` 是底线，`full` 才覆盖重编与打印链路）
 4. `powershell -File scripts\build-release.ps1`
+   日常自用部署可加 `-Internal`：包名带 `-internal` 后缀，不打 tag、不发 Release（2026.11.14 批次 1-5 版本双通道）。
 5. `powershell -File scripts\deploy.ps1 -Zip <刚出的包>`
 6. 自用 1~2 天
 7. `git tag -a v<版本> -m "<版本> release point"` + 推 GitHub Release
 
-**第 7 步不是可选项**：铁律 3 要求"每次发布留三样（tag / zip / SHA256）"，而本轮审计实测
-`release\` 有 30 个包、git tag 只有 2 个——**"打过包"不等于"发过版"**。查漏命令：
+**第 7 步只对正式发布强制**（不带 `-Internal` 打出的包）：见上方铁律 3 的双通道口径。
+历史上曾因"每个内部版本都占一个公开 tag"造成 `release\` 有 30 个包、tag 只有 2 个的欠账；
+引入双通道后，`-Internal` 包**不进**第 7 步口径，只有正式包才需要 tag。查漏命令（只查正式包）：
 
 ```powershell
-# 有包但没 tag 的版本（应为空）
+# 有正式包但没 tag 的版本（应为空；-internal 包不算）
 $tags = git tag | ForEach-Object { $_ -replace '^v', '' }
-Get-ChildItem release\*.zip | ForEach-Object { ($_.BaseName -split '-')[1] } |
+Get-ChildItem release\*.zip | Where-Object { $_.Name -notmatch '-internal' } |
+  ForEach-Object { ($_.BaseName -split '-')[1] } |
   Where-Object { $tags -notcontains $_ } | Sort-Object -Unique
 ```
 
@@ -518,7 +521,8 @@ Synology Drive 的同步根之下，字节被同步到 NAS。这不是拾光小�
 
 1. **运行区里的东西永远是产物，不是源头。** 谁都不在 `GlimmerNote\app\` 里改代码。
 2. **部署只动 `app\`。** `数据\` 由脚本层面保证不触碰。
-3. **每次发布必须留三样**：git tag、zip 产物、SHA256。
+3. **每次发布必须留三样**：git tag、zip 产物、SHA256。（2026.11.14 起分双通道：`-Internal`
+   内部构建的包**不属于**"发布"——不打 tag 不发 Release，正式包才必须三样齐全。）
 4. **回滚必须演练过。** 没演练过的回滚等于没有。
 5. **dev 里能跑测试，靠 `fixtures\`，不靠真数据。**
 6. **题干里的"空"是数据，不是装饰。** 每道有空的题都必须逐空登记答案（`answerSlots`），

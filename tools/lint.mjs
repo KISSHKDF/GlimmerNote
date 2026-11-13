@@ -309,18 +309,32 @@ for (const rel of VER.files) {
    漏了不会让任何功能变坏，只会让下一个人看不懂该不该升级 —— 纯人工约定必然漂移。
    ══════════════════════════════════════════════════════════════════════════ */
 const CATEGORIES = ['Added', 'Changed', 'Fixed', 'Removed', 'Security', 'Deprecated'];
-const CL_FILE = path.join(ROOT, 'CHANGELOG.md');
+/* ★ 2026-11-14（方案批次 1-6）：CHANGELOG 年度归档。
+ * 主文件只留**当季**（当前年份）条目；更早年份整段搬 `CHANGELOG-<年>.md`（只增不改的历史档案）。
+ * L7 因此扫**主文件 + 当年归档卷**：当年归档卷 = 归档发生在年初、当季条目已被搬走一部分的过渡形态，
+ * 也要逐版校验（同一套两行字段要求不因搬家而豁免）。往年归档卷不再扫——它们是冻结历史。
+ */
+const CL_CURRENT_YEAR = String(new Date().getFullYear());
+const CL_FILES = ['CHANGELOG.md', 'CHANGELOG-' + CL_CURRENT_YEAR + '.md']
+  .map(f => path.join(ROOT, f))
+  .filter(f => fs.existsSync(f));
 let clEntries = 0;
-if (fs.existsSync(CL_FILE)) {
+if (!fs.existsSync(path.join(ROOT, 'CHANGELOG.md'))) {
+  problems.L7.push('CHANGELOG.md 不存在 —— 逐版格式断言无法生效');
+} else if (!CL_FILES.length) {
+  problems.L7.push('CHANGELOG.md 不存在 —— 逐版格式断言无法生效');
+}
+for (const CL_FILE of CL_FILES) {
+  const rel = path.relative(ROOT, CL_FILE);
   const lines = fs.readFileSync(CL_FILE, 'utf8').replace(/^\uFEFF/, '').split(/\r?\n/);
   const heads = [];
   lines.forEach((l, i) => { if (/^##\s+\[/.test(l)) heads.push(i); });
-  clEntries = heads.length;
-  if (!heads.length) problems.L7.push('CHANGELOG.md  一个 `## [版本]` 条目都没有 —— 这条断言等于没生效（文件被改坏了？）');
+  clEntries += heads.length;
+  if (!heads.length) problems.L7.push(rel + '  一个 `## [版本]` 条目都没有 —— 这条断言等于没生效（文件被改坏了？）');
   heads.forEach((h, k) => {
     const end = k + 1 < heads.length ? heads[k + 1] : lines.length;
     const body = lines.slice(h + 1, end);
-    const who = 'CHANGELOG.md ' + lines[h].replace(/^##\s*/, '').slice(0, 56);
+    const who = rel + ' ' + lines[h].replace(/^##\s*/, '').slice(0, 56);
     const clsLine = body.find(x => /^\*\*变更分类\*\*\s*[：:]/.test(x));
     if (!clsLine) {
       problems.L7.push(`${who}  缺 \`**变更分类**：…\` 行 ｜ 期望：${CATEGORIES.join(' / ')} 的组合（用 " / " 分隔）`);
@@ -334,8 +348,6 @@ if (fs.existsSync(CL_FILE)) {
     const hasImp = body.some(x => /^\*\*升级影响\*\*\s*[：:]/.test(x)) || body.some(x => /^###\s*升级影响/.test(x));
     if (!hasImp) problems.L7.push(`${who}  缺 \`**升级影响**：…\` 行（或等价的 \`### 升级影响\` 小节）`);
   });
-} else {
-  problems.L7.push('CHANGELOG.md 不存在 —— 逐版格式断言无法生效');
 }
 
 /* ══════════════════════════════════════════════════════════════════════════

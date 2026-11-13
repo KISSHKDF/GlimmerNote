@@ -318,7 +318,7 @@
     finally { S.autoReloadBusy = false; }
   };
   S.regen = async function () {
-    S.toast('全量重建中（生成器重跑，约 5 分钟）…', 'warn', 9000);
+    S.toast('全量重建中（生成器重跑，通常十几秒，库大时更久）…', 'warn', 9000);
     try { const st = await H.regen(); if (!st || !Array.isArray(st.data)) throw new Error((st && st.regenError) || '重建返回异常'); M.applyState(st); S.render(); S.toast('重建完成', 'ok'); return true; }
     catch (e) { S.toast('重建失败：' + e.message, 'bad', 8000); return false; }
   };
@@ -328,7 +328,7 @@
     if (S.regenBusy) { S.toast('已有重建在后台进行（排队中）', 'warn'); return; }
     if (H.mode !== 'shell' && H.mode !== 'server') return;
     S.regenBusy = true;
-    S.toast('数据已写盘；后台重建中（约 5 分钟），可继续浏览，完成后自动刷新', 'warn', 9000);
+    S.toast('数据已写盘；后台重建中（通常十几秒），可继续浏览，完成后自动刷新', 'warn', 9000);
     H.regen().then(st => {
       if (st && Array.isArray(st.data)) { M.applyState(st); S.render(); S.toast('后台重建完成，磁盘快照已更新', 'ok'); }
       else S.toast('后台重建返回异常：' + ((st && st.regenError) || '未知') + '——可从托盘「全量重建」补刀', 'bad', 9000);

@@ -1292,6 +1292,12 @@ const unitTests = [
      而启动横幅本来就承诺 "will rebuild on first /api/state"。判据：冷库 ⇒ 200 + 真状态包 + 自建成功；
      阴性对照=重建也失败时仍 200，但必须挂 `degraded=state-missing-rebuild-failed` 并给原因。 */
   ['neg-server-cold-library.cjs'],
+  /* ⑯（T-19，2026-11-14 方案批次 1-4）：`_体检.mjs` 与 `_web-launcher.mjs` 此前在 tests 里
+     **零引用零断言**——两个"平时没人跑"的工具坏了不会有任何门禁红。本用例钉住两者的
+     源码级契约（体检硬/进度双清单 + --json 信封形状 + 启动器端口读序/双向边界文案/
+     失败响亮/有界探活），全部 %TEMP% 夹具，不起壳不占端口不写真库。
+     已按仓规在干净克隆口径自检（夹具自建、零真库依赖）。 */
+  ['neg-healthcheck-weblauncher.cjs'],
 ];
 /* ★ 2026-11-13（P0-C③，方案批次0-4）：单元级用例 **fail-soft**——逐用例跑完、末尾汇总点名。
    改前这里一条红就 process.exit：R1 实测白名单只跑到 10/40，被遮的 5 条（fixtures-smoke /
