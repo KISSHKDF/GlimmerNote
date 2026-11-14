@@ -63,6 +63,7 @@
  "neg-parent-report.cjs": 26,
  "neg-path-rewrite.cjs": 32,
  "neg-pending-answer-visible.cjs": 29,
+ "neg-conflict-bridge.cjs": 15,
  "neg-pending-dupid-resolve.mjs": 14,
  "neg-pending-gate-parity.mjs": 13,
  "neg-pending-reply-cases.cjs": 55,

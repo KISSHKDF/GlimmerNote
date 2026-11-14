@@ -102,8 +102,10 @@ process.on('exit', __releaseLibLock);
 const DB = path.join(ROOT, '_待确认.json');
 const MD = path.join(ROOT, '_待确认清单.md');
 
-/* ⚠ 与 `src\app\js\model.js` 的 `M.KINDS` 逐字相同（两份拷贝，一致性由 tests\neg-reason-entry.cjs 钉住）。 */
-const KINDS = ['笔迹归属', '错因口述', '老师漏判', '卷面辨认', '口径确认', '系统维护', '其他', '经验线索'];
+/* ⚠ 与 `src\app\js\model.js` 的 `M.KINDS` 逐字相同（两份拷贝，一致性由 tests\neg-reason-entry.cjs 钉住）。
+   ★ 2026-11-14：新增「红字异议」—— 它在台账里**永远不会有真条目**（异议条目由 `_异议桥.mjs`
+   派生、随状态包走），进 KINDS 只为让界面的类型筛选/图例认得这个 kind。 */
+const KINDS = ['笔迹归属', '错因口述', '老师漏判', '卷面辨认', '口径确认', '系统维护', '其他', '经验线索', '红字异议'];
 
 /* ---------- 措辞门禁（2026-10-10）：给用户看的文本禁用 agent 内部黑话 ----------
  * 起因：用户质询「错题库待办，好多措辞说『答案键』，这是什么意思啊，我理解不过来」。

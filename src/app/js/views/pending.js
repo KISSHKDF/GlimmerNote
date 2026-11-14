@@ -110,6 +110,9 @@
       evBlock(p) +
       pairBlock(p) +
       reviewBlock(p) +
+      /* ★ 2026-11-14（异议桥）：派生条目没有台账行，办结/作废必然落库失败 ——
+         不渲染那两个按钮，换成裁决指引（裁决落库后条目随状态包重建自动消失）。 */
+      (p.derived ? derivedFoot(p) :
       (done ? '' :
         '<div class="pd-note"><textarea data-ans="' + U.esc(p.id) + '" placeholder="结论/答案（办结必填，作废必写理由）：孩子口述了什么 / 放大原卷看到了什么 / 老师怎么答…" rows="2"></textarea></div>' +
         '<div class="pd-foot">' +
@@ -117,7 +120,17 @@
         '<button class="btn sm danger" data-void="' + U.esc(p.id) + '">🗑 作废</button>' +
         '<button class="btn sm ghost" data-copy="' + U.esc(p.id) + '">📋 复制为本地结论（导出办结包再同步）</button>' +
         (p.cardId && /\w/.test(p.cardId) ? '<button class="btn sm ghost" data-card="' + U.esc(p.student) + '|' + U.esc(p.cardId) + '">🔍 去关联卡</button>' : '') +
-        '<span class="localflag small" data-flag="' + U.esc(p.id) + '"></span></div>') +
+        '<span class="localflag small" data-flag="' + U.esc(p.id) + '"></span></div>')) +
+      '</div>';
+  }
+
+  /* ---------- 派生条目的操作条（2026-11-14，异议桥）----------
+     裁决是唯一出口（_标记复习.mjs 异议裁决）；这里给"去关联卡"与一条可复制的裁决命令。
+     不给办结/作废按钮：它们写的是 _待确认.json（真源），而派生条目在台账里没有行 ⇒ 必失败。 */
+  function derivedFoot(p) {
+    return '<div class="pd-foot">' +
+      (p.cardId && /\w/.test(p.cardId) ? '<button class="btn sm ghost" data-card="' + U.esc(p.student) + '|' + U.esc(p.cardId) + '">🔍 去关联卡</button>' : '') +
+      '<span class="small muted" style="flex:1">裁决后本条自动消失（不用在这里办结）。裁决命令在详情里，或直接说一句「把这张卡的红字异议裁决掉」。</span>' +
       '</div>';
   }
 
@@ -184,6 +197,16 @@
       '<br>全库自查：<code>node _待确认.mjs 证据</code></div>';
   }
   function evBlock(p) {
+    /* ★ 2026-11-14（异议桥）：派生条目缺图不渲染"补图"红块 —— 那条 `定位` 命令写的是 T 台账，
+       对没有台账行的派生条目必然失败；图随"去关联卡"看即可。 */
+    if (p.derived) {
+      if (p.evidence && p.evidenceOk !== false) {
+        return '<div class="pd-img">' +
+          '<img loading="lazy" class="pd-ev" data-zoom="' + U.esc(p.evidence) + '" data-rel="' + U.esc(p.evidence) + '" data-box="" src="' + U.esc(H.asset(p.evidence)) + '" alt="证据图">' +
+          '<button class="btn xs ghost" data-open="' + U.esc(p.evidence) + '">🗂 打开截图</button></div>';
+      }
+      return '';
+    }
     if (!p.evidence) return evMissHtml(p, '缺图（必有字段）');
     if (p.evidenceOk === false) return evMissHtml(p, '文件不在或路径非法');
     /* F-38：图坏了要喊出来，但**不许连「🗂 打开原图」一起删掉**（用户还要靠它去核对/补图）；
@@ -269,6 +292,9 @@
     return { regions: [], from: null };
   }
   function pairBlock(p) {
+    /* ★ 2026-11-14（异议桥）：派生条目不走原图并排（区域来自台账/卡的对位链，派生条目未登记，
+       画出来只会是一块"缺整页路径"的红提示——信息量为零）。 */
+    if (p.derived) return '';
     const ro = regionsOf(p);
     const regions = ro.regions;
     const hasOrig = !!p.origPage;
@@ -354,6 +380,8 @@
      为什么按需加载而不是渲染时全拉：每条待办一次壳往返，待办列表几十条 ⇒ 打开页面就几十次进程调用。
      ⚠ 失败/空/现值缺失一律**上屏原文**，不许静默降级。 */
   function reviewBlock(p) {
+    /* ★ 2026-11-14（异议桥）：派生条目没有台账 id，查候选修订（按 id 查 _待确认.json）必然空 —— 不渲染。 */
+    if (p.derived) return '';
     return '<div class="pd-review" data-review="' + U.esc(p.id) + '">' +
       '<div class="pair-hd">候选修订　<span class="small muted">草案 → 人工看 → 点「采用」才写进库</span></div>' +
       '<div class="rv-body small muted">未读。点下面按钮读这条待办的候选与修订链。</div>' +
@@ -457,8 +485,9 @@
   /* 2026-10-15 用户口径：裁图=截图；原图=这道题所在的原始整页。灯箱切换按钮与 🗂 都按此语义。 */
   function buildGallery() {
     /* evidenceOk === false（文件不在/路径非法）不进灯箱——进去只会是一块空白，
-       而灯箱本来就该是「看图办结」的地方。列表里那些条目会显示红块和补图命令。 */
-    return viewList.filter(p => p.evidence && p.evidenceOk !== false && (!p.status || p.status === '未确认'));
+       而灯箱本来就该是「看图办结」的地方。列表里那些条目会显示红块和补图命令。
+       ★ 2026-11-14（异议桥）：派生条目也不进 —— 灯箱的办结按钮写 T 台账，对派生条目必失败。 */
+    return viewList.filter(p => !p.derived && p.evidence && p.evidenceOk !== false && (!p.status || p.status === '未确认'));
   }
   function gItem(p) {
     /* 2026-10-15 用户指正：待办灯箱此前 orig=证据图自身 ⇒ 「⇄/🗂」开到的还是裁图，永远到不了整页。
@@ -536,6 +565,10 @@
   }
 
   async function resolve(id, action, answerIn, fromLb) {
+    /* ★ 2026-11-14（异议桥）：派生条目在台账里没有行，写它必然 missing —— 前端先拦下，
+       给出真正的出口（异议裁决），不让用户点完按钮才吃一条"台账里没有这个编号"。 */
+    const dv = viewList.find(p => p.id === id);
+    if (dv && dv.derived) { S.toast('这条是自动推进的红字异议，不走办结 —— 按详情里的裁决命令处理，裁决后它自动消失', 'warn', 8000); return; }
     let answer = answerIn != null ? String(answerIn).trim() : '';
     if (answerIn == null) { const ta = document.querySelector('[data-ans="' + id + '"]'); answer = (ta ? ta.value : '').trim(); }
     if (!answer) { S.toast(action === '作废' ? '作废必须写理由（防无留痕作废）' : '先写结论再办结', 'warn'); if (!fromLb) { const ta = document.querySelector('[data-ans="' + id + '"]'); ta && ta.focus(); } return; }

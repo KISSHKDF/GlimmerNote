@@ -23,6 +23,9 @@ import { fileURLToPath } from 'url';
 import { libraryRoot, toolPath } from './_库根.mjs';
 import { readJsonStrict, writeJsonAtomic, acquireLibLock } from './_安全写.mjs';
 import { resolver, encRel } from './_原图寻址.mjs';
+/* ★ 2026-11-14（异议桥）：pending 增量刷新必须与全量生成器接**同一个**派生源——
+   只接生成器不接这里的话，每次台账驱动的增量刷新都会把派生条目洗掉（异议无声消失）。 */
+import { deriveConflictTodos } from './_异议桥.mjs';
 
 /* ★ 2026-10-23 程序与数据分家：ROOT 现在是**用户库根**，不再是"本脚本所在目录"。
    兄弟工具一律用 toolPath(...)，见 _库根.mjs。 */
@@ -80,7 +83,18 @@ function refreshPending() {
     stdout = String((e.stdout || '') );
     if (!stdout.trim()) throw e;
   }
-  return extractJson(stdout);
+  /* ★ 2026-11-14（异议桥）：与生成状态.mjs 同一份派生源——增量刷新后的 pending 也带
+     卡上未裁决异议的派生条目；裁决落库后下一次刷新自然消失（自动办结）。 */
+  const j = extractJson(stdout);
+  const extra = deriveConflictTodos(ROOT);
+  if (extra.length) {
+    const items = (Array.isArray(j.items) ? j.items : []);
+    j.items = items.concat(extra);
+    j.open = (Number.isFinite(j.open) ? j.open : items.length) + extra.length;
+    j.byAsk = Object.assign({}, j.byAsk || {});
+    for (const t of extra) j.byAsk[t.askWho] = (j.byAsk[t.askWho] || 0) + 1;
+  }
+  return j;
 }
 /* 门禁 --json 的 stdout 应为纯 JSON；容错：截取首个 { 到最后一个 } */
 function extractJson(text) {

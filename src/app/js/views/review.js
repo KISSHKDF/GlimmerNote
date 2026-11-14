@@ -143,7 +143,7 @@ let longOpen = false, maskOpen = false;
         '<div class="card">' + (q.length ?
           '<div class="row"><div class="rv-grow"><b class="num">' + q.length + '</b> 题进场' +
           '<div class="small muted">' + (src === 'due' ? '按逾期天数倒序，逾期最久的先还账；没有到期题时这里主要是未复习题。' : src === 'basket' ? '组卷篮里的题直接屏幕重做。' : src === 'random' ? '从可练的题里随机抽——答完只在本屏对答案，<b>不计入复习记录</b>（建议日与组卷池都不动）。' : '未复习存量按入册先后排。') + '</div>' +
-          (blockCnt ? '<div class="small rv-warn">⚠ 本范围内另有 <b class="num">' + blockCnt + '</b> 题被门禁挡在复习流外（盲解未过 / 答案来源不足 / 已掌握 / 已归档）——<button class="btn xs ghost" data-a="bankBlind">按「盲解未过」筛出来看原因</button></div>' : '') +
+          (blockCnt ? '<div class="small rv-warn">⚠ 本范围内另有 <b class="num">' + blockCnt + '</b> 题被门禁挡在复习流外（盲解未过 / 答案来源不足 / 红字异议待裁决 / 已掌握 / 已归档）——<button class="btn xs ghost" data-a="bankBlind">按「盲解未过」筛出来看原因</button></div>' : '') +
           '</div>' +
           (src === 'random' ? '<button class="btn" id="rvReshuffle">🎲 换一批</button>' : '') +
           '<button class="btn primary" id="rvStart">▶ 开始（空格=翻答案 · 1/2/3=判分）</button>' +
