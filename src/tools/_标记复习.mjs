@@ -924,7 +924,7 @@ switch (action) {
          nextDue 有值且 ≤ 组卷日 ⇒ 系统已经判「该复习了」⇒ 不拦。 */
       const dueOn = id => { const it = byId[id] || {}; return !!it.nextDue && String(it.nextDue) <= String(date); };
       const hit = ids.filter(id => recent[id]);
-      const rep = hit;          // ← 真正要拦的：近期印过 且 还没到期
+      const rep = hit.filter(id => !dueOn(id));          // ← 真正要拦的：近期印过 且 还没到期
       const freed = hit.filter(id => dueOn(id));         // 到期放行的（留痕，便于事后核对）
       if (freed.length) {
         console.log('⚠ 到期放行：' + freed.length + ' 题虽在近 ' + REPEAT_DAYS + ' 天内印过，但建议复习日已到（≤' + date + '），按排期该练 ⇒ 不拦：' +

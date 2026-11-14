@@ -181,8 +181,17 @@ class Cdp {
   if (!booted) { cdp.close(); try { proc.kill(); } catch { } P('RESULT=FAIL 断言=' + asserts); process.exit(1); }
 
   /* ---------- 缺陷1：把触发条件在内存里打开（不改磁盘），连做 5 次 dash 渲染 ---------- */
+  /* ★ 2026-11-14：先取**注入前**的 needOral 数量（垫 seen 键用——垫键必须垫"启动数量"，
+     若垫成注入后的数量就把本次要弹的键自己吃掉了，实测 toastN=0 假红）。 */
+  const baseOral = await cdp.evalJs("CTB.model.cards.filter(function(x){return x.card.causeConfirmed===false}).length");
   const seeded = await cdp.evalJs("(function(){var n=0;CTB.model.cards.forEach(function(x){if(n<3&&x.card.causeConfirmed!==false){x.card.causeConfirmed=false;n++}});return n})()");
   A('缺陷1 触发条件就绪（内存注入 needOral>0，不写盘）', seeded > 0, 'needOral=' + seeded);
+
+  /* ★ 2026-11-14（口述确认闭环联调）：dash 的 needOral 提示现在按「同数量已提示过」记
+     localStorage（ctb2.needOralSeen）——程序重启也不再重弹。这条用例量的是「同屏去重」，
+     把**启动数量**垫进 seen（不含注入后的新数量 ⇒ 注入后首次 route 会弹、后续渲染同数量不弹）。
+     垫/清键只动测试自己的 profile，不碰用户数据。 */
+  await cdp.evalJs("try{localStorage.setItem('ctb2.needOralSeen',JSON.stringify({\"" + Number(baseOral) + "\":1}))}catch(e){}");
 
   /* ★ 2026-10-23：先清空提示，只量「这 5 次渲染」产生的。
      起因（实测）：提示的 key 里带题数（dash.needOral:<n>），而本库启动时本来就有 97 张
@@ -202,7 +211,13 @@ class Cdp {
   await cdp.evalJs("var b=document.getElementById('toasts'); if(b) b.innerHTML=''");
   await sleep(50);
   await cdp.evalJs("CTB.shell.route('dash')"); await sleep(150);
-  await cdp.evalJs("CTB.shell.applyTheme('light');CTB.shell.route('dash')"); await sleep(450);
+  await cdp.evalJs("CTB.shell.render()"); await sleep(150);
+  /* ★ 2026-11-14：再清一次 needOralSeen——第 5 次渲染（route）自己会写键（同数量提示只弹一次），
+     后续 route+applyTheme 的两次渲染不再弹。量测口径是「5 次渲染后同屏 1 条」，
+     所以这里要在后半程渲染前把键清掉，让最后一次 route 重新弹同一条。
+     （新逻辑行为：同数量在同一 localStorage 生命周期内只弹一次；本用例量的是同屏去重。） */
+  await cdp.evalJs("try{localStorage.removeItem('ctb2.needOralSeen')}catch(e){}");
+  await cdp.evalJs("CTB.shell.route('dash')"); await sleep(450);
 
   const m1 = JSON.parse(await cdp.evalJs(MEASURE));
   /* 改前实测：5 条同文案 toast，浮层高 271px */
