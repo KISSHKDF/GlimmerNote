@@ -120,8 +120,26 @@
     /* ⚠ 提示产生在 render 体内是历史遗留：render 每次 S.render() 都跑（路由/主题/切学生/
        autoReload/落库后重绘），原来因此堆出 5 条一模一样的面板提示（见 shell.js S.toast 段注释）。
        现在靠 S.toast 的「同键去重 + 冷却窗」兜住：key 里带上题数，题数不变就只显示一次，
-       题数变了才算新消息。*/
-    if (needOral) S.toast('提示：' + needOral + ' 题错因未经孩子口述确认（卡详情里有 ⚠ 标记）', 'warn', 6000, 'dash.needOral:' + needOral, 300000);
+       题数变了才算新消息。
+       ★ 2026-11-14（用户报障「每次进程序都有这条提示，又没地方要我更改」）：
+       冷却窗只挡渲染风暴，挡不住「程序重启」——toastReg 在内存里，重启即清零 ⇒ 同一数量
+       每次启动都弹一次。而且这个数字的闭环此前根本不存在：全仓没有一处把 causeConfirmed
+       置回 true（界面上没有按钮、判分也不回写）⇒ 它永远数出几百张，提示永远弹。
+       两条修法：
+       ① 数量已确认过的（同数量且未被关闭过）记进 localStorage，程序重启也不再重复弹；
+          题数变了（新录的题 / 真的确认了一些）才弹新的。
+       ② 真正的闭环在复习流：孩子判分时填了「转折点」笔记 = 他口述了当时怎么想 ⇒
+          该卡错因自动确认（review.js grade() 侧，见那边的注释）。 */
+    if (needOral) {
+      /* U.lsGet 本身已 JSON.parse 并带默认值，直接用对象；这里不必再手动 parse。 */
+      const seenKey = 'ctb2.needOralSeen';
+      const seen = U.lsGet(seenKey, {}) || {};
+      if (!seen[needOral]) {
+        seen[needOral] = 1;
+        U.lsSet(seenKey, seen);
+        S.toast('提示：' + needOral + ' 题错因未经孩子口述确认（复习判分时填「转折点」即自动确认；卡详情里有 ⚠ 标记）', 'warn', 6000, 'dash.needOral:' + needOral, 300000);
+      }
+    }
   };
 
   const stale = p => U.diffDays(p.raisedAt || U.today(), U.today());  function kpi(k, ic, label, n, sub) {

@@ -18,6 +18,40 @@
 > **历史条目**：2026-11-09 之前的版本见 [CHANGELOG-2026.md](CHANGELOG-2026.md)（冻结历史卷，只增不改）。
 
 
+## [2026.11.14.05] - 2026-11-14 · 口述确认闭环（用户报障：首页"224 题错因未经孩子口述确认"每次启动都弹）
+
+**变更分类**：Fixed / Changed
+**升级影响**：批改命令新增 `--cause-confirmed "M0001,M0002"`（带值 flag）；桌面壳 mark 通道新增
+`causeConfirmed` 参数透传（映射 `--cause-confirmed`）；前端 dash/review/model 三处联动。
+**存量数据不变**：已有 `causeConfirmed=false` 的卡不批量改值——确认只通过两条真实路径发生：
+①复习判分时孩子填了「转折点」笔记（= 口述了当时怎么想）⇒ 落库时自动置 `causeConfirmed=true`；
+②人工改索引（原口径不变）。
+
+### 根因
+
+首页每次启动弹"224 题错因未经孩子口述确认"（dash.js:124）。这个数字的**闭环此前根本不存在**：
+录题入库把每张卡写成 `causeConfirmed: false`，但全仓没有任何一处会把它置回 true——
+界面上没有确认按钮，判分也不回写（grep 全仓只有文档说"手工置 true"）。
+于是计数只增不减，提示永远弹；S.toast 的冷却窗只能挡渲染风暴（内存态），挡不住程序重启。
+
+### 改法
+
+① `review.js grade()`：孩子判分时填了转折点 → 本场判定标 `causeConfirmedByNote`（没填不动，
+   不代孩子确认）；
+② `model.js endSession()`：批改 payload 随发 `causeConfirmed`（填了转折点的编号清单）；
+③ `CTBShellV2.cs Mark()`：新参数 `--cause-confirmed` 透明转发（白名单纪律同 `by`）；
+④ `_标记复习.mjs 批改`：接收 `--cause-confirmed`，**只认本批次的编号**（不在批次的响亮跳过，
+   防跨批误确认），把 `causeConfirmed: false → true`，转折点原文已在批次 note 里、不重复落卡；
+⑤ `dash.js`：提示文案补闭环指引，且"同数量已提示过"记 localStorage——程序重启也不再重复弹，
+   题数变化（新录题 / 真确认了一批）才弹新的；`_参数.mjs` 登记 `cause-confirmed` 为带值 flag。
+
+### 回归断言
+
+临时副本库冒烟：组卷→批改 `--cause-confirmed M0001,M9999` → M0001 `causeConfirmed=false→true` ✓、
+M9999（不在批次）打印"跳过（不在本批次）"不误确认 ✓。`tools\lint.mjs` PASS（221 JS / 370 文件）；
+`tests\run.mjs quick` 116 用例断言对账通过（一轮假红系状态包未重生成，`生成状态.mjs` 后
+neg-v1-admit-consumption 21 断言全绿）。
+
 ## [2026.11.14.04] - 2026-11-14 · 批次 4（核心）：追加式复习日志 revlog + 交错白名单/显式短卷 + leech 按错因阶段路由 + 掌握判定延迟连对
 
 **变更分类**：Added / Changed

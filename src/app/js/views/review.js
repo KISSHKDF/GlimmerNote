@@ -29,6 +29,12 @@ let longOpen = false, maskOpen = false;
     if (res === '错' && requeueWrong && !x._rq) { const copy = Object.assign({}, x, { _rq: 1 }); s.queue.push(copy); }
     M.sessionGrade(res);
     if (s.results[k] && noteVal) s.results[k].note = noteVal;
+    /* ★ 2026-11-14（口述确认闭环 · 用户报障「224 题错因未经孩子口述确认」永远弹）：
+       孩子判分时填了「转折点」＝ 他口述了当时怎么想、在哪拐错 —— 这正是「错因口述确认」的定义。
+       在此把口述写回本场判定（endSession → 批改 --note 已带转折点），并标记该卡错因已确认；
+       落库侧（_标记复习.mjs 批改）见到 note 里有转折点 + 卡是 causeConfirmed=false 就置 true。
+       没填转折点的不动（没口述就没确认，不代孩子确认）。 */
+    if (noteVal && x.card.causeConfirmed === false) s.results[k].causeConfirmedByNote = true;
     delete noteByKey[x.key];
     reveal = false; noteVal = ''; longOpen = false; maskOpen = false;
     S.render();

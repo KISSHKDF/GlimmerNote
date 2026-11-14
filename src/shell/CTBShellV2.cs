@@ -527,6 +527,9 @@ namespace CTBShell2
                 AddFlag(args, payload, "by", "--by");
                 AddFlag(args, payload, "paper", "--paper");
                 AddFlag(args, payload, "results", "--results");
+                /* ★ 2026-11-14（口述确认闭环）：批改时随发的「本次判分中孩子填了转折点的编号清单」。
+                   壳只做透明转发（语义/校验在 _标记复习.mjs 工具侧），与 by 透传同一纪律。 */
+                AddFlag(args, payload, "causeConfirmed", "--cause-confirmed");
                 AddFlag(args, payload, "reason", "--reason");
                 AddFlag(args, payload, "at", "--at");
                 AddFlag(args, payload, "to", "--to");

@@ -472,7 +472,11 @@
       }
       const noteParts = list.filter(x => x.note).map(x => x.id + '：' + x.note);
       const noteStr = ('屏幕复习·' + kid + subject + ' ' + stamp + (noteParts.length ? ' ｜转折点笔记 ' + noteParts.join('；') : '')).slice(0, 400);
+      /* ★ 2026-11-14（口述确认闭环）：判分时填了转折点的卡 = 孩子口述了错因。
+         编号清单随批改下发，工具侧（_标记复习 批改）据此把这几张卡的 causeConfirmed 置 true。 */
+      const causeConfirmedIds = list.filter(x => x.causeConfirmedByNote).map(x => x.id).join(',');
       const r2 = await CTB.host.mark('批改', { paper: paperId, results: resStr, date: stamp, note: noteStr,
+        ...(causeConfirmedIds ? { causeConfirmed: causeConfirmedIds } : {}),
         /* ★ 2026-11-13（批次 4 / UX-10「谁判的」）：孩子模式下判分的是孩子自己（自评），否则是家长判。
            **不让人手选**：这个派生本来就准（"孩子模式"的定义就是让孩子自己判），
            多一个选择器只会多一处忘填/填错。记下来的用处是**数据自证**——

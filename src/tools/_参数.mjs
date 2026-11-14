@@ -189,4 +189,6 @@ export const COMMON_VALUE_FLAGS = [
   'counter', 'feature', 'ink', 'material', 'metric', 'page', 'range', 'sample',
   'type', 'zoom', 'case', 'from-pending', 'packs', 'lane', 'layer', 'solver',
   'no-repeat-days', 'leech-at', 'id',
+  /* ★ 2026-11-14（口述确认闭环）：批改随发的「孩子填了转折点的编号清单」（带值，逗号分隔）。 */
+  'cause-confirmed',
 ];
