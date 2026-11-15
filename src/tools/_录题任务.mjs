@@ -50,7 +50,7 @@ const { action: _cmd, opt, positional } = parseArgs(argv, {
        `确认 --task` 都按值消费 taskId（val('task')），列入带值表是对的；
        本工具真正的布尔开关只有 `json`。此前注释写"json/task 是开关"把两者混了。 */
     'task', 'recipe-ver', 'image-sha', 'contract-digest', 'cards', 'in', 'limit',
-    'fingerprint',
+    'fingerprint', 'by', 'student',
   ],
 });
 /* 缺省命令 = 空（与改前 `argv[0] || ''` 同口径）。 */
@@ -118,6 +118,9 @@ export function createTask(rec) {
     cards: rec.cards || [],
     image,
     subject: rec.subject || null,
+    /* ★ 2026-11-15（对外开放 v2 / A-3）：学生化名随任务落盘——页面在生成前已选学生，
+       指引第 6 步入库命令与工作单都直接引用它。CLI 不传为 null（行为不变）。 */
+    student: rec.student || null,
     contractDigest: rec.contractDigest || null,
     taskDigest: sha256(text),
     taskText: text,
@@ -147,6 +150,7 @@ function cmdNew() {
   const doc = createTask({
     recipe: { id: val('recipe'), version: val('recipe-ver'), fingerprint: val('fingerprint') },
     subject: val('subject') || null,
+    student: val('student') || null,
     image: { sha256: imgSha.toLowerCase() || null, rel: imgRel || null },
     cards: cardsRaw ? cardsRaw.split(',').map(s => s.trim()).filter(Boolean).map(s => {
       const [id, ver] = s.split('@'); const [packId, cardId] = id.split('/');
@@ -180,7 +184,8 @@ function cmdList() {
   const rows = all.slice(0, limit).map(j => ({
     taskId: j.taskId, createdAt: j.createdAt, recipe: (j.recipe && j.recipe.id) || null,
     subject: j.subject, image: (j.image && j.image.sha256) ? j.image.sha256.slice(0, 12) : null,
-    confirmed: !!j.confirmedAt,
+    student: j.student || null, confirmed: !!j.confirmedAt,
+    confirmedBy: j.confirmedBy || (j.confirmedAt ? 'human' : null),
   }));
   if (JSON_OUT) { process.stdout.write(JSON.stringify({ total: all.length, tasks: rows }) + '\n'); return 0; }
   if (!rows.length) { console.log('（还没有任务记录；生成任务单时加 --task 才会留痕）'); return 0; }
@@ -202,21 +207,34 @@ function cmdShow() {
   console.log('  学科：' + (j.subject || '?'));
   console.log('  原图：' + ((j.image && j.image.sha256) || '(未记录)') + ((j.image && j.image.rel) ? '  ' + j.image.rel : ''));
   console.log('  卡：' + (j.cards && j.cards.length ? j.cards.map(c => (c.packId ? c.packId + '/' : '') + c.cardId + (c.version ? '@' + c.version : '')).join(', ') : '(无，仅内置配方)'));
+  console.log('  学生：' + (j.student || '(未记录)'));
   console.log('  契约摘要：' + (j.contractDigest || '(无)'));
   console.log('  任务单摘要：' + j.taskDigest + '（' + String(j.taskText || '').length + ' 字符，记录里留了全文）');
-  console.log('  人工确认：' + (j.confirmedAt ? j.confirmedAt + (j.confirmNote ? '（' + j.confirmNote + '）' : '') : '**未确认**'));
+  console.log('  人工确认：' + (j.confirmedAt ? j.confirmedAt + (j.confirmedBy ? '（' + j.confirmedBy + '）' : '') + (j.confirmNote ? '（' + j.confirmNote + '）' : '') : '**未确认**'));
   return 0;
 }
 
-/* ---------- 确认（第三层由人写） ---------- */
+/* ---------- 确认（第三层由人写；2026-11-15 起也可由 AGENT 代确认并如实留痕） ---------- */
+/* ★ 2026-11-15（对外开放 v2 / A-2）：`--by <human|agent>`。
+ *   为什么只加标记不改门禁：方案 v2 的信任模型裁定（用户 2026-11-15）——AGENT 跑在用户
+ *   自己机器上、读的是用户自己孩子的照片，录题全自动是业务前提；人工否决权不取消、只后移
+ *   （改卡/撤卡/修订链与四道门禁一道不少）。confirmedBy 只回答"这次确认是谁写的"，让
+ *   "代理代确认"**可审计**（台账可视化、人回看不全信全疑），不是把第三层放空。 */
+const CONFIRM_BY = ['human', 'agent'];
 function cmdConfirm() {
   const id = positional[0] || val('task', '');
   const j = loadTask(id);
   if (!j) { console.error('任务不存在：' + (id || '(未给 taskId)')); return 2; }
+  const by = val('by', 'human');
+  if (!CONFIRM_BY.includes(by)) {
+    console.error('✖ --by 只接受 ' + CONFIRM_BY.join(' 或 ') + '，收到：' + by);
+    return 2;
+  }
   j.confirmedAt = nowLocal();
+  j.confirmedBy = by;
   j.confirmNote = val('note', '') || null;
   writeJsonAtomic(taskFile(j.taskId), j, { indent: 1 });
-  console.log('已确认任务 ' + j.taskId + '：' + j.confirmedAt + (j.confirmNote ? '（' + j.confirmNote + '）' : ''));
+  console.log('已确认任务 ' + j.taskId + '：' + j.confirmedAt + '（' + by + '）' + (j.confirmNote ? '（' + j.confirmNote + '）' : ''));
   return 0;
 }
 
@@ -400,9 +418,10 @@ function main() {
         '用法：',
         '  node src\\tools\\_录题任务.mjs 新 --recipe <id> --recipe-ver <v> --fingerprint <h> --subject <学科> --in <任务单.md>',
         '                                [--image <库内相对路径>] [--image-sha <64hex>] [--contract-digest <h>] [--cards <包/卡@版本,…>]',
+        '                                [--student <学生化名>]',
         '  node src\\tools\\_录题任务.mjs 列 [--limit N] [--json]',
         '  node src\\tools\\_录题任务.mjs 看 <taskId> [--json]',
-        '  node src\\tools\\_录题任务.mjs 确认 <taskId> [--note <一句话>]        # 第三层：由人写',
+        '  node src\\tools\\_录题任务.mjs 确认 <taskId> [--by human|agent] [--note <一句话>]  # 第三层：缺省 human；agent=代理代确认（可审计）',
         '  node src\\tools\\_录题任务.mjs 绑定校验 <taskId> --in <cards.json> [--json]',
         '',
         '通用参数：--data <库根>（与 _配方.mjs 同口径；不传则读 CTB_DATA 环境变量）',

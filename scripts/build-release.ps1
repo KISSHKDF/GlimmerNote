@@ -209,6 +209,27 @@ $recipeN = (Get-ChildItem $stageRecipes -Recurse -File).Count
 $recipeCore = Join-Path $stageRecipes '_core'
 if (-not (Test-Path (Join-Path $recipeCore 'base.md'))) { throw "配方核心层缺失：$recipeCore\base.md" }
 Write-Host "  配方：$recipeN 个文件 -> app\recipes\"
+# ── 1d) 官方经验包 src\官方经验包\ → 包内 app\官方经验包\ ──
+#   为什么必须进包（2026-11-15 对外开放 v2 / A-4）：官方经验包 = 随程序分发的 L3 题型经验
+#   （可插拔方法卡），由 app\tools\_经验包.mjs 的官方根（<AppRoot>\官方经验包）读取；
+#   引擎在默认根模式下把官方根与用户根合并（用户包同 id@版本优先），显式根模式不合并。
+#   缺它 = L3 经验层不随程序走；有它 = 别人的 AGENT 拿到任务单也拿到题型方法。
+#   内容红线：不含任何学生数据、不含 API Key、不联网；纯 Markdown / JSON。
+$srcOfficialPacks = Join-Path $root 'src\官方经验包'
+if (Test-Path $srcOfficialPacks) {
+  $stageOfficialPacks = Join-Path $stageApp '官方经验包'
+  Copy-Item $srcOfficialPacks $stageOfficialPacks -Recurse -Force
+  $officialN = (Get-ChildItem $stageOfficialPacks -Recurse -File).Count
+  $officialPackJson = Get-ChildItem $stageOfficialPacks -Recurse -Filter 'pack.json' -File
+  if (-not $officialPackJson) { throw "官方经验包里没有任何 pack.json：$srcOfficialPacks" }
+  foreach ($pj in $officialPackJson) {
+    $pjObj = Get-Content $pj.FullName -Raw | ConvertFrom-Json
+    if (-not $pjObj.formatVersion) { throw "官方经验包缺 formatVersion：$($pj.FullName)" }
+  }
+  Write-Host "  官方经验包：$officialN 个文件（$($officialPackJson.Count) 个包）-> app\官方经验包\"
+} else {
+  Write-Host "  官方经验包：无（src\官方经验包 不存在——本包不含官方方法卡）"
+}
 
 $verObj = [ordered]@{
   name     = [string]$V.name

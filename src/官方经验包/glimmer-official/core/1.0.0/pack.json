@@ -1,0 +1,17 @@
+{
+  "formatVersion": 1,
+  "id": "glimmer-official/core",
+  "version": "1.0.0",
+  "title": "拾光小册官方通用方法卡",
+  "author": "GlimmerNote",
+  "license": "随拾光小册发布",
+  "notes": "官方经验包（随程序只读分发）。卡片正文是长期沉淀的录题方法；停用=在本目录放 .停用 文件。",
+  "cards": [
+    {
+      "id": "multi-part-only-wrong",
+      "title": "一题多问：只收错的小问",
+      "steps": ["错题判定"],
+      "body": "multi-part-only-wrong.md"
+    }
+  ]
+}
