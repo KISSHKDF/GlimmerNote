@@ -153,6 +153,16 @@ A('4C --by 非法值 → exit 2（不许静默当 human）', confBad.code === 2,
 const recBad = JSON.parse(run(['_录题任务.mjs', '看', tB, '--json']).out);
 A('4C·补 非法值不改变既有确认（confirmedBy 仍 agent）', recBad.confirmedBy === 'agent', String(recBad.confirmedBy));
 
+/* ---------- 4·D) 批次工作单（2026-11-16 批次 B）：引用已存在任务合成，不造任务 ---------- */
+const wsOut = path.join(LIB, '工作单-测试.md');
+const ws = run(['_录题任务.mjs', '工作单', tA, tB, '--student', '学生丙', '--subject', '物理', '--out', wsOut]);
+A('4D 工作单合成成功（两条任务）', ws.code === 0, 'exit=' + ws.code + ' ' + (ws.out || '').split('\n')[0]);
+A('4D·补 工作单含两条 taskId 与明文路径（本机文档全信任）',
+  fs.existsSync(wsOut) && /t-[0-9]{8}-[0-9]{6}-[0-9a-f]{6}[\s\S]*t-[0-9]{8}-[0-9]{6}-[0-9a-f]{6}/.test(fs.readFileSync(wsOut, 'utf8')) &&
+  /_收件箱[\\/]a\.jpg/.test(fs.readFileSync(wsOut, 'utf8')), '');
+const wsGhost = run(['_录题任务.mjs', '工作单', 't-19990101-000000-ghost0']);
+A('4D·补 任务不存在 → exit 2（工作单只引用，不造任务）', wsGhost.code === 2, 'exit=' + wsGhost.code);
+
 /* ---------- 5) P1-#2：信封畸形（有 envelope、缺 result）必须可归因 ---------- */
 console.log('\n═══ 5 · 信封畸形：有 envelope 缺 result ⇒ 点名信封与 result，不许指错方向 ═══');
 /* 判据（有牙齿）：输出里**必须**出现「信封」且点到 result；**不得**出现「缺必填字段…pageSummary」
