@@ -223,7 +223,8 @@ if (Test-Path $srcOfficialPacks) {
   $officialPackJson = Get-ChildItem $stageOfficialPacks -Recurse -Filter 'pack.json' -File
   if (-not $officialPackJson) { throw "官方经验包里没有任何 pack.json：$srcOfficialPacks" }
   foreach ($pj in $officialPackJson) {
-    $pjObj = Get-Content $pj.FullName -Raw | ConvertFrom-Json
+    # ⚠ PS 5.1 的 Get-Content 不带 -Encoding 时按 ANSI（GBK）解无 BOM 的 UTF-8 —— 中文卡标题直接炸 JSON。
+    $pjObj = Get-Content $pj.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
     if (-not $pjObj.formatVersion) { throw "官方经验包缺 formatVersion：$($pj.FullName)" }
   }
   Write-Host "  官方经验包：$officialN 个文件（$($officialPackJson.Count) 个包）-> app\官方经验包\"
