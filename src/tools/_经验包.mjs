@@ -705,8 +705,9 @@ export function loadCard(sel, explicitRoot) {
     : [packsRoot(explicitRoot)];
   let hit = null;
   const missWhy = [];
+  let missReason = '';
   for (const root of candidates) {
-    if (!isDir(root)) { missWhy.push('经验包根不存在：' + root); continue; }
+    if (!isDir(root)) { missWhy.push('经验包根不存在：' + root); missReason = 'packs-root-missing'; continue; }
     const packDir = path.join(root, ...p.packId.split('/'), p.version);
     if (!isDir(packDir)) {
       const packBase = path.join(root, ...p.packId.split('/'));
@@ -715,8 +716,12 @@ export function loadCard(sel, explicitRoot) {
         try { vers = fs.readdirSync(packBase).filter((n) => isDir(path.join(packBase, n)) && VERSION_RE.test(n)); } catch { }
         missWhy.push('经验包 ' + p.packId + ' 没有版本 ' + p.version + '（' + packBase + ' 下已安装版本：' +
           (vers.length ? vers.join('、') : '（无）') + '）');
+        /* ★ reason 按"最具体的那次未命中"记：包在而版本不在 ⇒ version-unknown（契约 §2.2 冻结的三态，
+           neg-pack-contract 十一组钉住——A-4 改双根查找时必须逐根保留，不许合并压平）。 */
+        if (!missReason || missReason === 'pack-unknown') missReason = 'version-unknown';
       } else {
         missWhy.push('没有安装经验包 ' + p.packId + '（' + packBase + ' 不存在）—— 安装=手工复制文件夹，停用=包内放 .停用');
+        if (!missReason) missReason = 'pack-unknown';
       }
       continue;
     }
@@ -725,10 +730,9 @@ export function loadCard(sel, explicitRoot) {
   }
   if (!hit) {
     return {
-      ok: false, code: 2, reason: candidates.length > 1 ? 'pack-unknown' : 'packs-root-missing',
-      why: candidates.every((r) => isDir(r))
-        ? missWhy.join('\n  ')
-        : missWhy.join('\n  ') + '\n  安装=把包文件夹**手工复制**成 <经验包根>/<packId>/<version>/（见 仓库文档 docs\\经验包规范.md）',
+      ok: false, code: 2, reason: missReason || 'packs-root-missing',
+      why: missWhy.join('\n  ') +
+        (missReason === 'packs-root-missing' ? '\n  安装=把包文件夹**手工复制**成 <经验包根>/<packId>/<version>/（见 仓库文档 docs\\经验包规范.md）' : ''),
     };
   }
   /* ★ A-4：目录对账（§④）要按"包实际所在的根"做——合并模式下官方包在官方根里，
