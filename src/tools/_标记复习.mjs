@@ -554,7 +554,7 @@ function actGrading(paperId, resultsStr, date, note, by) {
   writeJson(file, json);
   const st = {}; rows.forEach(r => st[r.id] = r.status);
   log.forEach(l => l.status = st[l.id]);
-  return { batch: b, log };
+  return { batch: b, log, indexFile: file, indexJson: json };
 }
 
 /**
@@ -1018,6 +1018,27 @@ switch (action) {
     console.log('已回录 ' + r.batch.paperId + '（批次状态：' + r.batch.status + '）');
     r.log.forEach(l => console.log('   ' + l.id + ' 结果=' + l.res + ' → ' + l.status + ' · 连对 ' + l.pass + ' 次 · 建议复习 ' + l.nextDue));
     if (r.batch.status === '已掌握' || r.log.some(l => l.status === '已掌握')) console.log('   ★ 有题连对 2 次 → 已掌握，默认退出组卷池；可说“归档 Mxxxx”永久沉淀');
+    /* ★ 2026-11-14（口述确认闭环 · 用户报障「224 题错因未经孩子口述确认」永远弹）：
+       --cause-confirmed="M0001,M0002" = 复习流判分时孩子**填了转折点笔记**的编号清单——
+       填转折点就是「口述了当时怎么想」，这正是「错因口述确认」的定义（此前全仓没有一处
+       会把 causeConfirmed 置回 true，计数只增不减，提示每次启动都弹）。
+       边界：① 只认本批次的卡（不在批次里的编号忽略并提示，防跨批误确认）；
+            ② 只把 false → true，true 的不动；causeDesc 不代写（转折点原文已在批次 note 里）；
+            ③ 撤批不回滚这个标记（口述这件事发生过就是发生过，与判分正误无关）。 */
+    if (opt['cause-confirmed']) {
+      const claimed = String(opt['cause-confirmed']).split(/[,，]/).map(s => s.trim().toUpperCase()).filter(Boolean);
+      const inBatch = new Set(r.batch.items || []);
+      const done = [], skipped = [];
+      for (const id of claimed) {
+        if (!inBatch.has(id)) { skipped.push(id); continue; }
+        const it = (itemsOf(r.indexJson).find(o => o.item.id === id) || {}).item;
+        if (!it) { skipped.push(id); continue; }
+        if (it.causeConfirmed !== true) { it.causeConfirmed = true; done.push(id); }
+      }
+      if (done.length) { r.indexJson.updatedAt = today(); writeJson(r.indexFile, r.indexJson); }
+      if (done.length) console.log('   口述确认闭环：' + done.join(',') + ' 的错因已置为已确认（孩子判分时填了转折点）');
+      if (skipped.length) console.log('   口述确认跳过（不在本批次）：' + skipped.join(','));
+    }
     break;
   }
 

@@ -29,6 +29,12 @@ let longOpen = false, maskOpen = false;
     if (res === '错' && requeueWrong && !x._rq) { const copy = Object.assign({}, x, { _rq: 1 }); s.queue.push(copy); }
     M.sessionGrade(res);
     if (s.results[k] && noteVal) s.results[k].note = noteVal;
+    /* ★ 2026-11-14（口述确认闭环 · 用户报障「224 题错因未经孩子口述确认」永远弹）：
+       孩子判分时填了「转折点」＝ 他口述了当时怎么想、在哪拐错 —— 这正是「错因口述确认」的定义。
+       在此把口述写回本场判定（endSession → 批改 --note 已带转折点），并标记该卡错因已确认；
+       落库侧（_标记复习.mjs 批改）见到 note 里有转折点 + 卡是 causeConfirmed=false 就置 true。
+       没填转折点的不动（没口述就没确认，不代孩子确认）。 */
+    if (noteVal && x.card.causeConfirmed === false) s.results[k].causeConfirmedByNote = true;
     delete noteByKey[x.key];
     reveal = false; noteVal = ''; longOpen = false; maskOpen = false;
     S.render();
@@ -137,7 +143,7 @@ let longOpen = false, maskOpen = false;
         '<div class="card">' + (q.length ?
           '<div class="row"><div class="rv-grow"><b class="num">' + q.length + '</b> 题进场' +
           '<div class="small muted">' + (src === 'due' ? '按逾期天数倒序，逾期最久的先还账；没有到期题时这里主要是未复习题。' : src === 'basket' ? '组卷篮里的题直接屏幕重做。' : src === 'random' ? '从可练的题里随机抽——答完只在本屏对答案，<b>不计入复习记录</b>（建议日与组卷池都不动）。' : '未复习存量按入册先后排。') + '</div>' +
-          (blockCnt ? '<div class="small rv-warn">⚠ 本范围内另有 <b class="num">' + blockCnt + '</b> 题被门禁挡在复习流外（盲解未过 / 答案来源不足 / 已掌握 / 已归档）——<button class="btn xs ghost" data-a="bankBlind">按「盲解未过」筛出来看原因</button></div>' : '') +
+          (blockCnt ? '<div class="small rv-warn">⚠ 本范围内另有 <b class="num">' + blockCnt + '</b> 题被门禁挡在复习流外（盲解未过 / 答案来源不足 / 红字异议待裁决 / 已掌握 / 已归档）——<button class="btn xs ghost" data-a="bankBlind">按「盲解未过」筛出来看原因</button></div>' : '') +
           '</div>' +
           (src === 'random' ? '<button class="btn" id="rvReshuffle">🎲 换一批</button>' : '') +
           '<button class="btn primary" id="rvStart">▶ 开始（空格=翻答案 · 1/2/3=判分）</button>' +

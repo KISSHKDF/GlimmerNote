@@ -23,6 +23,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const crypto = require('crypto');
 const { spawnSync } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -372,6 +373,74 @@ console.log('\n══ 五、组装：原图路径按库根解析（用户实测�
     const miss = run2(['找图', '--sha', 'f'.repeat(64), '--json', '--data', LIB]);
     A('找图：库里确实没有 → exit 1（与参数错误分档）', miss.status === 1, 'exit=' + miss.status);
   }
+}
+
+console.log('\n══ 五·A、--task 路径 = v3 单读者作业书（2026-11-15 对外开放 v2；预览单仍为旧四段制）══');
+/* 裁定链（2026-11-15）：①本机 AGENT 全信任（机器内不设防，任务单明文路径合法）；
+   ②网页版 AI 不考虑（分支 B/人读段退场）。预览单（无 --task）逐字节不变是**保留项**，
+   由第五节的四段断言与 neg-card-select 的基线对拍继续钉住；本节只钉 --task 产物的新形状。 */
+{
+  const LIB3 = path.join(TMP, 'lib-v3ticket');
+  fs.mkdirSync(path.join(LIB3, '_收件箱', '批次甲'), { recursive: true });
+  fs.writeFileSync(path.join(LIB3, '_收件箱', '批次甲', 'p01.png'), Buffer.from([0x89, 0x50, 0x4E, 0x47, 0, 0, 0, 0]));
+  const run3 = (args) => spawnSync(process.execPath, [ENGINE, ...args], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+
+  const tk = run3(['组装', '--recipe', 'ingest-single', '--subject', '数学', '--student', '学生甲',
+    '--image', '_收件箱/批次甲/p01.png', '--task', '--data', LIB3]);
+  A('v3 · 组装 --task 成功', tk.status === 0, 'exit=' + tk.status);
+  const T = tk.stdout || '';
+
+  /* 结构：三节被替换、五/六/七节齐备 */
+  A('v3 · 「三、回来之后」人读段被替换为人工兜底声明',
+    T.includes('## 三、人工兜底') && !T.includes('把 AI 回的 JSON **原样**粘回程序'), '');
+  A('v3 · 六、AGENT 全流程作业指引在', T.includes('## 六、AGENT 全流程作业指引'), '');
+  A('v3 · 七、出网红线在', T.includes('## 七、出网红线'), '');
+  A('v3 · 五、任务号信封示例仍在', /"envelope"/.test(T) && /taskId/.test(T), '');
+
+  /* 本机明文（信任模型裁定）：原图绝对路径进任务表 */
+  const shaIn = (T.match(/[0-9a-f]{64}/) || [''])[0];
+  const inboxAbs = path.join(LIB3, '_收件箱', '批次甲', 'p01.png');
+  A('v3 · 任务表带原图绝对路径（本机 AGENT 直读；信任模型 2026-11-15）',
+    T.includes(inboxAbs.replace(/\\/g, '\\\\')) || T.includes(inboxAbs), inboxAbs);
+  A('v3 · 任务表带学生化名（--student 透传）', T.includes('学生甲'), '');
+  A('v3 · sha256 溯源锚仍在（64 位）', /^[0-9a-f]{64}$/.test(shaIn), shaIn.slice(0, 12));
+
+  /* 八步指引里的命令必须可复制即跑：四条工具命令、绝对路径、带 --by agent */
+  A('v3 · 指引第 4 步含绑定校验命令', /绑定校验 t-[0-9-]+[0-9a-f]+ --in <回传\.json>/.test(T), '');
+  A('v3 · 指引第 5 步含代确认命令（--by agent）', /确认 t-[0-9-]+[0-9a-f]+ --by agent/.test(T), '');
+  A('v3 · 指引第 6 步含入库命令（--student 学生甲）', /入库 t-[0-9-]+[0-9a-f]+ --file <回传\.json> --student 学生甲/.test(T), '');
+  A('v3 · 指引第 7 步含双路盲解命令（lane 1 与 lane 2）', /--lane 1/.test(T) && /--lane 2/.test(T), '');
+  A('v3 · 指引第 7 步钉"绝不按题号分半"', /绝不按题号分半/.test(T), '');
+  A('v3 · 指引钉"改题干必须同步 blindFingerprint"', /同步更新 blindFingerprint/.test(T), '');
+  A('v3 · 指引钉"不许手改任何 JSON"', /不许手改任何 JSON/.test(T), '');
+  A('v3 · 指引含视觉自检（"取到但看不见"止损保留）', /视觉自检/.test(T) && /看不到图像画面/.test(T), '');
+  A('v3 · 指引含找图兜底命令（matches[0].abs）', /matches\[0\]\.abs/.test(T), '');
+
+  /* 出网红线内容 */
+  A('v3 · 红线：照片不出机器（不图搜/不云 OCR）', /照片不出机器/.test(T) && /不图搜/.test(T), '');
+  A('v3 · 红线：检索词只含题干、真名换"某同学"', /某同学/.test(T), '');
+  A('v3 · 红线：除搜题外默认禁外发（拿不准=不发）', /拿不准 = 不发/.test(T) || /拿不准 = 不发/.test(T), '');
+  A('v3 · 红线：检索词清单进汇总报告（抽检）', /检索词清单/.test(T), '');
+
+  /* 任务记录面：student 落盘（A-3 与 _录题任务.mjs 的联合行为） */
+  const recDir = path.join(LIB3, '_录题');
+  const recs = fs.existsSync(recDir) ? fs.readdirSync(recDir).filter(f => f.endsWith('.json')) : [];
+  A('v3 · 任务记录落盘', recs.length === 1, 'recs=' + recs.length);
+  if (recs.length === 1) {
+    const rec = JSON.parse(fs.readFileSync(path.join(recDir, recs[0]), 'utf8'));
+    A('v3 · 记录带 student=学生甲', rec.student === '学生甲', String(rec.student));
+    A('v3 · 记录 taskDigest = sha256(taskText)', rec.taskDigest === crypto.createHash('sha256').update(rec.taskText).digest('hex'), '');
+    A('v3 · 记录 taskText 含第六节（留痕的是 v3 作业书）', /AGENT 全流程作业指引/.test(rec.taskText || ''), '');
+  }
+
+  /* 预览路径（无 --task）仍是旧四段制：第五节的四段断言打在预览单上，这里再钉一条显式对照 */
+  const pv = run3(['组装', '--recipe', 'ingest-single', '--subject', '数学', '--image', '_收件箱/批次甲/p01.png', '--data', LIB3]);
+  A('v3 · 无 --task 预览单仍是旧四段制（六/七节不出现）',
+    pv.status === 0 && (pv.stdout || '').includes('## 三、回来之后') &&
+    !(pv.stdout || '').includes('## 六、AGENT 全流程作业指引'), 'exit=' + pv.status);
+  const pv2 = run3(['组装', '--recipe', 'ingest-single', '--subject', '数学', '--student', '学生甲', '--data', LIB3]);
+  A('v3 · 预览单带 --student 也不出现第六节（student 只属 --task 路径）',
+    pv2.status === 0 && !(pv2.stdout || '').includes('## 六、AGENT 全流程作业指引'), 'exit=' + pv2.status);
 }
 
 console.log('\n══ 五·补、收件箱「已处理归档」（2026-10-30：不再把所有照片一股脑列出来）══');

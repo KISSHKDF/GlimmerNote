@@ -35,7 +35,15 @@ const ENGINE = path.join(ROOT, 'src', 'tools', '_配方.mjs');
 const PACK_ENGINE = path.join(ROOT, 'src', 'tools', '_经验包.mjs');
 const SAMPLES = path.join(ROOT, 'src', 'packs');
 /** 批次 2 开工基线（接口契约 §0）。它是**不可变祖先提交**，所以"改造前"永远取得到。 */
-const BASE_COMMIT = '330e015';
+/* ★ 2026-11-15 基线推进：`330e015` → `99dac5c`。
+   为什么推进：对外开放 v2 批次 A **有意**改了 `组装 --task` 路径的产物（v3 单读者作业书：
+   新增六、AGENT 全流程作业指引 + 七、出网红线两节；「三、回来之后」人读段替换为人工兜底声明；
+   任务表带原图绝对路径与学生）——裁定链见该提交说明（本机 AGENT 全信任、网页版 AI 不考虑）。
+   ⇒ 带 `--task` 的两条逐字节对拍断言当场变红（base=36517 cur=39565；带原图 base=37896 cur=41082），
+   卡正文锚定断言的「回来之后@-1」也是同一变更。
+   ⚠ 无 --task 的**预览单**不受影响（0 字节差异）——预览路径的兼容红线继续由本文件其余断言
+   与 neg-recipe-contract 五·A 段的"预览单不变式"钉住。 */
+const BASE_COMMIT = '99dac5c';
 
 let pass = 0, fail = 0, skip = 0;
 const A = (name, ok, detail) => {
@@ -163,31 +171,45 @@ if (!fs.existsSync(SAMPLES)) {
     A('★ 无 --card 的 contractDigest：与改造前逐字节相同',
       tB.code === 0 && tN.code === 0 && !!rB && !!rN && rB.contractDigest === rN.contractDigest,
       (rB && rB.contractDigest) + ' vs ' + (rN && rN.contractDigest));
-    /* 带 --task 的任务单里写着**任务号**（随机），所以比"任务单"要先把任务号归一化；
-       其余字节必须一致（含第五节的回传信封示例）。 */
-    const noId = (s, id) => s.split(id).join('<TASKID>');
-    A('★ 带 --task 的任务单：任务号归一化后逐字节相同（含第五节的回传信封示例）',
-      !!rB && !!rN && noId(tB.out, rB.taskId) === noId(tN.out, rN.taskId),
-      'base=' + tB.out.length + ' cur=' + tN.out.length + ' 字符');
+    /* 带 --task 的任务单里写着**任务号**（随机），所以比"任务单"要先把任务号归一化。
+       ★ 2026-11-15（对外开放 v2）：--task 路径已升级 v3 作业书（基线推进见文件头注），
+       "跨基线逐字节"对 --task 产物不再成立（那是**有意**的变更，由 neg-recipe-contract 五·A
+       段的结构断言接管）。本线改为守它的原始语义——**同引擎、双临时库对照**：
+       同一引擎跑两个干净库，证"环境（库根）不污染任务单正文"；与无 --card 路径的
+       跨基线对拍（上面四条，预览单 0 字节差异）互为犄角。 */
+    const libB3 = mkLib('base-sameeng'), libN3 = mkLib('cur-sameeng');
+    const sB = run(['组装', '--recipe', 'ingest-single', '--subject', '数学', '--data', libB3, '--task'], { engine: HEAD_ENGINE });
+    const sN = run(['组装', '--recipe', 'ingest-single', '--subject', '数学', '--data', libN3, '--task'], { engine: HEAD_ENGINE });
+    const rsB = newestTask(libB3), rsN = newestTask(libN3);
+    const noId2 = (s, id) => s.split(id).join('<TASKID>');
+    A('★ --task 任务单：同引擎双库对照逐字节相同（库根/收件箱路径不进 --task 产物）',
+      sB.code === 0 && sN.code === 0 && !!rsB && !!rsN &&
+      noId2(sB.out, rsB.taskId) === noId2(sN.out, rsN.taskId),
+      'a=' + sB.out.length + ' b=' + sN.out.length + ' 字符');
     A('★ 无 --card 的 taskDigest 就是任务单 bytes 的 sha256（口径没变）',
       !!rN && rN.taskDigest === sha256(Buffer.from(tN.out, 'utf8')), '');
     A('无 --card 时任务记录的 cards 仍是空数组（保持现值）',
       !!rN && Array.isArray(rN.cards) && rN.cards.length === 0, rN ? JSON.stringify(rN.cards) : '(无记录)');
-    /* 带原图：任务单里含**本机引擎绝对路径**（分支 A 的找图命令），两个引擎装在不同目录
-       ⇒ stdout 天然有两处不同。所以这里比"路径归一化之后的字节"+ 摘要本身（摘要不含路径）。 */
+    /* 带原图：任务单里含**引擎安装路径**（找图命令 + v3 的工具目录与四条工具命令），两个引擎
+       装在不同目录 ⇒ stdout 天然多处不同。★ 2026-11-15（对外开放 v2）：跨基线改为**同引擎双库**
+       对照（理由同上条）；归一化仍去掉引擎目录与任务号两处**已知环境差异**——这不是判据放松。 */
     const libB2 = mkLib('base-img'), libN2 = mkLib('cur-img');
     const imgB = path.join(libB2, '_收件箱', '批次甲', 'p01.png');
     const imgN = path.join(libN2, '_收件箱', '批次甲', 'p01.png');
     const iB = run(['组装', '--recipe', 'ingest-single', '--subject', '数学', '--image', imgB, '--data', libB2, '--task'], { engine: HEAD_ENGINE });
-    const iN = run(['组装', '--recipe', 'ingest-single', '--subject', '数学', '--image', imgN, '--data', libN2, '--task']);
+    const iN = run(['组装', '--recipe', 'ingest-single', '--subject', '数学', '--image', imgN, '--data', libN2, '--task'], { engine: HEAD_ENGINE });
     const rB2 = newestTask(libB2), rN2 = newestTask(libN2);
-    /* 两处必须归一化，且两处都是**已知的环境差异**，不是判据放松：
-       ① 两颗引擎装在不同目录 ⇒ 任务单里"分支 A"的找图命令路径不同；
-       ② `--task` 的任务号是随机的（同图同配方再生成也是两个任务，见 _录题任务.mjs 头注）。 */
-    const norm = (s, eng, id) => s.split(path.join(path.dirname(eng))).join('<TOOLS>').split(id).join('<TASKID>');
-    A('★ 带原图的任务单：路径与任务号归一化后逐字节相同（其余一个字节都不许变）',
+    /* 三处归一化，全部是**已知的环境差异**，不是判据放松：
+       ① 引擎安装目录（找图命令 + v3 的工具目录与工具命令）；
+       ② 任务号（随机）；
+       ③ 库根（v3 任务表带原图绝对路径，两个临时库名长度天然差 1 字符）。 */
+    const norm = (s, eng, id, lib) => s
+      .split(path.join(path.dirname(eng))).join('<TOOLS>')
+      .split(lib).join('<LIB>')
+      .split(id).join('<TASKID>');
+    A('★ 带原图的 --task 任务单：同引擎双库对照，路径与任务号归一化后逐字节相同',
       iB.code === 0 && iN.code === 0 && !!rB2 && !!rN2 &&
-      norm(iB.out, HEAD_ENGINE, rB2.taskId) === norm(iN.out, ENGINE, rN2.taskId),
+      norm(iB.out, HEAD_ENGINE, rB2.taskId, libB2) === norm(iN.out, HEAD_ENGINE, rN2.taskId, libN2),
       'base=' + iB.out.length + ' cur=' + iN.out.length + ' 字符');
     A('★ 带原图的 contractDigest：与改造前逐字节相同（摘要不含路径与任务号，可直接比）',
       !!rB2 && !!rN2 && rB2.contractDigest === rN2.contractDigest,
@@ -244,9 +266,12 @@ if (!fs.existsSync(SAMPLES)) {
   {
     const iAi = one.out.indexOf('## 二、任务指令');
     const iCard = one.out.indexOf('### 本次追加的方法（经验包）');
-    const iBack = one.out.indexOf('## 三、回来之后');
-    A('★ 卡正文位于「二、任务指令」段内（否则用户只复制那一段就丢卡）',
-      iAi > 0 && iCard > iAi && iCard < iBack, 'AI段@' + iAi + ' 经验包段@' + iCard + ' 回来之后@' + iBack);
+    /* ★ 2026-11-15（对外开放 v2）：--task 路径的「三、回来之后」人读段被替换为人工兜底声明，
+       v3 的锚改为「## 五、任务号」——经验包卡正文必须仍在配方正文段内、任务号段之前
+       （卡是"方法"的一部分，AGENT 按「二、任务指令」段拿到它）。 */
+    const iBack = one.out.indexOf('## 五、任务号');
+    A('★ 卡正文位于「二、任务指令」段内（v3 锚=任务号段；卡是方法的一部分）',
+      iAi > 0 && iCard > iAi && iBack > 0 && iCard < iBack, 'AI段@' + iAi + ' 经验包段@' + iCard + ' 任务号@' + iBack);
     /* "排在配方正文之后"要有个**精确**的锚：配方正文（含反例库）在任务单里出现两次
        （二、任务指令 一次，四、本机留痕 一次），所以拿反例库正文的**尾端**做锚 ——
        经验包段必须在第一份配方正文结束之后。 */

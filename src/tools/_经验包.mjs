@@ -100,7 +100,20 @@ function samePath(a, b) {
  *      （读不到 LOCALAPPDATA 时回落 `<用户主目录>\AppData\Local\拾光小册\经验包`）
  * 为什么放 LOCALAPPDATA 而不是仓库里：经验包是**用户装的东西**，不是程序资产；
  *   放进仓库会让"我装了什么"跟着 git 走、还会被发布包打包出去（施工方案 §6 已定）。
- * ⚠ 不做存在性检查：`清单` 在根不存在时要打印"没有安装任何经验包"并 exit 0，不是报错。 */
+ * ⚠ 不做存在性检查：`清单` 在根不存在时要打印"没有安装任何经验包"并 exit 0，不是报错。
+ *
+ * ★ 2026-11-15（对外开放 v2 / A-4）：**官方经验包**（随程序只读分发的 L3 题型经验）。
+ *   位置 `<AppRoot>\官方经验包\`（AppRoot = 本工具目录上一级，与 _库根.mjs 同口径推导，
+ *   但在这里自算 —— 本模块的硬边界②是"不依赖库根"，导入期不求值库根；AppRoot 只是
+ *   程序自身位置，不是用户数据）。解析语义：
+ *   · 显式根（①②）⇒ 单根，行为与今天逐字节相同（测试隔离性不变）；
+ *   · 默认根（③）⇒ **官方根 + 用户根合并**：清单两处都列（官方包标 official:true），
+ *     选卡用户包同 id 同版本**优先**（用户装的覆盖同名的官方包——用户对自己机器有最终决定权）；
+ *   · 官方包同样受 `.停用` 管（在官方包目录里放 .停用 即停用，删掉即恢复）。 */
+export const OFFICIAL_PACKS_DIRNAME = '官方经验包';
+export function officialPacksRoot() {
+  return path.join(path.dirname(fileURLToPath(import.meta.url)), '..', OFFICIAL_PACKS_DIRNAME);
+}
 export function packsRoot(explicit) {
   const pick = (v) => (typeof v === 'string' && v.trim() ? path.resolve(v.trim()) : '');
   const ex = pick(explicit);
@@ -110,6 +123,19 @@ export function packsRoot(explicit) {
   const lad = pick(process.env.LOCALAPPDATA);
   const base = lad || path.join(os.homedir(), 'AppData', 'Local');
   return path.join(base, '拾光小册', '经验包');
+}
+
+/** 默认根（③）时是否要合并官方根：显式根与环境变量都是"用户指定的根"，单根、不合并。 */
+function officialMergeWanted(explicitRoot) {
+  const env = process.env.CTB_PACKS;
+  return !explicitRoot && !(typeof env === 'string' && env.trim());
+}
+
+/** 枚举候选根：合并模式下 [官方根, 用户根]（官方在前=清单里先列、选卡时用户包后查→优先）。 */
+function rootsFor(explicitRoot) {
+  const main = packsRoot(explicitRoot);
+  if (!officialMergeWanted(explicitRoot)) return [main];
+  return [officialPacksRoot(), main];
 }
 
 /* ══════════════════════ 选卡串解析（契约 §1）══════════════════════
@@ -590,28 +616,38 @@ function realInside(packDir, realPack, abs, what, E) {
  * 为什么要这样：经验包根是用户手放文件的地方，坏一个包不该让"我装了哪些包"看不见。
  * 返回 `[{ id, version, dir, enabled, verdict:{ok,errors[]}, title, author, license, notes }]`。 */
 export function listPacks(explicitRoot) {
-  const root = packsRoot(explicitRoot);
+  const merge = officialMergeWanted(explicitRoot);
+  const mainRoot = packsRoot(explicitRoot);
+  const officialRoot = officialPacksRoot();
   const out = [];
-  for (const dir of findPackDirs(root)) {
-    const rel = path.relative(root, dir).split(path.sep).filter(Boolean);
-    const version = rel.length ? rel[rel.length - 1] : '';
-    const id = rel.slice(0, -1).join('/');
-    const enabled = !fs.existsSync(path.join(dir, DISABLED_MARK));
-    let meta = {};
-    try { meta = JSON.parse(readText(path.join(dir, PACK_FILE))); } catch { meta = {}; }
-    if (!meta || typeof meta !== 'object' || Array.isArray(meta)) meta = {};
-    let verdict;
-    try {
-      const v = validatePack(dir, explicitRoot);
-      verdict = { ok: v.ok, errors: v.errors };
-    } catch (e) {
-      /* 校验器自己炸了也不能让整份清单崩：这一行判红并说清楚是哪一行 */
-      verdict = { ok: false, errors: [{ code: '异常', what: '校验', why: '校验过程抛错：' + String(e && e.message || e) }] };
+  const seenIdVer = new Set();
+  for (const root of rootsFor(explicitRoot)) {
+    for (const dir of findPackDirs(root)) {
+      const rel = path.relative(root, dir).split(path.sep).filter(Boolean);
+      const version = rel.length ? rel[rel.length - 1] : '';
+      const id = rel.slice(0, -1).join('/');
+      const key = id + '@' + version;
+      if (merge && seenIdVer.has(key)) continue;   // 用户包同 id@版本优先（官方根先列 ⇒ 用户根跳过同键）——见下
+      if (merge) seenIdVer.add(key);
+      const enabled = !fs.existsSync(path.join(dir, DISABLED_MARK));
+      let meta = {};
+      try { meta = JSON.parse(readText(path.join(dir, PACK_FILE))); } catch { meta = {}; }
+      if (!meta || typeof meta !== 'object' || Array.isArray(meta)) meta = {};
+      let verdict;
+      try {
+        const v = validatePack(dir, explicitRoot);
+        verdict = { ok: v.ok, errors: v.errors };
+      } catch (e) {
+        /* 校验器自己炸了也不能让整份清单崩：这一行判红并说清楚是哪一行 */
+        verdict = { ok: false, errors: [{ code: '异常', what: '校验', why: '校验过程抛错：' + String(e && e.message || e) }] };
+      }
+      out.push({
+        id, version, dir, enabled, verdict,
+        /* official 只在合并模式才可能出现（官方根只进默认根合并）；显式单根时恒 false */
+        official: merge && samePath(root, officialRoot),
+        title: str(meta.title), author: str(meta.author), license: str(meta.license),
+      });
     }
-    out.push({
-      id, version, dir, enabled, verdict,
-      title: str(meta.title), author: str(meta.author), license: str(meta.license),
-    });
   }
   out.sort((a, b) => {
     const ka = a.id + '@' + a.version, kb = b.id + '@' + b.version;
@@ -662,30 +698,47 @@ export function loadCard(sel, explicitRoot) {
   const p = parseCardSel(sel);
   if (!p.ok) return { ok: false, code: 2, reason: 'sel-format', why: p.why };
 
-  const root = packsRoot(explicitRoot);
-  if (!isDir(root)) {
-    return {
-      ok: false, code: 2, reason: 'packs-root-missing',
-      why: '经验包根不存在：' + root + '\n  安装=把包文件夹**手工复制**成 <经验包根>/<packId>/<version>/（见 仓库文档 docs\\经验包规范.md）',
-    };
-  }
-  const packDir = path.join(root, ...p.packId.split('/'), p.version);
-  if (!isDir(packDir)) {
-    const packBase = path.join(root, ...p.packId.split('/'));
-    if (isDir(packBase)) {
-      let vers = [];
-      try { vers = fs.readdirSync(packBase).filter((n) => isDir(path.join(packBase, n)) && VERSION_RE.test(n)); } catch { }
-      return {
-        ok: false, code: 2, reason: 'version-unknown',
-        why: '经验包 ' + p.packId + ' 没有版本 ' + p.version + '（' + packBase + ' 下已安装版本：' +
-          (vers.length ? vers.join('、') : '（无）') + '）',
-      };
+  /* 合并模式（默认根）下按 [用户根, 官方根] 顺序找第一个命中者 —— 用户装的覆盖同 id@版本的官方包。
+     显式根（--packs / CTB_PACKS）保持单根：行为与今天逐字节相同（测试隔离性）。 */
+  const candidates = officialMergeWanted(explicitRoot)
+    ? [packsRoot(explicitRoot), officialPacksRoot()]
+    : [packsRoot(explicitRoot)];
+  let hit = null;
+  const missWhy = [];
+  let missReason = '';
+  for (const root of candidates) {
+    if (!isDir(root)) { missWhy.push('经验包根不存在：' + root); missReason = 'packs-root-missing'; continue; }
+    const packDir = path.join(root, ...p.packId.split('/'), p.version);
+    if (!isDir(packDir)) {
+      const packBase = path.join(root, ...p.packId.split('/'));
+      if (isDir(packBase)) {
+        let vers = [];
+        try { vers = fs.readdirSync(packBase).filter((n) => isDir(path.join(packBase, n)) && VERSION_RE.test(n)); } catch { }
+        missWhy.push('经验包 ' + p.packId + ' 没有版本 ' + p.version + '（' + packBase + ' 下已安装版本：' +
+          (vers.length ? vers.join('、') : '（无）') + '）');
+        /* ★ reason 按"最具体的那次未命中"记：包在而版本不在 ⇒ version-unknown（契约 §2.2 冻结的三态，
+           neg-pack-contract 十一组钉住——A-4 改双根查找时必须逐根保留，不许合并压平）。 */
+        if (!missReason || missReason === 'pack-unknown') missReason = 'version-unknown';
+      } else {
+        missWhy.push('没有安装经验包 ' + p.packId + '（' + packBase + ' 不存在）—— 安装=手工复制文件夹，停用=包内放 .停用');
+        if (!missReason) missReason = 'pack-unknown';
+      }
+      continue;
     }
+    hit = packDir;
+    break;
+  }
+  if (!hit) {
     return {
-      ok: false, code: 2, reason: 'pack-unknown',
-      why: '没有安装经验包 ' + p.packId + '（' + packBase + ' 不存在）—— 安装=手工复制文件夹，停用=包内放 .停用',
+      ok: false, code: 2, reason: missReason || 'packs-root-missing',
+      why: missWhy.join('\n  ') +
+        (missReason === 'packs-root-missing' ? '\n  安装=把包文件夹**手工复制**成 <经验包根>/<packId>/<version>/（见 仓库文档 docs\\经验包规范.md）' : ''),
     };
   }
+  /* ★ A-4：目录对账（§④）要按"包实际所在的根"做——合并模式下官方包在官方根里，
+     按 explicitRoot 对账会误判成"候选目录"（不查目录名一致性）。 */
+  const packDir = hit;
+  const owningRoot = candidates.find((r) => isInside(r, packDir) && !samePath(r, packDir)) || packsRoot(explicitRoot);
 
   /* 停用判据放在"形状/存在"之后、"内容校验"之前：用户最先要知道的是"这个包被我停用了"，
      而不是一堆内容错。停用原因（文件内容第一行）一并带出，才可归因。 */
@@ -700,7 +753,7 @@ export function loadCard(sel, explicitRoot) {
     };
   }
 
-  const v = validatePack(packDir, explicitRoot);
+  const v = validatePack(packDir, owningRoot);
   if (!v.ok) {
     const lines = v.errors.slice(0, 6).map((e) => '  - [' + e.code + '] ' + e.what + '：' + e.why);
     if (v.errors.length > 6) lines.push('  …另有 ' + (v.errors.length - 6) + ' 条（跑 校验 ' + packDir + ' 看全部）');

@@ -527,6 +527,9 @@ namespace CTBShell2
                 AddFlag(args, payload, "by", "--by");
                 AddFlag(args, payload, "paper", "--paper");
                 AddFlag(args, payload, "results", "--results");
+                /* ★ 2026-11-14（口述确认闭环）：批改时随发的「本次判分中孩子填了转折点的编号清单」。
+                   壳只做透明转发（语义/校验在 _标记复习.mjs 工具侧），与 by 透传同一纪律。 */
+                AddFlag(args, payload, "causeConfirmed", "--cause-confirmed");
                 AddFlag(args, payload, "reason", "--reason");
                 AddFlag(args, payload, "at", "--at");
                 AddFlag(args, payload, "to", "--to");
@@ -732,6 +735,10 @@ namespace CTBShell2
              下游 `_经验包.mjs` 另有包含性判据（纵深，不互相替代）。 */
         static readonly System.Text.RegularExpressions.Regex CARD_SEL_SHAPE =
             new System.Text.RegularExpressions.Regex(@"^[A-Za-z0-9_\-][A-Za-z0-9._\-]*(/[A-Za-z0-9_\-][A-Za-z0-9._\-]*)+@[0-9]+\.[0-9]+\.[0-9]+$");
+        /* ★ 2026-11-16（批次 B）：学生化名形状门禁（与上面选卡串同族的第一道形状防线）。
+            中文/字母/数字/连字符/下划线，2-24 字——不含引号、分号、空白、路径分隔符。 */
+        static readonly System.Text.RegularExpressions.Regex STUDENT_SHAPE =
+            new System.Text.RegularExpressions.Regex(@"^[\p{L}0-9_\-]{2,24}$");
         public string Recipe(string payload)
         {
             string action = ExtractString(payload, "action");
@@ -780,6 +787,18 @@ namespace CTBShell2
                                 return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"选卡串形状不对（应为 <包id>/<卡id>@<主>.<次>.<修订>，例 family-a/shared-stem/shared-stem@1.0.0）：" + Esc(sel) + "\"}";
                             args.Add("--card"); args.Add(sel);
                         }
+                    }
+                    /* ★ 2026-11-16（对外开放 v2 批次 B）：学生化名透传（--student）。
+                       页面在生成前已选学生，随任务记录落盘 + 进 v3 指引第 6 步入库命令。
+                       与选卡同一条纪律：固定键名 → 固定 flag；学生化名走**白名单字符集**形状门禁
+                       （化名是家长取的中文名/昵称，允许中文、字母数字、连字符——不含引号/分号/
+                       路径分隔符这类能改变 argv 语义的字符；值仍是独立 argv 元素，双保险）。 */
+                    string stu = ExtractString(payload, "student");
+                    if (!string.IsNullOrEmpty(stu))
+                    {
+                        if (!STUDENT_SHAPE.IsMatch(stu))
+                            return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"学生化名形状不对（只允许中文、字母、数字、连字符、下划线，2-24 字）：" + Esc(stu) + "\"}";
+                        args.Add("--student"); args.Add(stu);
                     }
                 }
                 /* ★ 2026-11-03（批次 1 收尾「页面接线」）：`--task` 布尔透传 —— 录题页「生成任务单」
@@ -880,6 +899,16 @@ namespace CTBShell2
             {
                 var args = new List<string> { ToolPath("_录题任务.mjs"), "确认", taskId };
                 AddFlag(args, payload, "note", "--note");
+                /* ★ 2026-11-16（批次 B / A-2）：确认者透传（--by human|agent）。
+                    页面的"我确认"按钮不带 by（缺省 human，行为不变）；"AGENT 将代确认"的
+                    程序化路径才带 by=agent。合法值由引擎判（白名单外 exit 2），壳只拦形状外的垃圾。 */
+                string by = ExtractString(payload, "by");
+                if (!string.IsNullOrEmpty(by))
+                {
+                    if (by != "human" && by != "agent")
+                        return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"--by 只接受 human 或 agent：" + Esc(by) + "\"}";
+                    args.Add("--by"); args.Add(by);
+                }
                 args.Add("--data"); args.Add(DataRoot);
                 int exit; string se;
                 string so = RunNodeRaw(args.ToArray(), 60000, out exit, out se);
@@ -957,6 +986,57 @@ namespace CTBShell2
                 return "{\"ok\":false,\"code\":-1,\"out\":\"\",\"err\":\"" + Esc(ex.Message) + "\"}";
             }
             finally { if (gated) { WriteGate.Release(); } if (tmp != null) { try { File.Delete(tmp); } catch { } } }
+        }
+
+        /* ★ 2026-11-16（对外开放 v2 批次 B）：批次工作单落盘通道（`_录题任务.mjs 工作单`）。
+           为什么要有它：录题页勾多张图逐张生成任务后，"把这批交给 AGENT"需要一份整批总纲
+           （出网纪律 + 环境明文 + 任务清单 + 进度骨架），页面自己拼不出（任务记录在库里）——
+           与 taskConfirm/ingestLand 同族：动作在工具里有、壳没有通道就等于没有。
+           纪律同上：固定键名 → 固定 argv 逐项映射；taskId 逐个过形状门禁；显式 --data；
+           回真实退出码。写读分界：写**新建**文件（<库根>\_录题\工作单-<W号>.md，用户数据）⇒ 进写闸，
+           finally 放闸（2026-11-04 P0·Critical 同族坑）。 */
+        public string WorksheetWrite(string payload)
+        {
+            string tasks = ExtractString(payload, "tasks");
+            if (string.IsNullOrEmpty(tasks))
+                return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"缺少 tasks（逗号分隔的 taskId 列表）\"}";
+            var ids = new List<string>();
+            foreach (string raw in tasks.Split(','))
+            {
+                string id = raw.Trim();
+                if (id.Length == 0) continue;
+                if (!TaskIdOk(id))
+                    return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"taskId 形状不对（应为 t-日期-时间-6位hex）：" + Esc(id) + "\"}";
+                ids.Add(id);
+            }
+            if (ids.Count == 0)
+                return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"tasks 里没有任何合法 taskId\"}";
+            string student = ExtractString(payload, "student");
+            if (!string.IsNullOrEmpty(student) && !STUDENT_SHAPE.IsMatch(student))
+                return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"学生化名形状不对（只允许中文、字母、数字、连字符、下划线，2-24 字）：" + Esc(student) + "\"}";
+            if (!WriteGate.Wait(1200000)) return "{\"ok\":false,\"code\":2,\"out\":\"\",\"err\":\"等待写入闸超时（另有落库/重建在跑）\"}";
+            bool gated = false;
+            try
+            {
+                var args = new List<string> { ToolPath("_录题任务.mjs"), "工作单" };
+                args.AddRange(ids);
+                if (!string.IsNullOrEmpty(student)) { args.Add("--student"); args.Add(student); }
+                AddFlag(args, payload, "subject", "--subject");
+                args.Add("--data"); args.Add(DataRoot);
+                if (ExtractString(payload, "json") == "1") args.Add("--json");
+                gated = true;
+                int exit; string se;
+                string so = RunNodeRaw(args.ToArray(), 60000, out exit, out se);
+                Log("worksheetWrite n=" + ids.Count + " exit=" + exit + " out=" + SliceForDiag((so ?? "").Replace("\r\n", " | ")) +
+                    (string.IsNullOrEmpty(se) ? "" : " err=" + SliceForDiag((se ?? "").Replace("\r\n", " | "))));
+                return "{\"ok\":true,\"code\":" + exit + ",\"out\":\"" + Esc(so ?? "") + "\",\"err\":\"" + Esc(se ?? "") + "\"}";
+            }
+            catch (Exception ex)
+            {
+                Log("worksheetWrite FAILED: " + ex.Message);
+                return "{\"ok\":false,\"code\":-1,\"out\":\"\",\"err\":\"" + Esc(ex.Message) + "\"}";
+            }
+            finally { if (gated) { WriteGate.Release(); } }
         }
 
         /* ★ 2026-11-03（批次 4「审核与正式入库」）：人工修订通道（候选 / 修订链 / 正式写入）。
@@ -1750,6 +1830,7 @@ namespace CTBShell2
                 /* ★ 2026-11-04：录题**入库**通道（校验通过 + 已确认 ⇒ 落成真错题卡）。
                    白名单纪律同上，见 HostBridge.IngestLand。写用户库 ⇒ 进写闸。 */
                 else if (op == "ingestLand") resp = bridge.IngestLand(payload);
+                else if (op == "worksheetWrite") resp = bridge.WorksheetWrite(payload);
                 else if (op == "readFile") resp = bridge.ReadFile(payload);
                 else if (op == "openFile")
                 {

@@ -40,7 +40,9 @@
      那一份）。两份必须逐字相等——只改一份会让「表单/筛选里选得到的类型，提交时被工具拒」。
      一致性由 `tests\neg-reason-entry.cjs` 的机读断言钉住（阴性对照：只改一份即红）。
      「经验线索」= 家长/用户对某道题或某条方法的纠正理由（工具侧 `纠因` 记 corrections[]）。 */
-  M.KINDS = ['笔迹归属', '错因口述', '老师漏判', '卷面辨认', '口径确认', '系统维护', '其他', '经验线索'];
+  /* ★ 2026-11-14：新增「红字异议」—— 派生 kind（_异议桥.mjs），台账里永远没有它的真条目；
+     进 KINDS 只为让类型筛选/图例认得。与 _待确认.mjs 的 KINDS 逐字相等（neg-reason-entry §0 钉住）。 */
+  M.KINDS = ['笔迹归属', '错因口述', '老师漏判', '卷面辨认', '口径确认', '系统维护', '其他', '经验线索', '红字异议'];
   M.ASK_ORDER = ['孩子', '老师', '原卷', '系统'];
   M.ASK_HINT = { 孩子: '孩子本人能答（错因、笔迹）', 老师: '只能跟老师核对（漏判、扣分口径）', 原卷: '拿原卷放大就能定（被覆盖/不清）', 系统: '不是问人，是待改的数据/工具问题' };
   M.ASK_IC = { 孩子: '🧒', 老师: '👩‍🏫', 原卷: '🔍', 系统: '🛠' };
@@ -472,7 +474,11 @@
       }
       const noteParts = list.filter(x => x.note).map(x => x.id + '：' + x.note);
       const noteStr = ('屏幕复习·' + kid + subject + ' ' + stamp + (noteParts.length ? ' ｜转折点笔记 ' + noteParts.join('；') : '')).slice(0, 400);
+      /* ★ 2026-11-14（口述确认闭环）：判分时填了转折点的卡 = 孩子口述了错因。
+         编号清单随批改下发，工具侧（_标记复习 批改）据此把这几张卡的 causeConfirmed 置 true。 */
+      const causeConfirmedIds = list.filter(x => x.causeConfirmedByNote).map(x => x.id).join(',');
       const r2 = await CTB.host.mark('批改', { paper: paperId, results: resStr, date: stamp, note: noteStr,
+        ...(causeConfirmedIds ? { causeConfirmed: causeConfirmedIds } : {}),
         /* ★ 2026-11-13（批次 4 / UX-10「谁判的」）：孩子模式下判分的是孩子自己（自评），否则是家长判。
            **不让人手选**：这个派生本来就准（"孩子模式"的定义就是让孩子自己判），
            多一个选择器只会多一处忘填/填错。记下来的用处是**数据自证**——

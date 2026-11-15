@@ -209,6 +209,28 @@ $recipeN = (Get-ChildItem $stageRecipes -Recurse -File).Count
 $recipeCore = Join-Path $stageRecipes '_core'
 if (-not (Test-Path (Join-Path $recipeCore 'base.md'))) { throw "配方核心层缺失：$recipeCore\base.md" }
 Write-Host "  配方：$recipeN 个文件 -> app\recipes\"
+# ── 1d) 官方经验包 src\官方经验包\ → 包内 app\官方经验包\ ──
+#   为什么必须进包（2026-11-15 对外开放 v2 / A-4）：官方经验包 = 随程序分发的 L3 题型经验
+#   （可插拔方法卡），由 app\tools\_经验包.mjs 的官方根（<AppRoot>\官方经验包）读取；
+#   引擎在默认根模式下把官方根与用户根合并（用户包同 id@版本优先），显式根模式不合并。
+#   缺它 = L3 经验层不随程序走；有它 = 别人的 AGENT 拿到任务单也拿到题型方法。
+#   内容红线：不含任何学生数据、不含 API Key、不联网；纯 Markdown / JSON。
+$srcOfficialPacks = Join-Path $root 'src\官方经验包'
+if (Test-Path $srcOfficialPacks) {
+  $stageOfficialPacks = Join-Path $stageApp '官方经验包'
+  Copy-Item $srcOfficialPacks $stageOfficialPacks -Recurse -Force
+  $officialN = (Get-ChildItem $stageOfficialPacks -Recurse -File).Count
+  $officialPackJson = Get-ChildItem $stageOfficialPacks -Recurse -Filter 'pack.json' -File
+  if (-not $officialPackJson) { throw "官方经验包里没有任何 pack.json：$srcOfficialPacks" }
+  foreach ($pj in $officialPackJson) {
+    # ⚠ PS 5.1 的 Get-Content 不带 -Encoding 时按 ANSI（GBK）解无 BOM 的 UTF-8 —— 中文卡标题直接炸 JSON。
+    $pjObj = Get-Content $pj.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+    if (-not $pjObj.formatVersion) { throw "官方经验包缺 formatVersion：$($pj.FullName)" }
+  }
+  Write-Host "  官方经验包：$officialN 个文件（$($officialPackJson.Count) 个包）-> app\官方经验包\"
+} else {
+  Write-Host "  官方经验包：无（src\官方经验包 不存在——本包不含官方方法卡）"
+}
 
 $verObj = [ordered]@{
   name     = [string]$V.name
@@ -413,7 +435,11 @@ $inboxNote = @'
   _收件箱\数学-10月28日\p01.jpg
   _收件箱\英语-11月02日\p03.jpg
 
-放好之后 → 打开程序 → 左侧「录题」→ 勾一张照片 → 生成任务单 → 复制给你自己的 AI。
+放好之后 → 打开程序 → 左侧「录题」→ 勾照片（可多张）→ 选孩子和学科 → 点「📦 生成 AGENT 任务包」
+→ 复制派发指令发给你本机的 AGENT（能读文件、跑命令、看图的，如 Claude Code / Codex / ZCode）。
+剩下全部由它完成：转录 → 搜题比对 → 校验 → 入库 → 双路盲解 → 批次报告。
+（手动挡：点「生成任务单」复制单张任务单粘给你的 AI，回传后走校验→确认→建卡入库。）
+
 （原图是这套系统里唯一不可再生的数据，放进来的别删；备份时整个「数据」目录一起拷走。）
 
 处理过的照片（已经在「原卷台账」里登记过的）会自动从待处理清单里隐去、算作"已归档"，
@@ -433,8 +459,31 @@ $readme = @'
    3. 第一次启动 Windows 可能提示"未知发布者"——本程序用的是自签证书（不是购买的正规
       代码签名证书），点「更多信息」→「仍要运行」即可。
    4. 进去点右上角「＋ 新建学生」，填个小名就行（不用选学科）
+   5. 错题照片放进 数据\_收件箱\，到「录题」页交给你的 AGENT（见下面"全自动录题"）
 
    ★ __NODENOTE__
+
+一·五、全自动录题（把一批错题交给你的本机 AGENT）
+   你需要一个"本机 AGENT"：能读文件、能跑命令、能看图的 AI 助手
+   （Claude Code / Codex CLI / ZCode / Cursor 等都行）。
+
+   步骤：
+   1. 照片放进 数据\_收件箱\<批次名>\
+   2. 「录题」页第 2 步：勾本批照片 → 选孩子 → 选学科 → 点「生成任务单」
+      （多张时逐张生成，一张失败不影响其余）→ 点「📦 生成 AGENT 任务包」
+   3. 点「📋 复制派发指令」，把那一行发给你的 AGENT —— 到此你收工。
+   4. AGENT 会跑完全部八步：取图 → 转录+搜题比对 → 校验 → 代确认 → 入库 →
+      双路盲解 → 异议处置 → 批次汇总报告。你随时在首页/台账看结果。
+
+   谁来干这些活：你的 AGENT。方法全部由程序提供——录题配方（怎么转录、答案从哪来、
+   错因怎么编码）随任务单全文携带；题型方法在 app\官方经验包\；八步工序写在任务包里。
+   AGENT 不需要装任何别的东西。
+
+   两条你必须知道的：
+   · AGENT 会"代确认"：任务记录里如实标记（可审计），程序的门禁一道不少；
+     你对任何一张卡不满意，改卡/撤卡随时可以（界面上有入口）。
+   · 出网只有一处：搜题。只发题干文字（孩子真名换成"某同学"、剔除学校班级学号）；
+     照片不上传任何地方；AGENT 的汇总报告会附检索词清单供你核对。
 
 二、⚠ 唯一需要系统自带的东西：Microsoft Edge WebView2 运行时
    桌面壳（拾光小册.exe）是用 WebView2 画的界面。**缺这个运行时，程序完全打不开**

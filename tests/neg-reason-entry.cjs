@@ -366,13 +366,18 @@ if (!OLD_SRC) {
   /* ── 原先这里的"已知差异①②③"是批次 3→4 时代的增量（经验线索 尚不在旧基线 KINDS 里）。
      2026-11-09 基线推进到 069e5a2（.01 落地后）：「经验线索」两侧都在，那三处差异不复存在——
      原断言集体改写为"两侧逐字一致"的同强度判据（宁可对拍变严，不许对着历史差异放水）。
-     唯一保留的有意差异 = 已知差异④（系统维护行的生成器指令，见下方专断言）。 ── */
+     唯一保留的有意差异 = 已知差异④（系统维护行的生成器指令，见下方专断言）。
+     ★ 2026-11-14 已知差异⑤：本轮把「红字异议」加进两侧 KINDS（异议桥批次），
+       旧基线（069e5a2）的 kind 报错文本自然没有它 —— 与①②③同族，归一后收进专断言。 ── */
   const badArgs = ['加', '--student', '学生D', '--q', '第1页第1题，「A」是你自己选的吗？', '--kind', '不存在的类型'];
   const ba = runTool(OLD_TOOL, OLD_LIB, badArgs), bb = runTool(NEW_TOOL, NEW_LIB, badArgs);
-  const bea = norm(ba.err, OLD_LIB), beb = norm(bb.err, NEW_LIB);
+  const bea = norm(ba.err, OLD_LIB).replace(/ \/ 红字异议/, '').replace(/ \/ 经验线索 \/ 红字异议/, ' / 经验线索');
+  const beb = norm(bb.err, NEW_LIB).replace(/ \/ 红字异议/, '').replace(/ \/ 经验线索 \/ 红字异议/, ' / 经验线索');
   A('加 --kind 非法：两边都 exit 2（行为不变）', ba.code === 2 && bb.code === 2, ba.code + '/' + bb.code);
-  A('★ 逐字节相同（基线推进后「经验线索」已在两侧 KINDS 里）', bea === beb,
+  A('★ 逐字节相同（基线推进后「经验线索」已在两侧 KINDS 里；已知差异⑤「红字异议」归一）', bea === beb,
     '旧=' + firstLine(bea) + ' ｜ 新=' + firstLine(beb));
+  A('已知差异⑤专断言：新实现的 kind 列表含「红字异议」、旧基线不含（差异真实存在）',
+    /红字异议/.test(norm(bb.err, NEW_LIB)) && !/红字异议/.test(norm(ba.err, OLD_LIB)), '');
 
   const ua = runTool(OLD_TOOL, OLD_LIB, ['不存在的动作']), ub = runTool(NEW_TOOL, NEW_LIB, ['不存在的动作']);
   const uea = norm(ua.err, OLD_LIB), ueb = norm(ub.err, NEW_LIB);

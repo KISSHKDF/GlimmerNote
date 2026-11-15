@@ -28,6 +28,8 @@ import { writeJsonAtomic, acquireLibLock } from './_安全写.mjs';
 import { resolver, encRel } from './_原图寻址.mjs';
 /* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。 */
 import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
+/* ★ 2026-11-14（异议桥）：卡上未裁决的红字异议 → 待办工作台派生条目（不落盘，随状态包走）。 */
+import { deriveConflictTodos } from './_异议桥.mjs';
 
 const argv = process.argv.slice(2);
 /* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。
@@ -295,9 +297,29 @@ function runChannel(tool, args, label) {
 }
 
 const blind = runChannel('_盲解复核.mjs', ['门禁', '--json'], '盲解指纹');
-const pend = runChannel('_待确认.mjs', ['门禁', '--json'], '待办台账');
+let pend = runChannel('_待确认.mjs', ['门禁', '--json'], '待办台账');
 const fig = runChannel('_配图门禁.mjs', ['清单', '--json'], '配图状态');
 const admit = runChannel('_标记复习.mjs', ['准入', '--json'], '组卷准入');
+
+/* ★ 2026-11-14（异议桥）：把卡上未裁决的红字异议合成**派生**待办条目，与台账真条目合并。
+   为什么在这里而不是 `_待确认.mjs`：异议事实住在卡上（`_索引.json`），台账工具不该越界读它；
+   为什么派生而不是写台账：裁决后条目随状态包重建自动消失 = 自动办结，没有第二份事实要对账。
+   条目带 `derived:true`，前端据此不渲染"确认办结/作废"（那会写 T 台账、必失败）。 */
+const conflictTodos = deriveConflictTodos(ROOT);
+if (conflictTodos.length) {
+  const pendItems = (pend && Array.isArray(pend.items)) ? pend.items : [];
+  pend = Object.assign({}, pend, {
+    items: pendItems.concat(conflictTodos),
+    open: (pend && Number.isFinite(pend.open) ? pend.open : pendItems.length) + conflictTodos.length,
+    byAsk: Object.assign({}, (pend && pend.byAsk) || {}, (() => {
+      const g = {};
+      for (const t of conflictTodos) g[t.askWho] = (g[t.askWho] || 0) + 1;
+      for (const k of Object.keys(g)) g[k] = (g[k] || 0) + (((pend && pend.byAsk) || {})[k] || 0);
+      return g;
+    })()),
+  });
+  log('[生成状态] 红字异议派生待办 ' + conflictTodos.length + ' 条（裁决后自动消失）');
+}
 
 /* 三个分区必须是"扁平字典"，不能把信封原样灌进去
    （2026-10-10 修过一次的同族 bug：灌信封 ⇒ 前端查不到任何卡 ⇒ 门禁整体放行） */

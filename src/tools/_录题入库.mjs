@@ -832,7 +832,28 @@ function cmdLand() {
   }
 
   const cards = Array.isArray(result.cards) ? result.cards : [];
-  if (!cards.length) return fail('回传内容里没有 cards（无可入库的卡）', 1);
+  /* ★ 2026-11-16（试运行回填待办①）：**0 卡页是合法结果，不是失败**。
+     试运行 P0153 批次实测：整页作答全对（红笔认可、独立验算无误）⇒ 转录+校验+确认全过，
+     入库器却把 cards=[] 拒成 exit 1——"整页没有错题"这条**事实**无处落账，AGENT 只能
+     把它记在报告里，库里无凭据，收件箱也永远对不上账。改为：合法空回传（信封匹配、
+     skipped 有内容或 pageSummary 在场）⇒ 幂等登记 `landedZeroAt`（ landedDigest 照记）
+     并 exit 0——闭环语义与"入库 N 张"对等；契约外字段仍被上游 schema 拒（不受影响）。 */
+  if (!cards.length) {
+    const hasEvidence = (result && (result.pageSummary || (Array.isArray(result.skipped) && result.skipped.length)));
+    if (!hasEvidence) return fail('回传内容里没有 cards，也没有 pageSummary/skipped——既不是"整页无错题"也无法判空（拒绝登记）', 1);
+    const digest0 = sha256(JSON.stringify({ pageSummary: result.pageSummary || null, skipped: result.skipped || [] }) + '\0' + taskId);
+    if (task.landedDigest === digest0) {
+      console.log('已登记过（幂等）：整页无错题（0 卡）——' + taskId);
+      return 0;
+    }
+    task.landedZeroAt = today();
+    task.landedDigest = digest0;
+    writeJsonAtomic(taskFile(taskId), task, { indent: 1 });
+    console.log('✔ 已登记：整页无错题（0 卡）——' + taskId);
+    console.log('  （校验与人工/代理确认都已过；这张照片的闭环到此完成，收件箱按台账判"已处理"）');
+    if (JSON_OUT) { process.stdout.write(JSON.stringify({ ok: true, taskId, landed: 0, zeroPage: true }) + '\n'); return 0; }
+    return 0;
+  }
 
   /* ⑤ 每张卡的 sourceImageSha256 必须等于任务记录的原图 sha */
   const imgSha = task.image && task.image.sha256;

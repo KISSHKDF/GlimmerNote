@@ -163,6 +163,17 @@ function fillAnswerSource(it, rec, { dry = false } = {}) {
 }
 
 const argv = process.argv.slice(2);
+/* ★ 2026-11-16（试运行回填坑③）：--data 支持。本工具**顶层**求值 libraryRoot()（持有库锁需要根），
+   而 _库根.mjs 的 --data 惯例是"先落 CTB_DATA 再解析"——原先只在头注里写"只认 CTB_DATA"，
+   AGENT 按其余工具的 --data 惯例调用就静默落错库（试运行 P0153 批次实测踩到）。
+   修法与 _配方.mjs 同一条路：parseArgs 之后、libraryRoot() 之前显式落 env。
+   ⚠ parseArgs 在下面才构造 ⇒ 这里用 argv 直扫（与其它 --data 惯例一致的预处理形态）。 */
+for (let i = 0; i < argv.length; i++) {
+  if (argv[i] === '--data' && argv[i + 1] && !argv[i + 1].startsWith('--')) {
+    process.env.CTB_DATA = path.resolve(argv[i + 1]);
+    break;
+  }
+}
 /* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。
    原先这里是"下一个参数像不像 flag 决定它是不是值"的自抄解析器 ⇒
    值以 `--` 开头时会被**解析成另一个 flag**（凭空打开一个开关）。
@@ -412,7 +423,10 @@ switch (action) {
         lines.push('');
       }
       // --ids 是"定点重盲解"，写到单独文件，避免把整册清稿覆盖成子集；--lane 2 也单独落文件
-      const suffix = opt.ids ? '-重盲解' : (String(opt.lane || '1') === '2' ? '-第2路' : '');
+      // ★ 2026-11-16（试运行回填坑⑤）：lane 后缀**优先**于 -重盲解，且带 --ids 时再加 ids 摘要——
+      //    原写法 `--ids` 一旦出现就把 -第2路 覆盖掉，两路清稿落成同一个文件互相覆盖（实测踩到）。
+      const idsHash = opt.ids ? '-' + crypto.createHash('sha256').update(String(opt.ids)).digest('hex').slice(0, 8) : '';
+      const suffix = (String(opt.lane || '1') === '2' ? '-第2路' : '-第1路') + (opt.ids ? '-重盲解' + idsHash : '');
       const out = path.join(OUTDIR, `${student}-${subject}-盲解清稿${suffix}.md`);
       /* ★ 2026-11-12（审计 D-01）：库内真源改原子写（盲解清稿是"回传答案的唯一凭据"，
          半截文件会让复核者按残缺题面判卷） */

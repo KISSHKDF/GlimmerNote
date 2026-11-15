@@ -25,7 +25,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
-import { libraryRoot, toolPath } from './_库根.mjs';
+import { libraryRoot, toolPath, TOOL_DIR } from './_库根.mjs';
 import { writeJsonAtomic, readJsonStrict } from './_安全写.mjs';
 /* ★ 2026-11-03（批次 1 收尾 · P1-#1）：容错文本抽取的**唯一实现**在 `_配方.mjs`。
    于是这两个模块互相 import（`_配方.mjs` 也 import 本模块的 createTask/newTaskId）——
@@ -50,7 +50,7 @@ const { action: _cmd, opt, positional } = parseArgs(argv, {
        `确认 --task` 都按值消费 taskId（val('task')），列入带值表是对的；
        本工具真正的布尔开关只有 `json`。此前注释写"json/task 是开关"把两者混了。 */
     'task', 'recipe-ver', 'image-sha', 'contract-digest', 'cards', 'in', 'limit',
-    'fingerprint',
+    'fingerprint', 'by', 'student',
   ],
 });
 /* 缺省命令 = 空（与改前 `argv[0] || ''` 同口径）。 */
@@ -118,6 +118,9 @@ export function createTask(rec) {
     cards: rec.cards || [],
     image,
     subject: rec.subject || null,
+    /* ★ 2026-11-15（对外开放 v2 / A-3）：学生化名随任务落盘——页面在生成前已选学生，
+       指引第 6 步入库命令与工作单都直接引用它。CLI 不传为 null（行为不变）。 */
+    student: rec.student || null,
     contractDigest: rec.contractDigest || null,
     taskDigest: sha256(text),
     taskText: text,
@@ -147,6 +150,7 @@ function cmdNew() {
   const doc = createTask({
     recipe: { id: val('recipe'), version: val('recipe-ver'), fingerprint: val('fingerprint') },
     subject: val('subject') || null,
+    student: val('student') || null,
     image: { sha256: imgSha.toLowerCase() || null, rel: imgRel || null },
     cards: cardsRaw ? cardsRaw.split(',').map(s => s.trim()).filter(Boolean).map(s => {
       const [id, ver] = s.split('@'); const [packId, cardId] = id.split('/');
@@ -180,7 +184,8 @@ function cmdList() {
   const rows = all.slice(0, limit).map(j => ({
     taskId: j.taskId, createdAt: j.createdAt, recipe: (j.recipe && j.recipe.id) || null,
     subject: j.subject, image: (j.image && j.image.sha256) ? j.image.sha256.slice(0, 12) : null,
-    confirmed: !!j.confirmedAt,
+    student: j.student || null, confirmed: !!j.confirmedAt,
+    confirmedBy: j.confirmedBy || (j.confirmedAt ? 'human' : null),
   }));
   if (JSON_OUT) { process.stdout.write(JSON.stringify({ total: all.length, tasks: rows }) + '\n'); return 0; }
   if (!rows.length) { console.log('（还没有任务记录；生成任务单时加 --task 才会留痕）'); return 0; }
@@ -202,21 +207,34 @@ function cmdShow() {
   console.log('  学科：' + (j.subject || '?'));
   console.log('  原图：' + ((j.image && j.image.sha256) || '(未记录)') + ((j.image && j.image.rel) ? '  ' + j.image.rel : ''));
   console.log('  卡：' + (j.cards && j.cards.length ? j.cards.map(c => (c.packId ? c.packId + '/' : '') + c.cardId + (c.version ? '@' + c.version : '')).join(', ') : '(无，仅内置配方)'));
+  console.log('  学生：' + (j.student || '(未记录)'));
   console.log('  契约摘要：' + (j.contractDigest || '(无)'));
   console.log('  任务单摘要：' + j.taskDigest + '（' + String(j.taskText || '').length + ' 字符，记录里留了全文）');
-  console.log('  人工确认：' + (j.confirmedAt ? j.confirmedAt + (j.confirmNote ? '（' + j.confirmNote + '）' : '') : '**未确认**'));
+  console.log('  人工确认：' + (j.confirmedAt ? j.confirmedAt + (j.confirmedBy ? '（' + j.confirmedBy + '）' : '') + (j.confirmNote ? '（' + j.confirmNote + '）' : '') : '**未确认**'));
   return 0;
 }
 
-/* ---------- 确认（第三层由人写） ---------- */
+/* ---------- 确认（第三层由人写；2026-11-15 起也可由 AGENT 代确认并如实留痕） ---------- */
+/* ★ 2026-11-15（对外开放 v2 / A-2）：`--by <human|agent>`。
+ *   为什么只加标记不改门禁：方案 v2 的信任模型裁定（用户 2026-11-15）——AGENT 跑在用户
+ *   自己机器上、读的是用户自己孩子的照片，录题全自动是业务前提；人工否决权不取消、只后移
+ *   （改卡/撤卡/修订链与四道门禁一道不少）。confirmedBy 只回答"这次确认是谁写的"，让
+ *   "代理代确认"**可审计**（台账可视化、人回看不全信全疑），不是把第三层放空。 */
+const CONFIRM_BY = ['human', 'agent'];
 function cmdConfirm() {
   const id = positional[0] || val('task', '');
   const j = loadTask(id);
   if (!j) { console.error('任务不存在：' + (id || '(未给 taskId)')); return 2; }
+  const by = val('by', 'human');
+  if (!CONFIRM_BY.includes(by)) {
+    console.error('✖ --by 只接受 ' + CONFIRM_BY.join(' 或 ') + '，收到：' + by);
+    return 2;
+  }
   j.confirmedAt = nowLocal();
+  j.confirmedBy = by;
   j.confirmNote = val('note', '') || null;
   writeJsonAtomic(taskFile(j.taskId), j, { indent: 1 });
-  console.log('已确认任务 ' + j.taskId + '：' + j.confirmedAt + (j.confirmNote ? '（' + j.confirmNote + '）' : ''));
+  console.log('已确认任务 ' + j.taskId + '：' + j.confirmedAt + '（' + by + '）' + (j.confirmNote ? '（' + j.confirmNote + '）' : ''));
   return 0;
 }
 
@@ -383,6 +401,76 @@ function cmdBind() {
   return code;
 }
 
+/* ---------- 工作单（批次工作单落盘；2026-11-16 批次 B）----------
+ * 把同批多条任务记录合成一份"批次工作单"（<库根>\_录题\工作单-<W号>.md）：
+ * 出网纪律置顶 + 环境明文 + 任务清单表 + 进度留痕骨架。给本机 AGENT 读，
+ * 任务单本身仍是每张照片的完整契约（方法+工序）。
+ * 只写 --out 指定的文件（默认 <库根>\_录题\工作单-<W号>.md），走 _安全写原子写。
+ * 任务记录必须已存在（工作单不造任务，只引用）——不存在即 exit 2。 */
+function cmdWorksheet() {
+  const ids = positional.filter(s => /^t-[0-9]{8}-[0-9]{6}-[0-9a-f]{6}$/.test(s));
+  if (!ids.length) { console.error('用法：工作单 <taskId>… [--student <学生>] [--subject <学科>] [--out <文件>]'); return 2; }
+  const recs = [];
+  for (const id of ids) {
+    const j = loadTask(id);
+    if (!j) { console.error('任务不存在：' + id + '（工作单只引用已存在的任务记录）'); return 2; }
+    recs.push(j);
+  }
+  const student = val('student', '') || (recs.find(r => r.student) || {}).student || null;
+  const subject = val('subject', '') || (recs.find(r => r.subject) || {}).subject || null;
+  const wno = 'W-' + stamp();
+  const tasks = recs.map((r, i) => {
+    const rel = (r.image && r.image.rel) || '';
+    const abs = rel ? path.join(ROOT(), rel.replace(/[\\/]+/g, path.sep)) : '';
+    return '| ' + (i + 1) + ' | ' + r.taskId + ' | ' + (abs || '（任务记录无原图）') + ' | ' +
+      ((r.image && r.image.sha256) ? r.image.sha256.slice(0, 12) : '(无指纹)') + ' | _录题\\单-' + r.taskId + '.md |';
+  });
+  const out = ['## 拾光小册 · 录题批次工作单 ' + wno,
+    '',
+    '- 学生：' + (student || '（未指定）') + '　学科：' + (subject || '（未指定）') + '　照片：' + recs.length + ' 张　生成于 ' + nowLocal(),
+    '- 派发指令：`执行拾光小册工作单 ' + path.join(TASK_DIR(), '工作单-' + wno + '.md') + '`',
+    '',
+    '## 0. 出网纪律（第一红线，先读这个再动手）',
+    '- 搜题只用文字：检索词只含题干纯文字；孩子真名换「某同学」；剔除学校/班级/学号/页眉页脚/文件路径',
+    '- 照片不出机器：不上传、不图搜、不云 OCR、不贴在线工具',
+    '- 除搜题文字外的一切外发默认禁止；拿不准 = 不发',
+    '- 检索词清单写进汇总报告（用户会抽检）',
+    '',
+    '## 1. 环境（本机明文）',
+    '- dataRoot：' + ROOT(),
+    '- 工具目录：' + TOOL_DIR + '　·　所有命令带 --data ' + ROOT(),
+    '- AGENT 技能：glimmer-agent-ingest-batch（SOP：取图→转录→校验→代确认→入库→双路盲解→异议→汇总）',
+    '',
+    '## 2. 任务清单（逐张处理；一张失败不影响下一张）',
+    '',
+    '| # | taskId | 原图（本机绝对路径） | sha 前12 | 任务单 |',
+    '|---|---|---|---|---|',
+    ...tasks,
+    '',
+    '## 3. 作业指引',
+    '- 每张的完整契约=对应任务单（任务单第六节=八步工序全文，配方正文在「二、任务指令」）',
+    '- 已知坑：双路独立 / 改题干同步 blindFingerprint / 顶层工具只认 CTB_DATA / 红字只作参考 / 不许手改 JSON',
+    '',
+    '## 4. 进度留痕（逐张追加，勿删）',
+    ...recs.map((r, i) => '- [ ] #' + (i + 1) + ' ' + r.taskId + ' →'),
+    ''].join('\n');
+  const outArg = val('out', '');
+  const target = outArg ? path.resolve(outArg) : path.join(TASK_DIR(), '工作单-' + wno + '.md');
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  writeJsonAtomicText(target, out);
+  if (JSON_OUT) { process.stdout.write(JSON.stringify({ ok: true, worksheet: target, tasks: recs.length, worksheetId: wno }) + '\n'); return 0; }
+  console.log('已写工作单：' + target + '（' + recs.length + ' 条任务）');
+  return 0;
+}
+
+/* 工作单是 Markdown 不是 JSON，但同样走"临时文件 + rename"的原子语义（与 writeTextAtomic 同族；
+ * 本模块只有这一个文本写点，不引入 _安全写 的整包锁 —— 工作单是新建文件，不覆盖用户数据）。 */
+function writeJsonAtomicText(file, text) {
+  const tmp = file + '.tmp-' + crypto.randomBytes(3).toString('hex');
+  fs.writeFileSync(tmp, text, 'utf8');
+  fs.renameSync(tmp, file);
+}
+
 /* ---------- 入口 ---------- */
 function main() {
   switch (cmd) {
@@ -391,6 +479,7 @@ function main() {
     case '看': return cmdShow();
     case '确认': return cmdConfirm();
     case '绑定校验': return cmdBind();
+    case '工作单': return cmdWorksheet();
     case '':
     case '--help':
     case '-h':
@@ -400,10 +489,12 @@ function main() {
         '用法：',
         '  node src\\tools\\_录题任务.mjs 新 --recipe <id> --recipe-ver <v> --fingerprint <h> --subject <学科> --in <任务单.md>',
         '                                [--image <库内相对路径>] [--image-sha <64hex>] [--contract-digest <h>] [--cards <包/卡@版本,…>]',
+        '                                [--student <学生化名>]',
         '  node src\\tools\\_录题任务.mjs 列 [--limit N] [--json]',
         '  node src\\tools\\_录题任务.mjs 看 <taskId> [--json]',
-        '  node src\\tools\\_录题任务.mjs 确认 <taskId> [--note <一句话>]        # 第三层：由人写',
+        '  node src\\tools\\_录题任务.mjs 确认 <taskId> [--by human|agent] [--note <一句话>]  # 第三层：缺省 human；agent=代理代确认（可审计）',
         '  node src\\tools\\_录题任务.mjs 绑定校验 <taskId> --in <cards.json> [--json]',
+        '  node src\\tools\\_录题任务.mjs 工作单 <taskId>… [--student <学生>] [--subject <学科>] [--out <文件>]  # 合成批次工作单',
         '',
         '通用参数：--data <库根>（与 _配方.mjs 同口径；不传则读 CTB_DATA 环境变量）',
         '退出码：0 通过/成功 · 1 格式不通过 · 2 任务不存在或用法错 · 3 与任务不匹配',
@@ -411,7 +502,7 @@ function main() {
       ].join('\n'));
       return 0;
     default:
-      console.error('未知命令：' + cmd + '　可用：新/列/看/确认/绑定校验');
+      console.error('未知命令：' + cmd + '　可用：新/列/看/确认/绑定校验/工作单');
       return 2;
   }
 }

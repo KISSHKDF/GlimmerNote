@@ -56,6 +56,24 @@ function liveFn(file, name) {
 const stemToText = liveFn(E.tool('_盲解复核.mjs'), 'stemToText');
 const norm = t => String(t).replace(/\s+/g, ' ').trim();
 const fpV1 = t => crypto.createHash('sha256').update(norm(t), 'utf8').digest('hex').slice(0, 12);
+/* ★ 2026-11-14（v2 指纹联调）：抽 figureSignature 的活实现——台账自 2026-11-14 体检起
+   200 张老卡升级为 v2 指纹（含图形签名，blindFingerprintVer=2），断言"指纹与台账一致"
+   必须按**卡记录的版本**取同一算法：ver≥2 用 fingerprint(text + '\0' + figSig)，
+   v1 老口径不变。与 _盲解复核.mjs 的 currentFingerprint 同构（两处实现靠本注释锚定同步）。 */
+const figureSignature = liveFn(E.tool('_盲解复核.mjs'), 'figureSignature');   /* 占位：body 引用 path/fs，
+  真正可用的实现是下方 figureSignatureWithDeps（显式注入依赖） */
+function figureSignatureWithDeps(x) {
+  const fn = new Function('path', 'fs', 'return (' +
+    fs.readFileSync(E.tool('_盲解复核.mjs'), 'utf8').match(/function figureSignature\([^)]*\) \{[\s\S]*?\n\}/)[0]
+      .replace('function figureSignature', 'function') + ')');
+  return fn(path, fs)(x);
+}
+function fpOfCard(dirAbs, item) {
+  const txt = stemToText(fs.readFileSync(path.join(dirAbs, '题干.html'), 'utf8'));
+  return Number(item.blindFingerprintVer) >= 2
+    ? fpV1(norm(txt) + '\u0000' + norm(figureSignatureWithDeps({ dirAbs })))
+    : fpV1(txt);
+}
 
 /** 与 _盲解复核.mjs 的 originalFromRecord() 逐字一致 */
 function originalFromRecord(dirAbs) {
@@ -116,7 +134,7 @@ for (const id of TARGETS) {
   const txt = buf.toString('utf8');
   const bom = buf.length >= 3 && buf[0] === 0xEF && buf[1] === 0xBB && buf[2] === 0xBF;
   const T0 = originalFromRecord(t.dirAbs);
-  const disk = fpV1(stemToText(txt));
+  const disk = fpOfCard(t.dirAbs, t.item);
   A(`${id} 无 BOM / 无 U+FFFD`, !bom && !txt.includes('\uFFFD'), `${buf.length}B`);
   /* ★ 2026-11-07（去掉一条已被证伪的不变量）：
      原断言是「stemToText(HTML) 必须逐字等于 md 的『**原题**』段」。实测在本库**不成立**，
@@ -129,7 +147,7 @@ for (const id of TARGETS) {
      现在保留可成立的三条：① 无 BOM/无替换字符 ② HTML 能抽出题干 ③ 指纹与台账一致。
      「题干与 md 同源」改由 **指纹** 保证（指纹登记在台账、改题干即失配 ⇒ 门禁会红）。 */
   A(`${id} stemToText(HTML) 能抽出题干`, !!norm(stemToText(txt)), `${norm(stemToText(txt)).length} 字`);
-  A(`${id} 指纹不变`, disk === t.item.blindFingerprint, `${disk} vs 台账 ${t.item.blindFingerprint}`);
+  A(`${id} 指纹不变（按卡的指纹版本 v${Number(t.item.blindFingerprintVer) || 1} 算）`, disk === t.item.blindFingerprint, `${disk} vs 台账 ${t.item.blindFingerprint}`);
 }
 
 console.log('\n=== D：真门禁（_盲解复核.mjs 门禁 --json） ===');
@@ -158,9 +176,17 @@ if (env) {
     `ok=${env.okCount} live=${env.liveCount} 差=${env.liveCount - env.okCount}`);
   A('checked >= liveCount（检查覆盖全部在用卡）', env.checked >= env.liveCount,
     `checked=${env.checked} live=${env.liveCount}`);
-  A('meta.fpV1 <= liveCount（v1 指纹是在用卡的子集）', env.meta.fpV1 <= env.liveCount,
-    `fpV1=${env.meta.fpV1} live=${env.liveCount} 差额=${env.liveCount - env.meta.fpV1}（无 v1 指纹的卡）`);
-  A('meta.fpV1 > 0（真有卡带 v1 指纹，否则上面那条恒真）', env.meta.fpV1 > 0, String(env.meta.fpV1));
+  /* ★ 2026-11-14（v2 指纹联调）：meta.fpV1 只在**存在 v1 指纹卡**时才有值（_盲解复核.mjs:626
+     `if (v1fp.length)` 才挂键）。2026-11-14 全量体检把 200 张 v1 老卡全部升级到 v2
+     （blindFingerprintVer=2）⇒ 现在全库无 v1 指纹卡，meta.fpV1 === undefined 是**预期态**。
+     断言从"子集关系 + 真有 v1 卡"改为："v1 键要么缺省（全 v2）、要么是 liveCount 的子集"。 */
+  if (env.meta.fpV1 === undefined) {
+    A('meta.fpV1 缺省（全库已无 v1 指纹卡，v2 升级完成）', true, '全库指纹均已 v2（含图形签名）');
+  } else {
+    A('meta.fpV1 <= liveCount（v1 指纹是在用卡的子集）', env.meta.fpV1 <= env.liveCount,
+      `fpV1=${env.meta.fpV1} live=${env.liveCount} 差额=${env.liveCount - env.meta.fpV1}（无 v1 指纹的卡）`);
+    A('meta.fpV1 > 0（真有卡带 v1 指纹，否则上面那条恒真）', env.meta.fpV1 > 0, String(env.meta.fpV1));
+  }
   /* 目标卡必须逐张判定为「有效」。cards 是 { "学生|ID": verdict } 字典，
    * 目标卡属于哪个学生不确定，所以按后缀匹配（'|' + id）。 */
   const verdictOf = (id) => {
