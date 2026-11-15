@@ -317,6 +317,13 @@
     if (H.mode === 'shell') return bridge('ingestLand', { taskId: taskId, text: text, student: student, subject: subject || '' }, 300000);
     throw new Error('「建卡入库」需要桌面壳通道（拾光小册.exe）。');
   };
+  /* ★ 2026-11-16（批次 B）：批次工作单落盘（`_录题任务.mjs 工作单`，op 见 CTBShellV2.WorksheetWrite）。
+     写用户库（<库根>\_录题\工作单-<W号>.md，新建文件）⇒ 只有桌面壳能做（同 ingestLand）。
+     tasks = 逗号分隔的 taskId 列表；student/subject 随单落工作单封面。 */
+  H.worksheetWrite = async function (tasks, student, subject) {
+    if (H.mode === 'shell') return bridge('worksheetWrite', { tasks: tasks, student: student || '', subject: subject || '', json: '1' }, 120000);
+    throw new Error('「生成 AGENT 任务包」需要桌面壳通道（拾光小册.exe）。');
+  };
   /* ★ 2026-11-03（批次 4「审核与正式入库」）：人工修订通道（候选 / 修订链 / 正式写入）。
      与壳侧三把 op 一一对应，分工同 `_待确认.mjs`：
        · reviewList      只读（读候选与修订链）

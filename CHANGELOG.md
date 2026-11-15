@@ -18,6 +18,43 @@
 > **历史条目**：2026-11-09 之前的版本见 [CHANGELOG-2026.md](CHANGELOG-2026.md)（冻结历史卷，只增不改）。
 
 
+## [2026.11.16.01] - 2026-11-16 · AGENT 全自动录题批次 B：多图一键任务包（页面 + 壳）
+
+**变更分类**：Added / Changed
+**升级影响**：录题页第 2 步重构：「孩子」下拉前置到生成区（学生随任务记录与入库命令携带）；
+勾选**多张**照片点「生成任务单」→ 逐张生成 N 条任务（一张失败不拖整批，页面列清单）；
+新增「📦 生成 AGENT 任务包」按钮与新壳 op `worksheetWrite`（把本批任务落成
+`<库根>\_录题\工作单-<W号>.md`：出网纪律置顶 + 环境明文 + 任务清单 + 进度骨架），
+派发指令一键复制发给本机 AGENT。`_录题任务.mjs` 新增 `工作单 <taskId>…` 子命令（工作单
+只引用已存在的任务记录）。壳 `组装` op 新增 `student` 透传（形状门禁：中文/字母/数字/
+连字符/下划线，2-24 字）、`taskConfirm` op 新增 `by` 透传（human|agent 白名单）。
+文案更新：录题页不再有"网页版 AI"叙述，能力两档（能开子代理=全链；不能=只录 lane1 留待双路）。
+
+### 根因
+
+批次 A 交付了 v3 任务单（AGENT 拿到单子能跑完全链），但"把一批照片交给 AGENT"仍要用户
+逐张点生成、逐张复制——对外场景下这个仪式就是门槛：多图（一整份作业十几页）逐张操作
+不可接受，且"哪几张生成了哪条任务"用户无凭据。
+
+### 改法
+
+- `_录题任务.mjs 工作单`：按 taskId 引用任务记录合成工作单（不造任务；记录不存在 exit 2）。
+- `CTBShellV2.cs`：`Recipe` 的组装动作透传 `student`（STUDENT_SHAPE 白名单）；`TaskConfirm`
+  透传 `by`；新 op `WorksheetWrite`（taskId 列表逐个形状门禁 → 引擎子命令，进写闸 finally 放闸）；
+  路由注册。
+- `ingest.js`：`onGenerate` 拆 `oneTicket`（单张，flags 构造共用）+ `renderSingle`（单图渲染
+  原样搬移）+ `renderMulti`（多图清单）；`makeWorkPacket` 调 `H.worksheetWrite`；孩子下拉
+  `paintStudents` 前置。`host.js` 新增 `H.worksheetWrite`。
+- 壳重编 + `neg-v2-ingest-task-e2e.cjs`（真壳 + CDP）全绿 44 断言。
+
+### 回归断言
+
+窗口用例 `neg-task-page-wiring.cjs` 55 断言全绿（切片锚点经 refactor 后仍可驱动；
+没勾图不发 task/image、勾图 task=1+image、stderr 解析任务号等判据照常成立）；
+四个工具测试族（task-binding 47 / recipe-contract 195 / card-select 64 / pack-contract 80）全绿。
+
+---
+
 ## [2026.11.15.01] - 2026-11-15 · AGENT 全自动录题（对外开放 v2 批次 A）：任务单 v3 作业书 + 代确认 + 官方经验包
 
 **变更分类**：Added / Changed

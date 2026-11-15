@@ -25,7 +25,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
-import { libraryRoot, toolPath } from './_库根.mjs';
+import { libraryRoot, toolPath, TOOL_DIR } from './_库根.mjs';
 import { writeJsonAtomic, readJsonStrict } from './_安全写.mjs';
 /* ★ 2026-11-03（批次 1 收尾 · P1-#1）：容错文本抽取的**唯一实现**在 `_配方.mjs`。
    于是这两个模块互相 import（`_配方.mjs` 也 import 本模块的 createTask/newTaskId）——
@@ -401,6 +401,76 @@ function cmdBind() {
   return code;
 }
 
+/* ---------- 工作单（批次工作单落盘；2026-11-16 批次 B）----------
+ * 把同批多条任务记录合成一份"批次工作单"（<库根>\_录题\工作单-<W号>.md）：
+ * 出网纪律置顶 + 环境明文 + 任务清单表 + 进度留痕骨架。给本机 AGENT 读，
+ * 任务单本身仍是每张照片的完整契约（方法+工序）。
+ * 只写 --out 指定的文件（默认 <库根>\_录题\工作单-<W号>.md），走 _安全写原子写。
+ * 任务记录必须已存在（工作单不造任务，只引用）——不存在即 exit 2。 */
+function cmdWorksheet() {
+  const ids = positional.filter(s => /^t-[0-9]{8}-[0-9]{6}-[0-9a-f]{6}$/.test(s));
+  if (!ids.length) { console.error('用法：工作单 <taskId>… [--student <学生>] [--subject <学科>] [--out <文件>]'); return 2; }
+  const recs = [];
+  for (const id of ids) {
+    const j = loadTask(id);
+    if (!j) { console.error('任务不存在：' + id + '（工作单只引用已存在的任务记录）'); return 2; }
+    recs.push(j);
+  }
+  const student = val('student', '') || (recs.find(r => r.student) || {}).student || null;
+  const subject = val('subject', '') || (recs.find(r => r.subject) || {}).subject || null;
+  const wno = 'W-' + stamp();
+  const tasks = recs.map((r, i) => {
+    const rel = (r.image && r.image.rel) || '';
+    const abs = rel ? path.join(ROOT(), rel.replace(/[\\/]+/g, path.sep)) : '';
+    return '| ' + (i + 1) + ' | ' + r.taskId + ' | ' + (abs || '（任务记录无原图）') + ' | ' +
+      ((r.image && r.image.sha256) ? r.image.sha256.slice(0, 12) : '(无指纹)') + ' | _录题\\单-' + r.taskId + '.md |';
+  });
+  const out = ['## 拾光小册 · 录题批次工作单 ' + wno,
+    '',
+    '- 学生：' + (student || '（未指定）') + '　学科：' + (subject || '（未指定）') + '　照片：' + recs.length + ' 张　生成于 ' + nowLocal(),
+    '- 派发指令：`执行拾光小册工作单 ' + path.join(TASK_DIR(), '工作单-' + wno + '.md') + '`',
+    '',
+    '## 0. 出网纪律（第一红线，先读这个再动手）',
+    '- 搜题只用文字：检索词只含题干纯文字；孩子真名换「某同学」；剔除学校/班级/学号/页眉页脚/文件路径',
+    '- 照片不出机器：不上传、不图搜、不云 OCR、不贴在线工具',
+    '- 除搜题文字外的一切外发默认禁止；拿不准 = 不发',
+    '- 检索词清单写进汇总报告（用户会抽检）',
+    '',
+    '## 1. 环境（本机明文）',
+    '- dataRoot：' + ROOT(),
+    '- 工具目录：' + TOOL_DIR + '　·　所有命令带 --data ' + ROOT(),
+    '- AGENT 技能：glimmer-agent-ingest-batch（SOP：取图→转录→校验→代确认→入库→双路盲解→异议→汇总）',
+    '',
+    '## 2. 任务清单（逐张处理；一张失败不影响下一张）',
+    '',
+    '| # | taskId | 原图（本机绝对路径） | sha 前12 | 任务单 |',
+    '|---|---|---|---|---|',
+    ...tasks,
+    '',
+    '## 3. 作业指引',
+    '- 每张的完整契约=对应任务单（任务单第六节=八步工序全文，配方正文在「二、任务指令」）',
+    '- 已知坑：双路独立 / 改题干同步 blindFingerprint / 顶层工具只认 CTB_DATA / 红字只作参考 / 不许手改 JSON',
+    '',
+    '## 4. 进度留痕（逐张追加，勿删）',
+    ...recs.map((r, i) => '- [ ] #' + (i + 1) + ' ' + r.taskId + ' →'),
+    ''].join('\n');
+  const outArg = val('out', '');
+  const target = outArg ? path.resolve(outArg) : path.join(TASK_DIR(), '工作单-' + wno + '.md');
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  writeJsonAtomicText(target, out);
+  if (JSON_OUT) { process.stdout.write(JSON.stringify({ ok: true, worksheet: target, tasks: recs.length, worksheetId: wno }) + '\n'); return 0; }
+  console.log('已写工作单：' + target + '（' + recs.length + ' 条任务）');
+  return 0;
+}
+
+/* 工作单是 Markdown 不是 JSON，但同样走"临时文件 + rename"的原子语义（与 writeTextAtomic 同族；
+ * 本模块只有这一个文本写点，不引入 _安全写 的整包锁 —— 工作单是新建文件，不覆盖用户数据）。 */
+function writeJsonAtomicText(file, text) {
+  const tmp = file + '.tmp-' + crypto.randomBytes(3).toString('hex');
+  fs.writeFileSync(tmp, text, 'utf8');
+  fs.renameSync(tmp, file);
+}
+
 /* ---------- 入口 ---------- */
 function main() {
   switch (cmd) {
@@ -409,6 +479,7 @@ function main() {
     case '看': return cmdShow();
     case '确认': return cmdConfirm();
     case '绑定校验': return cmdBind();
+    case '工作单': return cmdWorksheet();
     case '':
     case '--help':
     case '-h':
@@ -423,6 +494,7 @@ function main() {
         '  node src\\tools\\_录题任务.mjs 看 <taskId> [--json]',
         '  node src\\tools\\_录题任务.mjs 确认 <taskId> [--by human|agent] [--note <一句话>]  # 第三层：缺省 human；agent=代理代确认（可审计）',
         '  node src\\tools\\_录题任务.mjs 绑定校验 <taskId> --in <cards.json> [--json]',
+        '  node src\\tools\\_录题任务.mjs 工作单 <taskId>… [--student <学生>] [--subject <学科>] [--out <文件>]  # 合成批次工作单',
         '',
         '通用参数：--data <库根>（与 _配方.mjs 同口径；不传则读 CTB_DATA 环境变量）',
         '退出码：0 通过/成功 · 1 格式不通过 · 2 任务不存在或用法错 · 3 与任务不匹配',
@@ -430,7 +502,7 @@ function main() {
       ].join('\n'));
       return 0;
     default:
-      console.error('未知命令：' + cmd + '　可用：新/列/看/确认/绑定校验');
+      console.error('未知命令：' + cmd + '　可用：新/列/看/确认/绑定校验/工作单');
       return 2;
   }
 }
