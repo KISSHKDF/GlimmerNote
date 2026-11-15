@@ -41,7 +41,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'node:url';
-import { APP_ROOT, libraryRoot, toolPath } from './_库根.mjs';
+import { APP_ROOT, libraryRoot, toolPath, TOOL_DIR } from './_库根.mjs';
 import { createTask, newTaskId } from './_录题任务.mjs';
 /* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。 */
 import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
@@ -74,7 +74,7 @@ const { action: _cmd, opt } = parseArgs(argv, {
     ...COMMON_VALUE_FLAGS,
     // 本工具专属的带值 flag（**布尔开关不要列进来**：json/task/all 是开关）
     'recipe', 'recipe-ver', 'fingerprint', 'subject', 'textbook', 'image', 'sha',
-    'in', 'out', 'cards', 'contract-digest', 'packs',
+    'in', 'out', 'cards', 'contract-digest', 'packs', 'student',
   ],
 });
 /* 缺省命令 = 空（与改前 `argv[0] || ''` 同口径）。 */
@@ -1328,6 +1328,8 @@ async function cmdCompose() {
   const fetchCmd = imgSha
     ? '"' + nodeExe + '" "' + scriptAbs + '" 找图 --sha ' + imgSha.slice(0, 12) + ' --json'
     : '';
+  /* ★ 2026-11-15（对外开放 v2 / A-3）：学生化名随单交付（页面生成前已选）。 */
+  const student = valOf('student', '') || '';
 
   const head = [];
   head.push('# 录题任务单');
@@ -1475,10 +1477,29 @@ async function cmdCompose() {
   head.push(c.text);
   head.push('');
 
-  /* ★ 2026-11-02（批次 1）：--task ⇒ 留一条本地任务记录，并把任务号写进任务单 + 要求信封回传。 */
+  /* ★ 2026-11-02（批次 1）：--task ⇒ 留一条本地任务记录，并把任务号写进任务单 + 要求信封回传。
+   * ★ 2026-11-15（对外开放 v2 / A-1+A-3，用户裁定"网页版 AI 不考虑"）：--task 路径升级为
+   *   **v3 单读者作业书**——读者只剩一种：跑在用户自己机器上、能读文件/跑命令/看图的本机 AGENT。
+   *   为网页版设计的仪式在 --task 路径全部退场：
+   *     · 「三、回来之后」（粘回页面点按钮的人读段）整段替换为一句"已由 AGENT 指引接管"；
+   *     · 新增「六、AGENT 全流程作业指引」（八步完整命令，绝对路径实算，复制即可跑）；
+   *     · 新增「七、出网红线」（搜题只发脱敏题干、照片不出机——这是真实的出网闸口）；
+   *     · 任务表带原图绝对路径 + 学生（--student）。
+   *   ⚠ 无 --task 的纯配方预览**逐字节不变**（旧四段制原样保留）——兼容红线由
+   *   `tests\neg-card-select.cjs` 的基线对拍与本文第九节的断言钉住。 */
   const wantTask = argv.includes('--task');
   let taskId = null;
   if (wantTask) {
+    /* 把「三、回来之后」的人读段（到「四、本机留痕」之前）替换为接管声明 */
+    const iBack = head.indexOf('## 三、回来之后（这一步在本机做，**不用发给 AI**）');
+    const iTrace = head.indexOf('## 四、本机留痕（仅供排查，**不用发给 AI**）');
+    if (iBack >= 0 && iTrace > iBack) {
+      head.splice(iBack, iTrace - iBack,
+        '## 三、人工兜底（本单已按 AGENT 全流程作业指引执行；页面「校验 / 确认 / 建卡入库」按钮保留）',
+        '',
+        '> 作为人工兜底通道：对 AGENT 的产物不满意时，用页面按钮走校验→确认→入库，或改卡/撤卡/修订链。');
+    }
+
     taskId = newTaskId();
     head.push('## 五、任务号（回传时必须原样带回来）');
     head.push('');
@@ -1486,13 +1507,122 @@ async function cmdCompose() {
     head.push('|---|---|');
     head.push('| 任务号 | `' + taskId + '` |');
     head.push('');
-    head.push('回传时请用**外层信封**携带任务号与本次原图 sha256，`result` 里仍按第三节的格式填：');
+    head.push('回传时请用**外层信封**携带任务号与本次原图 sha256，`result` 里仍按上面配方正文的输出契约填：');
     head.push('');
     head.push('```json');
-    head.push('{ "envelope": { "schema": "glimmernote.ingest-result/v1", "taskId": "' + taskId + '", "imageSha256": "' + (imgSha || '') + '" }, "result": { /* 第三节那套格式 */ } }');
+    head.push('{ "envelope": { "schema": "glimmernote.ingest-result/v1", "taskId": "' + taskId + '", "imageSha256": "' + (imgSha || '') + '" }, "result": { /* cards / pageSummary / skipped，按配方正文的 schema */ } }');
     head.push('```');
     head.push('');
     head.push('**不要**把 taskId 塞进 `cards`（cards 的字段是冻结契约，程序按 `additionalProperties:false` 拒收）。');
+    head.push('');
+
+    /* ── v3 作业书 · 任务表补充（学生行）与指引/红线 ── */
+    head.push('## 六、AGENT 全流程作业指引（本单的读者是你：跑在用户机器上的本机 AGENT）');
+    head.push('');
+    head.push('### 本单参数（本机明文；只在用户机器内使用，不进任何出网文本）');
+    head.push('');
+    head.push('| 项 | 值 |');
+    head.push('|---|---|');
+    if (imgSha) {
+      head.push('| 原图（直接读这个文件） | `' + imgAbs + '` |');
+    } else {
+      head.push('| 原图 | ⚠ 本次生成时未选照片——先回程序选照片重新生成 |');
+    }
+    head.push('| 学生化名 | ' + (student || '（未指定——第 6 步入库前必须向用户要一次）') + ' |');
+    head.push('| 学科 | ' + (subject || '（未指定）') + ' |');
+    head.push('');
+    head.push('');
+    head.push('> 用户已经收工。把本单**从头做完**（包括第 7 步盲解），产出一份简短汇总报告，不要中途把活交回给人。');
+    head.push('> 每一步都有现成工具；**不许手改任何 JSON**（索引/台账/待确认/任务记录全部走工具通道，否则门禁对不上账）。');
+    head.push('');
+    head.push('### 0. 环境');
+    head.push('');
+    head.push('本程序包自带全部工具与配方（工具目录：`' + TOOL_DIR + '`）。');
+    head.push('库根按标准布局自动解析（程序目录旁的 `数据\\`）；若工具报找不到库，设环境变量');
+    head.push('`CTB_DATA=<程序目录旁的数据目录>` 后重跑（个别工具只认这个环境变量，`--data` 参数对它们无效）。');
+    head.push('');
+    head.push('### 1. 取图（完整性自校验）');
+    head.push('');
+    head.push('1. 读取上面任务表「原图」格给出的文件；读到后**自算该文件的 SHA256**，确认以前 12 位 `' + (imgSha ? imgSha.slice(0, 12) : '(无指纹)') + '` 开头。');
+    head.push('2. 路径读不到、或多张、或指纹不符 ⇒ 跑下面这条**只读**命令按内容指纹找回（照片可能被改名——名字不可信、指纹可信）：');
+    head.push('');
+    head.push('   ```');
+    head.push('   ' + fetchCmd);
+    head.push('   ```');
+    head.push('');
+    head.push('   返回 JSON 里 `matches[0].abs` 是照片的绝对路径，**直接读取那个文件**当作原图。');
+    head.push('3. **视觉自检（先做这一步，再谈录题）**：用一句话复述图上的印刷体标题或第一道题的开头。');
+    head.push('   复述不出来就是看不见画面：回一句「原图已取到、指纹一致，但本会话看不到图像画面，请换一个能读图的 AGENT」，');
+    head.push('   然后停下。看不见时**不许**转码、复制、缩放、造"测试图"——问题不在图，换图救不回来。');
+    head.push('');
+    head.push('### 2. 转录 + 搜题');
+    head.push('');
+    head.push('按本单「二、任务指令」里的配方正文转录与判卷（逐字照抄/看不清就标/先上网比对题库再独立判卷）。');
+    head.push('判不准、看不清的题放进 `skipped` 并写明原因——宁可少录，不可造错。');
+    head.push('');
+    head.push('### 3. 回传落盘');
+    head.push('');
+    head.push('把结果按「五、任务号」的信封格式写成一个 .json 文件（路径自定，如本次任务目录下 `cards-<taskId>.json`）。');
+    head.push('');
+    head.push('### 4. 绑定校验（①格式 + ②与任务及原图匹配）');
+    head.push('');
+    head.push('   ```');
+    head.push('   "' + nodeExe + '" "' + toolPath('_录题任务.mjs') + '" 绑定校验 ' + taskId + ' --in <回传.json>');
+    head.push('   ```');
+    head.push('');
+    head.push('退出码 0=通过；1=格式不通过、3=与任务不匹配——按打印的**具体原因**修你自己的回传内容后重跑，');
+    head.push('**不许**改程序、不许改任务记录。');
+    head.push('');
+    head.push('### 5. 代确认（第三层）');
+    head.push('');
+    head.push('   ```');
+    head.push('   "' + nodeExe + '" "' + toolPath('_录题任务.mjs') + '" 确认 ' + taskId + ' --by agent --note "AGENT自动闭环"');
+    head.push('   ```');
+    head.push('');
+    head.push('任务记录会如实标记这次确认是代理代写的（可审计）；程序的门禁一道不少，用户保留完整否决权');
+    head.push('（改卡/撤卡/修订链照旧）。你按配方正文判卷即可，不需要等人点头。');
+    head.push('');
+    head.push('### 6. 建卡入库（幂等 + 当场四道门禁）');
+    head.push('');
+    head.push('   ```');
+    head.push('   "' + nodeExe + '" "' + toolPath('_录题入库.mjs') + '" 入库 ' + taskId + ' --file <回传.json> --student ' + (student || '<学生化名>'));
+    head.push('   ```');
+    head.push('');
+    head.push('重复跑同一份内容会幂等跳过（exit 0"已入库过"）；失败按具体原因修回传内容后重跑。');
+    head.push('入库当场跑作答契约/配图/原卷溯源/盲解清稿四道门禁，并自动备好盲解清稿。');
+    head.push('');
+    head.push('### 7. 双路盲解（入库后必做；能开独立子会话才做得了这一步）');
+    head.push('');
+    head.push('每道新卡派**两个互不通气的独立解题会话**各做一遍（图形题每路仍是文字层+图形层两层），');
+    head.push('**绝不按题号分半**——分半只会各登记一路，合成恒"待双路"。逐题回填：');
+    head.push('');
+    head.push('   ```');
+    head.push('   "' + nodeExe + '" "' + toolPath('_盲解复核.mjs') + '" 批量 --student <学生化名> --results "M00xx=一致,M00yy=一致" --lane 1 --solver "<你的名字>-lane1"');
+    head.push('   "' + nodeExe + '" "' + toolPath('_盲解复核.mjs') + '" 批量 --student <学生化名> --results "M00xx=不一致,M00yy=一致" --lane 2 --solver "<你的名字>-lane2" --refresh');
+    head.push('   ```');
+    head.push('');
+    head.push('两路一致 ⇒ 已通过（进组卷池）；任一路不一致 ⇒ 回原图核实：转录错就改题干（**必须同步更新 blindFingerprint**，');
+    head.push('否则盲解指纹失效）、录入答案错就改答案，改完**两路重新盲解**。开不了两个独立子会话 ⇒ 只录 lane1 并如实');
+    head.push('说明（状态=待双路，程序会拦组卷）——**不许**假装跑了两路。');
+    head.push('');
+    head.push('### 8. 异议处置与收尾');
+    head.push('');
+    head.push('- 红字异议（红字与采用答案不一致）：有官方答案背书 ⇒ `"_标记复习.mjs" 异议裁决 --as 官方答案`；');
+    head.push('  红字只作参考 ⇒ `--as 红字参考`；裁决不了 ⇒ 如实留待办，**不许静默放过**。');
+    head.push('- 入库时打印的"疑似重复"提示逐条表态：真重复就不入这张卡、走改卡合并；不是重复就说明理由继续。');
+    head.push('- 收件箱该照片处理完后会被"已处理"判据归档；若已入库但收件箱仍列它，回填原卷台账或如实留待办。');
+    head.push('- 产出汇总报告：N 张照片 / 成功 M 张 / 失败 K 张（每张一句原因）/ 新卡号清单 / 盲解覆盖情况 / 本次实际发出的检索词清单。');
+    head.push('');
+    head.push('## 七、出网红线（对任何 AGENT 生效；违反即停手）');
+    head.push('');
+    head.push('- **搜题只用文字**：检索词只含题干纯文字（可含学科/学段词）。孩子真名一律替换「某同学」；');
+    head.push('  卷头页眉的学校、班级、学号、姓名、座位号一律剔除；教辅印刷常用人名（小明/小红）不算隐私。');
+    head.push('- **照片不出机器**：不上传检索引擎、不图搜、不云 OCR、不贴任何在线工具。');
+    head.push('- **其余外发默认禁止**：除搜题文字外，任何数据不进网页 AI、云盘、邮箱、在线工具；拿不准 = 不发。');
+    head.push('- 检索词清单要写进你的汇总报告（用户会抽检）。');
+    head.push('');
+    head.push('> 说明：你的模型通道（你本身）是完成本任务的工作媒介，照片/题干经你处理不算外发；');
+    head.push('> 红线管的是"把数据发到工作媒介**之外**"的动作。');
     head.push('');
   }
   const text = head.join('\n');
@@ -1527,6 +1657,7 @@ async function cmdCompose() {
       taskId,
       recipe: { id, version: c.meta.version, fingerprint: c.hash },
       subject,
+      student: student || null,
       image: { sha256: imgSha || null, rel: valOf('image', '') || null },
       cards: cards.map((card) => ({ packId: card.packId, cardId: card.cardId, version: card.version, sha256: card.sha256 })),
       contractDigest: dh.digest('hex'),

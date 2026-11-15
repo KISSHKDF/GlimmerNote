@@ -18,6 +18,122 @@
 > **历史条目**：2026-11-09 之前的版本见 [CHANGELOG-2026.md](CHANGELOG-2026.md)（冻结历史卷，只增不改）。
 
 
+## [2026.11.16.02] - 2026-11-16 · AGENT 全自动录题试运行回填：0 卡页闭环 + 盲解 --data + 清稿 lane 防互覆 + 官方包 1.1.0
+
+**变更分类**：Added / Fixed
+**升级影响**：`_录题入库.mjs 入库` 对**合法空回传**（信封匹配 + pageSummary 或 skipped 在场）
+从 exit 1 改为**登记「整页无错题」并 exit 0**（任务记录落 `landedZeroAt`/`landedDigest`，幂等）——
+整页全对不再是"校验确认都过了、入库却报错"的死胡同；既无 cards 又无证据的回传仍拒（exit 1）。
+`_盲解复核.mjs` 新增 `--data <库根>`（此前只认 CTB_DATA，AGENT 按惯例调用会静默落错库）；
+`清稿` 的文件名 lane 后缀**优先**于"-重盲解"且带 ids 摘要（两路清稿此前会互相覆盖）。
+官方经验包 `glimmer-official/core` 升 **1.1.0**（新增「整页全对：0 卡是合法结果」「teacherAnswer
+只抄红字本体」两张方法卡；1.0.0 并列留存）。`_录题任务.mjs 工作单` 新增 student/subject 回填。
+
+### 根因
+
+2026-11-16 深夜用真实批次（某学生物理期中模拟卷 6 页）试运行 AGENT 全自动全链：新卡 P0153
+双路盲解通过、3 页此前已闭环、2 页整页全对——暴露三个工具缺陷（0 卡页被拒成失败、盲解工具
+不认 --data、两路清稿互覆）与一批 SOP 盲区（派单张数不可信、外部 CLI 双路形态、图形层登记），
+全部回填进工具与技能。
+
+### 改法
+
+- `_录题入库.mjs`：空回传带证据 ⇒ 登记 0 卡闭环（幂等锚 landedDigest）；真例实测
+  （t-…-19d048 / t-…-d60eab 两页已登记，重跑幂等跳过）。
+- `_盲解复核.mjs`：argv 直扫 `--data` 落 CTB_DATA（在 libraryRoot() 之前，与 `_配方.mjs` 同路）；
+  清稿 suffix = lane 优先 + ids sha 前 8 位。
+- 技能 `glimmer-agent-ingest-batch`：坑清单从 7 条扩到 14 条（派单对账/0 卡页/外部 CLI/图形层/
+  lane 防互覆/红字本体等）。
+- 官方经验包 1.1.0 三卡；`tests/neg-task-binding.cjs` 增 4D 组（工作单合成/明文路径/幽灵任务
+  exit 2，合成名"学生丙"——repo-hygiene 真化名扫描抓出过一版）。
+
+### 回归断言
+
+`--update-baseline` 整轮 exit 0（quick 117 用例全绿 + 对账通过；task-binding 50、
+verify-stem 13/shape 各 +1——Y0006 补登后 656/656 全绿的数据态漂移）；repo-hygiene 14 断言绿；
+官方包两版本校验均 ok、新卡装载实测通过。
+
+---
+
+## [2026.11.16.01] - 2026-11-16 · AGENT 全自动录题批次 B：多图一键任务包（页面 + 壳）
+
+**变更分类**：Added / Changed
+**升级影响**：录题页第 2 步重构：「孩子」下拉前置到生成区（学生随任务记录与入库命令携带）；
+勾选**多张**照片点「生成任务单」→ 逐张生成 N 条任务（一张失败不拖整批，页面列清单）；
+新增「📦 生成 AGENT 任务包」按钮与新壳 op `worksheetWrite`（把本批任务落成
+`<库根>\_录题\工作单-<W号>.md`：出网纪律置顶 + 环境明文 + 任务清单 + 进度骨架），
+派发指令一键复制发给本机 AGENT。`_录题任务.mjs` 新增 `工作单 <taskId>…` 子命令（工作单
+只引用已存在的任务记录）。壳 `组装` op 新增 `student` 透传（形状门禁：中文/字母/数字/
+连字符/下划线，2-24 字）、`taskConfirm` op 新增 `by` 透传（human|agent 白名单）。
+文案更新：录题页不再有"网页版 AI"叙述，能力两档（能开子代理=全链；不能=只录 lane1 留待双路）。
+
+### 根因
+
+批次 A 交付了 v3 任务单（AGENT 拿到单子能跑完全链），但"把一批照片交给 AGENT"仍要用户
+逐张点生成、逐张复制——对外场景下这个仪式就是门槛：多图（一整份作业十几页）逐张操作
+不可接受，且"哪几张生成了哪条任务"用户无凭据。
+
+### 改法
+
+- `_录题任务.mjs 工作单`：按 taskId 引用任务记录合成工作单（不造任务；记录不存在 exit 2）。
+- `CTBShellV2.cs`：`Recipe` 的组装动作透传 `student`（STUDENT_SHAPE 白名单）；`TaskConfirm`
+  透传 `by`；新 op `WorksheetWrite`（taskId 列表逐个形状门禁 → 引擎子命令，进写闸 finally 放闸）；
+  路由注册。
+- `ingest.js`：`onGenerate` 拆 `oneTicket`（单张，flags 构造共用）+ `renderSingle`（单图渲染
+  原样搬移）+ `renderMulti`（多图清单）；`makeWorkPacket` 调 `H.worksheetWrite`；孩子下拉
+  `paintStudents` 前置。`host.js` 新增 `H.worksheetWrite`。
+- 壳重编 + `neg-v2-ingest-task-e2e.cjs`（真壳 + CDP）全绿 44 断言。
+
+### 回归断言
+
+窗口用例 `neg-task-page-wiring.cjs` 55 断言全绿（切片锚点经 refactor 后仍可驱动；
+没勾图不发 task/image、勾图 task=1+image、stderr 解析任务号等判据照常成立）；
+四个工具测试族（task-binding 47 / recipe-contract 195 / card-select 64 / pack-contract 80）全绿。
+
+---
+
+## [2026.11.15.01] - 2026-11-15 · AGENT 全自动录题（对外开放 v2 批次 A）：任务单 v3 作业书 + 代确认 + 官方经验包
+
+**变更分类**：Added / Changed
+**升级影响**：`组装 --task` 生成的任务单换版（v3 单读者作业书）：新增「六、AGENT 全流程作业指引」
+（八步完整命令：绑定校验/代确认/入库/双路盲解）与「七、出网红线」两节，任务表带原图绝对路径与
+学生化名（新参数 `--student`），「三、回来之后」人读段替换为人工兜底声明；**无 `--task` 的预览单
+保持旧四段制逐字节不变**（兼容红线）。`_录题任务.mjs 确认` 新增 `--by human|agent`（缺省 human，
+行为不变；`agent` = AGENT 全自动闭环代确认，任务记录新字段 `confirmedBy`，可审计）。任务记录新增
+`student` 字段。经验包新增**官方经验包**机制：默认根模式合并 `<AppRoot>\官方经验包\`（随程序分发，
+`清单 --json` 包条目新增 `official` 布尔），显式根（`--packs`/`CTB_PACKS`）不合并、行为不变；
+用户包同 id@版本优先；官方包同受 `.停用` 管。发布包新增 `app\官方经验包\`（首包
+`glimmer-official/core@1.0.0` 通用方法卡）。
+
+### 根因
+
+程序此前只服务"我们的 DSH AGENT"：八步工序经验（校验→代确认→入库→双路盲解→异议→收尾）
+只住在作者的会话技能里，别人的 AGENT 拿到任务单只会转录回传，入库/盲解全部断链；
+第三层"人工确认"只能由人写，AGENT 全自动闭环被契约卡死。
+2026-11-15 用户裁定两条前提：①本机 AGENT 全信任（照片含真名而不信任本机 AGENT 就没有业务，
+隐私防线只设在出网闸口）；②网页版 AI 不考虑（它做不了这个活）——为网页版设计的
+"任务单不含路径 / 双分支取图 / 人读段"等仪式在 `--task` 路径随之退场。
+
+### 改法
+
+- `_配方.mjs 组装`：`--task` 路径追加 v3 作业书（六/七节 + 人工兜底替换 + 本机明文参数表）；
+  新增 `--student` 透传进任务记录；预览路径零改动。
+- `_录题任务.mjs`：`确认 --by`（human/agent 白名单，非法值 exit 2）；`createTask`/`新` 带 student；
+  `列 --json` 行带 student/confirmedBy。
+- `_经验包.mjs`：官方根（引擎位置推导 `<tools>\..\官方经验包`）+ 默认根双根合并 + 用户包优先 +
+  owningRoot 目录对账；`build-release.ps1` 段 1d 拷 `src\官方经验包\` 并校验 formatVersion。
+- `docs\录题任务契约.md` §二/§六、`docs\经验包规范.md` §二 同步登记。
+
+### 回归断言
+
+`tests\neg-recipe-contract.cjs` 新增"五·A"段 28 断言（v3 结构/明文路径/四条工具命令/红线内容/
+记录 student/taskDigest/预览单不变式），全文件 195 断言全绿（改造前 167）；
+`tests\neg-task-binding.cjs` 新增 4A/4B/4C 组（缺省 human/--by agent 落盘/--by 非法值 exit 2），
+47 断言全绿；lint / portability / git diff --check 全绿。基线对拍
+（`tests\neg-card-select.cjs`）随本次**有意**的 --task 路径变更推进基线提交。
+
+---
+
 ## [2026.11.14.06] - 2026-11-14 · 红字异议自动推进待办工作台（用户报障：教师异议待裁决"应该推给我"，工作台却干净）
 
 **变更分类**：Added / Changed

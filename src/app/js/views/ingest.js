@@ -41,6 +41,9 @@
      —— 静默带出来的残留选择比空着更危险（用户会以为是自己这次选的）。 */
   st.task = ''; st.verdict = null; st.inbox = null; st.picked = {}; st.batch = '';
   st.typed = {}; st.packs = null;
+  /* ★ 2026-11-16（批次 B）：本次成功生成的任务清单（[{taskId, rel}]）与工作单派发态。
+     与 st.taskId 同一生命周期：只活在内存里；重新生成就换一批（同图同配方也是**两个**任务）。 */
+  st.batchTasks = [];
   /* 冲突策略是持久化的，但 localStorage 里的值可能被改坏/来自旧版本 ⇒ 白名单兜底，不许把野值送进壳。 */
   if (!/^(deny|first|all)$/.test(String(st.conflict))) st.conflict = 'deny';
   /* 本次生成任务单对应的那一张（rel + 内容指纹）。只活在内存里，切页即失效。 */
@@ -117,8 +120,9 @@
       '<div class="small muted" id="igInboxBox">正在读收件箱…</div>' +
       '</div>' +
       '<div class="card ig-step">' +
-      '<div class="ig-h"><span class="ig-n">2</span>生成任务单，交给你的 AI</div>' +
+      '<div class="ig-h"><span class="ig-n">2</span>生成任务单，交给你的本机 AGENT</div>' +
       '<div class="row ig-opts">' +
+      '<label class="ig-f"><span>孩子</span><select id="igStudent" class="bk-sort"></select></label>' +
       '<label class="ig-f"><span>配方</span>' +
       '<select id="igRecipe" class="bk-sort">' +
       '<option value="ingest-page">整页多题（一次作业错好几道就用这个）</option>' +
@@ -129,7 +133,11 @@
       '</select></label>' +
       '<span class="tb-sp"></span>' +
       '<button class="btn sm primary" id="igGen">生成任务单</button>' +
+      '<button class="btn sm" id="igWork">📦 生成 AGENT 任务包</button>' +
       '</div>' +
+      '<div class="small muted">勾<b>一张或多张</b>照片 → 选孩子和学科 → 点「生成 AGENT 任务包」：程序逐张生成任务' +
+      '并落一份批次工作单，把派发指令发给你的本机 AGENT（能读文件、跑命令、看图的，如 Claude Code / Codex / ZCode）即可，' +
+      '剩下全部由它完成。<b>只想复制单张任务单</b>就用「生成任务单」。</div>' +
       /* ★ 2026-11-03（批次 2 · 经验包）：选卡区。卡 = 方法卡，选了就随任务单一起交给 AI。
          只读清单 + 只读选择，不做安装/停用（那是用户在文件夹里的手工动作，页面不代做）。 */
       '<div class="ig-arch" style="margin-top:10px">' +
@@ -160,16 +168,37 @@
       '<div id="igResult"></div>' +
       '</div>';
 
-    const rSel = U.$id('igRecipe'), sSel = U.$id('igSubject');
+    const rSel = U.$id('igRecipe'), sSel = U.$id('igSubject'), kidSel = U.$id('igStudent');
     rSel.value = st.recipe; sSel.value = st.subject;
     rSel.onchange = () => { st.recipe = rSel.value; save(); };
     sSel.onchange = () => { st.subject = sSel.value; save(); };
+    /* ★ 2026-11-16（批次 B）：孩子下拉前置到生成区（A-3 的 --student 由此发出）。
+       学生清单来自状态包 M.students()（与第 4 步入库下拉同一份来源）；库空时禁用并给指路。 */
+    function paintStudents() {
+      const kids = (typeof M !== 'undefined' && M.students) ? M.students() : [];
+      kidSel.innerHTML = kids.length
+        ? kids.map(k => '<option value="' + U.esc(k) + '">' + U.esc(k) + '</option>').join('')
+        : '<option value="">（库里还没有孩子）</option>';
+      kidSel.disabled = !kids.length;
+    }
+    paintStudents();
+    kidSel.onchange = () => { st.student = kidSel.value || ''; };
     /* 冲突策略三态（值必须与契约 §3.1 逐字一致：deny|first|all） */
     const cSel = U.$id('igConflict');
     if (cSel) { cSel.value = st.conflict; cSel.onchange = () => { st.conflict = cSel.value; save(); }; }
     const pr = U.$id('igPacksReload');
     if (pr) pr.onclick = reloadPacks;
     U.$id('igGen').onclick = onGenerate;
+    /* ★ 2026-11-16（批次 B）：一键任务包（多图场景的直达入口）——逻辑与生成后出现的
+       「生成 AGENT 任务包」按钮同一份 makeWorkPacket；没有已生成的任务时提示先生成。 */
+    const wk = U.$id('igWork');
+    if (wk) wk.onclick = () => {
+      if (!(st.batchTasks && st.batchTasks.length)) {
+        S.toast('先点「生成任务单」（可一次勾多张），再生成任务包', 'warn', 7000);
+        return;
+      }
+      makeWorkPacket();
+    };
     U.$id('igCheck').onclick = onCheck;
 
     paintInbox();
@@ -389,83 +418,168 @@
     }
     btn.disabled = true; btn.textContent = '⏳ 生成中…';
     /* ★ 记住"这一张"到底是哪张（含内容指纹），供「定位这张图」按钮指认。
-       指纹来自收件箱列表（每次读列表时已算好），不额外起进程。 */
+       指纹来自收件箱列表（每次读列表时已算好），不额外起进程。
+       ★ 2026-11-16（批次 B）：多图勾选 ⇒ **逐张生成 N 条任务**（任务记录 image 单值是冻结契约，
+       一个任务绑一张图）；st.batchTasks 收集本次全部 taskId，供「生成 AGENT 任务包」引用。
+       单图路径的产物与改前逐字节一致（flags 构造共用同一段代码）。 */
     const shotInfo = picked.length ? (inboxFiles().find(f => f.rel === picked[0]) || null) : null;
     st.shot = (picked.length && shotInfo) ? { rel: shotInfo.rel, sha256: shotInfo.sha256, name: shotInfo.name } : null;
+    st.batchTasks = [];
     let boxNote = '';   /* 成功抬头后面补的一句实话（清单读不到之类），没有就不加 */
     try {
-      const flags = { recipe: st.recipe, subject: st.subject };
-      if (picked.length) { flags.image = picked[0]; }
-      /* ★ 2026-11-03（批次 1 收尾）：勾了照片 ⇒ 带 --task 留任务记录（壳侧布尔透传 task=1）。
-         没选照片时**不留**——没有原图的任务记录无法对图，只会产一条永远对不上的空壳。 */
-      if (picked.length) { flags.task = '1'; }
-      /* ★ 2026-11-03（批次 2）：选卡串 = 逗号分隔（壳侧逐项展开成重复的 --card，契约 §4），
-         冲突策略只在**确实带了卡**时一起送 —— 没卡时不送，保证"无 --card 时任务单逐字节不变"（契约 §3.2）。 */
-      if (sel.cards.length) { flags.cards = sel.cards.join(','); flags.cardConflict = st.conflict || 'deny'; }
-      if (st.packs && !st.packs.ok) {
-        /* 清单读不到时**没有**任何卡被送出：生成照做（不拦着用户录题），但这句话必须挂在结果上。 */
-        boxNote = '　<b>⚠ 经验包清单没读到（本次未选卡）</b>：' + U.esc(String(st.packs.error || '').slice(0, 200));
-      }
-      st.taskId = null;   /* 每次生成都是一次新任务；旧句柄随生成动作作废 */
-      const r = await H.recipe('组装', flags);
-      /* ⚠ 2026-10-27 修（用户实测：「生成不了任务单」，而界面显示"已生成（0 字符 / 1 行）"）：
-         原代码只看 out、不看 ok/code —— 工具失败时 stdout 是空的，于是"空字符串"被当成
-         "生成成功"。**失败必须说失败**，而且要带上工具的真实原因（stderr 里那行"原图不存在"）
-         和退出码，否则用户只看到一个 0 字符的框，无从下手。 */
-      const okFlag = !(r && r.ok === false) && !(r && r.code && r.code !== 0);
-      st.task = okFlag ? String((r && r.out) || '') : '';
-      if (!okFlag || !st.task.trim()) {
-        const why = String((r && (r.err || r.out)) || '').trim() || '工具没有返回内容（退出码 ' + ((r && r.code) || '?') + '）';
-        /* 选卡被工具拒 ⇒ 指路改哪个下拉，别让用户对着原文猜。实测判词两种（2026-11-03）：
-           deny 冲突 `✖ 选卡冲突：步骤「X」被两张卡同时覆盖：A 与 B`；重复卡 `✖ 同一张卡被选了两次：A`。 */
-        const conflictHit = /--card-conflict|同时覆盖|选卡冲突|同一张卡|选了两次/.test(why);
-        box.innerHTML = '<div class="ig-warn">✖ 生成失败：任务单是空的</div>' +
-          '<pre class="ig-pre ig-bad">' + U.esc(why.slice(-1200)) + '</pre>' +
-          (conflictHit
-            ? '<div class="small muted">这是<b>选卡</b>被拒：若两张卡覆盖了同一步骤，把上面「选卡冲突策略」改成' +
-              '「先到先得」或「全部拼入」；若是同一张卡填了两次，把重复的卡 ID 去掉（重复选同一张卡三种策略都拒）。</div>'
-            : '') +
-          '<div class="small muted">常见原因：选中的照片已经被移走/改名（路径按库根解析）；' +
-          '或该配方缺学科文件。修好后点上面「⟳ 刷新」重新读收件箱再试。</div>';
-        S.toast('生成失败，看下面的原因', 'bad', 8000);
-        return;
-      }
-      const lines = st.task.split('\n').length;
-      /* 任务号在工具 stderr 的「任务记录：t-…（<库根>\_录题\…）」行里（stdout 是任务单正文）。
-         旧壳没有 task 透传时会解析不到 ⇒ st.taskId 为 null，校验自然落回"仅格式校验"。 */
-      const tidM = String((r && r.err) || '').match(/任务记录：(t-[0-9]{8}-[0-9]{6}-[0-9a-f]{6})/);
-      st.taskId = tidM ? tidM[1] : null;
-      /* 「先到先得」策略下让位的卡由工具打印一行（契约 §3.1）——页面必须把它转出来，不许吞掉：
-         吞掉等于"我以为两张卡都生效了，其实只有一张"。 */
-      const cardNote = String((r && r.err) || '').split('\n')
-        .filter(l => /卡|覆盖|让位|冲突/.test(l) && !/任务记录/.test(l)).join('\n').trim();
-      box.innerHTML =
-        '<div class="ig-ok">✔ 任务单已生成（' + st.task.length + ' 字符 / ' + lines + ' 行）' +
-        (st.taskId ? '　任务号 <b>' + U.esc(st.taskId) + '</b>（已留任务记录，回传校验按三层判）' : '') +
-        (picked.length ? '' : '　<b>⚠ 未选照片：AI 拿不到 sourceImageSha256，回传会被拒收</b>') +
-        (sel.cards.length ? '　已选卡 <b>' + sel.cards.length + '</b> 张：' + sel.cards.map(U.esc).join('、') : '') +
-        boxNote + '</div>' +
-        (cardNote ? '<pre class="ig-pre" id="igCardNote">经验包提示（工具原文）：\n' + U.esc(cardNote) + '</pre>' : '') +
-        '<div class="row" style="margin:8px 0"><button class="btn sm primary" id="igCopy">📋 复制任务单</button>' +
-        (st.shot ? '<button class="btn sm primary" id="igReveal">📂 定位这张图</button>' : '') +
-        '<button class="btn sm ghost" id="igToggle">展开 / 收起预览</button>' +
-        '<span class="small muted">点「📋 复制任务单」把文字发给 AI：<b>本机代理</b>（能跑命令的，如 ZCode）会按任务单「第 0 步」自己取图，<b>不用你发照片</b>；<b>网页版</b> AI 才要用「📂 定位这张图」选中后作为附件发出去。</span></div>' +
-        (st.shot
-          ? '<div class="small muted" style="margin-bottom:8px">要发的那一张：' + U.esc(st.shot.name) +
-            '　指纹 <b>' + U.esc(String(st.shot.sha256 || '').slice(0, 12)) + '</b>' +
-            '（照片后来被改名也没关系，这个按钮按指纹找，不按名字找）</div>'
-          : '') +
-        '<pre class="ig-pre" id="igPre" hidden>' + U.esc(st.task) + '</pre>';
-      U.$id('igCopy').onclick = async () => {
-        const ok = await copyText(st.task);
-        S.toast(ok ? '任务单已复制，去粘给你的 AI 吧' : '复制失败：请展开预览后手动全选复制', ok ? 'ok' : 'warn', 6000);
+      const oneTicket = async (rel) => {
+        const flags = { recipe: st.recipe, subject: st.subject };
+        if (rel) { flags.image = rel; }
+        /* ★ 2026-11-03（批次 1 收尾）：勾了照片 ⇒ 带 --task 留任务记录（壳侧布尔透传 task=1）。
+           没选照片时**不留**——没有原图的任务记录无法对图，只会产一条永远对不上的空壳。 */
+        if (rel) { flags.task = '1'; }
+        /* ★ 2026-11-16（批次 B / A-3）：学生随单透传（壳侧 STUDENT_SHAPE 门禁后进 --student）。 */
+        const kid = (U.$id('igStudent') && U.$id('igStudent').value) || '';
+        if (rel && kid) { flags.student = kid; }
+        /* ★ 2026-11-03（批次 2）：选卡串 = 逗号分隔（壳侧逐项展开成重复的 --card，契约 §4），
+           冲突策略只在**确实带了卡**时一起送 —— 没卡时不送，保证"无 --card 时任务单逐字节不变"（契约 §3.2）。 */
+        if (sel.cards.length) { flags.cards = sel.cards.join(','); flags.cardConflict = st.conflict || 'deny'; }
+        const rr = await H.recipe('组装', flags);
+        const ok = !(rr && rr.ok === false) && !(rr && rr.code && rr.code !== 0);
+        const text = ok ? String((rr && rr.out) || '') : '';
+        const tidM = ok ? String((rr && rr.err) || '').match(/任务记录：(t-[0-9]{8}-[0-9]{6}-[0-9a-f]{6})/) : null;
+        return { ok, text, err: String((rr && (rr.err || rr.out)) || '').trim(), taskId: tidM ? tidM[1] : null };
       };
-      const rv = U.$id('igReveal'); if (rv) rv.onclick = revealShot;
-      U.$id('igToggle').onclick = () => { const p = U.$id('igPre'); p.hidden = !p.hidden; };
+      if (picked.length <= 1) {
+        const one = await oneTicket(picked[0] || null);
+        await renderSingle(one);
+      } else {
+        /* 多图：逐张生成；一张失败不拖整批（失败的记进失败清单，成功的照常进任务包）。 */
+        const results = [];
+        for (const rel of picked) {
+          btn.textContent = '⏳ 生成中 ' + (results.length + 1) + '/' + picked.length + '…';
+          const one = await oneTicket(rel);
+          results.push({ rel, ...one });
+          if (one.ok && one.taskId) st.batchTasks.push({ taskId: one.taskId, rel });
+        }
+        await renderMulti(results);
+      }
     } catch (e) {
       box.innerHTML = '<div class="ig-warn">✖ 生成失败：' + U.esc(String(e && e.message || e)) + '</div>';
     } finally {
       btn.disabled = false; btn.textContent = '生成任务单';
+    }
+  }
+
+  /* ---------- 单图渲染（原 onGenerate 成功路径整体搬移，行为逐字节不变）---------- */
+  async function renderSingle(one) {
+    const box = U.$id('igTaskBox');
+    const picked = Object.keys(st.picked).filter(k => st.picked[k]);
+    if (!one.ok || !one.text.trim()) {
+      st.task = '';
+      const why = one.err || '工具没有返回内容（退出码 ?）';
+      const conflictHit = /--card-conflict|同时覆盖|选卡冲突|同一张卡|选了两次/.test(why);
+      box.innerHTML = '<div class="ig-warn">✖ 生成失败：任务单是空的</div>' +
+        '<pre class="ig-pre ig-bad">' + U.esc(why.slice(-1200)) + '</pre>' +
+        (conflictHit
+          ? '<div class="small muted">这是<b>选卡</b>被拒：若两张卡覆盖了同一步骤，把上面「选卡冲突策略」改成' +
+            '「先到先得」或「全部拼入」；若是同一张卡填了两次，把重复的卡 ID 去掉（重复选同一张卡三种策略都拒）。</div>'
+          : '') +
+        '<div class="small muted">常见原因：选中的照片已经被移走/改名（路径按库根解析）；' +
+        '或该配方缺学科文件。修好后点上面「⟳ 刷新」重新读收件箱再试。</div>';
+      S.toast('生成失败，看下面的原因', 'bad', 8000);
+      return;
+    }
+    const sel = collectCards(st.packs && st.packs.packs, st.typed);
+    if (st.packs && !st.packs.ok) {
+      /* 清单读不到时**没有**任何卡被送出：生成照做（不拦着用户录题），但这句话必须挂在结果上。 */
+      var boxNote = '　<b>⚠ 经验包清单没读到（本次未选卡）</b>：' + U.esc(String(st.packs.error || '').slice(0, 200));
+    } else { var boxNote = ''; }
+    st.task = one.text;
+    st.taskId = one.taskId;
+    const lines = st.task.split('\n').length;
+    const cardNote = String(one.err || '').split('\n')
+      .filter(l => /卡|覆盖|让位|冲突/.test(l) && !/任务记录/.test(l)).join('\n').trim();
+    box.innerHTML =
+      '<div class="ig-ok">✔ 任务单已生成（' + st.task.length + ' 字符 / ' + lines + ' 行）' +
+      (st.taskId ? '　任务号 <b>' + U.esc(st.taskId) + '</b>（已留任务记录，回传校验按三层判）' : '') +
+      (picked.length ? '' : '　<b>⚠ 未选照片：AI 拿不到 sourceImageSha256，回传会被拒收</b>') +
+      (sel.cards.length ? '　已选卡 <b>' + sel.cards.length + '</b> 张：' + sel.cards.map(U.esc).join('、') : '') +
+      boxNote + '</div>' +
+      (cardNote ? '<pre class="ig-pre" id="igCardNote">经验包提示（工具原文）：\n' + U.esc(cardNote) + '</pre>' : '') +
+      '<div class="row" style="margin:8px 0"><button class="btn sm primary" id="igCopy">📋 复制任务单</button>' +
+      (st.shot ? '<button class="btn sm primary" id="igReveal">📂 定位这张图</button>' : '') +
+      '<button class="btn sm ghost" id="igToggle">展开 / 收起预览</button>' +
+      '<span class="small muted">多张照片要一起交给本机 AGENT？点上面「📦 生成 AGENT 任务包」。</span></div>' +
+      (st.shot
+        ? '<div class="small muted" style="margin-bottom:8px">要发的那一张：' + U.esc(st.shot.name) +
+          '　指纹 <b>' + U.esc(String(st.shot.sha256 || '').slice(0, 12)) + '</b>' +
+          '（照片后来被改名也没关系，这个按钮按指纹找，不按名字找）</div>'
+        : '') +
+      '<pre class="ig-pre" id="igPre" hidden>' + U.esc(st.task) + '</pre>';
+    U.$id('igCopy').onclick = async () => {
+      const ok = await copyText(st.task);
+      S.toast(ok ? '任务单已复制，去粘给你的 AI 吧' : '复制失败：请展开预览后手动全选复制', ok ? 'ok' : 'warn', 6000);
+    };
+    const rv = U.$id('igReveal'); if (rv) rv.onclick = revealShot;
+    U.$id('igToggle').onclick = () => { const p = U.$id('igPre'); p.hidden = !p.hidden; };
+  }
+
+  /* ---------- 多图渲染（批次 B）：N 条任务清单 + 一键任务包 ---------- */
+  async function renderMulti(results) {
+    const box = U.$id('igTaskBox');
+    const okN = results.filter(r => r.ok && r.taskId).length;
+    const failN = results.length - okN;
+    st.task = (results.find(r => r.ok && r.text) || {}).text || '';
+    st.taskId = (results.find(r => r.ok && r.taskId) || {}).taskId || null;
+    const rows = results.map((r, i) => {
+      const info = inboxFiles().find(f => f.rel === r.rel) || {};
+      return '<tr><td>' + (i + 1) + '</td><td class="small">' + U.esc(info.name || r.rel) + '</td><td>' +
+        (r.ok && r.taskId ? '<b class="small">' + U.esc(r.taskId) + '</b>' : '<span class="small">✖ ' + U.esc((r.err || '失败').slice(-120)) + '</span>') +
+        '</td></tr>';
+    }).join('');
+    box.innerHTML =
+      '<div class="ig-ok">✔ 已生成 <b>' + okN + '</b>/' + results.length + ' 条任务' +
+      (failN ? '（<b>' + failN + '</b> 条失败——失败的不进任务包，其余照常）' : '（全部成功）') + '</div>' +
+      '<table class="small" style="width:100%;border-collapse:collapse"><tbody>' + rows + '</tbody></table>' +
+      (okN && st.studentOk !== false
+        ? '<div class="row" style="margin:8px 0"><button class="btn sm primary" id="igMakePacket">📦 生成 AGENT 任务包（' + okN + ' 条）</button>' +
+          '<span class="small muted">把整批写成一份工作单，派发指令发给你的本机 AGENT，剩下不用你管。</span></div>' +
+          '<div id="igPacketBox"></div>'
+        : '') +
+      (failN ? '<div class="small muted">失败原因都在上面表里；修好（通常是照片被移走/改名）后重新勾选再生成。</div>' : '');
+    const mk = U.$id('igMakePacket');
+    if (mk) mk.onclick = makeWorkPacket;
+  }
+
+  /* ---------- 一键任务包（批次 B / B-3）：worksheetWrite op → 批次工作单 + 派发指令 ---------- */
+  async function makeWorkPacket() {
+    const box = U.$id('igPacketBox');
+    const ids = (st.batchTasks || []).map(t => t.taskId);
+    if (!ids.length) { S.toast('还没有成功的任务——先生成任务单', 'warn', 7000); return; }
+    const kid = (U.$id('igStudent') && U.$id('igStudent').value) || '';
+    if (!kid) { S.toast('库里没有孩子——先到「🏠 首页」建一个', 'warn', 7000); return; }
+    box.innerHTML = '<div class="small muted">⏳ 正在落工作单…</div>';
+    try {
+      const r = await H.worksheetWrite(ids.join(','), kid, st.subject);
+      const ok = !(r && r.ok === false) && !(r && r.code && r.code !== 0);
+      const out = String((r && r.out) || '');
+      const pathM = ok ? (out.match(/已写工作单：(.+?)（/) || (function () { try { return [null, (JSON.parse(out) || {}).worksheet]; } catch { return [null, null]; } })()) : null;
+      const wsPath = ok ? (pathM && pathM[1] ? pathM[1].trim() : '') : '';
+      if (!ok || !wsPath) {
+        box.innerHTML = '<div class="ig-warn">✖ 工作单落盘失败</div><pre class="ig-pre ig-bad">' +
+          U.esc(String((r && (r.err || r.out)) || '').slice(-600)) + '</pre>';
+        S.toast('任务包生成失败，看原因', 'bad', 8000);
+        return;
+      }
+      const dispatch = '请读取并执行 ' + wsPath;
+      box.innerHTML = '<div class="ig-ok">✔ AGENT 任务包已生成（' + ids.length + ' 条任务）</div>' +
+        '<div class="row" style="margin:8px 0"><button class="btn sm primary" id="igCopyDispatch">📋 复制派发指令</button>' +
+        '<span class="small muted">把指令发给你本机的 AGENT（Claude Code / Codex / ZCode 等），它会按工作单跑完全部录题与盲解。</span></div>' +
+        '<pre class="ig-pre">' + U.esc(dispatch) + '</pre>' +
+        '<div class="small muted">工作单：' + U.esc(wsPath) + '</div>';
+      U.$id('igCopyDispatch').onclick = async () => {
+        const okc = await copyText(dispatch);
+        S.toast(okc ? '派发指令已复制，发给你的 AGENT 吧' : '复制失败，请手动选中上面的指令', okc ? 'ok' : 'warn', 6000);
+      };
+      S.toast('任务包已生成，复制派发指令发给你 AGENT', 'ok', 6000);
+    } catch (e) {
+      box.innerHTML = '<div class="ig-warn">✖ 任务包失败：' + U.esc(String(e && e.message || e)) + '</div>';
     }
   }
 
