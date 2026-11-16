@@ -490,19 +490,20 @@ node tests\run.mjs quick
 2. `CHANGELOG.md` 顶部加条目，**必须含两行**：`**变更分类**：…` 与 `**升级影响**：…`（门禁会逐版校验）
 3. 跑门禁：`node tests\run.mjs full` + `node tools\lint.mjs`（`quick` 是底线，`full` 才覆盖重编与打印链路）
 4. `powershell -File scripts\build-release.ps1`
-   日常自用部署可加 `-Internal`：包名带 `-internal` 后缀，不打 tag、不发 Release（2026.11.14 批次 1-5 版本双通道）。
-5. `powershell -File scripts\deploy.ps1 -Zip <刚出的包>`
-6. 自用 1~2 天
-7. `git tag -a v<版本> -m "<版本> release point"` + 推 GitHub Release
+5. `powershell -File scripts\deploy.ps1 -Zip <刚出的包>`（部署到运行区，本机实测一遍）
+6. `git tag -a v<版本> -m "<版本> release point"` + 推 GitHub Release（附 zip + `.sha256`）
 
-**第 7 步只对正式发布强制**（不带 `-Internal` 打出的包）：见上方铁律 3 的双通道口径。
-历史上曾因"每个内部版本都占一个公开 tag"造成 `release\` 有 30 个包、tag 只有 2 个的欠账；
-引入双通道后，`-Internal` 包**不进**第 7 步口径，只有正式包才需要 tag。查漏命令（只查正式包）：
+**这六步是一条链，不许停在中间**（2026-11-16 起）：**升版本号 = 发布**。
+没有"内部构建"这种中间态了——上一版曾允许 `-Internal` 打出"不打 tag、不发 Release 的内部包"，
+结果造成运行区一个版本号、对外发布另一个版本号（实测出现"运行区 .16.03 / 公开 .16.02"的分裂）。
+现在一个版本号只有一种含义、只有一个可见形态。想先观察几天再对外，就**别先升版本号**
+（在开发树里跑夹具验证）；一旦升号，上面六步就走完。
+
+查漏命令（每个 zip 都该有一个同名 tag；输出应为空）：
 
 ```powershell
-# 有正式包但没 tag 的版本（应为空；-internal 包不算）
 $tags = git tag | ForEach-Object { $_ -replace '^v', '' }
-Get-ChildItem release\*.zip | Where-Object { $_.Name -notmatch '-internal' } |
+Get-ChildItem release\*.zip |
   ForEach-Object { ($_.BaseName -split '-')[1] } |
   Where-Object { $tags -notcontains $_ } | Sort-Object -Unique
 ```
@@ -554,8 +555,8 @@ Synology Drive 的同步根之下，字节被同步到 NAS。这不是拾光小�
 
 1. **运行区里的东西永远是产物，不是源头。** 谁都不在 `GlimmerNote\app\` 里改代码。
 2. **部署只动 `app\`。** `数据\` 由脚本层面保证不触碰。
-3. **每次发布必须留三样**：git tag、zip 产物、SHA256。（2026.11.14 起分双通道：`-Internal`
-   内部构建的包**不属于**"发布"——不打 tag 不发 Release，正式包才必须三样齐全。）
+3. **每次发布必须留三样**：git tag、zip 产物、SHA256。**升版本号就是发布**——没有"内部构建"
+   这种中间态（2026-11-16 取消 `-Internal` 双通道），本地自用部署也走同一条链。
 4. **回滚必须演练过。** 没演练过的回滚等于没有。
 5. **dev 里能跑测试，靠 `fixtures\`，不靠真数据。**
 6. **题干里的"空"是数据，不是装饰。** 每道有空的题都必须逐空登记答案（`answerSlots`），

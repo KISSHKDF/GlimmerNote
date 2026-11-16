@@ -32,13 +32,12 @@ param(
   #   并打印显眼警告（发版记录里必须写明实际版本）；不传 ⇒ 钉住校验照常执行。
   #   同时修掉 274 行那句假注释（"-NodeExe 只要求 ≥18" —— 钉住检查从不区分 Node 来源）。
   [string]$PinnedNodeVersion = 'v26.10.0',
-  [switch]$AllowAnyNodeVersion,  # ★ 2026-11-05（N3 整改）：真·可绕过 —— 见下面钉住检查处的注释
-  # ★ 2026-11-14（方案批次 1-5）：**版本双通道**。
-  #   -Internal = 内部构建：包名加 `-internal` 后缀（release\GlimmerNote-<ver>-win-x64-internal.zip），
-  #   不打 tag、不发 GitHub Release —— 日常自用部署走这条，避免"每个内部版本都占一个公开 tag"。
-  #   正式发布（不带本开关）= 铁律 3 的三样齐全：tag / zip / SHA256，README 发版检查单第 7 步。
-  #   包内容两种通道完全一致（同版本号、同校验），差异只在包名与"是否对外"。
-  [switch]$Internal
+  [switch]$AllowAnyNodeVersion  # ★ 2026-11-05（N3 整改）：真·可绕过 —— 见下面钉住检查处的注释
+  # ★ 2026-11-16：**取消"版本双通道"**（用户裁定"统一版本，不许搞出那么多名堂"）。
+  #   原先 `-Internal` 允许"内部构建：包名加 -internal 后缀、不打 tag 不发 Release"，
+  #   结果造成运行区一个版本号、对外发布另一个版本号（实测出现"运行区 .16.03 / 公开 .16.02"的分裂）。
+  #   现在只有一条通道：**升版本号 = 发布**（tag / zip / SHA256 三样齐全，见 README 发版检查单）。
+  #   本地自用部署也走这条 —— 一个版本号只有一种含义、只有一个可见形态。
 )
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.IO.Compression.FileSystem | Out-Null
@@ -610,10 +609,8 @@ Write-Host "  构建时间戳（钉死）：$stamp"
 
 # ── 4) 压缩 ──
 if (-not (Test-Path $relDir)) { New-Item -ItemType Directory -Path $relDir -Force | Out-Null }
-# ★ 2026-11-14（批次 1-5）：内部构建包名加 -internal 后缀（deploy.ps1 从包内 版本.json 取版本、
-#   不解析文件名，落地版本仍是 $ver —— 实读 deploy.ps1 L56/L104 后确认此后缀对部署链透明）。
-$channelSuffix = if ($Internal) { '-internal' } else { '' }
-$zipName = "GlimmerNote-$ver-win-x64$channelSuffix.zip"
+# 包名只有一种形态（2026-11-16 取消 -internal 后缀通道）：GlimmerNote-<版本>-win-x64.zip。
+$zipName = "GlimmerNote-$ver-win-x64.zip"
 $zipPath = Join-Path $relDir $zipName
 if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
 [IO.Compression.ZipFile]::CreateFromDirectory($stage, $zipPath, [IO.Compression.CompressionLevel]::Optimal, $false)
@@ -724,7 +721,7 @@ Write-Host "  大小：$sizeMB MB ／ app 内 $fileN 个文件"
 Write-Host "  哈希：$hash"
 Write-Host "  校验：$shaPath"
 Write-Host ""
-if ($Internal) {
-  Write-Host "  通道：内部构建（-internal 后缀；不打 tag、不发 Release —— 正式发版重跑不带 -Internal）"
-}
-Write-Host "下一步：powershell -File scripts\deploy.ps1 -Zip `"$zipPath`""
+Write-Host "下一步（一条链，不许断在半路）："
+Write-Host "  ① powershell -File scripts\deploy.ps1 -Zip `"$zipPath`"      # 部署到运行区"
+Write-Host "  ② git tag v$ver && git push origin v$ver                     # 打 tag"
+Write-Host "  ③ gh release create v$ver ...                                 # 发 Release（附 zip + .sha256）"

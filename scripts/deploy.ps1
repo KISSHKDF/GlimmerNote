@@ -189,7 +189,10 @@ try {
   Write-Host "  数据：$dataDir（未改动）"
   Write-Host "  记录：$logFile"
   Write-Host ""
-  Write-Host "下一步：启动 app\ 里的程序，确认能开；再用两天再发布。"
+  Write-Host "下一步（升版本号 = 发布，一条链走完；见 README 发版检查单）："
+  Write-Host "  ① 启动 app\ 里的程序，确认能开、能用（本机实测）"
+  Write-Host "  ② git tag -a v$newVer -m `"$newVer release point`" && git push origin v$newVer"
+  Write-Host "  ③ gh release create v$newVer ...（附 zip + .sha256）"
 } catch {
   Write-Host ""
   Write-Host "✖ 部署过程中出错，正在自动回退…" -ForegroundColor Red
