@@ -4,18 +4,21 @@
 #   产出：release\GlimmerNote-<ver>-win-x64.zip + 同名 .sha256
 #   用法：powershell -File scripts\build-release.ps1
 #
-#   ★ 2026-10-25：默认把 **node.exe 一起打进包**（-WithoutNode 可关掉）。
+#   ★ 2026-10-25 定，2026-11-16 收口：**始终把 node.exe 一起打进包**（唯一形态）。
 #     为什么必须打：壳里 RunNode 是裸调 "node.exe"（CTBShellV2.cs:597，只给文件名、
 #     UseShellExecute=false），而 Windows CreateProcess 的搜索序**第一个就是调用方 exe
 #     所在目录**（2026-10-25 实测：目录里没有 node.exe 且 PATH 剥离 → 报"系统找不到指定
 #     的文件"；把 node.exe 拷到旁边 → 正常返回 v26.10.0）。所以只要 node.exe 与
 #     「拾光小册.exe」同目录，**一行 C# 都不用改**，陌生人机器也能直接跑。
 #     不打的话：空库能打开，但点「＋新建学生」就失败，且报错不提 Node。
+#     ★ 2026-11-16：**删掉 `-WithoutNode` 精简包通道**。理由（用户裁定"不要搞那么多概念"）：
+#       两个包名 / 两套文案 / 两种体积说法本身就是负担，而精简包对普通用户是坑 ——
+#       他解压双击能开，一点「新建学生 / 录题」就失败，且报错不提 Node。
+#       一个程序一种形态：自带运行时，解压即用。
 # ═══════════════════════════════════════════════════════════
 [CmdletBinding()]
 param(
   [string]$NodeExe,        # 指定要打进包的 node.exe（不填则取 PATH 里的）
-  [switch]$WithoutNode,    # 打"不带 Node"的精简包（体积很小，但要求用户自备 Node ≥18）
   # ★ 2026-11-04（D2）：**钉住内置 Node 的精确版本**。
   #   README 标的体积（38 MiB / 102 MiB / node.exe 99.9 MiB）与「用户免装 Node」的承诺
   #   都建立在「打进去的是哪一个 node」之上 ⇒ 版本必须钉住，否则同一份文档对不同的包。
@@ -271,19 +274,15 @@ if ($lack.Count -gt 0) {
 #   工具链 19 个 .mjs 全部只用 Node 内置模块（2026-10-25 实测），所以只要 node.exe 一个文件，
 #   不需要 node_modules、不需要 npm。
 $nodeInfo = $null
-if ($WithoutNode) {
-  Write-Host "  ⚠ -WithoutNode：本包不含 node.exe，最终用户必须自备 Node.js ≥18" -ForegroundColor Yellow
-} else {
-  $nodeSrc = $NodeExe
-  if (-not $nodeSrc) {
-    $cmd = Get-Command node -ErrorAction SilentlyContinue
-    if ($cmd) { $nodeSrc = $cmd.Source }
-  }
-  if (-not $nodeSrc -or -not (Test-Path $nodeSrc)) {
-    throw ("找不到 node.exe 可打进包（试过 -NodeExe 与 PATH）。`r`n" +
-           "  · 想打「绿色免安装」完整包：先装 Node.js ≥18，或用 -NodeExe 指定 node.exe 路径`r`n" +
-           "  · 确实要打不含 Node 的精简包：加 -WithoutNode（用户需自备 Node）")
-  }
+$nodeSrc = $NodeExe
+if (-not $nodeSrc) {
+  $cmd = Get-Command node -ErrorAction SilentlyContinue
+  if ($cmd) { $nodeSrc = $cmd.Source }
+}
+if (-not $nodeSrc -or -not (Test-Path $nodeSrc)) {
+  throw ("找不到 node.exe 可打进包（试过 -NodeExe 与 PATH）。`r`n" +
+         "  · 本程序**必须**内置 node.exe（绿色免安装）：先装 Node.js ≥18，或用 -NodeExe 指定路径")
+}
   $nodeVer = (& $nodeSrc --version) 2>$null
   if (-not $nodeVer) { throw "无法执行 $nodeSrc --version，可能不是可用的 node.exe" }
   $major = 0
@@ -390,7 +389,6 @@ see https://github.com/nodejs/node/blob/main/LICENSE for the full list.
   }
   Write-Host ("  内置 Node：{0}（{1:N1} MB）→ app\node.exe" -f $nodeInfo.version, ($nodeBytes / 1MB))
   Write-Host "  已放：内置Node说明.txt、node-LICENSE.txt"
-}
 
 # ── 2.5) 补"解压即可用"的两样东西（★ 2026-10-24 加）──
 # 为什么要数据目录：壳的库根解析顺序是 CTB_DATA > <AppRoot>..\数据 > <AppRoot>\数据 > AppRoot。
@@ -523,24 +521,14 @@ $readme = @'
    MIT，见仓库 LICENSE。
 '@
 $readme = $readme.Replace('__VER__', $ver)
-# ★ 2026-11-04（D2）：**产物文案必须跟着构建分支走**。
-#   改前：这段"已内置 Node.js"的说明在 `if ($WithoutNode)/else` **之外无条件**构造
-#   ⇒ `-WithoutNode` 精简包装着一份**说谎的使用说明**：
-#   它说"app\node.exe 已内置、见内置Node说明.txt"，而那个包里**根本没有这两个文件**。
-#   凡是"同一份产物文案被多条互斥配置路径共享"的场景，文案必须跟着分支走 ——
-#   否则最小包会带着假承诺出厂（用户照着说明去找 node.exe，找不到）。
-$nodeNote = if ($WithoutNode) {@'
-本包是**精简包**：不含 Node.js 运行时，你**需要自己先装 Node.js ≥ 18**（https://nodejs.org/）。
-  本程序的所有"写盘"动作（新建学生 / 组卷 / 批改 / 待办办结）都由 Node 工具链完成，
-  没有 Node 就跑不起来。
-  装好后请确认命令行里 `node --version` 能正常输出。
-'@
-} else {
-@'
+# ★ 2026-11-04（D2）历史教训（留档）：产物文案必须跟着构建分支走 ——
+#   当年 `-WithoutNode` 精简包装着"已内置 Node.js"的说明出厂（说"见内置Node说明.txt"，
+#   而包里根本没那个文件）。**2026-11-16 取消该通道**后全仓只有一个包形态，
+#   这类"同一份文案被多条互斥路径共享"的坑随之消失；本段留档，防止再引入第二形态。
+$nodeNote = @'
 本程序已内置所需的 Node.js（app\node.exe）：**不用另外安装 Node，也不用联网。**
   内置版本与 SHA256 见同目录「内置Node说明.txt」，其许可见「node-LICENSE.txt」。
 '@
-}
 $readme = $readme.Replace('__NODENOTE__', $nodeNote.TrimEnd())
 [IO.File]::WriteAllText((Join-Path $stage '使用说明.txt'), $readme + "`r`n", (New-Object System.Text.UTF8Encoding($true)))
 Write-Host "  已放：数据\先看这里.txt、使用说明.txt"

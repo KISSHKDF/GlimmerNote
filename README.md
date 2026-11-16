@@ -203,11 +203,6 @@ Get-Content .\GlimmerNote-<版本>-win-x64.zip.sha256
 > 内置版本与 SHA256 见包内 `内置Node说明.txt`，许可见 `node-LICENSE.txt`。
 > 想自己检查这一点：`src\tools\` 下的所有 `.mjs` 工具都只用 Node 内置模块，没有 `node_modules`。
 >
-> ⚠ **本表的体积与"免装 Node"只适用于**默认发行包**（内置 Node 的完整包）**。
-> 自建包时 `scripts\build-release.ps1` 有个 `-WithoutNode` 开关，出的是**不含 Node 的精简包**：
-> 体积小得多，但**用户必须自己装 Node ≥ 18**（包里的 `使用说明.txt` 会明确写这一点）。
-> 两种包不是同一件东西，别拿精简包的体积去对上面这张表。
->
 > 内置 Node 的**精确版本是钉死的**（`build-release.ps1` 的 `$PinnedNodeVersion`）——
 > 打包机上装的 Node 版本对不上会**响亮拒绝**，而不是悄悄换一个版本打进去
 > （否则上面这张体积表就会对不同的包说不同的话）。要换版本：改那个参数 + 实测后同步改这张表。
