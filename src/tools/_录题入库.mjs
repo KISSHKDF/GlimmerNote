@@ -164,8 +164,17 @@ function findTarget(student, subject) {
   if (single.length > 1) return { why: '学生 ' + student + ' 的「' + subject + '」有多个索引文件（' + single.map(x => path.basename(path.dirname(x.f))).join('、') + '）——请先合并成一个' };
   if (multi.length === 1) {
     const { f, j } = multi[0];
-    const v = j.subjects[subject];
-    if (!v) return { why: '学生 ' + student + ' 的索引里没有学科「' + subject + '」这一节（现有：' + Object.keys(j.subjects).join('、') + '）' };
+    let v = j.subjects[subject];
+    /* ★ 2026-11-16（真机复现 P0）：**新学生的学科节必须在这里长出来**。
+       事故：`_建学生.mjs` 建出的索引是 `subjects: {}`（它自陈"录哪门课的题，那门课就自动出现"），
+       但全仓**没有任何代码**创建这个节点 —— 于是任何一个新用户建完学生、录第一张卡，
+       入库器都在这里返回"索引里没有学科「数学」这一节（现有：）"⇒ exit 2、零写盘。
+       这条路径**不可能被老用户碰到**（老库的学科节是历史一次性脚本建的），
+       测试也没覆盖（neg-ingest-land 的夹具是手写的学科级索引）⇒ 缺陷活到今天。
+       修法：学科节点与学科目录**按需创建**（与 `_建学生.mjs` 的承诺、与 N4"学科目录⇔subjects 键一一对应"一致）。
+       写盘仍在下面的锁+事务里：目录由 `tx.mkdir` 登记，索引由 `tx.writeJson` 原子写，
+       中途失败会连新目录一起回滚（不会留下"有册无卡"的空壳键）。 */
+    if (!v) v = j.subjects[subject] = { items: [] };
     return { idxFile: f, idx: j, subject, dirAbs: path.join(path.dirname(f), subject), owner: 'multi', subjNode: v };
   }
   if (multi.length > 1) return { why: '学生 ' + student + ' 有多个索引文件（' + multi.map(x => path.basename(x.f)).join('、') + '）——请先合并成一个' };
@@ -1076,6 +1085,9 @@ function cmdLand() {
   let tx = null;
   try {
     tx = openTransaction(root, { label: '_录题入库 ' + taskId });
+    /* 学科目录按需创建（新学生的第一张卡）：必须先登记，
+       否则回滚时只删卡目录、留下一个空学科目录 ⇒ N4「有册无卡/有卡无册」两头都可能违规。 */
+    tx.mkdir(tgt.dirAbs);
     const made = [];
     const figs = [];
     const answers = [];
@@ -1338,7 +1350,7 @@ const HELP = [
   '  · 任务记录存在且**已人工确认**（第三层，契约 §四）',
   '  · 回传 JSON 的信封 taskId / imageSha256 与任务记录一致（第二层）',
   '  · 每张卡的 sourceImageSha256 等于任务记录的原图 sha',
-  '  · 学生·学科落点存在（学生索引里有这一科）',
+  '  · 学生存在（学科不用先建：新学生录第一张卡时，该学科的节点与目录会自动长出来）',
   '',
   '改卡（2026-11-05 新增）：重写**已在库**那一张的题干/裁图/记录，',
   '  索引条目**原地更新**（不删行、不换号），**复习状态原样保留**。',
