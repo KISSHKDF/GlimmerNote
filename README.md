@@ -499,7 +499,7 @@ node tests\run.mjs quick
 现在一个版本号只有一种含义、只有一个可见形态。想先观察几天再对外，就**别先升版本号**
 （在开发树里跑夹具验证）；一旦升号，上面六步就走完。
 
-查漏命令（每个 zip 都该有一个同名 tag；输出应为空）：
+**查漏命令**（列出"有包无 tag"的版本）：
 
 ```powershell
 $tags = git tag | ForEach-Object { $_ -replace '^v', '' }
@@ -507,6 +507,11 @@ Get-ChildItem release\*.zip |
   ForEach-Object { ($_.BaseName -split '-')[1] } |
   Where-Object { $tags -notcontains $_ } | Sort-Object -Unique
 ```
+
+⚠ **历史欠账很多**（2026-11-16 前实测 120+ 个包对 6 个 tag）：旧口径允许"内部构建"——
+本地自用部署也产出 zip 却不打 tag。新口径下这类欠账不再增长：将来**要么升号并走完六步
+（有包必有 tag），要么不升号（不产生新包名）**。这条命令的用处是核对"新口径之后有没有
+漏发"，不是要求历史全补齐（历史包不再追补 tag）。
 
 ## 联网情况（分阶段可对证）
 
