@@ -29,11 +29,27 @@ jobs:
   zero-dependency-gate:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      # ★ 2026-11-17 升 v4 → v7：v4 跑在已被弃用的 Node 20 运行时上，GitHub 每次都
+      #   强制用 Node 24 跑并告警（"Node.js 20 is deprecated"）。v7 的 action.yml 是
+      #   `using: node24`，从根上消掉这条告警。
+      #   破坏性变更核对（v5/v6/v7 三个大版本全读过）：
+      #     · checkout v7：只影响 `pull_request_target` / `workflow_run` 的 fork 检出
+      #       （默认改为拒绝不安全检出）。本工作流用 `pull_request`，不受影响。
+      #     · setup-node v7：只影响自动缓存（ESM 迁移、cache 相关输出）。本工作流
+      #       不跑 `npm ci`、不需要缓存，不受影响。
+      #   两条都只动"用不到的那部分"，所以升版本是零行为变化。
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      # ★ 2026-11-17 换 Node 20 → 26：发行包内置的是 v26.10.0
+      #   （`scripts\build-release.ps1` 的 `$PinnedNodeVersion`），本机开发也是 v26.10.0。
+      #   改前 CI 装 Node 20 跑门禁 ⇒ **CI 绿不代表发行包能跑**：两边的 JS 引擎
+      #   差的不是小版本（20 → 26 跨 6 个大版本），语法/内置 API/默认行为都有差异。
+      #   门禁的意义是"干净环境下发行包能不能跑"，那它就该用发行包的那一版。
+      #   ⚠ 版本号只写两处：这里 + build-release.ps1 的 $PinnedNodeVersion。
+      #     改一处必须改另一处（`tests\portability.cjs` 会拦不一致）。
+      - uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '26.10.0'
 
       - name: 语法 / 编码 / 行尾 / 调试残留
         run: node tools/lint.mjs

@@ -97,6 +97,44 @@ A('有 AppDomain.UnhandledException 兜底', /UnhandledException/.test(cs), '');
 A('有日志轮转逻辑', /LogMaxBytes/.test(cs) && /\.1/.test(cs), '');
 A('Main() 整体包 try', /static void Main\(\)\s*\n\s*\{\s*\n\s*try/.test(cs), '');
 
+console.log('\n═══ ⑤ CI 的 Node 版本 = 发行包内置的 Node 版本 ═══');
+/* ★ 2026-11-17 新增。动机（真实缺陷，不是假想）：
+   `.github/workflows/gate.yml` 装的是 Node **20**，而发行包内置的是 **v26.10.0**
+   （`scripts\build-release.ps1` 的 `$PinnedNodeVersion`），本机开发也跑 v26。
+   两边差 6 个大版本 ⇒ **CI 绿不代表发行包能跑**：语法/内置 API/默认行为都可能有差异，
+   而这条 CI 存在的全部意义就是"干净环境下发行包能不能跑"。
+   判据：从 gate.yml 抠出 `node-version:` 的值，与 build-release.ps1 的
+   `$PinnedNodeVersion` 做**字符串相等**（都带不带 v 都归一化掉）。
+   ⚠ 这条守卫只保证"两处写着同一个版本"，不保证"这个版本是对的"——后者是人的判断。
+   但不一致一定错（改一处忘另一处），所以它必须能红。 */
+const GATE_YML = path.join(ROOT, '.github', 'workflows', 'gate.yml');
+const BUILD_PS1 = path.join(ROOT, 'scripts', 'build-release.ps1');
+const normVer = (v) => String(v == null ? '' : v).trim().replace(/^v/i, '');
+if (!fs.existsSync(GATE_YML)) {
+  A('gate.yml 存在', false, GATE_YML);
+} else if (!fs.existsSync(BUILD_PS1)) {
+  A('build-release.ps1 存在', false, BUILD_PS1);
+} else {
+  const yml = fs.readFileSync(GATE_YML, 'utf8');
+  const ps1 = fs.readFileSync(BUILD_PS1, 'utf8');
+  /* 只认 `- uses: actions/setup-node@...` 后面那个 with 块里的 node-version。
+     用 `[^\S\n]*` 而不是 `\s*` 是为了不跨行误吃到别的步骤。 */
+  const ymlM = /uses:\s*actions\/setup-node@\S+[^\n]*\n(?:[^\n]*\n)*?[^\S\n]*with:\s*\n[^\S\n]*node-version:\s*['"]?([0-9][0-9A-Za-z.*-]*)['"]?/.exec(yml);
+  const ps1M = /\$PinnedNodeVersion\s*=\s*['"]([^'"]+)['"]/.exec(ps1);
+  A('gate.yml 里能抠出 setup-node 的 node-version', !!ymlM,
+    ymlM ? ymlM[1] : '没找到（锚点被改？见 .github/workflows/gate.yml）');
+  A('build-release.ps1 里能抠出 $PinnedNodeVersion', !!ps1M,
+    ps1M ? ps1M[1] : '没找到（变量被改名？见 scripts/build-release.ps1）');
+  if (ymlM && ps1M) {
+    const ciVer = normVer(ymlM[1]);
+    const pkgVer = normVer(ps1M[1]);
+    A('CI 的 Node 版本与发行包内置版本**逐字相同**（' + pkgVer + '）',
+      ciVer === pkgVer,
+      'CI=' + ciVer + '　打包脚本=' + pkgVer +
+      '　⇒ 改一处必须改另一处（.github/workflows/gate.yml ↔ scripts/build-release.ps1）');
+  }
+}
+
 console.log('\n' + (fail === 0 ? '✔ 可搬移性静态检查全通过' : '✖ ' + fail + ' 项未通过'));
 console.log('\nRESULT=' + (fail ? 'FAIL(' + fail + ')' : 'PASS') +
   '  断言=' + nChecks + '  通过=' + (nChecks - fail) + '  失败=' + fail);
