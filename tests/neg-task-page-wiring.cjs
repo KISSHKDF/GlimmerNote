@@ -129,7 +129,7 @@ const sliceFn = (from, to) => {
 let PAGE = null, PAGE_ERR = '', SRC_CONFIRM = '';
 try {
   SRC_CONFIRM = sliceFn('async function onConfirm(cf)', 'async function onCheck()');
-  const src = sliceFn('async function onGenerate()', 'async function onBoundCheck(')
+  const src = sliceFn('async function onGenerate(', 'async function onBoundCheck(')
     + sliceFn('async function onBoundCheck(', 'async function onConfirm(cf)')
     + SRC_CONFIRM
     + sliceFn('async function onCheck()', 'V.onShow = function');
@@ -146,10 +146,10 @@ const mkPage = (over) => {
   const o = over || {};
   const els = {};
   const mkEl = () => ({ innerHTML: '', disabled: false, textContent: '', value: '', onclick: null });
-  const calls = { recipe: [], taskCheck: [], taskConfirm: [], toast: [] };
+  const calls = { recipe: [], taskCheck: [], taskConfirm: [], worksheetWrite: [], toast: [] };
   const st = Object.assign({
     recipe: 'ingest-page', subject: SHA_TXT, batch: '', picked: {}, task: '',
-    verdict: null, inbox: null, shot: null, taskId: null,
+    verdict: null, inbox: null, shot: null, taskId: null, batchTasks: [],
   }, o.st || {});
   const U = { $id: (id) => (els[id] || (els[id] = mkEl())), esc: (s) => String(s) };
   const H = {
@@ -163,6 +163,12 @@ const mkPage = (over) => {
       return o.taskCheckReply || { ok: true, code: 0, out: '绑定校验 · 任务 x\n  ③ 内容已人工确认：**未确认**（人看过之后再跑 `确认 x`）\n', err: '' };
     },
     taskConfirm: async (id) => { calls.taskConfirm.push(id); return { ok: true, code: 0, out: '', err: '' }; },
+    /* ★ 2026-11-17：一键任务包通道（壳 op worksheetWrite）。返回形如工具原文的
+       「已写工作单：<路径>（…）」，页面按这个正则取路径并拼派发指令。 */
+    worksheetWrite: async (tasks, student, subject) => {
+      calls.worksheetWrite.push({ tasks, student, subject });
+      return { ok: true, code: 0, out: '已写工作单：' + path.join('C:\\LIB', '_录题', '工作单-W-test.md') + '（3 条任务）\n', err: '' };
+    },
   };
   const S = { toast: (m) => calls.toast.push(String(m)) };
   const fns = PAGE(U, H, S, st, o.inboxFiles || (() => []), async () => true, () => { });
@@ -211,6 +217,87 @@ const mkPage = (over) => {
     f1.task === '1' && f1.image === '_收件箱/w/p001.jpg', 'flags=' + JSON.stringify(f1));
   A('B2b 行为级·任务号确实从 stderr 解析出来（stdout 是任务单正文，里面没有任务号）',
     p1.st.taskId === TID_FAKE, 'st.taskId=' + String(p1.st.taskId));
+
+  /* ═════════ B2f · 多选接通（2026-11-17） ═════════
+     缺陷复现（改前实测）：
+       勾选处理器第一行是 `if (cb.checked) { st.picked = {}; }`（注释"单选语义"）⇒
+       每勾一张清空之前所有 ⇒ 勾 3 张后 picked 只剩最后一张 ⇒ picked.length 恒 ≤ 1 ⇒
+       `renderMulti` 永远进不去 ⇒ 批次 B 的多图任务包是死代码；而单图分支当时**也不** push
+       `st.batchTasks` ⇒ 单张照片永远产不出任务包（两条路一起断）。
+     判据四段：① 多选真保住；② 单图也登记 batchTasks；③ 一键 autoPacket 真调 worksheetWrite；
+     ④ 阴性自证：把"清空"那行塞回源码，切片驱动后 picked 必须退化成 1（判据不是恒真的）。 */
+  console.log('\n═══ B2f · 多选接通 + 一键任务包（2026-11-17）═══');
+  /* ② 单图（B2b 那次）必须已登记进 batchTasks —— 否则「生成 AGENT 任务包」没有可引用的任务号 */
+  A('B2f-1 行为级·单图也登记 st.batchTasks（改前只有多图分支 push ⇒ 单张永远出不了任务包）',
+    p1.st.batchTasks.length === 1 && p1.st.batchTasks[0].taskId === TID_FAKE,
+    JSON.stringify(p1.st.batchTasks));
+
+  /* ③ 一键：onGenerate(true) 必须真的调 worksheetWrite（用户点一下就走完全程） */
+  const p1b = mkPage({
+    st: { picked: { '_收件箱/w/p001.jpg': true }, student: '学生甲' },
+    inboxFiles: () => ([{ rel: '_收件箱/w/p001.jpg', sha256: 'a'.repeat(64), name: 'p001.jpg' }]),
+  });
+  p1b.$id('igStudent').value = '学生甲';
+  await p1b.fns.onGenerate(true);
+  A('B2f-2 行为级·onGenerate(true) 一键走完：recipe 组装后**接着**调 worksheetWrite（不用再点第二个按钮）',
+    p1b.calls.recipe.length === 1 && p1b.calls.worksheetWrite.length === 1 &&
+    p1b.calls.worksheetWrite[0].tasks === TID_FAKE,
+    'recipe=' + p1b.calls.recipe.length + ' worksheetWrite=' + JSON.stringify(p1b.calls.worksheetWrite));
+  A('B2f-3 行为级·派发指令上屏（用户复制那一条就能派活）',
+    /请读取并执行/.test(p1b.$id('igPacketBox').innerHTML),
+    p1b.$id('igPacketBox').innerHTML.slice(0, 120));
+
+  /* ① 多选：切片驱动真实的勾选处理器（从源码切出 paintPickCount + 绑定块，注入假 box 真跑） */
+  const PICK_SRC = (() => {
+    const a = INGEST.indexOf('const paintPickCount = () => {');
+    const b = INGEST.indexOf('  }\n\n  /* ---------- 「已归档」区');
+    if (a < 0 || b < 0) throw new Error('切不出勾选处理器（锚点被改名/重排）');
+    return INGEST.slice(a, b);
+  })();
+  const runPick = (labels) => {
+    /* 极简假 DOM：只有 querySelectorAll('input[data-rel]')、closest('label')、classList */
+    const cbs = labels.map(rel => {
+      const lab = { classList: { _s: new Set(), add(c) { this._s.add(c); }, remove(c) { this._s.delete(c); }, toggle(c, on) { on ? this._s.add(c) : this._s.delete(c); } } };
+      return { checked: false, dataset: { rel }, closest: () => lab, _lab: lab };
+    });
+    const hint = { textContent: '', innerHTML: '' };
+    const box = {
+      querySelectorAll: (sel) => (sel === 'input[data-rel]' ? cbs : []),
+      querySelector: (sel) => (sel === '#igPickHint' ? hint : null),
+    };
+    const st = { picked: {} };
+    new Function('box', 'st', PICK_SRC)(box, st);
+    return { cbs, st, hint };
+  };
+  const pk = runPick(['_收件箱/w/a.jpg', '_收件箱/w/b.jpg', '_收件箱/w/c.jpg']);
+  for (const cb of pk.cbs) { cb.checked = true; cb.onchange(); }   // 模拟用户依次勾三张
+  const pickedN = Object.keys(pk.st.picked).filter(k => pk.st.picked[k]).length;
+  A('B2f-4 行为级·勾 3 张 ⇒ picked 保住 3 张（改前是"勾新的清旧的" ⇒ 只剩 1 张）',
+    pickedN === 3, 'picked=' + JSON.stringify(Object.keys(pk.st.picked)));
+  A('B2f-5 行为级·计数提示实时更新为 3 张', /3/.test(String(pk.hint.innerHTML)), pk.hint.innerHTML);
+  pk.cbs[1].checked = false; pk.cbs[1].onchange();                   // 再取消中间那张
+  A('B2f-6 行为级·取消一张 ⇒ 只剩 2 张（取消不能用"清空"实现）',
+    Object.keys(pk.st.picked).filter(k => pk.st.picked[k]).length === 2,
+    JSON.stringify(Object.keys(pk.st.picked)));
+
+  /* ④ 阴性自证：把改前那行"单选语义"塞回切片源码 ⇒ 同样的驱动必须退化成 1 张。
+     没有这一段，B2f-4 可能是恒真的（比如处理器根本没被调用）。 */
+  const PICK_MUTANT = PICK_SRC.replace(
+    'if (cb.checked) st.picked[cb.dataset.rel] = true;\n        else delete st.picked[cb.dataset.rel];',
+    'if (cb.checked) { st.picked = {}; } st.picked[cb.dataset.rel] = true;\n        if (!cb.checked) delete st.picked[cb.dataset.rel];');
+  A('B2f-7 判据自证：切片源码里确实有"多选"那一行（否则上面的替换是空操作，变异体无效）',
+    PICK_MUTANT !== PICK_SRC);
+  const pkM = (() => {
+    const cbs = ['a', 'b', 'c'].map(rel => ({ checked: false, dataset: { rel }, closest: () => ({ classList: { add() { }, remove() { }, toggle() { } } }) }));
+    const hint = { textContent: '', innerHTML: '' };
+    const box = { querySelectorAll: () => cbs, querySelector: () => hint };
+    const st = { picked: {} };
+    new Function('box', 'st', PICK_MUTANT)(box, st);
+    for (const cb of cbs) { cb.checked = true; cb.onchange(); }
+    return Object.keys(st.picked).length;
+  })();
+  A('B2f-8 判据自证：恢复"单选语义"的变异体必须只剩 1 张（否则 B2f-4 是死的）',
+    pkM === 1, '变异体 picked 数=' + pkM);
 
   /* B2c "没勾图不留记录"的**整条行为链**：把页面真送出的 flags 原样重放给真工具
      （缺陷复现：页面若在没勾图时也发 task=1 ⇒ 这条重放会真的落一条记录 ⇒ 记录数变红） */
