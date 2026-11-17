@@ -18,7 +18,48 @@
 > **历史条目**：2026-11-09 之前的版本见 [CHANGELOG-2026.md](CHANGELOG-2026.md)（冻结历史卷，只增不改）。
 
 
-## [2026.11.17.01] - 2026-11-17 · 录题主路径接通：放照片 → 选孩子 → 一点到底
+## [2026.11.17.02] - 2026-11-17 · 托管 CI 升 actions 并让 Node 版本对齐发行包
+
+**变更分类**：Changed / Fixed
+**升级影响**：只动 `.github\workflows\gate.yml` 与 `tests\portability.cjs`，**零产品代码、零数据、零用户可见行为**。
+发行包内容不变（Node 内置版本本来就是 v26.10.0，这次是让 CI 跟上它，不是反过来）。
+
+### 根因（两个，第二个才是真问题）
+
+**① actions 跑在已弃用的 Node 20 运行时上。**
+`actions/checkout@v4` 与 `actions/setup-node@v4` 的 `action.yml` 是 `using: node20`，
+GitHub 每次都强制用 Node 24 跑并挂一条告警（"Node.js 20 is deprecated"）。这不是"以后会坏"，
+是**现在每次 CI 都在跑一个它自己声明不支持的运行时**。
+
+**② CI 装的 Node 20 ≠ 发行包内置的 v26.10.0 —— CI 绿不代表发行包能跑。**
+`scripts\build-release.ps1` 的 `$PinnedNodeVersion = 'v26.10.0'`，本机开发也是 v26.10.0，
+唯独 CI 装的是 Node 20。跨 6 个大版本的 JS 引擎差异（语法、内置 API、默认行为）全部落在
+CI 的盲区里，而这条 CI 存在的**全部意义**就是"干净环境下发行包能不能跑"。
+**这一条比 ① 严重**：① 是噪音，② 是门禁在说谎。
+
+### 改法
+
+1. `checkout@v4 → v7`、`setup-node@v4 → v7`（两个 action 的 `action.yml` 已改用 `node24`）。
+2. `node-version: '20' → '26.10.0'`，与 `$PinnedNodeVersion` 逐字一致。
+3. **破坏性变更逐条核对过**（三个大版本全读）：
+   - checkout v7：只影响 `pull_request_target` / `workflow_run` 的 fork 检出（默认改拒绝）。
+     本工作流用 `pull_request`，**不受影响**。
+   - setup-node v7：只影响自动缓存（ESM 迁移、cache 输出）。本工作流不跑 `npm ci`、
+     不需要缓存，**不受影响**。
+   - 两条都只动"用不到的那部分" ⇒ 升版本是零行为变化。
+4. 新增 `portability.cjs` ⑤ 段（3 条断言）：「CI 的 Node 版本 = 打包脚本固定住的版本」。
+   从 `gate.yml` 抠 `node-version`、从 `build-release.ps1` 抠 `$PinnedNodeVersion`，做字符串相等。
+   注释里写的是"两处必须一致"——那就必须有机器保证，否则是假承诺。
+
+### 回归断言
+
+- `node tests\portability.cjs` → **18/18 通过**（原 15 + 新增 3）。
+- **阴性自证**：把 `node-version` 改回 `'20'`（模拟"改一处忘另一处"）⇒ ⑤ 段当场判红
+  `RESULT=FAIL(1)`；还原后 `RESULT=PASS`。没有这一步，"18 条全绿"可能只是恒真。
+- `node tools\lint.mjs` → PASS；`git diff --check` → exit 0。
+- YAML 结构自检：无 Tab 缩进（YAML 硬禁）、三个版本锚点解析正确。
+
+
 
 **变更分类**：Fixed / Changed
 **升级影响**：只动录题页（`src\app\js\views\ingest.js`）与一个回归用例，**零契约变更、零数据变更**。
