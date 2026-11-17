@@ -94,7 +94,10 @@ console.log('\n═══ B · 录题页选卡：真送出 / 真拦住 / 真上�
    —— 批次 1 的 tests\neg-task-page-wiring.cjs 按「onGenerate … onBoundCheck」整段切片，
    助手必须落在那个窗口里，否则那条用例会切成悬空引用（本轮真实踩过）。 */
 const CARD_SRC = sliceIn(INGEST, 'function cardIdOk(id)', 'async function onBoundCheck(');
-const GEN_SRC = sliceIn(INGEST, 'async function onGenerate()', 'function cardIdOk(id)');
+/* ★ 2026-11-17：`onGenerate` 加了 `autoPacket` 参数（一键任务包），锚点必须跟着改成
+   `async function onGenerate(`——否则 indexOf 找不到起始锚点、整个用例静默崩掉。
+   这类"签名变了锚点没跟着"就是本用例自己的锚点漂移风险（同 neg-task-page-wiring 的 B0 判据）。 */
+const GEN_SRC = sliceIn(INGEST, 'async function onGenerate(', 'function cardIdOk(id)');
 const PAGE_SRC = CARD_SRC + GEN_SRC;
 const buildPage = (src) => new Function('U', 'H', 'S', 'CTB', 'st', 'inboxFiles', 'copyText', 'revealShot',
   src + '\nreturn { cardIdOk, packVerOk, collectCards, packsPickerHtml, loadPacks, paintPacks, reloadPacks, onGenerate };');

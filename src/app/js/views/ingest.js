@@ -132,16 +132,17 @@
       SUBJECTS.map(s => '<option value="' + U.esc(s) + '">' + U.esc(s) + '</option>').join('') +
       '</select></label>' +
       '<span class="tb-sp"></span>' +
-      '<button class="btn sm primary" id="igGen">生成任务单</button>' +
-      '<button class="btn sm" id="igWork">📦 生成 AGENT 任务包</button>' +
+      '<button class="btn sm primary" id="igGen">📦 生成 AGENT 任务包</button>' +
       '</div>' +
       '<div class="small muted">勾<b>一张或多张</b>照片 → 选孩子和学科 → 点「生成 AGENT 任务包」：程序逐张生成任务' +
       '并落一份批次工作单，把派发指令发给你的本机 AGENT（能读文件、跑命令、看图的，如 Claude Code / Codex / ZCode）即可，' +
-      '剩下全部由它完成。<b>只想复制单张任务单</b>就用「生成任务单」。</div>' +
-      /* ★ 2026-11-03（批次 2 · 经验包）：选卡区。卡 = 方法卡，选了就随任务单一起交给 AI。
-         只读清单 + 只读选择，不做安装/停用（那是用户在文件夹里的手工动作，页面不代做）。 */
-      '<div class="ig-arch" style="margin-top:10px">' +
-      '<div class="row ig-opts">' +
+      '剩下全部由它完成。</div>' +
+      /* ★ 2026-11-17（用户裁定「下面应该全自动化」）：选卡区收进 <details>。
+         「选卡」是给高级用户的（方法卡随任务单一起交给 AI），绝大多数录题一次都用不到；
+         它以前常驻在生成路径上，视觉上等于逼用户先做一道选择。默认折叠，功能一个不删。 */
+      '<details class="ig-arch" style="margin-top:10px">' +
+      '<summary class="small muted" style="cursor:pointer">⚙ 高级：经验包方法卡（大多数录题用不到，默认不选）</summary>' +
+      '<div class="row ig-opts" style="margin-top:8px">' +
       '<label class="ig-f"><span>选卡冲突策略</span><select id="igConflict" class="bk-sort">' +
       '<option value="deny">拒绝（默认）</option>' +
       '<option value="first">先到先得</option>' +
@@ -152,12 +153,17 @@
       '<button class="btn sm ghost" id="igPacksReload">⟳ 重新读经验包</button>' +
       '</div>' +
       '<div id="igPackBox" class="small muted" style="margin-top:6px">正在读经验包…</div>' +
-      '</div>' +
+      '</details>' +
       '<div id="igTaskBox"></div>' +
       '</div>' +
-      '<div class="card ig-step">' +
-      '<div class="ig-h"><span class="ig-n">3</span>把 AI 的答案粘回来校验</div>' +
-      '<div class="small muted">把 AI 输出的那一整段<b>原样</b>粘进来（外面裹了解释文字也没关系，程序会自己剥掉；' +
+      /* ★ 2026-11-17：第 3 步整段收进 <details>（默认折叠）。
+         用户原话：「不应该再去做什么选择，更不应该还要用户再把 AI 的答案粘回来校验这些复杂操作」。
+         粘回来校验保留为**兜底通道**（AI 不在本机、或 AGENT 跑到一半断了要人工接手时用），
+         但它不再是主路径上的一步 —— 主路径是「生成任务包 → 派发指令 → AGENT 全自动跑完」。 */
+      '<details class="card ig-step">' +
+      '<summary class="ig-h" style="cursor:pointer"><span class="ig-n">3</span>兜底：把 AI 的答案粘回来手工校验（AGENT 全自动时用不到）</summary>' +
+      '<div class="small muted">只有<b>不跑本机 AGENT</b>（比如 AI 在别的机器上、或 AGENT 断了要人工接手）才走这里。' +
+      '把 AI 输出的那一整段<b>原样</b>粘进来（外面裹了解释文字也没关系，程序会自己剥掉；' +
       '一份 JSON 里用了 <code>envelope</code> 就必须同时有 <code>result</code>，缺哪样会直接点名）。' +
       '<b>生成任务单后走三层校验（格式 → 与任务及原图匹配 → 人工确认）</b>；' +
       '没生成任务单时只校验格式，会明确标"未与任务关联"。</div>' +
@@ -166,7 +172,7 @@
       '<span class="small muted">★ 2026-11-04：校验通过并<b>人工确认</b>后，下面会出现「📥 建卡入库」按钮 —— ' +
       '点它，卡当场进库（门禁当场跑，盲解清稿当场备好）。</span></div>' +
       '<div id="igResult"></div>' +
-      '</div>';
+      '</details>';
 
     const rSel = U.$id('igRecipe'), sSel = U.$id('igSubject'), kidSel = U.$id('igStudent');
     rSel.value = st.recipe; sSel.value = st.subject;
@@ -188,17 +194,10 @@
     if (cSel) { cSel.value = st.conflict; cSel.onchange = () => { st.conflict = cSel.value; save(); }; }
     const pr = U.$id('igPacksReload');
     if (pr) pr.onclick = reloadPacks;
-    U.$id('igGen').onclick = onGenerate;
-    /* ★ 2026-11-16（批次 B）：一键任务包（多图场景的直达入口）——逻辑与生成后出现的
-       「生成 AGENT 任务包」按钮同一份 makeWorkPacket；没有已生成的任务时提示先生成。 */
-    const wk = U.$id('igWork');
-    if (wk) wk.onclick = () => {
-      if (!(st.batchTasks && st.batchTasks.length)) {
-        S.toast('先点「生成任务单」（可一次勾多张），再生成任务包', 'warn', 7000);
-        return;
-      }
-      makeWorkPacket();
-    };
+    /* ★ 2026-11-17（用户裁定「放照片→选孩子→最多选学科，下面全自动化」）：
+       主按钮一次走完 生成任务 → 落工作单 → 出派发指令（onGenerate(true) 的 autoPacket 分支）。
+       改前是两个按钮、两步点，且两个按钮都因勾选写成单选而走不通。 */
+    U.$id('igGen').onclick = () => onGenerate(true);
     U.$id('igCheck').onclick = onCheck;
 
     paintInbox();
@@ -311,20 +310,37 @@
       '<div class="small muted" style="margin-bottom:6px">共 ' + r.batches.length + ' 批 / ' +
       r.total + ' 张待处理' +
       (archN ? '　<b>另有 ' + archN + ' 张已处理，已归档不显示</b>' : '') +
-      '。勾选要处理的那一张（一次一张，判错准确率最高）。</div>' +
+      '。勾选要处理的那一张或多张 —— <b>每张照片 = 一条任务</b>，一批勾完一次生成即可。' +
+      '<div class="small muted" id="igPickHint" style="margin-top:4px"></div></div>' +
       (archNote ? '<div class="small muted ig-archnote">⚠ ' + U.esc(archNote) + '</div>' : '') +
       skipHtml +
       rows.join('') + archBlockHtml(r);
     wireInboxButtons(box);
     wireArch(box, archN);
+    /* ★ 2026-11-17 修（多选接通 · 用户原话「只要放进照片、选哪个孩子、最多选学科，
+       下面就应该全自动化」）：改前这里第一行是 `if (cb.checked) { st.picked = {}; }`
+       —— 每勾一张就把之前勾的全清空（注释写着"单选语义"）。于是 `picked.length` 恒 ≤ 1，
+       `onGenerate` 永远走 `renderSingle`，`renderMulti` 里的「📦 生成 AGENT 任务包」
+       **永远不可能出现**；批次 B 交付的多图一键任务包实际上是一段死代码。
+       实测：勾 3 张后 picked = ['c.jpg'] ⇒ 只剩最后一张。
+       现在：每张独立开关（真正的多选），并实时更新"已勾 N 张"的计数提示。
+       一个任务绑一张图（任务记录 image 单值是冻结契约），所以 N 张 = N 条任务，不是一张图装 N 题。 */
+    const paintPickCount = () => {
+      const n = Object.keys(st.picked).filter(k => st.picked[k]).length;
+      const hint = box.querySelector('#igPickHint');
+      if (!hint) return;
+      if (!n) { hint.textContent = '还没勾照片（勾一张或多张）'; return; }
+      hint.innerHTML = '已勾 <b>' + n + '</b> 张 → 点「📦 生成 AGENT 任务包」逐张出任务';
+    };
+    paintPickCount();
     box.querySelectorAll('input[data-rel]').forEach(cb => {
       cb.onchange = () => {
-        if (cb.checked) { st.picked = {}; }   /* 单选语义：勾新的就取消旧的 */
-        st.picked[cb.dataset.rel] = cb.checked;
-        if (!cb.checked) delete st.picked[cb.dataset.rel];
-        box.querySelectorAll('label.ig-file').forEach(l => l.classList.remove('on'));
-        const cur = box.querySelector('input[data-rel="' + CSS.escape(cb.dataset.rel) + '"]');
-        if (cur && cur.checked) cur.closest('label').classList.add('on');
+        if (cb.checked) st.picked[cb.dataset.rel] = true;
+        else delete st.picked[cb.dataset.rel];
+        /* 只动自己那一行的高亮：全清再全画会让"别的行的勾"看起来闪一下 */
+        const lab = cb.closest('label');
+        if (lab) lab.classList.toggle('on', !!cb.checked);
+        paintPickCount();
       };
     });
   }
@@ -392,7 +408,10 @@
     };
   }
 
-  async function onGenerate() {
+  /* ★ 2026-11-17（一键任务包）：`autoPacket=true` 时，生成完任务**立刻**接着落工作单，
+     并把派发指令摆到用户面前 —— 用户的动作到这里就结束了（勾照片 → 选孩子 → 选学科 → 点一下）。
+     改前这是两个按钮（先生成任务单、再点生成任务包），多一步纯属程序没接完。 */
+  async function onGenerate(autoPacket) {
     const btn = U.$id('igGen'); const box = U.$id('igTaskBox');
     const picked = Object.keys(st.picked).filter(k => st.picked[k]);
     if (!picked.length) {
@@ -447,6 +466,11 @@
       };
       if (picked.length <= 1) {
         const one = await oneTicket(picked[0] || null);
+        /* ★ 2026-11-17 修（多选接通配套）：单图**也要**登记进 st.batchTasks。
+           改前只有多图分支 push，而多图分支因勾选被写成单选**永远进不去** ⇒
+           单张照片永远产不出任务包（renderSingle 里没入口、renderMulti 里进不去 = 死循环）。
+           现在单图产单条任务包，「生成 AGENT 任务包」是一条真实可走的主路径。 */
+        if (one.ok && one.taskId && picked[0]) st.batchTasks.push({ taskId: one.taskId, rel: picked[0] });
         await renderSingle(one);
       } else {
         /* 多图：逐张生成；一张失败不拖整批（失败的记进失败清单，成功的照常进任务包）。 */
@@ -462,7 +486,14 @@
     } catch (e) {
       box.innerHTML = '<div class="ig-warn">✖ 生成失败：' + U.esc(String(e && e.message || e)) + '</div>';
     } finally {
-      btn.disabled = false; btn.textContent = '生成任务单';
+      btn.disabled = false; btn.textContent = '📦 生成 AGENT 任务包';
+    }
+    /* 先把任务单摆出来（用户要看得见"生成了什么"），再自动接任务包 ——
+       顺序不能反：任务包要引用的 taskId 必须先落盘。 */
+    if (autoPacket && st.batchTasks && st.batchTasks.length) {
+      try { await makeWorkPacket(); } catch (e) {
+        S.toast('任务包生成失败：' + String(e && e.message || e), 'bad', 8000);
+      }
     }
   }
 
@@ -502,20 +533,28 @@
       (sel.cards.length ? '　已选卡 <b>' + sel.cards.length + '</b> 张：' + sel.cards.map(U.esc).join('、') : '') +
       boxNote + '</div>' +
       (cardNote ? '<pre class="ig-pre" id="igCardNote">经验包提示（工具原文）：\n' + U.esc(cardNote) + '</pre>' : '') +
-      '<div class="row" style="margin:8px 0"><button class="btn sm primary" id="igCopy">📋 复制任务单</button>' +
-      (st.shot ? '<button class="btn sm primary" id="igReveal">📂 定位这张图</button>' : '') +
+      '<div class="row" style="margin:8px 0"><button class="btn sm primary" id="igMakePacket">📦 生成 AGENT 任务包</button>' +
+      '<button class="btn sm" id="igCopy">📋 复制任务单</button>' +
+      (st.shot ? '<button class="btn sm" id="igReveal">📂 定位这张图</button>' : '') +
       '<button class="btn sm ghost" id="igToggle">展开 / 收起预览</button>' +
-      '<span class="small muted">多张照片要一起交给本机 AGENT？点上面「📦 生成 AGENT 任务包」。</span></div>' +
+      '<span class="small muted">「生成 AGENT 任务包」= 把这批落成工作单并给出派发指令（推荐）；' +
+      '只想手工粘任务单给 AI 才用「复制任务单」。</span></div>' +
       (st.shot
         ? '<div class="small muted" style="margin-bottom:8px">要发的那一张：' + U.esc(st.shot.name) +
           '　指纹 <b>' + U.esc(String(st.shot.sha256 || '').slice(0, 12)) + '</b>' +
           '（照片后来被改名也没关系，这个按钮按指纹找，不按名字找）</div>'
         : '') +
+      /* ★ 2026-11-17：单图的落点。多图渲染里有它、单图没有 ⇒ makeWorkPacket 找不到容器就
+         静默失败（点「生成 AGENT 任务包」什么也不发生）。 */
+      '<div id="igPacketBox"></div>' +
       '<pre class="ig-pre" id="igPre" hidden>' + U.esc(st.task) + '</pre>';
     U.$id('igCopy').onclick = async () => {
       const ok = await copyText(st.task);
       S.toast(ok ? '任务单已复制，去粘给你的 AI 吧' : '复制失败：请展开预览后手动全选复制', ok ? 'ok' : 'warn', 6000);
     };
+    /* ★ 2026-11-17：单图也要能一键出任务包（改前这条入口不存在 ⇒ 单张照片永远走不到 AGENT） */
+    const mkOne = U.$id('igMakePacket');
+    if (mkOne) mkOne.onclick = makeWorkPacket;
     const rv = U.$id('igReveal'); if (rv) rv.onclick = revealShot;
     U.$id('igToggle').onclick = () => { const p = U.$id('igPre'); p.hidden = !p.hidden; };
   }
@@ -550,6 +589,7 @@
   /* ---------- 一键任务包（批次 B / B-3）：worksheetWrite op → 批次工作单 + 派发指令 ---------- */
   async function makeWorkPacket() {
     const box = U.$id('igPacketBox');
+    if (!box) { S.toast('页面上找不到任务包容器（#igPacketBox）—— 请刷新页面', 'bad', 8000); return; }
     const ids = (st.batchTasks || []).map(t => t.taskId);
     if (!ids.length) { S.toast('还没有成功的任务——先生成任务单', 'warn', 7000); return; }
     const kid = (U.$id('igStudent') && U.$id('igStudent').value) || '';
