@@ -447,6 +447,7 @@ const TMP_PREFIXES = [
   'gn-neg-transposed-',
   'gn-neg-triage-',
   'gn-neg-vd-',
+  'gn-indep-neg-',    // neg-independent-recipe.cjs（独立判卷口径）的夹具根
   'gn-newstu-',
   'gn-nolock-',
   'gn-pfresh-',
