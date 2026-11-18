@@ -126,6 +126,7 @@
       '<label class="ig-f"><span>配方</span>' +
       '<select id="igRecipe" class="bk-sort">' +
       '<option value="ingest-page">整页多题（一次作业错好几道就用这个）</option>' +
+      '<option value="ingest-independent">整页独立判卷（不靠红笔，AI 独立判错）</option>' +
       '<option value="ingest-single">单题（只拍了一道题）</option>' +
       '</select></label>' +
       '<label class="ig-f"><span>学科</span><select id="igSubject" class="bk-sort">' +

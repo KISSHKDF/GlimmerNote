@@ -394,6 +394,21 @@ function buildRecord(id, c, meta) {
   return L.join('\n');
 }
 
+/* 从既有 `错题记录.md` 里读回"判定来源"那一行（配方 id / 版本 / 指纹）。
+ * ★ 2026-11-18（独立判卷口径）：改卡路径原先把配方**写死成 `ingest-page`** ——
+ *   在只有两个配方的年代就已经会把 `ingest-single` 卡的来源记错，加进第三个整页配方后
+ *   错标面更大（独立判卷卡被标成红笔口径卡，"这批卡按哪版契约收的"直接失真）。
+ *   改法：**沿用卡上原有的来源行**，读不到才留空（不猜、不顶替）。
+ *   为什么不从索引读：索引里没有配方字段，卡面才是唯一真源（见 `docs\录题任务契约.md`）。 */
+function recipeOfRecord(absDir) {
+  const p = path.join(absDir, '错题记录.md');
+  let txt = '';
+  try { txt = fs.readFileSync(p, 'utf8'); } catch { return { recipe: '', recipeVer: '', fingerprint: '' }; }
+  const m = /^> 判定来源：[^（]*（配方 (.+?) v(.+?) · 指纹 (.+?)）/m.exec(txt);
+  if (!m) return { recipe: '', recipeVer: '', fingerprint: '' };
+  return { recipe: m[1], recipeVer: m[2], fingerprint: m[3] };
+}
+
 /* ───────────────── 裁图 ─────────────────
  * 裁图用 **Windows 自带的 System.Drawing**（PowerShell 一行脚本，零外部依赖）。
  * 坐标一律**归一化 0~1**（`docs\区域契约.md` §三：坐标只以归一化落库），
@@ -704,9 +719,12 @@ function cmdFix() {
       }, { newline: true });
     }
 
-    /* ④c 错题记录.md */
+    /* ④c 错题记录.md
+       ★ 2026-11-18：判定来源沿用卡上原有的（不许写死配方名、不许清空）——
+       改一张卡不该把它"当初按哪版配方收的"抹掉。 */
+    const prev = recipeOfRecord(abs);
     tx.writeText(path.join(abs, '错题记录.md'), buildRecord(cardId, c, {
-      recipe: 'ingest-page', recipeVer: '', fingerprint: '',
+      recipe: prev.recipe, recipeVer: prev.recipeVer, fingerprint: prev.fingerprint,
       imageRel: srcImg ? path.relative(root, srcImg).split(path.sep).join('/') : '',
       imageSha: sha, taskId: '', date: today(), teacherConflict: teacherConflictOf(c),
     }));

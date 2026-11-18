@@ -1,0 +1,26 @@
+{
+  "note": "黄金样本：用来给『换了自己的 AI』打分，不是回归测试。不含照片——请用你自己的一整页未批改、孩子全对的试卷跑同一条配方，再把输出与这里比对。",
+  "caseId": "02-unmarked-all-right",
+  "title": "一页未批改试卷、独立判卷全部判对（0 卡）",
+  "photoNote": "一整页数学试卷，卷面**没有任何红笔批改**，孩子 8 道题全部做对。AI 独立解完逐题比对，8 道判对、0 道判错",
+  "checkPoints": [
+    "pageSummary.totalQuestions = 8",
+    "pageSummary.judgedWrong = 0，且 cards 为空数组",
+    "0 卡不是失败：这是合法结果，登记为『整页无判错（0 卡）』后闭环",
+    "skipped 仍然非空（写明『全部清晰可判，无跳过项』，不许留空数组装懂）",
+    "判对的题一条都不出现",
+    "teacherAnswer 为空串（卷面无红笔，不许编）"
+  ],
+  "expect": {
+    "pageSummary": {
+      "totalQuestions": 8,
+      "judgedWrong": 0
+    },
+    "cards": [],
+    "mustBeAbsent": [
+      "判对的题出现在 cards 里",
+      "cards 出现任何一条（本页 0 卡）",
+      "teacherAnswer 被填上卷面并不存在的红笔内容"
+    ]
+  }
+}
