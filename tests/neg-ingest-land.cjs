@@ -99,6 +99,17 @@ A('ingest.js 的 onLand 调 H.ingestLand', /H\.ingestLand\(st\.taskId/.test(INGE
 A('ingest.js：入库失败明确说"没有写盘"（不许让人以为写进去了）', /没有写盘/.test(INGEST));
 A('ingest.js：旧文案「本页不落库 / 本页不写库」已从校验通过路径移除',
   !/下一步：按 `docs\\\\作答契约\.md` 建卡入库（本页不写库）/.test(INGEST));
+/* ★ 2026-11-18（独立判卷口径引导）：0 卡必须与 N 卡**分开渲染**，且红笔口径判出 0 卡时
+   要把"换配方"说出口——否则用户只看到"录了 0 张"，以为程序不批改。 */
+A('ingest.js：onLand 能区分 0 卡（识别「整页无错题（0 卡）」）',
+  /整页无错题（0 卡）|已登记：整页无错题/.test(INGEST));
+A('ingest.js：0 卡分支的抬头**不是**「已入库 —— 卡进库了」（不许把 0 卡说成录了题）',
+  /zeroCard[\s\S]{0,200}?已登记：本页无错题（0 卡）/.test(INGEST)
+  && !/zeroCard[\s\S]{0,200}?已入库 —— 卡进库了/.test(INGEST));
+A('ingest.js：红笔口径 0 卡时提示改用「整页独立判卷」',
+  /st\.recipe === 'ingest-page'[\s\S]{0,300}?整页独立判卷/.test(INGEST));
+A('ingest.js：0 卡分支不触发状态包重建（没有新卡，重建无意义）',
+  !/zeroCard[\s\S]{0,1200}?regenBackground/.test(INGEST));
 
 /* B2 行为级：把 onLand / landBoxHtml 真切出来驱动（不匹配字面量）。 */
 const sliceFn = (from, to) => {
@@ -121,7 +132,7 @@ const mkLandPage = (reply, over) => {
   const els = {};
   const mkEl = () => ({ innerHTML: '', disabled: false, textContent: '', value: '', onclick: null });
   const calls = { ingestLand: [], toast: [] };
-  const st = Object.assign({ taskId: 't-20261104-200000-aaaaaa', subject: '数学', task: '' }, o.st || {});
+  const st = Object.assign({ taskId: 't-20261104-200000-aaaaaa', subject: '数学', task: '', recipe: 'ingest-page' }, o.st || {});
   const U = { $id: (id) => (els[id] || (els[id] = mkEl())), esc: (s) => String(s) };
   /* 学生下拉的默认选中项 = 库里第一个学生（与 landBoxHtml 的默认值一致） */
   const kids = o.kids || ['学生甲', '学生乙'];
@@ -146,6 +157,24 @@ const mkLandPage = (reply, over) => {
     && p.calls.ingestLand[0].subject === '数学',
     JSON.stringify(p.calls.ingestLand[0] || {}));
   A('B2 行为级：成功时上屏「已入库」', /已入库/.test(p.$id('igResult').innerHTML));
+
+  /* B2-0 ★ 2026-11-18：0 卡回传必须渲染成"本页无错题"，且红笔口径下给出换配方提示。 */
+  const zOut = '✔ 已登记：整页无错题（0 卡）——t-20261104-200000-aaaaaa\n  （校验与人工/代理确认都已过）\n';
+  const pz = mkLandPage({ ok: true, code: 0, out: zOut, err: '' });
+  pz.$id('igIn').value = '{ "cards": [] }';
+  await pz.fns.onLand();
+  A('B2 行为级：0 卡渲染「本页无错题（0 卡）」',
+    /本页无错题（0 卡）/.test(pz.$id('igResult').innerHTML));
+  A('B2 行为级：0 卡**不**渲染「已入库 —— 卡进库了」',
+    !/已入库 —— 卡进库了/.test(pz.$id('igResult').innerHTML));
+  A('B2 行为级：红笔口径 0 卡时提示改用「整页独立判卷」',
+    /整页独立判卷/.test(pz.$id('igResult').innerHTML));
+  /* 独立判卷口径的 0 卡是"确实全判对"，不该再推换配方。 */
+  const pz2 = mkLandPage({ ok: true, code: 0, out: zOut, err: '' }, { st: { recipe: 'ingest-independent' } });
+  pz2.$id('igIn').value = '{ "cards": [] }';
+  await pz2.fns.onLand();
+  A('B2 行为级：独立判卷口径 0 卡**不**提示换配方（0 卡才是真全对）',
+    !/整页独立判卷/.test(pz2.$id('igResult').innerHTML) && /独立判卷口径判为全对/.test(pz2.$id('igResult').innerHTML));
 
   const p2 = mkLandPage({ ok: true, code: 3, out: '✖ 与任务不匹配：信封里的 taskId=…\n', err: '' });
   p2.$id('igIn').value = '{ "cards": [] }';
@@ -266,6 +295,51 @@ const mkLandPage = (reply, over) => {
   A('C2 同一份再入库 ⇒ **幂等跳过**，库里还是 1 张（不造重复卡）',
     r1b.code === 0 && idx2.items.length === before && /幂等/.test(r1b.out),
     'exit=' + r1b.code + ' items=' + idx2.items.length + ' ' + r1b.out.slice(0, 140));
+
+  /* ═════════ C3 · 行为级·0 卡登记 + 配方切换提示（2026-11-18）═════════
+     实测事故：用户用红笔口径（ingest-page）录一份**无红笔批改**的卷子，
+     AI 严格按口径回报"无错题"，入库器登记 0 卡——但界面只说"已登记"，
+     不告诉用户"卷面无红笔 ⇒ 该换独立判卷配方"，于是用户以为程序不批改。 */
+  console.log('\n═══ C3 · 0 卡登记：红笔口径给换配方提示，独立判卷口径不给 ═══');
+  const TID0 = 't-20261118-200000-cccccc';
+  const TID0I = 't-20261118-200001-dddddd';
+  const mkZeroTask = (id, recipeId) => Buffer.from(JSON.stringify({
+    schema: 'glimmernote.ingest-task/v1', taskId: id, createdAt: '2026-11-18T20:00:00+08:00',
+    recipe: { id: recipeId, version: '1.0.0', fingerprint: 'deadbeefcafe' },
+    cards: [], image: { sha256: IMG_SHA, rel: imgRel }, subject: '数学',
+    contractDigest: 'cafe1234', taskDigest: 'cccc', taskText: '（测试）',
+    confirmedAt: '2026-11-18T20:01:00+08:00',
+  }), 'utf8');
+  w(LIB, path.join('_录题', TID0 + '.json'), mkZeroTask(TID0, 'ingest-page'));
+  w(LIB, path.join('_录题', TID0I + '.json'), mkZeroTask(TID0I, 'ingest-independent'));
+  const mkZeroResult = (taskId) => ({
+    envelope: { schema: 'glimmernote.ingest-result/v1', taskId, imageSha256: IMG_SHA },
+    result: {
+      pageSummary: { totalQuestions: 8, markedWrong: 0, unmarked: 8 },
+      cards: [],
+      skipped: [{ what: '全页', reason: '卷面无红笔批改，红笔口径下无错题可收' }],
+    },
+  });
+  const zf0 = cardsFile(mkZeroResult(TID0), 'zero-page.json');
+  const rz0 = run(['_录题入库.mjs', '入库', TID0, '--file', zf0, '--student', '学生甲', '--subject', '数学', '--data', LIB]);
+  A('C3 红笔口径 0 卡登记 ⇒ exit 0 且点名「整页无错题（0 卡）」',
+    rz0.code === 0 && /整页无错题（0 卡）/.test(rz0.out), 'exit=' + rz0.code + ' ' + rz0.out.slice(0, 160));
+  A('C3 ★ 红笔口径 0 卡必须提示改用「整页独立判卷」（把换配方说出口）',
+    /整页独立判卷/.test(rz0.out), rz0.out.slice(0, 200));
+  A('C3 0 卡登记写回 landedZeroAt（闭环有凭据）', (() => {
+    const j = JSON.parse(fs.readFileSync(path.join(LIB, '_录题', TID0 + '.json'), 'utf8').replace(/^\uFEFF/, ''));
+    return !!j.landedZeroAt && !!j.landedDigest;
+  })());
+  /* 独立判卷口径的 0 卡是"确实全判对"，不该再推换配方（否则误导）。 */
+  const zfI = cardsFile(mkZeroResult(TID0I), 'zero-indep.json');
+  const rzI = run(['_录题入库.mjs', '入库', TID0I, '--file', zfI, '--student', '学生甲', '--subject', '数学', '--data', LIB]);
+  A('C3 独立判卷口径 0 卡 ⇒ 也登记 0 卡，但**不**提示换配方',
+    rzI.code === 0 && /整页无错题（0 卡）/.test(rzI.out) && !/整页独立判卷/.test(rzI.out),
+    'exit=' + rzI.code + ' ' + rzI.out.slice(0, 160));
+  /* 幂等：0 卡再跑一次仍 exit 0，且提示仍在（不因幂等吞掉引导）。 */
+  const rz0b = run(['_录题入库.mjs', '入库', TID0, '--file', zf0, '--student', '学生甲', '--subject', '数学', '--data', LIB]);
+  A('C3 0 卡幂等重跑 ⇒ exit 0 且换配方提示仍在（幂等不吞引导）',
+    rz0b.code === 0 && /整页独立判卷/.test(rz0b.out), 'exit=' + rz0b.code + ' ' + rz0b.out.slice(0, 160));
 
   /* ═════════ D · 行为级·三层前置（不写盘） ═════════ */
   console.log('\n═══ D · 行为级·三层前置：任一层不过 ⇒ 零写盘 ═══');

@@ -868,9 +868,19 @@ function cmdLand() {
   if (!cards.length) {
     const hasEvidence = (result && (result.pageSummary || (Array.isArray(result.skipped) && result.skipped.length)));
     if (!hasEvidence) return fail('回传内容里没有 cards，也没有 pageSummary/skipped——既不是"整页无错题"也无法判空（拒绝登记）', 1);
+    /* ★ 2026-11-18（独立判卷口径引导）：红笔口径下判出 0 卡，最常见的真实原因是
+       **卷面本无红笔批改**（还没批改的卷子、只有铅笔作答的作业）——这不是"全对"，
+       是**口径没选对**。必须把"换配方"这条路**说出口**：否则用户只看到"录了 0 张"，
+       会以为程序不批改、甚至以为 AI 没干活。
+       只对 `ingest-page` 提示：`ingest-independent` 的 0 卡才是"确实全判对"，提示会误导。 */
+    const zeroHint = (task.recipe && task.recipe.id) === 'ingest-page'
+      ? '  ⚠ 本页按「红笔口径」判为无错题。若这张卷子**本来就没有红笔批改**，' +
+        '请改用「整页独立判卷」配方重新生成任务单——它不要求红笔，AI 独立判错、判错即收。'
+      : '';
     const digest0 = sha256(JSON.stringify({ pageSummary: result.pageSummary || null, skipped: result.skipped || [] }) + '\0' + taskId);
     if (task.landedDigest === digest0) {
       console.log('已登记过（幂等）：整页无错题（0 卡）——' + taskId);
+      if (zeroHint) console.log(zeroHint);
       return 0;
     }
     task.landedZeroAt = today();
@@ -878,7 +888,8 @@ function cmdLand() {
     writeJsonAtomic(taskFile(taskId), task, { indent: 1 });
     console.log('✔ 已登记：整页无错题（0 卡）——' + taskId);
     console.log('  （校验与人工/代理确认都已过；这张照片的闭环到此完成，收件箱按台账判"已处理"）');
-    if (JSON_OUT) { process.stdout.write(JSON.stringify({ ok: true, taskId, landed: 0, zeroPage: true }) + '\n'); return 0; }
+    if (zeroHint) console.log(zeroHint);
+    if (JSON_OUT) { process.stdout.write(JSON.stringify({ ok: true, taskId, landed: 0, zeroPage: true, hint: zeroHint || null }) + '\n'); return 0; }
     return 0;
   }
 
