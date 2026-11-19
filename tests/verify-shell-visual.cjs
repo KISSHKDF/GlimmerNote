@@ -222,22 +222,6 @@ class Cdp {
   A('★ 提示文案不重复（同 key 只累加 ×N，不新增节点）', PR.visible === 1 && PR.uniq === 1,
     `可见 ${PR.visible} 条 / 去重后 ${PR.uniq} 条 / 文案 ${JSON.stringify(PR.texts)}`);
 
-  /* 「学科盘面」几何：第一版选择器没命中就悄悄跳过 ⇒ 也是空真。改为**全文本搜索**且找不到即失败。 */
-  const grid = await c.evalJs(`(function(){
-    var all=[].slice.call(document.querySelectorAll('*'));
-    var hits=all.filter(function(e){
-      if(!/学科盘面/.test(e.textContent||'')) return false;
-      return ![].slice.call(e.children).some(function(ch){return /学科盘面/.test(ch.textContent||'')});
-    });
-    if(!hits.length) return JSON.stringify({found:false});
-    var t=hits[0], r=t.getBoundingClientRect(), lh=parseFloat(getComputedStyle(t).lineHeight)||20;
-    return JSON.stringify({found:true,tag:t.tagName,w:Math.round(r.width),h:Math.round(r.height),lh:Math.round(lh),
-      lines:Math.max(1,Math.round(r.height/lh)), text:(t.textContent||'').trim().slice(0,20)});
-  })()`);
-  console.log('== 「学科盘面」标题几何（真壳）==', grid);
-  const G = JSON.parse(grid);
-  A('★「学科盘面」标题在真壳里不是一字一行', G.found === true && G.w > 60 && G.lines <= 1, JSON.stringify(G));
-
   /* ④ 截图 + 切换断言。
      ⚠ 两版口径说明：①文档里**没有 h1/h2**，顶栏是 `header`（class 为空）内含一个带 🏠 的视图名元素；
      ②侧栏也**没有被选中的类**（无 `.on/.active/[aria-current]`）。所以"当前视图"只能从 header 文本里取视图名。
@@ -266,6 +250,31 @@ class Cdp {
     return after === kw;
   }
   async function theme(t) { try { await c.evalJs(`(function(){document.documentElement.setAttribute('data-theme', ${JSON.stringify(t)}); try{localStorage.setItem('ctb2.theme', ${JSON.stringify(t)})}catch(e){} return 1})()`); } catch (e) { } await sleep(500); }
+
+  /* 「学科盘面」几何：第一版选择器没命中就悄悄跳过 ⇒ 也是空真。改为**全文本搜索**且找不到即失败。
+     ★ 2026-11-19（full 实测抓到的时序缺陷）：这条量的是**首页**上的「学科盘面」标题，
+     但 full 跑进来时页面停在 `#stats`（统计分析视图）—— 该标题只在首页渲染 ⇒
+     全文本搜索找不到 ⇒ `{"found":false}` 判红。单跑时恰好停在首页，所以此前没暴露。
+     修法：量之前**先切回首页**（用同一个 go()，它已带"切换后必须匹配到目标视图名"的校验），
+     切不过去就在那条上红，而不是把"页面不对"算成"标题样式坏了"。
+     ⚠ 这段必须放在 go/curView 定义**之后**（const/函数声明不提升，提前调用会 ReferenceError）。 */
+  const homeOk = await go('今日总览');
+  A('★ 量「学科盘面」前先切回首页（否则量的是别的视图，空真/假红都不可信）', homeOk,
+    '切回首页=' + (homeOk ? '✔' : '✘'));
+  const grid = await c.evalJs(`(function(){
+    var all=[].slice.call(document.querySelectorAll('*'));
+    var hits=all.filter(function(e){
+      if(!/学科盘面/.test(e.textContent||'')) return false;
+      return ![].slice.call(e.children).some(function(ch){return /学科盘面/.test(ch.textContent||'')});
+    });
+    if(!hits.length) return JSON.stringify({found:false});
+    var t=hits[0], r=t.getBoundingClientRect(), lh=parseFloat(getComputedStyle(t).lineHeight)||20;
+    return JSON.stringify({found:true,tag:t.tagName,w:Math.round(r.width),h:Math.round(r.height),lh:Math.round(lh),
+      lines:Math.max(1,Math.round(r.height/lh)), text:(t.textContent||'').trim().slice(0,20)});
+  })()`);
+  console.log('== 「学科盘面」标题几何（真壳）==', grid);
+  const G = JSON.parse(grid);
+  A('★「学科盘面」标题在真壳里不是一字一行', G.found === true && G.w > 60 && G.lines <= 1, JSON.stringify(G));
 
   const shots = [];
   const navOk = [];
