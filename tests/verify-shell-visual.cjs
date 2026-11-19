@@ -67,7 +67,22 @@ class Cdp {
    *        实证：拉壳后不睡直接跑，必现（见 _测试环境.cjs 里 waitAppPageTarget 的注释）。
    *   现在：只认 app 页面 + 有界等待（唯一实现 E.waitAppPageTarget），等不到就**显式判红**，
    *   不再静默退化成空白页——"拿错页面"必须红在说清原因的那条断言上。 */
-  const { page: pg, targets, waitedMs } = await E.waitAppPageTarget(BASE, { timeoutMs: 20000 });
+  /* ★ 2026-11-19（用例间相互拖死）：full 里本用例排在 `verify-v2-route-cta.cjs` 之后，
+     而后者偶发 CDP 超时（`Execution context was destroyed`）会把壳拖死/关掉 ⇒
+     本用例拿到的 target 列表为空 ⇒ 判红。**那是环境被杀，不是产品缺陷**（单跑两者都 PASS）。
+     修法：等不到就先**自己拉起壳**再等一次（launch-dev 是幂等的：先杀旧壳再起），
+     拉完仍拿不到才判红——这样用例不再依赖"前一个用例有没有把壳弄活"。 */
+  let { page: pg, targets, waitedMs } = await E.waitAppPageTarget(BASE, { timeoutMs: 20000 });
+  if (!pg) {
+    console.log('（CDP ' + PORT + ' 上没有 app page target —— 多半是前一个用例把壳拖死了，自行拉起一次）');
+    try {
+      require('child_process').execFileSync(process.execPath, [path.join(__dirname, 'launch-dev.cjs')],
+        { cwd: ROOT, stdio: 'pipe', timeout: 180000 });
+    } catch (e) {
+      console.log('  拉起开发壳失败：' + String((e && e.message) || e).slice(0, 200));
+    }
+    ({ page: pg, targets, waitedMs } = await E.waitAppPageTarget(BASE, { timeoutMs: 30000 }));
+  }
   if (!pg) {
     const seen = (Array.isArray(targets) ? targets : []).map(t => t.type + ':' + dec(t.url).slice(0, 60));
     console.log('[FAIL] 20s 内没等到真正的 app page target（CDP ' + PORT + '）—— 现有 target：' + JSON.stringify(seen));
