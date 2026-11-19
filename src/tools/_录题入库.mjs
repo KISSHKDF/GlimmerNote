@@ -394,6 +394,21 @@ function buildRecord(id, c, meta) {
   return L.join('\n');
 }
 
+/* 从既有 `错题记录.md` 里读回"判定来源"那一行（配方 id / 版本 / 指纹）。
+ * ★ 2026-11-18（独立判卷口径）：改卡路径原先把配方**写死成 `ingest-page`** ——
+ *   在只有两个配方的年代就已经会把 `ingest-single` 卡的来源记错，加进第三个整页配方后
+ *   错标面更大（独立判卷卡被标成红笔口径卡，"这批卡按哪版契约收的"直接失真）。
+ *   改法：**沿用卡上原有的来源行**，读不到才留空（不猜、不顶替）。
+ *   为什么不从索引读：索引里没有配方字段，卡面才是唯一真源（见 `docs\录题任务契约.md`）。 */
+function recipeOfRecord(absDir) {
+  const p = path.join(absDir, '错题记录.md');
+  let txt = '';
+  try { txt = fs.readFileSync(p, 'utf8'); } catch { return { recipe: '', recipeVer: '', fingerprint: '' }; }
+  const m = /^> 判定来源：[^（]*（配方 (.+?) v(.+?) · 指纹 (.+?)）/m.exec(txt);
+  if (!m) return { recipe: '', recipeVer: '', fingerprint: '' };
+  return { recipe: m[1], recipeVer: m[2], fingerprint: m[3] };
+}
+
 /* ───────────────── 裁图 ─────────────────
  * 裁图用 **Windows 自带的 System.Drawing**（PowerShell 一行脚本，零外部依赖）。
  * 坐标一律**归一化 0~1**（`docs\区域契约.md` §三：坐标只以归一化落库），
@@ -704,9 +719,12 @@ function cmdFix() {
       }, { newline: true });
     }
 
-    /* ④c 错题记录.md */
+    /* ④c 错题记录.md
+       ★ 2026-11-18：判定来源沿用卡上原有的（不许写死配方名、不许清空）——
+       改一张卡不该把它"当初按哪版配方收的"抹掉。 */
+    const prev = recipeOfRecord(abs);
     tx.writeText(path.join(abs, '错题记录.md'), buildRecord(cardId, c, {
-      recipe: 'ingest-page', recipeVer: '', fingerprint: '',
+      recipe: prev.recipe, recipeVer: prev.recipeVer, fingerprint: prev.fingerprint,
       imageRel: srcImg ? path.relative(root, srcImg).split(path.sep).join('/') : '',
       imageSha: sha, taskId: '', date: today(), teacherConflict: teacherConflictOf(c),
     }));
@@ -850,9 +868,19 @@ function cmdLand() {
   if (!cards.length) {
     const hasEvidence = (result && (result.pageSummary || (Array.isArray(result.skipped) && result.skipped.length)));
     if (!hasEvidence) return fail('回传内容里没有 cards，也没有 pageSummary/skipped——既不是"整页无错题"也无法判空（拒绝登记）', 1);
+    /* ★ 2026-11-18（独立判卷口径引导）：红笔口径下判出 0 卡，最常见的真实原因是
+       **卷面本无红笔批改**（还没批改的卷子、只有铅笔作答的作业）——这不是"全对"，
+       是**口径没选对**。必须把"换配方"这条路**说出口**：否则用户只看到"录了 0 张"，
+       会以为程序不批改、甚至以为 AI 没干活。
+       只对 `ingest-page` 提示：`ingest-independent` 的 0 卡才是"确实全判对"，提示会误导。 */
+    const zeroHint = (task.recipe && task.recipe.id) === 'ingest-page'
+      ? '  ⚠ 本页按「红笔口径」判为无错题。若这张卷子**本来就没有红笔批改**，' +
+        '请改用「整页独立判卷」配方重新生成任务单——它不要求红笔，AI 独立判错、判错即收。'
+      : '';
     const digest0 = sha256(JSON.stringify({ pageSummary: result.pageSummary || null, skipped: result.skipped || [] }) + '\0' + taskId);
     if (task.landedDigest === digest0) {
       console.log('已登记过（幂等）：整页无错题（0 卡）——' + taskId);
+      if (zeroHint) console.log(zeroHint);
       return 0;
     }
     task.landedZeroAt = today();
@@ -860,7 +888,8 @@ function cmdLand() {
     writeJsonAtomic(taskFile(taskId), task, { indent: 1 });
     console.log('✔ 已登记：整页无错题（0 卡）——' + taskId);
     console.log('  （校验与人工/代理确认都已过；这张照片的闭环到此完成，收件箱按台账判"已处理"）');
-    if (JSON_OUT) { process.stdout.write(JSON.stringify({ ok: true, taskId, landed: 0, zeroPage: true }) + '\n'); return 0; }
+    if (zeroHint) console.log(zeroHint);
+    if (JSON_OUT) { process.stdout.write(JSON.stringify({ ok: true, taskId, landed: 0, zeroPage: true, hint: zeroHint || null }) + '\n'); return 0; }
     return 0;
   }
 

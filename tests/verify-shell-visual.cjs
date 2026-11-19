@@ -67,7 +67,22 @@ class Cdp {
    *        实证：拉壳后不睡直接跑，必现（见 _测试环境.cjs 里 waitAppPageTarget 的注释）。
    *   现在：只认 app 页面 + 有界等待（唯一实现 E.waitAppPageTarget），等不到就**显式判红**，
    *   不再静默退化成空白页——"拿错页面"必须红在说清原因的那条断言上。 */
-  const { page: pg, targets, waitedMs } = await E.waitAppPageTarget(BASE, { timeoutMs: 20000 });
+  /* ★ 2026-11-19（用例间相互拖死）：full 里本用例排在 `verify-v2-route-cta.cjs` 之后，
+     而后者偶发 CDP 超时（`Execution context was destroyed`）会把壳拖死/关掉 ⇒
+     本用例拿到的 target 列表为空 ⇒ 判红。**那是环境被杀，不是产品缺陷**（单跑两者都 PASS）。
+     修法：等不到就先**自己拉起壳**再等一次（launch-dev 是幂等的：先杀旧壳再起），
+     拉完仍拿不到才判红——这样用例不再依赖"前一个用例有没有把壳弄活"。 */
+  let { page: pg, targets, waitedMs } = await E.waitAppPageTarget(BASE, { timeoutMs: 20000 });
+  if (!pg) {
+    console.log('（CDP ' + PORT + ' 上没有 app page target —— 多半是前一个用例把壳拖死了，自行拉起一次）');
+    try {
+      require('child_process').execFileSync(process.execPath, [path.join(__dirname, 'launch-dev.cjs')],
+        { cwd: ROOT, stdio: 'pipe', timeout: 180000 });
+    } catch (e) {
+      console.log('  拉起开发壳失败：' + String((e && e.message) || e).slice(0, 200));
+    }
+    ({ page: pg, targets, waitedMs } = await E.waitAppPageTarget(BASE, { timeoutMs: 30000 }));
+  }
   if (!pg) {
     const seen = (Array.isArray(targets) ? targets : []).map(t => t.type + ':' + dec(t.url).slice(0, 60));
     console.log('[FAIL] 20s 内没等到真正的 app page target（CDP ' + PORT + '）—— 现有 target：' + JSON.stringify(seen));
@@ -170,47 +185,42 @@ class Cdp {
 
   /* ③ 两处修复在真壳里的复验 —— ⚠ 必须是**有牙齿**的断言：
      第一版写成"当前可见提示 ≤2 条"⇒ 当时可见 0 条也判通过（**空真**，正是本仓铁律禁止的那类）。
-     现在改为**主动复现当初的触发路径**：连点侧栏「今日总览」5 次（每次都会重跑 dash 渲染，旧代码就是这样堆出 5 条的），
-     然后断言"可见提示 ≤2 且文案不重复"。若一次都没触发提示，则显式报"空真/无对象"而**不是**通过。 */
+     第二版改为连点侧栏「今日总览」5 次 —— 但它依赖"库里恰好有会触发 toast 的数据"：
+     实测 full 跑出 `断言=13`（无 toast 可观察走 S() 不计数）而基线是 14，
+     **断言数随库数据漂移**，对账 fail-closed 当场判红（抓得对）。
+     ⇒ 现在**自己造前提**：直接调 `CTB.shell.toast()` 发同一文案 5 次。
+       去重键是 `t:<type>|<msg>`（shell.js:377），同 key 只累加 ×N、不新增节点
+       ⇒ 无论库里有什么数据，都能稳定量到"同文案不堆叠"，断言数恒定（不再随数据漂移）。 */
   const provoke = await c.evalJs(`(async function(){
-    var items=[].slice.call(document.querySelectorAll('.side a,.side button,.side li,nav a,nav button,aside a,aside button'));
-    var home=items.filter(function(e){return /今日总览/.test(e.textContent||'')})[0];
-    if(!home) return JSON.stringify({clicked:0,err:'侧栏找不到「今日总览」'});
-    for(var i=0;i<5;i++){ home.click(); await new Promise(function(r){setTimeout(r,180)}); }
-    await new Promise(function(r){setTimeout(r,700)});
+    if (!(window.CTB && CTB.shell && typeof CTB.shell.toast === 'function'))
+      return JSON.stringify({clicked:0,err:'没有 CTB.shell.toast'});
     var box=document.getElementById('toasts');
-    if(!box) return JSON.stringify({clicked:5,err:'没有 #toasts 容器'});
+    if(!box) return JSON.stringify({clicked:0,err:'没有 #toasts 容器'});
+    /* 先清空：把上一轮遗留的提示清掉，保证量的是本次这 5 次 */
+    box.innerHTML='';
+    var MSG='__probe_toast_dedupe__';
+    for(var i=0;i<5;i++){ CTB.shell.toast(MSG,'warn',9000); await new Promise(function(r){setTimeout(r,120)}); }
+    await new Promise(function(r){setTimeout(r,400)});
     /* ⚠ 选择器口径（我自己踩过）：容器 id=toasts / class=toasts 自身也匹配星号通配的 class 选择器，
        用它计数会把容器算成一条提示（假阳性：误报"2 条重复"）。必须用 #toasts 的直接子元素 .toast 精确选取。 */
     var vis=[].slice.call(box.querySelectorAll(':scope > .toast')).filter(function(e){return !e.classList.contains('out')});
     var texts=vis.map(function(e){ var m=e.querySelector('.t-m'); return (m?m.textContent:e.textContent||'').trim().replace(/\\s+/g,' ').slice(0,60)});
-    return JSON.stringify({clicked:5,visible:vis.length,texts:texts,uniq:new Set(texts).size,
+    var r={clicked:5,visible:vis.length,texts:texts,uniq:new Set(texts).size,
       stackTop:vis.length?Math.round(Math.min.apply(null,vis.map(function(e){return e.getBoundingClientRect().top}))):null,
-      stackH:vis.length?Math.round(vis.reduce(function(a,e){return a+e.getBoundingClientRect().height},0)):0});
+      stackH:vis.length?Math.round(vis.reduce(function(a,e){return a+e.getBoundingClientRect().height},0)):0};
+    /* 收尾：把探针提示清掉，不给后续断言留脏状态 */
+    box.innerHTML='';
+    return JSON.stringify(r);
   })()`);
-  console.log('== 主动复现提示堆叠（连点侧栏 5 次）==', provoke);
+  console.log('== 主动复现提示堆叠（同文案连发 5 次）==', provoke);
   const PR = JSON.parse(provoke);
-  A('★ 连点 5 次后提示不堆叠（同屏可见 ≤2 条）', PR.clicked === 5 && PR.visible <= 2, `可见 ${PR.visible} 条，累计高 ${PR.stackH}px`);
-  /* 「提示不重复」必须三态：有对象且不重复=通过 / 有对象且重复=失败 / **无对象=空真（单列，不算通过也不算失败）**。
-     本仓铁律「空真不得报通过」；但同样不能把"没有对象"判成失败（那是把工作量当缺陷）。 */
-  if (PR.visible === 0) S('★ 提示文案不重复', '本次无提示可观察（本机数据当前没有该提示项）⇒ 空真，不构成"已验证不堆叠"');
-  else A('★ 提示文案不重复（无同文案堆叠）', PR.uniq === PR.visible, `可见 ${PR.visible} / 去重后 ${PR.uniq}`);
-
-  /* 「学科盘面」几何：第一版选择器没命中就悄悄跳过 ⇒ 也是空真。改为**全文本搜索**且找不到即失败。 */
-  const grid = await c.evalJs(`(function(){
-    var all=[].slice.call(document.querySelectorAll('*'));
-    var hits=all.filter(function(e){
-      if(!/学科盘面/.test(e.textContent||'')) return false;
-      return ![].slice.call(e.children).some(function(ch){return /学科盘面/.test(ch.textContent||'')});
-    });
-    if(!hits.length) return JSON.stringify({found:false});
-    var t=hits[0], r=t.getBoundingClientRect(), lh=parseFloat(getComputedStyle(t).lineHeight)||20;
-    return JSON.stringify({found:true,tag:t.tagName,w:Math.round(r.width),h:Math.round(r.height),lh:Math.round(lh),
-      lines:Math.max(1,Math.round(r.height/lh)), text:(t.textContent||'').trim().slice(0,20)});
-  })()`);
-  console.log('== 「学科盘面」标题几何（真壳）==', grid);
-  const G = JSON.parse(grid);
-  A('★「学科盘面」标题在真壳里不是一字一行', G.found === true && G.w > 60 && G.lines <= 1, JSON.stringify(G));
+  /* 前提自证：探针**确实**发出了 5 次（否则下面两条是空真） */
+  A('★ 探针前提成立：同文案确实发了 5 次（不是空跑）', PR.clicked === 5, JSON.stringify(PR).slice(0, 200));
+  A('★ 连发 5 次后提示不堆叠（同屏可见 ≤2 条）', PR.visible >= 1 && PR.visible <= 2, `可见 ${PR.visible} 条，累计高 ${PR.stackH}px`);
+  /* 「提示不重复」：去重键相同 ⇒ 只应有 1 条可见（×5），不是 5 条同文案。
+     这条现在**恒可量测**（前提由我们自己造），不再有 S() 空真分支 ⇒ 断言数稳定。 */
+  A('★ 提示文案不重复（同 key 只累加 ×N，不新增节点）', PR.visible === 1 && PR.uniq === 1,
+    `可见 ${PR.visible} 条 / 去重后 ${PR.uniq} 条 / 文案 ${JSON.stringify(PR.texts)}`);
 
   /* ④ 截图 + 切换断言。
      ⚠ 两版口径说明：①文档里**没有 h1/h2**，顶栏是 `header`（class 为空）内含一个带 🏠 的视图名元素；
@@ -240,6 +250,31 @@ class Cdp {
     return after === kw;
   }
   async function theme(t) { try { await c.evalJs(`(function(){document.documentElement.setAttribute('data-theme', ${JSON.stringify(t)}); try{localStorage.setItem('ctb2.theme', ${JSON.stringify(t)})}catch(e){} return 1})()`); } catch (e) { } await sleep(500); }
+
+  /* 「学科盘面」几何：第一版选择器没命中就悄悄跳过 ⇒ 也是空真。改为**全文本搜索**且找不到即失败。
+     ★ 2026-11-19（full 实测抓到的时序缺陷）：这条量的是**首页**上的「学科盘面」标题，
+     但 full 跑进来时页面停在 `#stats`（统计分析视图）—— 该标题只在首页渲染 ⇒
+     全文本搜索找不到 ⇒ `{"found":false}` 判红。单跑时恰好停在首页，所以此前没暴露。
+     修法：量之前**先切回首页**（用同一个 go()，它已带"切换后必须匹配到目标视图名"的校验），
+     切不过去就在那条上红，而不是把"页面不对"算成"标题样式坏了"。
+     ⚠ 这段必须放在 go/curView 定义**之后**（const/函数声明不提升，提前调用会 ReferenceError）。 */
+  const homeOk = await go('今日总览');
+  A('★ 量「学科盘面」前先切回首页（否则量的是别的视图，空真/假红都不可信）', homeOk,
+    '切回首页=' + (homeOk ? '✔' : '✘'));
+  const grid = await c.evalJs(`(function(){
+    var all=[].slice.call(document.querySelectorAll('*'));
+    var hits=all.filter(function(e){
+      if(!/学科盘面/.test(e.textContent||'')) return false;
+      return ![].slice.call(e.children).some(function(ch){return /学科盘面/.test(ch.textContent||'')});
+    });
+    if(!hits.length) return JSON.stringify({found:false});
+    var t=hits[0], r=t.getBoundingClientRect(), lh=parseFloat(getComputedStyle(t).lineHeight)||20;
+    return JSON.stringify({found:true,tag:t.tagName,w:Math.round(r.width),h:Math.round(r.height),lh:Math.round(lh),
+      lines:Math.max(1,Math.round(r.height/lh)), text:(t.textContent||'').trim().slice(0,20)});
+  })()`);
+  console.log('== 「学科盘面」标题几何（真壳）==', grid);
+  const G = JSON.parse(grid);
+  A('★「学科盘面」标题在真壳里不是一字一行', G.found === true && G.w > 60 && G.lines <= 1, JSON.stringify(G));
 
   const shots = [];
   const navOk = [];

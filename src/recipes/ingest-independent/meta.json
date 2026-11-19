@@ -1,0 +1,39 @@
+{
+  "id": "ingest-independent",
+  "version": "1.0.0",
+  "title": "整页独立判卷录题（不做红笔假设，AI 独立判错）",
+  "kind": "ingest",
+  "summary": "拍整页，不假设卷面有红笔批改。AI 先搜公开题库，再独立解出每道题，把「自己判孩子做错」的题拆成多条记录。适合没批改的卷子、只有铅笔作答的卷子、想按独立判卷口径全量收录错题的场景。",
+  "inputs": [
+    "一张整页照片（所有题 + 孩子的作答都在画面里）",
+    "原图 sha256（由程序在任务单里给出，必须原样回填）"
+  ],
+  "outputs": "cards.json —— 判错的题每题一条；另含 pageSummary 与 skipped",
+  "appliesTo": {
+    "stages": [
+      "小学",
+      "初中",
+      "高中"
+    ],
+    "subjects": [
+      "*"
+    ]
+  },
+  "layers": [
+    "_core/base.md",
+    "_core/cause.md",
+    "_core/provenance.md",
+    "_subject/${subject}.md"
+  ],
+  "requires": {
+    "subject": true,
+    "images": 1
+  },
+  "updatedAt": "2026-11-18",
+  "changelog": [
+    {
+      "version": "1.0.0",
+      "note": "初版：与 ingest-page 的**唯一区别是收录口径**——ingest-page 收「确认做错且有红笔标出」的题；本配方收「AI 独立判卷判错」的题，**不要求卷面有红笔**。红笔仍原样转录进 teacherAnswer（只作参考，不作定案标准），判错与否完全由独立判卷决定。判对题不出现、判不准题进 skipped、判错题才进 cards，三条判据与 ingest-page 一致。"
+    }
+  ]
+}

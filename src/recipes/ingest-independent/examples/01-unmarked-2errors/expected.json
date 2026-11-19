@@ -1,0 +1,30 @@
+{
+  "note": "黄金样本：用来给『换了自己的 AI』打分，不是回归测试。不含照片——请用你自己的一整页未批改试卷跑同一条配方，再把输出与这里比对。",
+  "caseId": "01-unmarked-2errors",
+  "title": "一页未批改试卷、独立判卷判错 2 题",
+  "photoNote": "一整页数学试卷，卷面**没有任何红笔批改**，只有孩子自己的铅笔作答。AI 独立解完 8 道题，判错 2 道（第 3 题移项错、第 6 题符号错），其余 6 道判对",
+  "checkPoints": [
+    "pageSummary.totalQuestions = 8",
+    "pageSummary.judgedWrong = 2，且与 cards 条数一致",
+    "判对的 6 道题一条都不出现（既不进 cards 也不进 skipped）",
+    "2 条记录的 answerSourceNote 都写清了独立解题的关键步骤",
+    "卷面无红笔 ⇒ 两条的 teacherAnswer 都是空串",
+    "skipped 不是空数组"
+  ],
+  "expect": {
+    "pageSummary": {
+      "totalQuestions": 8,
+      "judgedWrong": 2
+    },
+    "cards": [
+      { "subject": "数学", "causeCode": "S1" },
+      { "subject": "数学", "causeCode": "S2" }
+    ],
+    "mustBeAbsent": [
+      "判对的 6 道题出现在 cards 里",
+      "cards 条数多于 judgedWrong 且 skipped 为空",
+      "teacherAnswer 被填上卷面并不存在的红笔内容",
+      "pageSummary 缺失或 totalQuestions 明显偏离实际题数"
+    ]
+  }
+}

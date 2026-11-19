@@ -387,6 +387,12 @@ const SUPPORTED = new Set(['$schema', 'title', 'description', 'type', 'required'
   'additionalProperties', 'enum', 'const', 'pattern', 'minLength', 'maxLength',
   'minItems', 'maxItems', 'minimum', 'maximum', 'items']);
 
+/* ★ 2026-11-18（独立判卷口径）：**整页多条**配方族。
+   这些配方的输出都是"一页 → 多条 cards + pageSummary + skipped"，因此共用同一条
+   `skipped` 非空铁律与同一条"0 卡是合法结果"的语义。新增整页配方时把 id 加进来，
+   别在判据里再写死单个配方名（写死 = 下个配方漏改 = 静默退化）。 */
+const PAGE_RECIPES = new Set(['ingest-page', 'ingest-independent']);
+
 function typeOf(v) {
   if (v === null) return 'null';
   if (Array.isArray(v)) return 'array';
@@ -502,8 +508,11 @@ function selfTest(recipeId, actual) {
       }
     }
 
-    /* ④ 整页配方的铁律：skipped 不许为空数组 */
-    if (recipeId === 'ingest-page') {
+    /* ④ 整页配方族的铁律：skipped 不许为空数组。
+       ★ 2026-11-18（独立判卷口径）：`ingest-independent` 与 `ingest-page` 同为"整页多条"族，
+       同样要求 `skipped` 非空——0 卡页的 `skipped` 写明"全部清晰可判"，
+       绝不许留空数组装懂。判据按**族**判，不按单个配方写死，避免再加整页配方时漏改。 */
+    if (PAGE_RECIPES.has(recipeId)) {
       const sk = actual && actual.skipped;
       A('skipped 非空（不许装懂）', Array.isArray(sk) && sk.length > 0, Array.isArray(sk) ? sk.length + ' 条' : '缺失');
     }
@@ -1555,10 +1564,20 @@ async function cmdCompose() {
     head.push('   复述不出来就是看不见画面：回一句「原图已取到、指纹一致，但本会话看不到图像画面，请换一个能读图的 AGENT」，');
     head.push('   然后停下。看不见时**不许**转码、复制、缩放、造"测试图"——问题不在图，换图救不回来。');
     head.push('');
-    head.push('### 2. 转录 + 搜题');
+    head.push('### 2. 转录 + 判卷');
     head.push('');
     head.push('按本单「二、任务指令」里的配方正文转录与判卷（逐字照抄/看不清就标/先上网比对题库再独立判卷）。');
     head.push('判不准、看不清的题放进 `skipped` 并写明原因——宁可少录，不可造错。');
+    /* ★ 2026-11-18（独立判卷口径 / 0 卡短路）：本页没有题进 `cards` 是**合法结果，不是失败**
+       （红笔口径下无红笔、独立判卷口径下全判对，都会这样）。以前没有明说，AGENT 只能
+       把"无卡"当异常，要么空转整条链、要么去伪造盲解结果。现在把短路写死：
+       直接回传 → 入库登记 0 卡闭环，盲解/异议两步标注"不适用"，**不许伪造**。
+       判据与 `_录题入库.mjs` 的 `landedZeroAt` 分支同口径。 */
+    head.push('');
+    head.push('**★ 若本页 `cards` 为空（没有任何题进卡——红笔口径下无红笔、独立判卷口径下全判对，都是这一种）**：');
+    head.push('这是**合法结果，不是失败**。不必逐题转录，直接进第 3 步回传（`cards: []` + **有内容的 `skipped`** + 在场的 `pageSummary`）；');
+    head.push('第 6 步入库会把它登记为「整页无错题（0 卡）」并正常闭环。此时**第 7 步盲解与第 8 步异议不适用**，');
+    head.push('在报告里如实写「不适用（0 卡）」即可——**不许伪造任何 lane1/lane2 盲解结果或异议记录**。');
     head.push('');
     head.push('### 3. 回传落盘');
     head.push('');
@@ -1703,11 +1722,18 @@ function cmdValidate() {
   /* 默认按配方推断：有 pageSummary 走整页配方，否则走单题配方。
      ⚠ 推断必须**说出口**（不静默）：整页输出若漏了 pageSummary，会被误判成单题配方，
      而单题 schema 不要求 pageSummary ⇒ 一份残缺的整页结果可能"悄悄通过"。
-     所以这里把推断依据打印出来，调用方一眼能看出"它拿哪套契约验的"。 */
+     所以这里把推断依据打印出来，调用方一眼能看出"它拿哪套契约验的"。
+     ★ 2026-11-18（独立判卷口径）：整页族现在有**两个**配方，光看"有没有 pageSummary"
+     已经分不开了。两个 pageSummary 的必填键不同（`markedWrong` vs `judgedWrong`），
+     按**在场的那个键**分派——判据就是 schema 的 required，不是另立一套口径。
+     两个键都在（AI 混了口径）⇒ 仍按 ingest-page，让它照该配方的 schema 报错。 */
   let id = valOf('recipe', '');
   let inferred = false;
+  let why = '';
   if (!id) {
-    id = (obj && obj.pageSummary) ? 'ingest-page' : 'ingest-single';
+    if (!(obj && obj.pageSummary)) { id = 'ingest-single'; why = '无 pageSummary'; }
+    else if ('judgedWrong' in obj.pageSummary && !('markedWrong' in obj.pageSummary)) { id = 'ingest-independent'; why = 'pageSummary.judgedWrong'; }
+    else { id = 'ingest-page'; why = 'pageSummary.markedWrong'; }
     inferred = true;
   }
 
@@ -1716,13 +1742,13 @@ function cmdValidate() {
   const skipped = Array.isArray(obj && obj.skipped) ? obj.skipped : [];
 
   if (JSON_OUT) {
-    process.stdout.write(JSON.stringify({ ok: errs.length === 0, recipe: id, inferred, extracted, cards: cards.length, skipped: skipped.length, errors: errs, envelope: env ? { taskId: env.taskId || null, imageSha256: env.imageSha256 || null } : null }) + '\n');
+    process.stdout.write(JSON.stringify({ ok: errs.length === 0, recipe: id, inferred, inferredFrom: inferred ? why : null, extracted, cards: cards.length, skipped: skipped.length, errors: errs, envelope: env ? { taskId: env.taskId || null, imageSha256: env.imageSha256 || null } : null }) + '\n');
     return errs.length ? 1 : 0;
   }
 
   if (extracted === 'braces') console.log('输入：JSON 外裹了说明文字，已按首个 { 到最后一个 } 抽取（容错解析**只此一份**，页面与 CLI 同口径）');
   if (env) console.log('信封：taskId=' + (env.taskId || '(空)') + (env.imageSha256 ? '　imageSha256=' + String(env.imageSha256).slice(0, 12) + '…' : '') + '（与任务的匹配由 _录题任务.mjs 绑定校验 判定）');
-  console.log('配方：' + id + (inferred ? '（未指定 --recipe，按输入形态推断：' + (obj && obj.pageSummary ? '有 pageSummary' : '无 pageSummary') + '）' : ''));
+  console.log('配方：' + id + (inferred ? '（未指定 --recipe，按输入形态推断：' + why + '）' : ''));
   console.log('记录：' + cards.length + ' 条　跳过：' + skipped.length + ' 条');
   if (!errs.length) {
     console.log('✔ 校验通过');
