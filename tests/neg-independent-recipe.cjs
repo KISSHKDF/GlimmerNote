@@ -170,11 +170,15 @@ console.log('\n══ ③ 推断不静默：两个整页配方按 pageSummary �
   A('★ markedWrong ⇒ 推断 ingest-page', !!jPage && jPage.recipe === 'ingest-page' && jPage.inferred === true, JSON.stringify(jPage && { recipe: jPage.recipe, from: jPage.inferredFrom }));
 
   const jInd = (() => { const r = engine(['校验', '--in', writeJson('inf-ind.json', page()), '--json']); try { return JSON.parse(r.out); } catch { return null; } })();
-  A('★ judgedWrong ⇒ 推断 ingest-independent', !!jInd && jInd.recipe === ID && jInd.inferred === true, JSON.stringify(jInd && { recipe: jInd.recipe, from: jInd.inferredFrom }));
+  /* ★ 2026-11-19（零选择）：`ingest-auto` 是唯一入口配方，pageSummary 键与 ingest-independent
+     相同（judgedWrong）⇒ 推断分派给 ingest-auto（新入口优先）。ingest-independent 仍可显式 --recipe 校验（老任务重放）。 */
+  A('★ judgedWrong ⇒ 推断 ingest-auto（零选择后的唯一入口）', !!jInd && jInd.recipe === 'ingest-auto' && jInd.inferred === true, JSON.stringify(jInd && { recipe: jInd.recipe, from: jInd.inferredFrom }));
   A('★ 推断依据随 --json 一并给出（inferredFrom 非空）', !!jInd && typeof jInd.inferredFrom === 'string' && jInd.inferredFrom.length > 0, jInd && jInd.inferredFrom);
 
   const jSingle = (() => { const r = engine(['校验', '--in', writeJson('inf-single.json', { cards: [card()] }), '--json']); try { return JSON.parse(r.out); } catch { return null; } })();
-  A('★ 无 pageSummary ⇒ 仍推断 ingest-single（老路径不变）', !!jSingle && jSingle.recipe === 'ingest-single', jSingle && jSingle.recipe);
+  /* ★ 2026-11-19（零选择）：无 pageSummary 也推断 ingest-auto —— 单题与整页同契约（auto 的
+     pageSummary 必填；单题特写 totalQuestions=1）。老 ingest-single 只在显式 --recipe 时走。 */
+  A('★ 无 pageSummary ⇒ 推断 ingest-auto（单题/整页同契约）', !!jSingle && jSingle.recipe === 'ingest-auto', jSingle && jSingle.recipe);
 
   /* 人读输出也要说出口（不许只有 --json 才看得见）。 */
   const human = engine(['校验', '--in', writeJson('inf-human.json', page())]);

@@ -391,7 +391,7 @@ const SUPPORTED = new Set(['$schema', 'title', 'description', 'type', 'required'
    这些配方的输出都是"一页 → 多条 cards + pageSummary + skipped"，因此共用同一条
    `skipped` 非空铁律与同一条"0 卡是合法结果"的语义。新增整页配方时把 id 加进来，
    别在判据里再写死单个配方名（写死 = 下个配方漏改 = 静默退化）。 */
-const PAGE_RECIPES = new Set(['ingest-page', 'ingest-independent']);
+const PAGE_RECIPES = new Set(['ingest-page', 'ingest-independent', 'ingest-auto']);
 
 function typeOf(v) {
   if (v === null) return 'null';
@@ -1309,8 +1309,8 @@ async function cmdList() {
 }
 
 async function cmdCompose() {
-  const id = valOf('recipe', '');
-  if (!id) { console.error('用法：组装 --recipe <id> --subject <学科> [--image <路径>] [--out <文件>] [--card <包id>/<卡id>@<版本>]… [--card-conflict deny|first|all] [--packs <经验包根>]'); return 2; }
+  const id = valOf('recipe', '') || 'ingest-auto';
+  if (!id) { console.error('用法：组装 [--recipe <id>] --subject <学科> [--image <路径>] [--out <文件>] [--card <包id>/<卡id>@<版本>]… [--card-conflict deny|first|all] [--packs <经验包根>]（缺 --recipe 时默认 ingest-auto：用户只放照片，AI 看图自判形态与口径）'); return 2; }
   const img = valOf('image', '');
   const out = valOf('out', '');
 
@@ -1634,22 +1634,18 @@ async function cmdCompose() {
        现在按配方分叉：独立判卷口径 0 卡 = 真·全对；红笔口径 0 卡必须先回答
        "卷面上到底有没有红色批改"，没有就**停手回报**、不许登记 0 卡。 */
     head.push('');
-    if (id === 'ingest-page') {
-      head.push('**★ 若本页过了红笔口径却一道都没进 `cards`，先回答一个问题：这一页上有没有红色批改（红叉/红圈/扣分/红字批注）？**');
-      head.push('');
-      head.push('- **有红笔，但没有标出错题** ⇒ 本页确实无错题。进第 3 步回传（`cards: []` + **有内容的 `skipped`** + 在场的 `pageSummary`），');
-      head.push('  第 6 步入库登记「整页无错题（0 卡）」并闭环；**第 7 步盲解与第 8 步异议不适用**，在报告里如实写「不适用（0 卡）」。');
-      head.push('- **整页看不到任何红色批改**（只有孩子自己的铅笔/蓝黑笔作答） ⇒ 这是**口径不适用，不是本页全对**。');
-      head.push('  **不许**回传 0 卡、**不许**登记入库、**不许**替用户把这一页判成"没有错题"。');
-      head.push('  立刻停手并在报告里明确写：本页没有红笔批改，红笔口径无法收录，需改用「整页独立判卷」配方重新生成任务单');
-      head.push('  （判据：AI 独立解出答案 → 与孩子作答比对 → 判错即收，**不要求卷面有红笔**）。');
-      head.push('  这一条优先于本单其余一切"必须跑完"的要求：**宁可停在这里报口径不适用，也不许产出 6 页 0 卡**。');
-    } else {
-      head.push('**★ 若本页 `cards` 为空（独立判卷口径下全判对）**：');
-      head.push('这是**合法结果，不是失败**。不必逐题转录，直接进第 3 步回传（`cards: []` + **有内容的 `skipped`** + 在场的 `pageSummary`）；');
-      head.push('第 6 步入库会把它登记为「整页无错题（0 卡）」并正常闭环。此时**第 7 步盲解与第 8 步异议不适用**，');
-      head.push('在报告里如实写「不适用（0 卡）」即可——**不许伪造任何 lane1/lane2 盲解结果或异议记录**。');
-    }
+    /* ★ 2026-11-19（零选择 / ingest-auto）：配方合一后不再有"红笔口径"分支。
+       ingest-auto 的收录口径只有一条：独立判卷判错即收。
+       0 卡=真·全对（合法闭环），但**有红笔的 0 卡**必须在 skipped 里逐条交代红笔标的题
+       为什么没收——把矛盾摆在台面上，不许静默吞掉批改信号（防 2026-11-17 那 6 页 0 卡的漏判）。 */
+    head.push('**★ 若本页 `cards` 为空（判卷后全对）**：');
+    head.push('这是**合法结果，不是失败**。不必逐题转录，直接进第 3 步回传（`cards: []` + **有内容的 `skipped`** + 在场的 `pageSummary`）；');
+    head.push('第 6 步入库会把它登记为「整页无错题（0 卡）」并正常闭环。此时**第 7 步盲解与第 8 步异议不适用**，');
+    head.push('在报告里如实写「不适用（0 卡）」即可——**不许伪造任何 lane1/lane2 盲解结果或异议记录**。');
+    head.push('');
+    head.push('⚠ **但若这一页上有红色批改而 `cards` 为空**：`skipped` 必须逐条交代红笔标的每道题为什么没收');
+    head.push('（例：`{ "what": "第3题", "reason": "红笔标了红叉，但独立解出 x=2 与孩子作答一致，判定为批改有误" }`）。');
+    head.push('红笔与你的结论冲突时按「答案打架」流程独立裁决——**不许静默吞掉批改信号**（漏判 = 孩子的错题永远丢了）。');
     head.push('');
     head.push('### 3. 回传落盘');
     head.push('');
@@ -1795,17 +1791,19 @@ function cmdValidate() {
      ⚠ 推断必须**说出口**（不静默）：整页输出若漏了 pageSummary，会被误判成单题配方，
      而单题 schema 不要求 pageSummary ⇒ 一份残缺的整页结果可能"悄悄通过"。
      所以这里把推断依据打印出来，调用方一眼能看出"它拿哪套契约验的"。
-     ★ 2026-11-18（独立判卷口径）：整页族现在有**两个**配方，光看"有没有 pageSummary"
-     已经分不开了。两个 pageSummary 的必填键不同（`markedWrong` vs `judgedWrong`），
+     ★ 2026-11-18（独立判卷口径）：整页族配方光看"有没有 pageSummary"
+     已经分不开了。各 pageSummary 的必填键不同（`markedWrong` vs `judgedWrong`），
      按**在场的那个键**分派——判据就是 schema 的 required，不是另立一套口径。
-     两个键都在（AI 混了口径）⇒ 仍按 ingest-page，让它照该配方的 schema 报错。 */
+     ★ 2026-11-19（零选择）：`ingest-auto` 成为唯一入口配方，它的 pageSummary 必填键
+     与 ingest-independent 相同（`judgedWrong`）。推断改为：
+     judgedWrong（或双键混用）⇒ ingest-auto（新入口优先），markedWrong ⇒ ingest-page（老任务重放）。 */
   let id = valOf('recipe', '');
   let inferred = false;
   let why = '';
   if (!id) {
-    if (!(obj && obj.pageSummary)) { id = 'ingest-single'; why = '无 pageSummary'; }
-    else if ('judgedWrong' in obj.pageSummary && !('markedWrong' in obj.pageSummary)) { id = 'ingest-independent'; why = 'pageSummary.judgedWrong'; }
-    else { id = 'ingest-page'; why = 'pageSummary.markedWrong'; }
+    if (!(obj && obj.pageSummary)) { id = 'ingest-auto'; why = '无 pageSummary（按 auto 契约验，cards 逐条对 schema）'; }
+    else if ('markedWrong' in obj.pageSummary && !('judgedWrong' in obj.pageSummary)) { id = 'ingest-page'; why = 'pageSummary.markedWrong'; }
+    else { id = 'ingest-auto'; why = 'pageSummary.judgedWrong' + (('markedWrong' in obj.pageSummary) ? '（与 markedWrong 混用，按 auto 拒收契约外字段）' : ''); }
     inferred = true;
   }
 

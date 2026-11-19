@@ -261,12 +261,11 @@ async function waitFor(cdp, expr, ok, tries, gap) {
            ① "(空)" ⇒ 清干净了、页面还没写回；
            ② 能解析成 JSON 且**逐字段全等** ingest.js 的默认值（recipe/subject/conflict 三个持久化字段），且没有多余字段。
            任何一个字段是上轮真人选的值 ⇒ 判红。默认值改了这里要同步（来源：views/ingest.js 的 st 初值）。
-           ★ 2026-11-19：默认配方由 `ingest-page` 改为 `ingest-independent` ——
-           干净机器上用户丢进来的往往**还没批改**，红笔口径对那种卷子必然 0 卡
-           （真实事故：6 页未批改期中卷 → 0 张卡，孩子错题一道没进）。默认必须是"不靠红笔也能判"的那个。
+           ★ 2026-11-19（零选择）：默认配方改为 `ingest-auto`（三配方合一，唯一入口）——
+           用户只放照片，AI 看图自判形态与口径（红笔当旁证、无红笔独立判卷），判错即收。
            ⚠ 本断言需要真壳 + CDP，只能在 Windows 上实跑；Linux 上只做了语法检查。 */
       const after = String(lsAfter);
-      const DEFAULTS = { recipe: 'ingest-independent', subject: '数学', conflict: 'deny' };
+      const DEFAULTS = { recipe: 'ingest-auto', subject: '数学', conflict: 'deny' };
       let parsed = null;
       try { parsed = JSON.parse(after); } catch { }
       const isEmpty = after === '(空)';
@@ -378,14 +377,16 @@ async function waitFor(cdp, expr, ok, tries, gap) {
        改前这段一律写 `pageSummary.markedWrong`（红笔口径），而 `tid` 来自页面生成、
        页面默认配方已改为 `ingest-independent`（认 `judgedWrong`）⇒ 格式层当场判红，
        连带 ④⑤ 六条断言全红（实测：code=1「格式不通过」）。
-       判据按配方分派，不写死：`ingest-page` 用 markedWrong、`ingest-independent` 用 judgedWrong。 */
+       ★ 2026-11-19（零选择）：页面默认配方已是 `ingest-auto`（与 ingest-independent 同键
+       `judgedWrong`）。判据按配方分派，不写死：judgedWrong 族（auto/independent）用 judgedWrong、
+       ingest-page 用 markedWrong。 */
     const recipeOf = (id) => {
       try { return (JSON.parse(fs.readFileSync(path.join(LIB, '_录题', String(id) + '.json'), 'utf8')).recipe || {}).id || ''; }
       catch { return ''; }
     };
-    const pageSummaryFor = (id, n) => (recipeOf(id) === 'ingest-independent'
-      ? { totalQuestions: n, judgedWrong: 1 }
-      : { totalQuestions: n, markedWrong: 1 });
+    const pageSummaryFor = (id, n) => (recipeOf(id) === 'ingest-page'
+      ? { totalQuestions: n, markedWrong: 1 }
+      : { totalQuestions: n, judgedWrong: 1 });
     /* 载荷形状必须跟**正在被校验的那个任务**（第三参 `shapeOf`，默认 = 信封里的任务号）的配方同口径。
        跨任务那两条恰恰是"信封写 B、页面句柄在 A" ⇒ 形状按 A 的配方、信封写 B 的任务号，
        否则会先被格式层拦成 exit 1，测不到"与任务不匹配"这条判据（实测就是这样红的）。 */

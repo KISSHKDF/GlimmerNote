@@ -6,9 +6,12 @@
  * 三段式（对应 _配方.mjs 的三个动作）：
  *   ① **收件箱**：把照片丢进 数据\_收件箱\<批次>\，这里就能看见（不提供文件选择框：
  *      用户明确说过"不考虑人工输入原图"，入口就是收件箱本身）
- *   ② **生成任务单**：选配方式和学科 → 拼出完整提示词 → 复制给你自己的 AI
+ *   ② **生成任务单**：选孩子和学科 → 程序自动按统一配方（ingest-auto）拼出完整提示词 → 交给你的 AI
  *   ③ **校验回传**：AI 的 JSON 粘回来 → 逐条按 schema 校验 → 告诉你哪条不合格
  *
+ * ★ 2026-11-19（用户裁定「全面修改：别人只放照片，程序自动定配方」）：
+ *    三个配方（红笔口径 / 独立判卷 / 单题）合并为唯一入口 `ingest-auto`——
+ *    用户不再选配方；AI 看图自判形态与口径。页面不再出现"配方"这个词。
  * ★ 2026-11-04：第 ③ 步之后接上**第四步「建卡入库」**。
  *   改前本页走完校验+确认就**结束**（写着「本页不落库」），因为仓内**没有任何东西能把 JSON 变成卡**：
  *   实测 2026-11-04 19:36 那次录题，任务记录 `cards` 是**空数组**、库里**零张新卡**。
@@ -24,18 +27,13 @@
   const V = CTB.views.ingest = {};
 
   const LS_KEY = 'ctb2.ingest';
+  /* ★ 2026-11-19（用户裁定「全面修改：别人只放照片，程序自动定配方」）：
+     配方不再是一个用户选项 —— 统一走 `ingest-auto`（AI 看图自判形态与口径）。
+     `st.recipe` 保留只是为了让旧 localStorage 里的值不炸（白名单兜底后恒为 ingest-auto），
+     界面上**没有**配方下拉；组装 flags 也固定发 ingest-auto。 */
+  const AUTO_RECIPE = 'ingest-auto';
   const st = Object.assign({
-    /* ★ 2026-11-19（用户报障：干净机器上"没有红笔所以没录入错题"）：
-       默认从红笔口径 `ingest-page` 改为 `ingest-independent`（整页独立判卷）。
-       判据是**覆盖面**，不是口味：
-         · 独立判卷口径对"已批改"和"没批改"两种卷子都成立（红笔只原样记进 teacherAnswer 作参考，
-           不参与判错）；
-         · 红笔口径对"没批改"的卷子**必然 0 卡**——那是口径不适用，不是本页全对。
-       用户 2026-11-17 在干净机器上用默认配方跑一份未批改的期中卷 6 页，整条 AGENT 流水线
-       零产出；225 条真实任务记录里 `ingest-independent` 被选中 **0 次**（默认值是谁选就是谁）。
-       ⇒ 默认必须是那个"不会因为卷面没红笔就空转"的口径。已有用户 localStorage 里存着
-       `ingest-page` 的，按原值走（不静默改用户的选择）。 */
-    recipe: 'ingest-independent',
+    recipe: AUTO_RECIPE,
     subject: '数学',
     conflict: 'deny',        /* 选卡冲突策略：deny=拒绝（契约默认）/ first=先到先得 / all=全部 */
     batch: '',
@@ -46,7 +44,10 @@
     verdict: null,           /* 校验结果 */
     inbox: null,
   }, U.lsGet(LS_KEY, {}));
-  const save = () => U.lsSet(LS_KEY, { recipe: st.recipe, subject: st.subject, conflict: st.conflict });
+  /* ★ 2026-11-19（零选择）：配方不再是用户选项 —— localStorage 里的旧值直接归一。
+     `st.recipe` 字段只为兼容旧测试桩与读取代码而保留，值恒为 AUTO_RECIPE。 */
+  st.recipe = AUTO_RECIPE;
+  const save = () => U.lsSet(LS_KEY, { recipe: AUTO_RECIPE, subject: st.subject, conflict: st.conflict });
   /* 这几个不持久化：每次进来重新取，避免"昨天选中的图/卡今天还在"的错觉
      —— 静默带出来的残留选择比空着更危险（用户会以为是自己这次选的）。 */
   st.task = ''; st.verdict = null; st.inbox = null; st.picked = {}; st.batch = '';
@@ -133,28 +134,21 @@
       '<div class="ig-h"><span class="ig-n">2</span>生成任务单，交给你的本机 AGENT</div>' +
       '<div class="row ig-opts">' +
       '<label class="ig-f"><span>孩子</span><select id="igStudent" class="bk-sort"></select></label>' +
-      /* ★ 2026-11-19（用户报障：干净机器上说"没有红笔"所以一张错题都没录）：
-         旧文案把两个整页配方写成「整页多题（一次作业错好几道就用这个）」vs
-         「整页独立判卷（不靠红笔，AI 独立判错）」——**决定性的那件事（卷子有没有批改过）
-         一个字都没提**。家长看到"一次作业错好几道就用这个"，自然会选它，
-         而它的收录判据是"确认做错**且有红笔标出**"，未批改的卷子必然 0 卡。
-         现在按用户要做的判断来写：**先问卷子批改过没有**，再给结论，并把默认口径
-         （独立判卷）的选项排在第一位。 */
-      '<label class="ig-f"><span>卷子批改过吗</span>' +
-      '<select id="igRecipe" class="bk-sort">' +
-      '<option value="ingest-independent">还没批改 / 没有红笔 —— AI 自己判对错（默认）</option>' +
-      '<option value="ingest-page">已经批改过、卷面有红笔 —— 按红笔标出的错题收</option>' +
-      '<option value="ingest-single">只拍了一道题</option>' +
-      '</select></label>' +
+      /* ★ 2026-11-19（用户裁定「全面修改：别人只放照片，程序自动定配方」）：
+         配方下拉整删。三个配方（红笔口径/独立判卷/单题）合并成唯一入口 `ingest-auto`：
+         AI 看图自判形态（整页 or 单题）与口径（红笔当旁证、无红笔独立判卷），
+         收录口径统一为「确认做错即收」。用户不再需要知道"配方"这个词，
+         也不再需要回答"卷子批改过吗"——那是 AI 看图要干的事，不是用户要答的题。 */
       '<label class="ig-f"><span>学科</span><select id="igSubject" class="bk-sort">' +
       SUBJECTS.map(s => '<option value="' + U.esc(s) + '">' + U.esc(s) + '</option>').join('') +
       '</select></label>' +
       '<span class="tb-sp"></span>' +
       '<button class="btn sm primary" id="igGen">📦 生成 AGENT 任务包</button>' +
       '</div>' +
-      '<div class="small muted">勾<b>一张或多张</b>照片 → 选孩子和学科 → 点「生成 AGENT 任务包」：程序逐张生成任务' +
-      '并落一份批次工作单，把派发指令发给你的本机 AGENT（能读文件、跑命令、看图的，如 Claude Code / Codex / ZCode）即可，' +
-      '剩下全部由它完成。</div>' +
+      '<div class="small muted">勾<b>一张或多张</b>照片 → 选孩子和学科 → 点「生成 AGENT 任务包」。' +
+      '不用选什么"整页还是单题""有没有红笔批改"——<b>程序自动定口径</b>（AI 看图判断：红笔只当旁证，' +
+      '没红笔它自己解题判错），任务单把这套判卷标准写给你的本机 AGENT（能读文件、跑命令、看图的，' +
+      '如 Claude Code / Codex / ZCode），剩下全部由它完成。</div>' +
       /* ★ 2026-11-17（用户裁定「下面应该全自动化」）：选卡区收进 <details>。
          「选卡」是给高级用户的（方法卡随任务单一起交给 AI），绝大多数录题一次都用不到；
          它以前常驻在生成路径上，视觉上等于逼用户先做一道选择。默认折叠，功能一个不删。 */
@@ -192,9 +186,9 @@
       '<div id="igResult"></div>' +
       '</details>';
 
-    const rSel = U.$id('igRecipe'), sSel = U.$id('igSubject'), kidSel = U.$id('igStudent');
-    rSel.value = st.recipe; sSel.value = st.subject;
-    rSel.onchange = () => { st.recipe = rSel.value; save(); };
+    /* ★ 2026-11-19（零选择）：igRecipe 元素已删除 —— 这里只接学科与孩子。 */
+    const sSel = U.$id('igSubject'), kidSel = U.$id('igStudent');
+    sSel.value = st.subject;
     sSel.onchange = () => { st.subject = sSel.value; save(); };
     /* ★ 2026-11-16（批次 B）：孩子下拉前置到生成区（A-3 的 --student 由此发出）。
        学生清单来自状态包 M.students()（与第 4 步入库下拉同一份来源）；库空时禁用并给指路。 */
@@ -465,7 +459,7 @@
     let boxNote = '';   /* 成功抬头后面补的一句实话（清单读不到之类），没有就不加 */
     try {
       const oneTicket = async (rel) => {
-        const flags = { recipe: st.recipe, subject: st.subject };
+        const flags = { recipe: AUTO_RECIPE, subject: st.subject };
         if (rel) { flags.image = rel; }
         /* ★ 2026-11-03（批次 1 收尾）：勾了照片 ⇒ 带 --task 留任务记录（壳侧布尔透传 task=1）。
            没选照片时**不留**——没有原图的任务记录无法对图，只会产一条永远对不上的空壳。 */
@@ -913,15 +907,15 @@
       if (code === 0) {
         /* ★ 2026-11-18：0 卡与 N 卡**分开说**。0 卡是"本页无错题"的合法闭环，
            不是"已入库 N 张"；两者都渲染成"卡进库了"会让用户误以为录了题。
-           红笔口径判出 0 卡时，最可能是卷面本无红笔批改（口径没选对），必须把换配方说出口。 */
+           ★ 2026-11-19（零选择 / ingest-auto）：配方合一后不再有"红笔口径"分支——
+           0 卡就是「AI 独立判卷后全对」的合法闭环；唯一的追责口径是"卷面有红笔却 0 卡
+           ⇒ skipped 必须逐条交代红笔去向"（工具侧已强制打印这句）。 */
         const zeroCard = /整页无错题（0 卡）|已登记：整页无错题/.test(out);
         if (zeroCard) {
           box.innerHTML = '<div class="ig-ok">✔ 已登记：本页无错题（0 卡）—— 闭环完成</div>' +
             '<pre class="ig-pre">' + U.esc(out) + '</pre>' +
-            (st.recipe === 'ingest-page'
-              ? '<div class="small muted">⚠ 本页按「红笔口径」判为无错题。若这张卷子本来就没有红笔批改，' +
-                '请回上面「2」把配方换成「整页独立判卷」重新生成任务单——它不要求红笔，AI 独立判错、判错即收。</div>'
-              : '<div class="small muted">本页按独立判卷口径判为全对，无错题可收；收件箱按任务记录判「已处理」。</div>');
+            '<div class="small muted">本页判为全对，无错题可收；收件箱按任务记录判「已处理」。' +
+            '若卷面上其实有红笔批改，请核对工具输出——程序要求 AI 把「红笔标的题为什么没收」逐条写进 skipped，没写就是漏判。</div>';
           S.toast('已登记：本页无错题（0 卡）', 'warn', 8000);
           if (S.refreshSub) S.refreshSub();
         } else {
@@ -973,7 +967,7 @@
     const btn = U.$id('igCheck'); btn.disabled = true; btn.textContent = '⏳ 校验中…';
     try {
       if (st.taskId) { await onBoundCheck(box, text, btn); return; }
-      const r = await H.recipe('校验', { recipe: st.recipe, text });
+      const r = await H.recipe('校验', { recipe: AUTO_RECIPE, text });
       st.verdict = r;
       const code = r && r.code;
       const out = String((r && r.out) || '');

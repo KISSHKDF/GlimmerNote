@@ -98,7 +98,11 @@ const CARD_SRC = sliceIn(INGEST, 'function cardIdOk(id)', 'async function onBoun
    `async function onGenerate(`——否则 indexOf 找不到起始锚点、整个用例静默崩掉。
    这类"签名变了锚点没跟着"就是本用例自己的锚点漂移风险（同 neg-task-page-wiring 的 B0 判据）。 */
 const GEN_SRC = sliceIn(INGEST, 'async function onGenerate(', 'function cardIdOk(id)');
-const PAGE_SRC = CARD_SRC + GEN_SRC;
+/* ★ 2026-11-19（零选择 / ingest-auto）：`AUTO_RECIPE` 是 ingest.js 顶部的 const，不在切片作用域
+   ⇒ 抽出字面量注入（页面改名时这里显式红）。 */
+const AUTO_SRC = (() => { const m = /const AUTO_RECIPE = '([^']+)';/.exec(INGEST); return m ? m[0] : "const AUTO_RECIPE = 'ingest-auto';"; })();
+A('B0·补 ingest.js 顶部能抽出 AUTO_RECIPE 字面量', /const AUTO_RECIPE = 'ingest-auto';/.test(INGEST), AUTO_SRC);
+const PAGE_SRC = AUTO_SRC + '\n' + CARD_SRC + GEN_SRC;
 const buildPage = (src) => new Function('U', 'H', 'S', 'CTB', 'st', 'inboxFiles', 'copyText', 'revealShot',
   src + '\nreturn { cardIdOk, packVerOk, collectCards, packsPickerHtml, loadPacks, paintPacks, reloadPacks, onGenerate };');
 
@@ -416,7 +420,7 @@ function mkPage(over) {
     console.log('\n═══ E · 阴性对照：掏掉防线必须变红 ═══');
     const MUT_CARD = CARD_SRC.replace('if (!p.enabled) {', 'if (false) {');
     A('E0 变异体确实被改动（否则下面的"阴性对照"是假动作）', MUT_CARD !== CARD_SRC);
-    const p3m = mkPage({ src: MUT_CARD + GEN_SRC, packs: [PACK_A, PACK_B], st: { typed: { 'family-b/other': 'x' } } });
+    const p3m = mkPage({ src: AUTO_SRC + '\n' + MUT_CARD + GEN_SRC, packs: [PACK_A, PACK_B], st: { typed: { 'family-b/other': 'x' } } });
     await p3m.fns.onGenerate();
     const f3m = (p3m.calls.recipe[0] || {}).flags || {};
     A('E1 阴性对照·B3：把 `if (!p.enabled)` 掏成恒假 ⇒ 停用包的卡照样被发出去（B3 判据确实能红）',
