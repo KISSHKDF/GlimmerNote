@@ -432,6 +432,7 @@ const TMP_PREFIXES = [
   'gn-h08b-out-',
   'gn-holder-',
   'gn-ledger-',
+  'gn-neg-zerocard-',   // neg-inbox-zero-card.cjs 的临时库（0 卡页归档判据）
   'gn-libcsp-',
   'gn-locate-',
   'gn-lock-',

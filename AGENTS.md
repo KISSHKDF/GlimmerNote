@@ -54,7 +54,12 @@ node tests\neg-answer-slot-contract.cjs   # 两份实现对拍 + 阴性自证（
 
 - 用户说中文，回复用中文；代码、注释、提交信息可用中文但须与既有风格一致。
 - **只在真正不可逆的地方问**（口径收窄，用户 2026-11-06 复核：原写法把"删远端分支"一律当不可逆，问得没意义）：
-  - 必须先问：`push` 到 `main`、**打 tag**、**发 Release**、**删带独有提交的分支**、以及任何改写历史的动作。
+  - **发版一条链不问、直接做到底**（用户 2026-11-19 明示：「以后不许再问，直接打tag,push,release」）：
+    `commit` → **打 tag** → **push 到 `main`** → **发 GitHub Release**（附 zip + `.sha256`）全部自动执行，
+    **禁止停在"要发版吗？"这类问句上**。前提是本地链路已按规跑完并留证：`tools\lint.mjs` PASS、
+    `tests\run.mjs quick` 全绿（发版前 full）、`portability` 全过、`build-release` → `deploy` → `verify-deploy`
+    零漂移、实机启动确认版本号。任何一步没过 ⇒ 修到过，不是跳过。
+  - 仍必须先问的只剩**真正不可重建**的两类：**删带独有提交的分支**、**任何改写历史的动作**。
   - **可以自删**：已并入 `main` 的临时分支 —— **前置条件是机械可验的**：先 `git log main..<branch>` 验**独有提交数 = 0**，再把分支 sha 记进 `~/.dsh/logs/gn-deleted-branches.log` 留谱，然后删（远端 ref 用 `DELETE /repos/{owner}/{repo}/git/refs/heads/<branch>`）。分支内容全在 `main`、sha 已知 ⇒ 删了随时能重建，不是不可逆。
     **日志格式只有一种**（`2026-11-17` 统一，此前手工写成了 4 种、含 7 位短 sha，没法对账）：
     ```

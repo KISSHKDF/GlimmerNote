@@ -887,7 +887,11 @@ function cmdLand() {
     task.landedDigest = digest0;
     writeJsonAtomic(taskFile(taskId), task, { indent: 1 });
     console.log('✔ 已登记：整页无错题（0 卡）——' + taskId);
-    console.log('  （校验与人工/代理确认都已过；这张照片的闭环到此完成，收件箱按台账判"已处理"）');
+    /* ★ 2026-11-19：这句话以前是**假的** —— 收件箱的"已处理"判据只看 `_原卷台账.json`，
+       而 0 卡页天生没有卡、永远进不了台账 ⇒ 实测 26 条 0 卡任务里 24 张至今挂在待处理清单。
+       现在 `_配方.mjs` 的 `inboxZeroCardSet()` 会读 `_录题\t-*.json` 的 `landedZeroAt`，
+       这句话才成立（回归见 `tests\neg-inbox-zero-card.cjs`）。 */
+    console.log('  （校验与人工/代理确认都已过；这张照片的闭环到此完成，收件箱按任务记录判"已处理"）');
     if (zeroHint) console.log(zeroHint);
     if (JSON_OUT) { process.stdout.write(JSON.stringify({ ok: true, taskId, landed: 0, zeroPage: true, hint: zeroHint || null }) + '\n'); return 0; }
     return 0;

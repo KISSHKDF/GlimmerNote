@@ -421,10 +421,31 @@ function cmdWorksheet() {
   const wno = 'W-' + stamp();
   const tasks = recs.map((r, i) => {
     const rel = (r.image && r.image.rel) || '';
-    const abs = rel ? path.join(ROOT(), rel.replace(/[\\/]+/g, path.sep)) : '';
+    /* ⚠ 2026-11-19：`image.rel` 按契约是**库根相对**路径（界面传 `_收件箱/xxx.jpg`）。
+       但 CLI 直接调 `_配方.mjs 组装 --image <绝对路径>` 时它会被原样记成绝对路径，
+       此时 `path.join(ROOT(), 'D:\\…')` 会拼出 `<库根>\D:\…` 这种不存在的路径
+       （实测已复现）。绝对路径就按原样用，别再拼一次库根。 */
+    const abs = !rel ? ''
+      : (path.isAbsolute(rel) ? path.normalize(rel) : path.join(ROOT(), rel.replace(/[\\/]+/g, path.sep)));
+    /* ★ 2026-11-19：最后一列原写 `_录题\单-<taskId>.md` —— **那个文件从来没有任何代码写过**
+       （实测真库 `_录题\` 下 `单-*.md` 计数 = 0，225 条任务记录里一条也没有）。
+       工作单是派给 AGENT 的执行书，指着不存在的文件 ⇒ AGENT 只能自己找路。
+       改成指向**任务记录 JSON**（它一定存在，且 `taskText` 里存着任务单全文）。 */
     return '| ' + (i + 1) + ' | ' + r.taskId + ' | ' + (abs || '（任务记录无原图）') + ' | ' +
-      ((r.image && r.image.sha256) ? r.image.sha256.slice(0, 12) : '(无指纹)') + ' | _录题\\单-' + r.taskId + '.md |';
+      ((r.image && r.image.sha256) ? r.image.sha256.slice(0, 12) : '(无指纹)') + ' | _录题\\' + r.taskId + '.json |';
   });
+  /* ★ 2026-11-19（用户报障：干净机器上说"没有红笔"所以没录入错题）：
+     工作单以前**完全不提配方口径**，而每张任务的配方早已定死在任务记录里
+     （`recipe.id` + 指纹）。派单的人（家长）与接单的 AGENT 都不知道"这批用的是哪套判据、
+     卷面没红笔会怎样"，于是 6 页未批改的卷子被跑成 6 页 0 卡。
+     这里把口径与零卡规则写进工作单**本身**（它才是 AGENT 打开的入口文档）。 */
+  const recipeIds = [...new Set(recs.map(r => (r.recipe && r.recipe.id) || '?'))];
+  const recipeLine = recipeIds.map((rid) => {
+    if (rid === 'ingest-independent') return '`ingest-independent`（整页独立判卷：AI 自己解题比对，**不要求卷面有红笔**）';
+    if (rid === 'ingest-page') return '`ingest-page`（红笔口径：只收**有红笔标出**的错题）';
+    if (rid === 'ingest-single') return '`ingest-single`（单题：一题一张照片）';
+    return '`' + rid + '`';
+  }).join('、');
   const out = ['## 拾光小册 · 录题批次工作单 ' + wno,
     '',
     '- 学生：' + (student || '（未指定）') + '　学科：' + (subject || '（未指定）') + '　照片：' + recs.length + ' 张　生成于 ' + nowLocal(),
@@ -440,15 +461,23 @@ function cmdWorksheet() {
     '- dataRoot：' + ROOT(),
     '- 工具目录：' + TOOL_DIR + '　·　所有命令带 --data ' + ROOT(),
     '- AGENT 技能：glimmer-agent-ingest-batch（SOP：取图→转录→校验→代确认→入库→双路盲解→异议→汇总）',
+    '- 读某一单的完整任务单（含配方正文）：`node "' + toolPath('_录题任务.mjs') + '" 看 <taskId> --json`，取 `taskText` 字段',
+    '',
+    '## 1·5 本批判卷口径（决定"卷面没有红笔"时该怎么办）',
+    '- 本批配方：' + recipeLine,
+    '- **红笔口径下，整页没有红色批改 ≠ 本页全对**：那是口径不适用。遇到这种页**停手回报**，',
+    '  不许回传 0 卡、不许入库登记，并在报告里写明「本页无红笔批改，需改用整页独立判卷配方重新生成任务单」。',
+    '  （2026-11-17 真实事故：未批改的期中卷 6 页被全判 0 卡，孩子真正的错题一道没进。）',
+    '- 独立判卷口径下，0 卡才是真·全对（合法闭环，登记 `landedZeroAt` 后该照片自动从待处理清单消失）。',
     '',
     '## 2. 任务清单（逐张处理；一张失败不影响下一张）',
     '',
-    '| # | taskId | 原图（本机绝对路径） | sha 前12 | 任务单 |',
+    '| # | taskId | 原图（本机绝对路径） | sha 前12 | 任务记录 |',
     '|---|---|---|---|---|',
     ...tasks,
     '',
     '## 3. 作业指引',
-    '- 每张的完整契约=对应任务单（任务单第六节=八步工序全文，配方正文在「二、任务指令」）',
+    '- 每张的完整契约=对应任务记录里的 `taskText`（任务单第六节=八步工序全文，配方正文在「二、任务指令」）',
     '- 已知坑：双路独立 / 改题干同步 blindFingerprint / 顶层工具只认 CTB_DATA / 红字只作参考 / 不许手改 JSON',
     '',
     '## 4. 进度留痕（逐张追加，勿删）',
