@@ -570,15 +570,67 @@ const INBOX_SKIP = new Set(['_任务单', '_已处理', '_probe']);
  *   挪文件会让 `_原卷台账.mjs 门禁` 当场整片报红（"整页不在盘"）。归档要动真源，得连台账一起改，
  *   那是另一件事（要单独批准、可回滚）。本函数**只读**：不动任何文件、不写任何东西。 */
 const LEDGER_NAME = '_原卷台账.json';
+
+/* ══════════════ 「0 卡页」也是处理过的页（2026-11-19）══════════════
+ * 用户报障现场：一份未批改的期中卷 6 页，AGENT 全流程跑完、6 张都登记成
+ * 「整页无错题（0 卡）」闭环，`landedZeroAt` 都写进任务记录了 —— 而收件箱里那 6 张
+ * **一张都没消失**，永远挂在待处理清单上。用户看到的结论是"这程序什么也没做"。
+ *
+ * 根因：`inboxArchivedSet()` 的"已处理"判据**只看 `_原卷台账.json`**（卡片 ↔ 原图），
+ * 而 0 卡页天生**没有卡** ⇒ 永远不会出现在台账里 ⇒ 永远判不出"已处理"。
+ * 更糟的是 `_录题入库.mjs` 的 0 卡分支当场打印「收件箱按台账判"已处理"」——
+ * 那句是**假的**（实测：26 条 0 卡任务里 24 张至今挂在待处理清单）。
+ *
+ * 判据（与卡片判据同源、只是多一个真源）：任务记录 `_录题\t-*.json` 里
+ * `landedZeroAt` 非空 ⇒ 这张原图已经走过"校验 → 确认 → 入库登记"全链，
+ * 它就是处理过的。取证走任务记录自带的 `image.sha256` / `image.rel`。
+ *
+ * 性能：225 个任务记录、每个约 100 KB（含任务单全文）。不解析全部 ——
+ * 先做**子串筛**（`"landedZeroAt"` 出现才 JSON.parse），实测 225 个文件读一遍 95 ms，
+ * 真正解析的只有 26 个。收件箱列表的既有优化（路径命中零 IO）不受影响。
+ *
+ * 退化方向与其余判据一致：**宁可多显示，不可误藏**。任务记录读不动 / 形状不对 ⇒ 跳过，
+ * 该件继续留在待处理清单。
+ */
+function inboxZeroCardSet(root) {
+  const relSet = new Set();
+  const shaSet = new Set();
+  const dir = path.join(root, '_录题');
+  if (!isDir(dir)) return { relSet, shaSet };
+  let names;
+  try { names = fs.readdirSync(dir); } catch { return { relSet, shaSet }; }
+  for (const name of names) {
+    if (!/^t-.*\.json$/i.test(name)) continue;
+    const abs = path.join(dir, name);
+    let txt;
+    try { txt = fs.readFileSync(abs, 'utf8'); } catch { continue; }
+    /* 子串筛：绝大多数任务记录是 N 卡（没有 landedZeroAt），不必付 JSON.parse 的钱 */
+    if (txt.indexOf('"landedZeroAt"') < 0) continue;
+    let j; try { j = JSON.parse(txt.replace(/^\uFEFF/, '')); } catch { continue; }
+    if (!j || !j.landedZeroAt) continue;
+    const im = j.image;
+    if (!im || typeof im !== 'object') continue;
+    if (typeof im.sha256 === 'string' && /^[0-9a-f]{64}$/i.test(im.sha256)) shaSet.add(im.sha256.toLowerCase());
+    if (typeof im.rel === 'string' && im.rel.trim()) relSet.add(inboxRelKey(im.rel));
+  }
+  return { relSet, shaSet };
+}
+
 function inboxArchivedSet(root) {
   const set = new Set();
+  /* ★ 2026-11-19：0 卡页（`landedZeroAt` 已登记）也算处理过 —— 见上方 inboxZeroCardSet 的事故说明。
+     两条来源**并集**：台账（卡片 ↔ 原图）与任务记录（0 卡页）。任一条命中即归档。 */
+  const zero = inboxZeroCardSet(root);
+  for (const k of zero.relSet) set.add(k);
+  const zeroSeen = (sha) => zero.shaSet.has(String(sha).toLowerCase());
   const p = path.join(root, LEDGER_NAME);
-  if (!isFile(p)) return { set, seen: null, doneBatches: null, doneStems: null, doneFamilies: null, transposed: null, note: '' };   // 新库/空库：正常的"还没有台账"，不是异常
+  if (!isFile(p)) return { set, seen: (sha) => zeroSeen(sha), doneBatches: null, doneStems: null, doneFamilies: null, transposed: null, note: '' };   // 新库/空库：正常的"还没有台账"，不是异常
   let doc;
   try { doc = readJson(p); }
   catch (e) {
-    /* 台账坏了 ⇒ **宁可多显示**：退回"全部待处理"，并把原因说出来（不许静默把待处理件藏掉）。 */
-    return { set, seen: null, doneBatches: null, doneStems: null, doneFamilies: null, transposed: null, note: '原卷台账读不动（' + String((e && e.message) || e).split('\n')[0] + '），已按"全部待处理"显示' };
+    /* 台账坏了 ⇒ **宁可多显示**：退回"全部待处理"，并把原因说出来（不许静默把待处理件藏掉）。
+       ⚠ 2026-11-19：`seen` 仍保留 0 卡判据 —— 台账坏不该让"确定处理过的 0 卡页"重新冒出来。 */
+    return { set, seen: (sha) => zeroSeen(sha), doneBatches: null, doneStems: null, doneFamilies: null, transposed: null, note: '原卷台账读不动（' + String((e && e.message) || e).split('\n')[0] + '），已按"全部待处理"显示' };
   }
   const cards = (doc && doc.cards && typeof doc.cards === 'object' && !Array.isArray(doc.cards)) ? doc.cards : {};
   /* ① 路径集合 + 台账指纹集合（内容判据与转置判据都要用） */
@@ -748,6 +800,8 @@ function inboxArchivedSet(root) {
   }
   const shaCache = new Map();            // 绝对路径 → sha256（惰性填充）
   function seen(sha, size) {
+    /* ★ 2026-11-19：0 卡页判据排在最前 —— 它由任务记录直接给出指纹，零 IO、零误判风险 */
+    if (zeroSeen(sha)) return true;
     const cand = bySize.get(size);
     if (!cand) return false;             // 大小都对不上 ⇒ 不可能是同一张
     for (const abs of cand) {
@@ -1569,15 +1623,33 @@ async function cmdCompose() {
     head.push('按本单「二、任务指令」里的配方正文转录与判卷（逐字照抄/看不清就标/先上网比对题库再独立判卷）。');
     head.push('判不准、看不清的题放进 `skipped` 并写明原因——宁可少录，不可造错。');
     /* ★ 2026-11-18（独立判卷口径 / 0 卡短路）：本页没有题进 `cards` 是**合法结果，不是失败**
-       （红笔口径下无红笔、独立判卷口径下全判对，都会这样）。以前没有明说，AGENT 只能
+       （独立判卷口径下全判对、红笔口径下红笔没标出错题，都会这样）。以前没有明说，AGENT 只能
        把"无卡"当异常，要么空转整条链、要么去伪造盲解结果。现在把短路写死：
        直接回传 → 入库登记 0 卡闭环，盲解/异议两步标注"不适用"，**不许伪造**。
-       判据与 `_录题入库.mjs` 的 `landedZeroAt` 分支同口径。 */
+       ★ 2026-11-19（用户报障：干净机器上"没有红笔所以没录入错题"）：上面这条 0 卡短路
+       **不能对所有配方一视同仁** —— 红笔口径下"整页没有红笔批改"不是"本页全对"，
+       而是**这个口径对本卷不适用**。旧文案把两种情形混成一句"都是这一种"，
+       等于授权 AGENT 把一份未批改的卷子 6 页全部登记成 0 卡闭环（真实事故：
+       2026-11-17 干净机器，6 张照片 → 0 张卡，孩子真正的错题一道没进）。
+       现在按配方分叉：独立判卷口径 0 卡 = 真·全对；红笔口径 0 卡必须先回答
+       "卷面上到底有没有红色批改"，没有就**停手回报**、不许登记 0 卡。 */
     head.push('');
-    head.push('**★ 若本页 `cards` 为空（没有任何题进卡——红笔口径下无红笔、独立判卷口径下全判对，都是这一种）**：');
-    head.push('这是**合法结果，不是失败**。不必逐题转录，直接进第 3 步回传（`cards: []` + **有内容的 `skipped`** + 在场的 `pageSummary`）；');
-    head.push('第 6 步入库会把它登记为「整页无错题（0 卡）」并正常闭环。此时**第 7 步盲解与第 8 步异议不适用**，');
-    head.push('在报告里如实写「不适用（0 卡）」即可——**不许伪造任何 lane1/lane2 盲解结果或异议记录**。');
+    if (id === 'ingest-page') {
+      head.push('**★ 若本页过了红笔口径却一道都没进 `cards`，先回答一个问题：这一页上有没有红色批改（红叉/红圈/扣分/红字批注）？**');
+      head.push('');
+      head.push('- **有红笔，但没有标出错题** ⇒ 本页确实无错题。进第 3 步回传（`cards: []` + **有内容的 `skipped`** + 在场的 `pageSummary`），');
+      head.push('  第 6 步入库登记「整页无错题（0 卡）」并闭环；**第 7 步盲解与第 8 步异议不适用**，在报告里如实写「不适用（0 卡）」。');
+      head.push('- **整页看不到任何红色批改**（只有孩子自己的铅笔/蓝黑笔作答） ⇒ 这是**口径不适用，不是本页全对**。');
+      head.push('  **不许**回传 0 卡、**不许**登记入库、**不许**替用户把这一页判成"没有错题"。');
+      head.push('  立刻停手并在报告里明确写：本页没有红笔批改，红笔口径无法收录，需改用「整页独立判卷」配方重新生成任务单');
+      head.push('  （判据：AI 独立解出答案 → 与孩子作答比对 → 判错即收，**不要求卷面有红笔**）。');
+      head.push('  这一条优先于本单其余一切"必须跑完"的要求：**宁可停在这里报口径不适用，也不许产出 6 页 0 卡**。');
+    } else {
+      head.push('**★ 若本页 `cards` 为空（独立判卷口径下全判对）**：');
+      head.push('这是**合法结果，不是失败**。不必逐题转录，直接进第 3 步回传（`cards: []` + **有内容的 `skipped`** + 在场的 `pageSummary`）；');
+      head.push('第 6 步入库会把它登记为「整页无错题（0 卡）」并正常闭环。此时**第 7 步盲解与第 8 步异议不适用**，');
+      head.push('在报告里如实写「不适用（0 卡）」即可——**不许伪造任何 lane1/lane2 盲解结果或异议记录**。');
+    }
     head.push('');
     head.push('### 3. 回传落盘');
     head.push('');

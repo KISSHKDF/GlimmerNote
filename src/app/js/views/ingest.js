@@ -25,7 +25,17 @@
 
   const LS_KEY = 'ctb2.ingest';
   const st = Object.assign({
-    recipe: 'ingest-page',   /* 默认整页：一次作业往往错好几道，整页比单题省事 */
+    /* ★ 2026-11-19（用户报障：干净机器上"没有红笔所以没录入错题"）：
+       默认从红笔口径 `ingest-page` 改为 `ingest-independent`（整页独立判卷）。
+       判据是**覆盖面**，不是口味：
+         · 独立判卷口径对"已批改"和"没批改"两种卷子都成立（红笔只原样记进 teacherAnswer 作参考，
+           不参与判错）；
+         · 红笔口径对"没批改"的卷子**必然 0 卡**——那是口径不适用，不是本页全对。
+       用户 2026-11-17 在干净机器上用默认配方跑一份未批改的期中卷 6 页，整条 AGENT 流水线
+       零产出；225 条真实任务记录里 `ingest-independent` 被选中 **0 次**（默认值是谁选就是谁）。
+       ⇒ 默认必须是那个"不会因为卷面没红笔就空转"的口径。已有用户 localStorage 里存着
+       `ingest-page` 的，按原值走（不静默改用户的选择）。 */
+    recipe: 'ingest-independent',
     subject: '数学',
     conflict: 'deny',        /* 选卡冲突策略：deny=拒绝（契约默认）/ first=先到先得 / all=全部 */
     batch: '',
@@ -123,11 +133,18 @@
       '<div class="ig-h"><span class="ig-n">2</span>生成任务单，交给你的本机 AGENT</div>' +
       '<div class="row ig-opts">' +
       '<label class="ig-f"><span>孩子</span><select id="igStudent" class="bk-sort"></select></label>' +
-      '<label class="ig-f"><span>配方</span>' +
+      /* ★ 2026-11-19（用户报障：干净机器上说"没有红笔"所以一张错题都没录）：
+         旧文案把两个整页配方写成「整页多题（一次作业错好几道就用这个）」vs
+         「整页独立判卷（不靠红笔，AI 独立判错）」——**决定性的那件事（卷子有没有批改过）
+         一个字都没提**。家长看到"一次作业错好几道就用这个"，自然会选它，
+         而它的收录判据是"确认做错**且有红笔标出**"，未批改的卷子必然 0 卡。
+         现在按用户要做的判断来写：**先问卷子批改过没有**，再给结论，并把默认口径
+         （独立判卷）的选项排在第一位。 */
+      '<label class="ig-f"><span>卷子批改过吗</span>' +
       '<select id="igRecipe" class="bk-sort">' +
-      '<option value="ingest-page">整页多题（一次作业错好几道就用这个）</option>' +
-      '<option value="ingest-independent">整页独立判卷（不靠红笔，AI 独立判错）</option>' +
-      '<option value="ingest-single">单题（只拍了一道题）</option>' +
+      '<option value="ingest-independent">还没批改 / 没有红笔 —— AI 自己判对错（默认）</option>' +
+      '<option value="ingest-page">已经批改过、卷面有红笔 —— 按红笔标出的错题收</option>' +
+      '<option value="ingest-single">只拍了一道题</option>' +
       '</select></label>' +
       '<label class="ig-f"><span>学科</span><select id="igSubject" class="bk-sort">' +
       SUBJECTS.map(s => '<option value="' + U.esc(s) + '">' + U.esc(s) + '</option>').join('') +
@@ -904,7 +921,7 @@
             (st.recipe === 'ingest-page'
               ? '<div class="small muted">⚠ 本页按「红笔口径」判为无错题。若这张卷子本来就没有红笔批改，' +
                 '请回上面「2」把配方换成「整页独立判卷」重新生成任务单——它不要求红笔，AI 独立判错、判错即收。</div>'
-              : '<div class="small muted">本页按独立判卷口径判为全对，无错题可收；收件箱按台账判「已处理」。</div>');
+              : '<div class="small muted">本页按独立判卷口径判为全对，无错题可收；收件箱按任务记录判「已处理」。</div>');
           S.toast('已登记：本页无错题（0 卡）', 'warn', 8000);
           if (S.refreshSub) S.refreshSub();
         } else {
