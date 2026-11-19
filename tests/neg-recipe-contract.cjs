@@ -184,9 +184,15 @@ console.log('\n══ 二·补、公开题库比对流程（2026-11-05 家长定
 
 console.log('\n══ 三、schema 真校验（阴性样本必须被拒）══');
 {
+  /* ★ 2026-11-19（零选择 / ingest-auto）：推断默认改走 auto 契约（pageSummary+skipped 必填）。
+     这节的"单题合规样本"要显式 --recipe ingest-single 才能守住原判据（缺 pageSummary 的裸 cards 是单题路径的合法形状）。 */
   const ok = writeJson('ok.json', { cards: [card()] });
-  const r = engine(['校验', '--in', ok]);
-  A('合规样本通过', r.code === 0, 'code=' + r.code);
+  const r = engine(['校验', '--in', ok, '--recipe', 'ingest-single']);
+  A('合规样本通过（显式 ingest-single）', r.code === 0, 'code=' + r.code);
+  /* auto 口径下，同一份"裸 cards"必须被拒（auto 要求 pageSummary+skipped 在场）。 */
+  const rAuto = engine(['校验', '--in', ok]);
+  A('拒收：auto 口径下裸 cards 缺 pageSummary/skipped（推断说出口）',
+    rAuto.code === 1 && /ingest-auto/.test(rAuto.out), 'code=' + rAuto.code + ' ' + (rAuto.out.match(/配方：[^\n]*/) || [''])[0]);
 }
 const REJECT = [
   ['缺 confidence（原型老 bug：单题永远进不了 trusted）', { confidence: '<<DEL>>' }],

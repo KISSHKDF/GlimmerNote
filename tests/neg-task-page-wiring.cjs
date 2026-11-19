@@ -129,7 +129,13 @@ const sliceFn = (from, to) => {
 let PAGE = null, PAGE_ERR = '', SRC_CONFIRM = '';
 try {
   SRC_CONFIRM = sliceFn('async function onConfirm(cf)', 'async function onCheck()');
-  const src = sliceFn('async function onGenerate(', 'async function onBoundCheck(')
+  /* ★ 2026-11-19（零选择 / ingest-auto）：`AUTO_RECIPE` 是 ingest.js 顶部的 const，
+     不在任何被切函数的词法作用域里 ⇒ 切片驱动时必须注入。
+     从源码里抽出它的字面量一起带进 new Function（页面改常量名时这里会显式红）。 */
+  const autoM = /const AUTO_RECIPE = '([^']+)';/.exec(INGEST);
+  A('B0·补 ingest.js 顶部能抽出 AUTO_RECIPE 字面量', !!autoM, autoM && autoM[1]);
+  const AUTO_LINE = autoM ? autoM[0] : "const AUTO_RECIPE = 'ingest-auto';";
+  const src = AUTO_LINE + '\n' + sliceFn('async function onGenerate(', 'async function onBoundCheck(')
     + sliceFn('async function onBoundCheck(', 'async function onConfirm(cf)')
     + SRC_CONFIRM
     + sliceFn('async function onCheck()', 'V.onShow = function');

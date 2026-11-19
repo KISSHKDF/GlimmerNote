@@ -434,13 +434,11 @@ function cmdWorksheet() {
     return '| ' + (i + 1) + ' | ' + r.taskId + ' | ' + (abs || '（任务记录无原图）') + ' | ' +
       ((r.image && r.image.sha256) ? r.image.sha256.slice(0, 12) : '(无指纹)') + ' | _录题\\' + r.taskId + '.json |';
   });
-  /* ★ 2026-11-19（用户报障：干净机器上说"没有红笔"所以没录入错题）：
-     工作单以前**完全不提配方口径**，而每张任务的配方早已定死在任务记录里
-     （`recipe.id` + 指纹）。派单的人（家长）与接单的 AGENT 都不知道"这批用的是哪套判据、
-     卷面没红笔会怎样"，于是 6 页未批改的卷子被跑成 6 页 0 卡。
-     这里把口径与零卡规则写进工作单**本身**（它才是 AGENT 打开的入口文档）。 */
+  /* ★ 2026-11-19（零选择 / ingest-auto）：配方合一后口径只有一条，工作单按 auto 口径写。
+     老 ingest-page / ingest-independent 任务重放时仍如实标注它们的配方名与含义。 */
   const recipeIds = [...new Set(recs.map(r => (r.recipe && r.recipe.id) || '?'))];
   const recipeLine = recipeIds.map((rid) => {
+    if (rid === 'ingest-auto') return '`ingest-auto`（自动口径：AI 看图自判形态与口径，收录=**独立判卷判错即收**）';
     if (rid === 'ingest-independent') return '`ingest-independent`（整页独立判卷：AI 自己解题比对，**不要求卷面有红笔**）';
     if (rid === 'ingest-page') return '`ingest-page`（红笔口径：只收**有红笔标出**的错题）';
     if (rid === 'ingest-single') return '`ingest-single`（单题：一题一张照片）';
@@ -463,12 +461,13 @@ function cmdWorksheet() {
     '- AGENT 技能：glimmer-agent-ingest-batch（SOP：取图→转录→校验→代确认→入库→双路盲解→异议→汇总）',
     '- 读某一单的完整任务单（含配方正文）：`node "' + toolPath('_录题任务.mjs') + '" 看 <taskId> --json`，取 `taskText` 字段',
     '',
-    '## 1·5 本批判卷口径（决定"卷面没有红笔"时该怎么办）',
+    '## 1·5 本批判卷口径',
     '- 本批配方：' + recipeLine,
-    '- **红笔口径下，整页没有红色批改 ≠ 本页全对**：那是口径不适用。遇到这种页**停手回报**，',
-    '  不许回传 0 卡、不许入库登记，并在报告里写明「本页无红笔批改，需改用整页独立判卷配方重新生成任务单」。',
+    '- **收录口径只有一条**（auto）：你独立解出答案 → 与孩子作答比对 → **判错即收**。',
+    '  红笔只是旁证（原样进 `teacherAnswer`，不作定案标准）；卷面没红笔也一样判。',
+    '- **0 卡 = 真·全对**（合法闭环，登记 `landedZeroAt` 后该照片自动从待处理清单消失）。',
+    '  ⚠ 但**卷面有红笔而 `cards` 为空** ⇒ `skipped` 必须逐条交代红笔标的每道题为什么没收——不许静默吞掉批改信号。',
     '  （2026-11-17 真实事故：未批改的期中卷 6 页被全判 0 卡，孩子真正的错题一道没进。）',
-    '- 独立判卷口径下，0 卡才是真·全对（合法闭环，登记 `landedZeroAt` 后该照片自动从待处理清单消失）。',
     '',
     '## 2. 任务清单（逐张处理；一张失败不影响下一张）',
     '',

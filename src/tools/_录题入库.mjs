@@ -868,15 +868,15 @@ function cmdLand() {
   if (!cards.length) {
     const hasEvidence = (result && (result.pageSummary || (Array.isArray(result.skipped) && result.skipped.length)));
     if (!hasEvidence) return fail('回传内容里没有 cards，也没有 pageSummary/skipped——既不是"整页无错题"也无法判空（拒绝登记）', 1);
-    /* ★ 2026-11-18（独立判卷口径引导）：红笔口径下判出 0 卡，最常见的真实原因是
-       **卷面本无红笔批改**（还没批改的卷子、只有铅笔作答的作业）——这不是"全对"，
-       是**口径没选对**。必须把"换配方"这条路**说出口**：否则用户只看到"录了 0 张"，
-       会以为程序不批改、甚至以为 AI 没干活。
-       只对 `ingest-page` 提示：`ingest-independent` 的 0 卡才是"确实全判对"，提示会误导。 */
+    /* ★ 2026-11-19（零选择 / ingest-auto）：配方合一后 0 卡就是「独立判卷判为全对」的合法闭环。
+       auto 口径下 0 卡**不再提示换配方**（没有别的配方可换）；追责口径改成
+       「卷面有红笔却 0 卡 ⇒ AI 必须把红笔标的每道题为什么没收写进 skipped」——
+       老的 ingest-page 任务重放时，旧提示仍有意义（那时确实存在"换配方"这条路），照旧给。 */
     const zeroHint = (task.recipe && task.recipe.id) === 'ingest-page'
       ? '  ⚠ 本页按「红笔口径」判为无错题。若这张卷子**本来就没有红笔批改**，' +
-        '请改用「整页独立判卷」配方重新生成任务单——它不要求红笔，AI 独立判错、判错即收。'
-      : '';
+        '请改用「自动口径」重新生成任务单——新版本只有 ingest-auto 一个配方，AI 独立判错、判错即收。'
+      : '  ℹ 本页按自动口径（ingest-auto）判为全对。若卷面上有红笔批改，请核对回传的 skipped：' +
+        'AI 必须把「红笔标的每道题为什么没收」逐条写清——没写就是漏判，请让它重判这一页。';
     const digest0 = sha256(JSON.stringify({ pageSummary: result.pageSummary || null, skipped: result.skipped || [] }) + '\0' + taskId);
     if (task.landedDigest === digest0) {
       console.log('已登记过（幂等）：整页无错题（0 卡）——' + taskId);

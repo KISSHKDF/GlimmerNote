@@ -1,0 +1,39 @@
+{
+  "id": "ingest-auto",
+  "version": "1.0.0",
+  "title": "自动口径录题（唯一入口：一张照片，AI 看图自判形态与口径）",
+  "kind": "ingest",
+  "summary": "拍一张照片（整页作业、整页试卷、单题特写都行）。程序不问「批没批改过」「几道题」——AI 自己看图判断题量与口径：有红笔当旁证，没红笔独立判卷；收录口径统一为「独立判卷判错即收」。判错的拆成多条记录，判准与未作答进 skipped。",
+  "inputs": [
+    "一张照片（整页或单题，所有题 + 孩子的作答 + 可能的红笔批注都在画面里）",
+    "原图 sha256（由程序在任务单里给出，必须原样回填）"
+  ],
+  "outputs": "cards.json —— 判错的题每题一条；另含 pageSummary 与 skipped",
+  "appliesTo": {
+    "stages": [
+      "小学",
+      "初中",
+      "高中"
+    ],
+    "subjects": [
+      "*"
+    ]
+  },
+  "layers": [
+    "_core/base.md",
+    "_core/cause.md",
+    "_core/provenance.md",
+    "_subject/${subject}.md"
+  ],
+  "requires": {
+    "subject": true,
+    "images": 1
+  },
+  "updatedAt": "2026-11-19",
+  "changelog": [
+    {
+      "version": "1.0.0",
+      "note": "初版：合并 ingest-page / ingest-independent / ingest-single 三配方为**唯一入口**。用户只放照片，不再选配方。形态（整页/单题）与口径（有无红笔）都由 AI 看图自判：totalQuestions 即形态声明（单题特写=1）；收录口径统一为「独立判卷判错即收，不以红笔为前提」（红笔只作旁证进 teacherAnswer，不作定案标准——沿用 base.md 红字纪律）。pageSummary 必填键 judgedWrong；skipped 不许空数组；0 卡是合法结果（真·全对）——但「有红笔却判 0 卡」必须在 skipped 交代红笔去向，防漏判。"
+    }
+  ]
+}
