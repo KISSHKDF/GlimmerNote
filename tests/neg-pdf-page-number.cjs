@@ -46,6 +46,19 @@ function judge(cs, hostJs, paperJs, statsJs) {
   push('页眉空卷名兜底（不传也印得出可辨认的名头）', /string\.IsNullOrEmpty\(docTitle\)\s*\?\s*"拾光小册"/.test(cs));
   push('页脚本地路径被清（FooterUri 覆盖，隐私红线）', /psPdf\.FooterUri\s*=\s*" "/.test(cs));
   push('设置构造失败退回 null（不阻断出 PDF，退回原行为）', /catch\s*\(Exception exPs\)[\s\S]*?psPdf\s*=\s*null/.test(cs));
+  /* ★ 2026-11-21.02 实机日志抓到的真坑：设置构造放在分派线程（Task.Run）时，env 的 RCW
+     跨线程 QI ICoreWebView2Environment6 抛 InvalidCastException ⇒ 每次静默退回 null、页码
+     不出现。设置构造必须在 UI 线程（与 PrintToPdfAsync 同在 BeginInvoke 块内），且用
+     wv.CoreWebView2.Environment（控件就绪的真实环境对象）而不是外层 env 变量。 */
+  const beg = cs.indexOf('BeginInvoke((Action)(async () =>', cs.indexOf('op == "pdf"'));
+  const mk = cs.indexOf('CreatePrintSettings()', beg < 0 ? 0 : beg);
+  /* pdf op 段（到 printDirect 为止）：设置构造必须走控件环境对象；printDirect 段的
+     env.CreatePrintSettings() 在它自己的 BeginInvoke（UI 线程）内、与本门禁无关，不动。 */
+  const pdfOp = cs.slice(cs.indexOf('op == "pdf"'), cs.indexOf('else if (op == "printDirect")'));
+  push('设置构造走 wv.CoreWebView2.Environment（pdf op 内不用外层 env 变量）',
+    /wv\.CoreWebView2\.Environment\.CreatePrintSettings\(\)/.test(pdfOp) && !/env\.CreatePrintSettings\(\)/.test(pdfOp));
+  push('设置构造在 UI 线程 BeginInvoke 块内（跨线程 QI 会炸，实机日志实证）', beg >= 0 && mk > beg, '');
+  push('printDirect 段不受影响（env.CreatePrintSettings 仍在它自己的 UI 线程块内）', /var ps = env\.CreatePrintSettings\(\);/.test(cs), '');
   /* ② host.js：title 进桥载荷 */
   push('H.pdf 第二参 title 进桥载荷', /bridge\('pdf',\s*\{\s*path:\s*relPath,\s*title:\s*title \|\| ''\s*\}/.test(hostJs));
   /* ③ 三个消费点各带名头（试卷/答案册共用一个三元表达式 + 同一条卷名尾巴，判据看两个名头与尾巴都在） */
@@ -75,7 +88,9 @@ console.log('\n══ ④ 阴性自证：掏掉任何一环 ⇒ 判据必须红 
   /* 变异 2：壳不启用页眉页脚（页码没了但 PDF 还能出） */
   const m2 = cs.replace(/psPdf\.ShouldPrintHeaderAndFooter\s*=\s*true;/, '/* mutated */;');
   A('变异点命中（页眉页脚开关被掏）', m2 !== cs, '');
-  A('★ 掏掉页眉页脚开关 ⇒ 「显式启用」判据红', judge(m2, hostJs, paperJs, statsJs)[1].ok === false, '');
+  const j2 = judge(m2, hostJs, paperJs, statsJs);
+  A('★ 掏掉页眉页脚开关 ⇒ 「显式启用」判据红', j2[1].ok === false, '');
+  A('★ 掏掉开关不牵连 UI 线程判据（两判据独立）', j2[4].ok === true && j2[5].ok === true, '');
   /* 变异 3：壳不接收 title（页眉统一印应用名，卷与册无法区分） */
   const m3 = cs.replace(/string docTitle = ExtractStringTop\(raw, "title"\);/, '');
   A('变异点命中（壳不接收 title）', m3 !== cs, '');
@@ -85,10 +100,10 @@ console.log('\n══ ④ 阴性自证：掏掉任何一环 ⇒ 判据必须红 
     'const r = await H.pdf(name);');
   A('变异点命中（前端掏掉 title）', m4 !== paperJs, '');
   const j4 = judge(cs, hostJs, m4, statsJs);
-  /* judge 返回序：7=试卷页眉 8=答案册页眉 9=家长报告页眉 */
-  A('★ 前端掏掉 title ⇒ 试卷页眉判据红', j4[7].ok === false, '');
+  /* judge 返回序：10=试卷页眉 11=答案册页眉 12=家长报告页眉 */
+  A('★ 前端掏掉 title ⇒ 试卷页眉判据红', j4[10].ok === false, '');
   A('★ 同一变异同时红两条（试卷+答案册共链；家长报告走 stats 不受牵连）',
-    j4[8].ok === false && j4[9].ok === true, '');
+    j4[11].ok === false && j4[12].ok === true, '');
 }
 
 console.log(`\n[neg-pdf-page-number] 断言=${passed} 失败=${worst}`);

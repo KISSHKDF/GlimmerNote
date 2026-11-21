@@ -18,6 +18,42 @@
 > **历史条目**：2026-11-09 之前的版本见 [CHANGELOG-2026.md](CHANGELOG-2026.md)（冻结历史卷，只增不改）。
 
 
+## [2026.11.21.02] - 2026-11-21 · 修复 .01 页码不出现：设置构造必须在 UI 线程
+
+**变更分类**：Fixed
+**升级影响**：换程序目录 `app\`（只换壳 exe）。`数据\` 结构零改动。
+
+### 根因：实机日志抓到「打印设置构造失败，本次退回默认（无页码）」
+
+.01 在实机上生成 PDF 仍无页码。壳日志（`%LOCALAPPDATA%\拾光小册\shell.log`）逐帧给出铁证：
+
+```
+pdf: 打印设置构造失败，本次退回默认（无页码）← Unable to cast to
+     Microsoft.Web.WebView2.Core.Raw.ICoreWebView2Environment6.
+```
+
+消息分派跑在 `Task.Run` 的**后台线程**（历史注释早有记载："PrintToPdfAsync 要在 UI 线程发起"），
+而 .01 把 `CreatePrintSettings()` 放在了 BeginInvoke **外面**——环境对象的 RCW 在后台线程上
+QI `ICoreWebView2Environment6` 直接抛 InvalidCastException ⇒ 每次都走进兜底分支退回 null
+⇒ 页码永远不出现。兜底分支本身按设计"不阻断出 PDF"，于是缺陷被静默成了"功能没生效"。
+
+### 改法
+
+1. 设置构造整体挪进 `BeginInvoke`（UI 线程，与 `PrintToPdfAsync` 同一块）；
+2. 环境对象改用 `wv.CoreWebView2.Environment`（控件就绪的真实环境对象，与官方示例同源），
+   不再触碰跨线程的外层 `env` 变量；`printDirect`（PrintAsync）段保持不动——
+   它的 `env.CreatePrintSettings()` 本就在自己的 UI 线程块内。
+
+### 回归断言
+
+- `tests\neg-pdf-page-number.cjs`：19 → 23 断言（新增：设置构造走控件环境对象 /
+  在 UI 线程 BeginInvoke 块内 / printDirect 段不受影响；阴性自证同步扩到 6 条）。
+
+### 实机验收（发版记录）
+
+部署 .02 后以 CDP 驱动真壳生成试卷（4 页）与答案册（3 页）PDF，逐页渲染为 PNG 核对：
+页眉印卷名、页脚「第 x 页，共 y 页」逐页连续、页脚无本地路径。
+
 ## [2026.11.21.01] - 2026-11-21 · 试卷与答案册打印页数编号（页脚页码 + 页眉卷名）
 
 **变更分类**：Added

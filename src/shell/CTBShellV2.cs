@@ -1941,27 +1941,33 @@ namespace CTBShell2
                                页脚左侧默认印本地 file:/// 路径（隐私红线），FooterUri 显式清空，
                                被拒则退应用名。设置构造失败退回 null（= 原行为，无页码但能出 PDF）。 */
                             string docTitle = ExtractStringTop(raw, "title");
-                            Microsoft.Web.WebView2.Core.CoreWebView2PrintSettings psPdf = null;
-                            try
-                            {
-                                psPdf = env.CreatePrintSettings();
-                                psPdf.ShouldPrintHeaderAndFooter = true;
-                                psPdf.HeaderTitle = string.IsNullOrEmpty(docTitle) ? "拾光小册" : docTitle;
-                                try { psPdf.FooterUri = " "; }
-                                catch (Exception exF)
-                                {
-                                    HostBridge.Log("pdf: FooterUri 空格被拒（" + exF.Message + "），页脚左侧改印应用名");
-                                    try { psPdf.FooterUri = "拾光小册"; } catch (Exception) { }
-                                }
-                                HostBridge.Log("pdf: 已启用打印页眉页脚（页眉=" + psPdf.HeaderTitle + "，页脚=页码）");
-                            }
-                            catch (Exception exPs)
-                            {
-                                psPdf = null;
-                                HostBridge.Log("pdf: 打印设置构造失败，本次退回默认（无页码）← " + exPs.Message);
-                            }
                             BeginInvoke((Action)(async () =>
                             {
+                                /* 2026-11-21 实测（部署壳日志）：设置构造原本放在外面的分派线程
+                                   （Task.Run），env 的 RCW 跨线程 QI ICoreWebView2Environment6 抛
+                                   InvalidCastException（Unable to cast to …Environment6）⇒ 每次都
+                                   静默退回 null、页码不出现。 PrintToPdfAsync 本来就要求 UI 线程，
+                                   设置构造同属一条路 —— 一起挪进 BeginInvoke，并改用与官方示例
+                                   同源的 wv.CoreWebView2.Environment（控件已就绪的真实环境对象）。 */
+                                Microsoft.Web.WebView2.Core.CoreWebView2PrintSettings psPdf = null;
+                                try
+                                {
+                                    psPdf = wv.CoreWebView2.Environment.CreatePrintSettings();
+                                    psPdf.ShouldPrintHeaderAndFooter = true;
+                                    psPdf.HeaderTitle = string.IsNullOrEmpty(docTitle) ? "拾光小册" : docTitle;
+                                    try { psPdf.FooterUri = " "; }
+                                    catch (Exception exF)
+                                    {
+                                        HostBridge.Log("pdf: FooterUri 空格被拒（" + exF.Message + "），页脚左侧改印应用名");
+                                        try { psPdf.FooterUri = "拾光小册"; } catch (Exception) { }
+                                    }
+                                    HostBridge.Log("pdf: 已启用打印页眉页脚（页眉=" + psPdf.HeaderTitle + "，页脚=页码）");
+                                }
+                                catch (Exception exPs)
+                                {
+                                    psPdf = null;
+                                    HostBridge.Log("pdf: 打印设置构造失败，本次退回默认（无页码）← " + exPs.Message);
+                                }
                                 try
                                 {
                                     bool okPdf = await wv.CoreWebView2.PrintToPdfAsync(abs, psPdf);
