@@ -150,5 +150,5 @@
  "neg-revlog-appendonly.cjs": 18,
  "neg-fresh-library-ingest.cjs": 18,
  "neg-inbox-zero-card.cjs": 12,
- "neg-pdf-page-number.cjs": 19
+ "neg-pdf-page-number.cjs": 23
 }
