@@ -591,7 +591,9 @@
          加 HHmm 时间戳即永不相撞，也让"同一批打两次"各自留档。 */
       const hm = (function () { const d = new Date(); return String(d.getHours()).padStart(2, '0') + String(d.getMinutes()).padStart(2, '0'); })();
       const name = '组卷\\' + stamp + '-' + who + '-' + (kind === 'ans' ? '答案册' : '重做卷') + '-' + hm + '.pdf';
-      const r = await H.pdf(name);
+      /* 2026-11-21（页数编号）：卷名透传壳侧打印页眉；页脚页码由引擎逐页计（「第 x 页，共 y 页」）。
+         试卷与答案册各带自己的名头，散页后不会对错册。 */
+      const r = await H.pdf(name, (kind === 'ans' ? '答案册（家长批改用）· ' : '错题重做卷 · ') + (sheet.title || ''));
       if (!r || r.ok === false) {
         /* ⚠ 2026-10-11 实测：WebView2 **同一时刻只允许一个打印任务**。若「打印预览」还开着，
            PrintToPdfAsync 会立刻以 E_ABORT 失败（宿主返回 ok:false）——不是文件问题，是占用冲突。
