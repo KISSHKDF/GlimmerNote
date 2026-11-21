@@ -228,7 +228,8 @@
         U.$id('printArea').innerHTML = V.reportHtml(reportData);
         const hm = (function () { const dd = new Date(); return String(dd.getHours()).padStart(2, '0') + String(dd.getMinutes()).padStart(2, '0'); })();
         const name = '组卷\\' + U.today() + '-' + (M.student() || '学生') + '-家长报告-' + hm + '.pdf';
-        const r = await H.pdf(name);
+        /* 2026-11-21（页数编号）：报告标题透传壳侧打印页眉（页脚页码由引擎逐页计） */
+        const r = await H.pdf(name, (M.student() || '学生') + '·家长报告 ' + U.today());
         if (!r || r.ok === false) throw new Error((r && r.error) || '壳返回失败');
         S.toast('已生成 ' + name + '（' + Math.round((r.bytes || 0) / 1024) + ' KB）', 'ok', 10000);
       } catch (e) {

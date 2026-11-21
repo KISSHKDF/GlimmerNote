@@ -434,8 +434,10 @@
      实测用它打印那份 963KB 重做卷 → 打印机自身计数器 7965→7968（真印了 3 页）。
      与 printDirect（WebView2 PrintAsync）的区别：后者在本机恒定 OtherError、只生成 0 字节空作业。 */
   H.printPdf = function (relPath) { return bridge('printPdf', { path: relPath }, 60000); };
-  /* 存为 PDF（2026-10-11 新增）：**不依赖打印机** —— 用户目标是"打出来给孩子做"，
+  /* 存为 PDF（2026-11-21 起第二参 title 可选）：**不依赖打印机** —— 用户目标是"打出来给孩子做"，
      但打印对话框能否成功还取决于打印机/驱动。PrintToPdfAsync 直接出 PDF，可再打印/存档/发打印店。
-     relPath 必须落在题库根内（壳侧用 TryResolveInsideRoot 校验，越界拒绝）。 */
-  H.pdf = function (relPath) { return bridge('pdf', { path: relPath }, 120000); };
+     relPath 必须落在题库根内（壳侧用 TryResolveInsideRoot 校验，越界拒绝）。
+     title = 打印页眉的卷名（2026-11-21：壳启用打印页眉页脚，页脚是引擎逐页计的页码，
+     页眉不传就都印「拾光小册」，试卷/答案册/报告无法区分）。 */
+  H.pdf = function (relPath, title) { return bridge('pdf', { path: relPath, title: title || '' }, 120000); };
 })();

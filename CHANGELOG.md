@@ -18,6 +18,73 @@
 > **历史条目**：2026-11-09 之前的版本见 [CHANGELOG-2026.md](CHANGELOG-2026.md)（冻结历史卷，只增不改）。
 
 
+## [2026.11.21.02] - 2026-11-21 · 修复 .01 页码不出现：设置构造必须在 UI 线程
+
+**变更分类**：Fixed
+**升级影响**：换程序目录 `app\`（只换壳 exe）。`数据\` 结构零改动。
+
+### 根因：实机日志抓到「打印设置构造失败，本次退回默认（无页码）」
+
+.01 在实机上生成 PDF 仍无页码。壳日志（`%LOCALAPPDATA%\拾光小册\shell.log`）逐帧给出铁证：
+
+```
+pdf: 打印设置构造失败，本次退回默认（无页码）← Unable to cast to
+     Microsoft.Web.WebView2.Core.Raw.ICoreWebView2Environment6.
+```
+
+消息分派跑在 `Task.Run` 的**后台线程**（历史注释早有记载："PrintToPdfAsync 要在 UI 线程发起"），
+而 .01 把 `CreatePrintSettings()` 放在了 BeginInvoke **外面**——环境对象的 RCW 在后台线程上
+QI `ICoreWebView2Environment6` 直接抛 InvalidCastException ⇒ 每次都走进兜底分支退回 null
+⇒ 页码永远不出现。兜底分支本身按设计"不阻断出 PDF"，于是缺陷被静默成了"功能没生效"。
+
+### 改法
+
+1. 设置构造整体挪进 `BeginInvoke`（UI 线程，与 `PrintToPdfAsync` 同一块）；
+2. 环境对象改用 `wv.CoreWebView2.Environment`（控件就绪的真实环境对象，与官方示例同源），
+   不再触碰跨线程的外层 `env` 变量；`printDirect`（PrintAsync）段保持不动——
+   它的 `env.CreatePrintSettings()` 本就在自己的 UI 线程块内。
+
+### 回归断言
+
+- `tests\neg-pdf-page-number.cjs`：19 → 23 断言（新增：设置构造走控件环境对象 /
+  在 UI 线程 BeginInvoke 块内 / printDirect 段不受影响；阴性自证同步扩到 6 条）。
+
+### 实机验收（发版记录）
+
+部署 .02 后以 CDP 驱动真壳生成试卷（4 页）与答案册（3 页）PDF，逐页渲染为 PNG 核对：
+页眉印卷名、页脚「第 x 页，共 y 页」逐页连续、页脚无本地路径。
+
+## [2026.11.21.01] - 2026-11-21 · 试卷与答案册打印页数编号（页脚页码 + 页眉卷名）
+
+**变更分类**：Added
+**升级影响**：换程序目录 `app\`（壳 exe 与 `js\host.js`、`js\views\paper.js`、`js\views\stats.js` 必须一起更新；旧 exe 配新 JS 也能出 PDF，只是没有页码）。`数据\` 结构零改动。
+
+### 需求：孩子试卷与家长答案册都要有页数编号
+
+多页卷散页后无法复原顺序，答案册与试卷也页页对不上。此前壳的 PDF 通道传
+`PrintToPdfAsync(abs, null)`（默认设置 = 无页眉页脚），纸面与 PDF 都没有页码。
+
+### 改法：页码走引擎打印页脚（唯一逐页准确的路），卷名走页眉
+
+为什么不能用 CSS：Chromium 打印管线不支持 `@page` 边框盒计数器（`@bottom-center{content:counter(page)}`），
+卷面 HTML 里数不出"这是第几页"；WebView2 引擎自带的打印页脚「第 x 页，共 y 页」由引擎逐页计、天然准确
+（zh-CN 系统即中文）。壳侧（`CTBShellV2.cs` pdf op）：
+
+1. `PrintToPdfAsync` 从 `null` 改为显式打印设置：`ShouldPrintHeaderAndFooter = true`，
+   页脚左/右由引擎印 日期 与 **页码**；
+2. 页脚左侧默认印**本地 file:/// 路径**（隐私红线）→ `FooterUri` 显式覆盖为空格清掉；
+   被拒时退印应用名；设置构造失败退回 `null`（= 原行为，不阻断出 PDF）；
+3. 页眉 = 前端透传的卷名（`HeaderTitle` 显式覆盖 `document.title`——否则三种 PDF 的页眉
+   全都印页面标题「拾光小册」，无法区分）：试卷「错题重做卷·卷名」、答案册「答案册（家长批改用）·卷名」、
+   家长报告「学生·家长报告 日期」。
+
+### 回归断言
+
+- 新增 `tests\neg-pdf-page-number.cjs`（19 断言，含 5 条阴性自证：壳退回 null / 掏页眉页脚开关 /
+  掉 title 接收 / 前端掉 title，都必须当场红）。
+- 实机验收：部署版生成 ≥2 页试卷与答案册 PDF，逐页渲染核对页眉卷名与页脚页码连续（见当次发版记录）。
+
+
 ## [2026.11.19.02] - 2026-11-19 · 三配方合一为 ingest-auto：录题零选择，程序自动定口径
 
 **变更分类**：Changed

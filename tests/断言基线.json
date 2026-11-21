@@ -149,5 +149,6 @@
  "neg-original-mtime-invariant.cjs": 4,
  "neg-revlog-appendonly.cjs": 18,
  "neg-fresh-library-ingest.cjs": 18,
- "neg-inbox-zero-card.cjs": 12
+ "neg-inbox-zero-card.cjs": 12,
+ "neg-pdf-page-number.cjs": 23
 }
