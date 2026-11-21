@@ -489,6 +489,9 @@ html[data-theme="dark"] .hm-cell{stroke:rgba(255,255,255,.05)}
 .lg-gline .lg-id{flex:none;min-width:52px;color:var(--text3);font-size:0.78125rem}
 .lg-gline .lg-q{flex:1 1 150px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .lg-gline .seg{flex:none;margin-left:auto}
+/* ★ 2026-11-21（合并录入）：同一次打印拆成多批时的分节标题——题号连排不重置，
+   标题只提示"从这里起是下一科"。行之间的分隔样式，不抢题号方块的视觉焦点。 */
+.lg-gsec{flex-basis:100%;text-align:center;color:var(--text3);font-size:0.78125rem;padding:2px 0;border-top:1px dashed var(--line)}
 /* ---------- 卷面页操作条吸顶（2026-10-24 用户报障）----------
    「回台账的按钮很小，不容易发现；更关键的是往下拉一段屏幕后这个按钮没跟下来，很不方便回退。」
    卷面 30 题很长，滚到中途操作条必须还在 —— 否则唯一的退路要一路滚回顶部。

@@ -279,7 +279,8 @@ console.log('\n═══ ⑥ 回录批改行带卷面题号 ═══');
   /* 与卷面同口径：卷面 qHtml/ansHtml 用的就是 (i + 1) */
   A('卷面题号口径一致：qHtml 与 ansHtml 都是 (i + 1)',
     /\(i \+ 1\) \+ '．'/.test(paperSrc) && /\(i \+ 1\) \+ '．（'/.test(paperSrc));
-  A('抽屉不是另抄一份行模板（必须复用 V.gradeRows）', /V\.gradeRows\(items, lookup, results\)/.test(paperSrc));
+  /* ★ 2026-11-21（合并录入）：gradeRows 加了第 4 个可选参数 sectionOf，锚点不再钉死右括号 */
+  A('抽屉不是另抄一份行模板（必须复用 V.gradeRows）', /V\.gradeRows\(items, lookup, results/.test(paperSrc));
 
   /* 已录过的题：行标 done + 对应按钮 .on（续录时才看得见哪些判过） */
   const html2 = V.gradeRows(items, lookup, { [items[1]]: '错' });

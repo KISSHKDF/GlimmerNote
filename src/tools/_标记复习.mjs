@@ -979,6 +979,10 @@ switch (action) {
     const batch = {
       paperId, date, student: json.student, subject,
       title: opt.title || (date + '-' + json.student + '-' + subject + '-错题重做卷'),
+      /* ★ 2026-11-21（合并录入）：同一次界面组卷拆出的多个学科批次共用一个组号。
+         台账页凭它把这几行合并成一个「录入对错」（卷面题号连排，与打印出的那张纸一致）。
+         可选字段：CLI 直呼 组卷 不带它，老批次也没有它——两处都退回逐批录入的旧行为。 */
+      printGroup: String(opt['print-group'] || '').trim() || undefined,
       items: ordered, status: '待批改', results: {}, gradedAt: null,
       source: opt.source || 'agent', note: opt.note || ''
     };

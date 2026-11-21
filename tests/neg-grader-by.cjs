@@ -60,9 +60,13 @@ const reviewOf = (id, paper) => {
   return null;
 };
 
-/* ---------- 组一张卷 ---------- */
+/* ---------- 组一张卷 ----------
+   ★ 2026-11-21 加 --no-repeat-days 0：本用例挑卡只看盲解/答案来源，**没避开"最近 7 天已印过"**——
+   真库恰好有一批待批改卷（如 P20261117-01）含这些卡时，防重复门禁会拦掉组卷（间歇性假红，
+   与被测能力无关）。这里验证的是 --by 落流水，不是防重复，故显式关门禁（与
+   neg-print-group-merge 同款做法）。 */
 const paper = (() => {
-  const out = run(['组卷', '--student', STU, '--subject', '数学', '--ids', okCards.map(x => x.id).join(','), '--title', '谁判的对照']);
+  const out = run(['组卷', '--student', STU, '--subject', '数学', '--ids', okCards.map(x => x.id).join(','), '--title', '谁判的对照', '--no-repeat-days', '0']);
   const m = String(out).match(/P\d{8}-\d+/);
   return m ? m[0] : null;
 })();
