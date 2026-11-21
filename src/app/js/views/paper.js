@@ -668,18 +668,22 @@
        ① printGroup 相同且非空 —— 组号只由「一次界面组卷且拆了 ≥2 个学科批次」时签发；
        ② 同一个学生 —— 判分写回按学生隔离，跨学生的两批不能合成一张"卷"来录；
        ③ 至少一批还没批改完 —— 全录完的组没有任何待办，合并按钮没有意义。
-     返回 Map(printGroup → 该组待批改批次数组，按传入顺序=台账顺序）。 */
+     按「组号|学生」分桶（不靠台账相邻串链）：同一组号里若隔着别的学生的批次，
+     同一学生的几批照样并上（实机验收踩过：相邻串链被隔断 ⇒ 按钮消失）。
+     返回 Map(printGroup → 该组待批改批次数组，按传入顺序=台账顺序=打印顺序）。 */
   V.pendingPrintGroups = function (batches) {
-    const m = new Map();
+    const byKey = new Map();
     for (const b of (batches || [])) {
       if (!b || !b.printGroup || b.status === '已批改') continue;
-      const arr = m.get(b.printGroup) || [];
-      const prev = arr.length ? arr[arr.length - 1] : null;
-      if (prev && prev.student !== b.student) continue;      // 跨学生：不并，各自单独录
-      arr.push(b);
-      m.set(b.printGroup, arr);
+      const k = b.printGroup + '|' + b.student;
+      if (!byKey.has(k)) byKey.set(k, []);
+      byKey.get(k).push(b);
     }
-    for (const [k, arr] of m) if (arr.length < 2) m.delete(k);   // 组内只剩一批 ⇒ 旧行为单独录
+    const m = new Map();
+    for (const arr of byKey.values()) {
+      if (arr.length < 2) continue;                           // 组内只剩一批 ⇒ 旧行为单独录
+      m.set(arr[0].printGroup, arr);
+    }
     return m;
   };
   V.ledgerRow = function (b, seq, isAll, grp) {

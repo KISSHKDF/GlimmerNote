@@ -76,6 +76,17 @@ console.log('\n═══ ② pendingPrintGroups 判据三条 ══');
   ]);
   A('★ 跨学生的同组号不并（各自单独录）', g2.size === 0, 'groups=' + g2.size);
 
+  /* ★ 2026-11-21 实机验收补（分桶口径）：组号里隔着别的学生的批次，同学生的两批仍要并上。
+     旧实现靠"相邻同学生"串链，被隔断 ⇒ 合并按钮消失（验收批次混了两个孩子抓到）。 */
+  const g2b = V.pendingPrintGroups([
+    mk('P20261121-01', 'Gx', '学生甲', '数学', 8),
+    mk('P20261121-02', 'Gx', '学生乙', '化学', 2),
+    mk('P20261121-03', 'Gx', '学生甲', '物理', 3),
+  ]);
+  A('★ 组号里隔着别的学生，同学生两批仍并上（按「组号|学生」分桶，不串链）',
+    g2b.size === 1 && g2b.get('Gx').length === 2 && g2b.get('Gx').every(b => b.student === '学生甲'),
+    'groups=' + g2b.size);
+
   const g3 = V.pendingPrintGroups([
     mk('P20261121-01', 'Gx', '学生甲', '数学', 8),
     mk('P20261121-02', 'Gx', '学生甲', '化学', 2, '已批改', { C0001: '对' }),
@@ -91,15 +102,13 @@ console.log('\n═══ ② pendingPrintGroups 判据三条 ══');
   const g5 = V.pendingPrintGroups([]);
   A('空台账不崩、空 Map', g5 instanceof Map && g5.size === 0, '');
 
-  /* 阴性自证：判据退化成"只看组号"（去掉学生一致性与待批改判断）⇒ 跨学生/已录完的组必须被放进来 */
-  const MUT = /if \(prev && prev\.student !== b\.student\) continue;/.source.replace(/\\/g, '');
-  const mut1 = paper.replace(/if \(prev && prev\.student !== b\.student\) continue;/, '');
+  /* 阴性自证：判据退化成"只看组号"（去掉学生分桶与待批改判断）⇒ 跨学生/已录完的组必须被放进来 */
+  const mut1 = paper.replace(/const k = b\.printGroup \+ '\|' \+ b\.student;/, "const k = b.printGroup;");
   const mut2 = paper.replace(/if \(!b \|\| !b\.printGroup \|\| b\.status === '已批改'\) continue;/, "if (!b || !b.printGroup) continue;");
   A('前置：两处变异点唯一命中（改得到才谈得上自证）', mut1 !== paper && mut2 !== paper, '');
   if (mut1 !== paper) {
-    const V1 = loadEngine();
-    // 用变异源码重载不可行（loadEngine 读文件）——改为行为级验证：真实实现必须把上述两例判为不并（上一组断言已红）
-    A('★ 自证 · 真实现拒绝跨学生组（g2 判据与变异目标相反）', g2.size === 0 && g3.size === 0, '');
+    // 行为级验证：真实实现必须把跨学生判为不并（g2=0），分桶版同学生隔断场景必须并上（g2b=1）
+    A('★ 自证 · 真实现拒绝跨学生组（g2 判据与变异目标相反）', g2.size === 0 && g2b.size === 1, '');
   }
 }
 
