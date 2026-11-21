@@ -705,6 +705,19 @@ switch (action) {
     for (const { item, subject } of itemsOf(json)) { known[item.id] = subject; byId[item.id] = item; }
     /* 报错带上最终选中的索引文件：多索引库里一眼看出"它到底在哪个库里找编号" */
     ids.forEach(id => { if (!(id in known)) throw new Error(json.student + ' 库中不存在编号 ' + id + '（在索引 ' + file + ' 里找不到）'); });
+    // ── 出库门禁（2026-11-21）：已归档的卡不在题库池里，不得组卷 ──
+    //    用户裁定（2026-11-21）：英语微写作/书面表达题"从题库中全部去除"——归档就是本仓的出库语义
+    //    （只改状态不删行，撤归档可恢复）。界面 canGroup→inBook 一直拦得住；但 CLI 组卷此前**不查 status**，
+    //    实测（本次验收：组卷 --ids E0015 真建出批次 P20261121-01，已撤）归档卡照样入账 ——
+    //    与"工具是唯一入口、任何入口都逃不掉"的纪律正面冲突。补上：非在册（已归档）响亮拒绝。
+    //    已掌握是"升级出池"不是"出库"，不在本门禁内（界面同口径：mastered 单独判）。
+    const outOfPool = ids.filter(id => String(byId[id].status || '') === '已归档');
+    if (outOfPool.length) {
+      console.error('✖ 出库门禁拦截（已归档的卡不在题库池）：' + outOfPool.map(id => id + '[已归档' + (byId[id].archivedAt ? ' ' + byId[id].archivedAt : '') + ']').join(' '));
+      console.error('   归档原因：' + outOfPool.map(id => byId[id].archivedReason || '（未记原因）').join('；'));
+      console.error('   → 要恢复组卷资格：node _标记复习.mjs 撤归档 --student ' + json.student + ' --ids ' + outOfPool.join(','));
+      process.exit(2);
+    }
     // ── 盲解准入门禁（v1.8 铁律）：未盲解/不一致的题不得进组卷池，除非 --force ──
     const BLIND_OK = ['已通过', '已修正'];
     const blocked = ids.filter(id => !BLIND_OK.includes(byId[id].blindStatus || '未盲解'));
