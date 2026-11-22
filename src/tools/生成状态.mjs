@@ -173,6 +173,12 @@ function cardsOf(idx, idxDir, subjectName) {
     const mdAbs = path.join(ROOT, cardDirRel, '错题记录.md');
     const stemAbs = path.join(ROOT, cardDirRel, '题干.jpg');
     const stemHtmlAbs = path.join(ROOT, cardDirRel, '题干.html');
+    /* fig 资产两个真名（2026-11-22，M0070 报障）：入库器 cropFigure 裁出的叫「题图.jpg」
+       （_录题入库.mjs:1215-1227，配图门禁 FIG_ASSETS 也只认 题图.jpg/题干.jpg），
+       「配图.svg」只剩 fixtures\库-形状 在用（喂 F-58 fig 兜底的 e2e）。
+       原先只探测 配图.svg ⇒ 全库 0 命中，jpg 图卡的 fig 恒为 null，前端兜底永不触发。
+       探测顺序：题图.jpg 优先（现行契约），配图.svg 兜底（兼容 fixture 与历史资产）。 */
+    const figJpgAbs = path.join(ROOT, cardDirRel, '题图.jpg');
     const figAbs = path.join(ROOT, cardDirRel, '配图.svg');
 
     const o = Object.assign({}, c);
@@ -182,7 +188,10 @@ function cardsOf(idx, idxDir, subjectName) {
     o.md = fs.existsSync(mdAbs) ? enc(path.join(cardDirRel, '错题记录.md')) : null;
     o.stem = fs.existsSync(stemAbs) ? enc(path.join(cardDirRel, '题干.jpg')) : null;
     o.stemHtml = fs.existsSync(stemHtmlAbs) ? fs.readFileSync(stemHtmlAbs, 'utf8').replace(/^\uFEFF/, '') : '';
-    o.fig = fs.existsSync(figAbs) ? enc(path.join(cardDirRel, '配图.svg')) : null;
+    const figJpg = fs.existsSync(figJpgAbs);
+    const figSvg = fs.existsSync(figAbs);
+    o.fig = figJpg ? enc(path.join(cardDirRel, '题图.jpg'))
+      : figSvg ? enc(path.join(cardDirRel, '配图.svg')) : null;
     /* 原卷溯源四字段：**从 _原卷台账.json 并回来**（不是 null）。
        台账键是「学生|卡号」；page=整页原卷、box=归一化红框、import=原件、by=定位方式。
        ⚠ 路径口径与老生成器一致：**百分号编码**（前端拿 decodeURIComponent 还原后再取图；
