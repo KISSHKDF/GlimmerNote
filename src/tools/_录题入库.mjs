@@ -39,6 +39,7 @@ import { displaySize } from './_图尺寸.mjs';
    ⚠ 不能改成 `import './_题干门禁.mjs'`：它是 CLI，顶层解析 `process.argv`，
    被本文件 import 时会拿**调用方的**命令行去解析并报「未知参数」退出（实测踩到）。 */
 import { mentionsUnderlineSense, hasUnderlineMark, hasUnderlineMarkEntity } from './_划线.mjs';
+import { flatComplexFractions, flatComplexFractionMsg } from './_分数.mjs';
 /* ★ 2026-11-12（审计 F04）：`answerSource` 取值契约的**唯一真源**（原先 3 处代码 + 2 份配方 schema
    各写一份，且精确集/前缀集两种语义并存 ⇒ `_盲解复核` 自己写的带限定值会被本文件判非法）。 */
 import { isInContract, isRetiredSource, isOfficialSource } from './_来源.mjs';
@@ -239,6 +240,10 @@ function buildStemHtml(text, hasBlank) {
      提到"画线"却一个 `<u>` 都没有 ⇒ 当场拒收（与实体化标签同一处、同一风格）。
      这类题不标画线就没法作答，落盘等于造一道印不出来的废题。 */
   checkUnderlineMarked(raw);
+  /* ★ 2026-11-22（用户定案「原题是上下结构的分数，转换出来也一定是上下结构」）：
+     复合分式被压扁成 `(...)/(...)` ⇒ 当场拒收（与画线同风格）。
+     简单比值（k/x、1/3）不在这里拦——原卷可能是行文式，门禁⑨出清单人工核对。 */
+  checkFractionsStacked(raw);
   const paras = raw.split(/\n+/).map(s => s.trim()).filter(Boolean);
   const body = paras.length ? paras.map(p => '<p class="stem-lead">' + escapeHtmlAllowMarkup(p) + '</p>').join('\n  ')
     : '<p class="stem-lead">（题干为空）</p>';
@@ -311,6 +316,30 @@ export function checkEntityTags(text) {
  *      "两处同步改"这条纪律不再靠人记 —— 分叉时是**同一函数引用**，不可能漂。 */
 /* 对外契约保持不变（re-export）；不要再在这里抄第二份正则。 */
 export { UNDERLINE_WORD, UNDERLINE_OBJECT, DRAW_WIRE_PHRASE, mentionsUnderlineSense, hasUnderlineMark, hasUnderlineMarkEntity } from './_划线.mjs';
+/* ★ 2026-11-22（用户定案「原题是上下结构，转换出来也一定是上下结构」）：
+   复合分式被压扁成 `(...)/(...)` ⇒ 拒收。判据单一真源在 `_分数.mjs`（与 _划线.mjs 同纪律）：
+   本文件与 _题干门禁.mjs 判据⑨是同一函数引用，不可能漂。
+   ⚠ import 必须放在**文件顶部 import 区**（不能挨着 assertFractionsStacked 的定义）——
+     neg-stem-readability.cjs 会从本文件抽 `buildStemHtml…` 源码段进临时模块，
+     段内出现 `from './_分数.mjs'` 会在 %TEMP% 下解析失败（实测：quick 4 用例未申报）。 */
+
+/** **复合分式压扁成斜杠** ⇒ 拒收（2026-11-22，用户定案）。
+ *  判据：题干文本里出现 `(多项式)/(多项式)` 形态（两侧含数理字符、不含中文）。
+ *  为什么是拒收而不是警告：这类分式在卷面上是**上下结构**（分子在上、分母在下），
+ *  压扁后读者看到的不是卷面的写法——与"画线不标"同级：信息被转录层擅自改写了。
+ *  已竖排的 `<span class="fr">` 与 svg 内部不算（挖掉后再判）。 */
+export function assertFractionsStacked(text) {
+  const hits = flatComplexFractions(String(text || ''));
+  if (!hits.length) return null;
+  return flatComplexFractionMsg(hits);
+}
+/** 复合分式压扁 ⇒ **抛错拒收**（入库前置检查与 buildStemHtml 都走它）。
+ *  返回 null 表示通过；返回字符串表示有问题（给前置检查用，不抛）。 */
+export function checkFractionsStacked(text) {
+  const msg = assertFractionsStacked(text);
+  if (msg) throw new Error(msg);
+  return null;
+}
 
 /** **该画线却没画线标记** ⇒ 拒收（2026-11-08，用户报障「单词画线的字母，你在印刷版中
  *  没有体现出哪个字母画线了，这样的错误还不少」）。
@@ -631,6 +660,10 @@ function cmdFix() {
      **提到"画线"却一个 `<u>` 都没有**的题干 —— 写盘前拦，别把废题改进来。 */
   const underlineProblem = assertUnderlineMarked(c.questionText);
   if (underlineProblem) return fail('改卡中止：' + underlineProblem, 1);
+  /* ★ 2026-11-22（用户定案「原题是上下结构的分数，转换出来也一定是上下结构」）：
+     改卡入口同样拒**复合分式压扁**——写盘前拦，别把压扁的题干改进来（与画线同风格）。 */
+  const fractionProblem = assertFractionsStacked(c.questionText);
+  if (fractionProblem) return fail('改卡中止：' + fractionProblem, 1);
 
   /* ③ 找到原图：优先用回传的 sourceImageSha256 去台账/收件箱找；找不到就只改文本不动裁图 */
   let srcImg = null;
@@ -1371,7 +1404,18 @@ function cmdLand() {
   }
 }
 
-/* ───────────────── 入口 ───────────────── */
+/* ───────────────── 入口 ─────────────────
+ * ★ 2026-11-22：入口加 IS_ENTRY 守卫（与 _题干门禁.mjs 同款）——判据⑨分数保真收敛后，
+ *   回归用例需要 import 本文件拿 checkFractionsStacked 等导出；原先顶层直接跑 CLI，
+ *   被 import 时会拿调用方的 argv 打印用法并 process.exit（实测：测试一 import 就被退出码打断）。 */
+import { fileURLToPath } from 'node:url';
+const IS_ENTRY = (() => {
+  try {
+    const self = fileURLToPath(import.meta.url);
+    const entry = process.argv[1] ? path.resolve(process.argv[1]) : '';
+    return !!entry && path.resolve(self) === entry;
+  } catch { return false; }
+})();
 const HELP = [
   '拾光小册 · 录题入库',
   '',
@@ -1394,7 +1438,7 @@ const HELP = [
 ];
 
 let code = 0;
-switch (cmd) {
+if (IS_ENTRY) switch (cmd) {
   case '入库': code = cmdLand(); break;
   case '改卡': code = cmdFix(); break;
   case '':
@@ -1409,4 +1453,4 @@ switch (cmd) {
     console.error(HELP.join('\n'));
     code = 2;
 }
-process.exit(code);
+if (IS_ENTRY) process.exit(code);
