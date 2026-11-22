@@ -66,6 +66,11 @@
  *      ⚠ 为什么必须"共现对照语境"：固定大题指令「根据句意、中文释义、首字母和**音标**提示，
  *        写出句中所缺单词」里的"音标"与画线无关 —— 不收窄就会把一整批词汇题当假阳性长期挂着
  *        （真库实测 5 张，另一路 teammate 回原卷逐张核对确认全是误报，见 PHONETIC_CONTEXT 注释）。
+ *   ⑨ **分数保真**（2026-11-22 新增，用户定案「原题是上下结构的分数，转换出来也一定是上下结构」）：
+ *      A 级（阻断）：**复合分式被压扁成 `(...)/(...)`** —— 卷面上下结构被转录层改写，
+ *        判据在 `_分数.mjs`（单一真源，入库器当场拦同一函数）。
+ *      B 级（只报告）：**简单比值线性斜杠**（k/x、1/3）—— 原卷可能是行文式，出清单人工核对；
+ *        单位（m/s、r/min）与英语词组/页码豁免（UNIT_EXEMPT + 数理字符过滤）。
  *
  * 用法（node _题干门禁.mjs <动作>）：
  *   扫描 [--json]   只读：逐卡列出标记使用与问题
@@ -305,6 +310,10 @@ export {
   mentionsUnderlineSense, hasUnderlineMark, hasUnderlineMarkEntity,
 } from './_划线.mjs';
 import { mentionsUnderlineSense, hasUnderlineMark } from './_划线.mjs';
+/* ★ 2026-11-22（用户定案「原题是上下结构的分数，转换出来也一定是上下结构」）：
+   判据⑨收敛到单一真源 `_分数.mjs`（与 _划线.mjs 同纪律，入库器 import 同一函数）。
+   A 级（复合分式压扁）阻断；B 级（简单比值）只出清单。 */
+import { flatComplexFractions, flatComplexFractionMsg, flatSimpleFractions, SIMPLE_FRACTION_NOTE } from './_分数.mjs';
 import { indexFiles } from './_题库发现.mjs';
 
 /** 题干里有没有画线标记（**含实体化 / 双重转义形态** `&lt;u&gt;`）。
@@ -425,6 +434,20 @@ export function judgeCard({ stem = '', question = '', source = '', type = '' } =
     warns.push({ code: 'phonetic-no-underline', msg: '这是**语音类题**（命中 语音/读音/发音/音标/重音/Pronunciation，且题面出现 相同/不同/归类/替换/画线 这类对照语境），题干却没有 `<u>` 画线标记——请回原卷核对：若原题画了线，把被画线的字母/短语用 `<u>` 括出来（只报告，不阻断）' });
   }
 
+  /* ⑨ 分数保真（2026-11-22，用户定案「原题是上下结构的分数，转换出来也一定是上下结构」）：
+     A 级：**复合分式被压扁成 `(...)/(...)`** ⇒ 阻断——卷面上的上下结构被转录层擅自改写，
+     结构信息丢了一层，且这是"转录纪律"问题（不是原卷写法），与 ⑦ 该画线却没画线同级。
+     B 级：**简单比值线性斜杠**（k/x、1/3）⇒ 只出清单——原卷可能是行文式（表头 a/m、
+     行内公式），机器判不了，人工回原卷逐处核对。单位（m/s、r/min）已豁免（见 _分数.mjs）。 */
+  const flatComplex = flatComplexFractions(html);
+  if (flatComplex.length) {
+    problems.push({ code: 'fraction-flattened', msg: flatComplexFractionMsg(flatComplex) });
+  }
+  const flatSimple = flatSimpleFractions(html);
+  if (flatSimple.length) {
+    warns.push({ code: 'fraction-simple-slash', msg: `有 ${flatSimple.length} 处**线性斜杠比值**（${flatSimple.slice(0, 4).map(h => h.raw).join('、')}${flatSimple.length > 4 ? ' 等' : ''}）——若原卷上是竖式分数应改成 .fr 竖排标记。${SIMPLE_FRACTION_NOTE}` });
+  }
+
   return {
     ok: problems.length === 0,
     problems, warns,
@@ -477,9 +500,12 @@ export function judgeLibrary(root = ROOT) {
      ⚠ 条件是"关键词 **且** 对照/标注语境"（收窄见 PHONETIC_CONTEXT 注释）。 */
   const phoneticNoUnderline = rows.filter(r => r.info.phonetic && r.info.phoneticContext && !r.info.underline)
     .map(r => ({ key: r.key, id: r.id, subject: r.subject, blocked: !r.ok }));
+  /* ⑨ B 级清单：线性斜杠比值（只报告；含被 A 级阻断的卡），供人回原卷核对 */
+  const fractionSimpleSlash = rows.filter(r => r.warns.some(w => w.code === 'fraction-simple-slash'))
+    .map(r => ({ key: r.key, id: r.id, subject: r.subject, blocked: !r.ok }));
   return {
     ok: blocked.length === 0 && !emptyButHasIndex && idxErrs.length === 0,
-    rows, blocked, warned, longParagraphs, phoneticNoUnderline,
+    rows, blocked, warned, longParagraphs, phoneticNoUnderline, fractionSimpleSlash,
     indexErrors: idxErrs,
     stats: {
       total: rows.length,
@@ -494,6 +520,8 @@ export function judgeLibrary(root = ROOT) {
       longPara: longParagraphs.length,
       underlineMissing: rows.filter(r => r.problems.some(p => p.code === 'underline-missing')).length,
       phoneticNoUnderline: phoneticNoUnderline.length,
+      fractionFlattened: rows.filter(r => r.problems.some(p => p.code === 'fraction-flattened')).length,
+      fractionSimpleSlash: fractionSimpleSlash.length,
     },
   };
 }
@@ -502,7 +530,7 @@ if (IS_ENTRY) switch (action) {
   case '扫描':
   case '门禁': {
     const lib = judgeLibrary();
-    const { rows, blocked, warned, longParagraphs, phoneticNoUnderline } = lib;
+    const { rows, blocked, warned, longParagraphs, phoneticNoUnderline, fractionSimpleSlash } = lib;
     const json = {
       ok: lib.ok,
       action,
@@ -526,6 +554,8 @@ if (IS_ENTRY) switch (action) {
       longParagraphs,
       /* ⑧ 的清单单独成键（B 级只报告；含被 ⑦ 阻断的卡），供人回原卷核对画线 */
       phoneticNoUnderline,
+      /* ⑨ 的清单单独成键（B 级只报告；含被 A 级阻断的卡），供人回原卷核对分式形态 */
+      fractionSimpleSlash,
     };
     if (opt.json) {
       console.log(JSON.stringify(json));
@@ -548,11 +578,15 @@ if (IS_ENTRY) switch (action) {
         console.log(`\n⑧ 语音类题没有画线标记（B 级只报告）：${phoneticNoUnderline.length} 张 —— 题干/来源/类型命中语音类关键词却无 <u>，回原卷核对画线在哪`);
         for (const r of phoneticNoUnderline) console.log(`   ${r.key.padEnd(14)} ${String(r.subject).padEnd(3)}${r.blocked ? '（另有 A 级问题，已阻断）' : ''}`);
       }
+      if (fractionSimpleSlash.length) {
+        console.log(`\n⑨ 线性斜杠比值（B 级只报告）：${fractionSimpleSlash.length} 张 —— 原卷是竖式分数的应改成 .fr 竖排标记，回原卷逐处核对`);
+        for (const r of fractionSimpleSlash) console.log(`   ${r.key.padEnd(14)} ${String(r.subject).padEnd(3)}${r.blocked ? '（另有 A 级问题，已阻断）' : ''}`);
+      }
       break;
     }
     /* 门禁 */
     if (json.ok) {
-      console.log(`题干门禁通过：${rows.length} 张卡没有数据损坏（实体化标签 / 字面标签 / 标记不配对 / 语篇残篇 / 该画线却没画线）。`);
+      console.log(`题干门禁通过：${rows.length} 张卡没有数据损坏（实体化标签 / 字面标签 / 标记不配对 / 语篇残篇 / 该画线却没画线 / 复合分式压扁）。`);
       if (warned.length) {
         console.log(`   ⚠ 另有 ${warned.length} 张卡**内容欠完整**（题号是孤儿号却没带大题指令）——只报告不阻断。`);
         console.log('     这些是 2026-10-22 那批的历史欠账，登记在库根 `_整改台账.md`；整改要逐张回原卷核对，别批量改。');
@@ -565,6 +599,10 @@ if (IS_ENTRY) switch (action) {
       if (phoneticNoUnderline.length) {
         console.log(`   ⚠ 另有 ${phoneticNoUnderline.length} 张卡是**语音类题却没有画线标记**——只报告不阻断，回原卷核对画线。`);
         console.log('     看清单：node _题干门禁.mjs 扫描（⑧ 段）');
+      }
+      if (fractionSimpleSlash.length) {
+        console.log(`   ⚠ 另有 ${fractionSimpleSlash.length} 张卡带**线性斜杠比值**（⑨ B 级）——只报告不阻断，回原卷核对原卷是否竖式分数。`);
+        console.log('     看清单：node _题干门禁.mjs 扫描（⑨ 段）');
       }
     } else {
       console.log(`⛔ 题干门禁未通过：${blocked.length} 张卡有数据损坏（语篇残篇、该画线却没画线均计入阻断）——`);

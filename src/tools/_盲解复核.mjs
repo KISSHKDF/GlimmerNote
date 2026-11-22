@@ -418,6 +418,18 @@ switch (action) {
         lines.push(`## ${x.item.id}　（来源：${x.item.source || '—'}）`);
         lines.push('');
         lines.push(st.text || '（题干为空）');
+        /* ★ 2026-11-22（M0070 报障）：图形资产躺在卡目录（题图.jpg）而题干没有内联 <svg> ⇒
+           清稿里连"这题有图"都不知道，解题方按纯文字题解——M0070 两路都因此没跑图形层，
+           碰巧文字自足才解对；图依赖题（图象法解集、力臂图）这样就会产出错误盲解结论。
+           注意判据只认**内联 <svg>**：<img> 在 stemToText 里被剥成空，清稿同样什么都看不见；
+           内联 <svg> 已被 stemToText 换成图形区域占位，不重复提示。
+           占位只进清稿文件，不进盲解指纹（指纹仍按 stemOf+figureSignature 算）。 */
+        const hp = path.join(x.dirAbs, '题干.html');
+        const announced = fs.existsSync(hp) && /<svg[\s\S]*?<\/svg>/i.test(fs.readFileSync(hp, 'utf8'));
+        if (isFigureCard(x.dirAbs) && !announced) {
+          lines.push('');
+          lines.push('【本题配有图形（题图.jpg），未包含在本清稿中；若题设文字不足以定解，请在疑点中明确标注"图形缺失"】');
+        }
         lines.push('');
         lines.push(`【作答】`);
         lines.push('');
@@ -512,7 +524,7 @@ switch (action) {
       const composed = composeStatus(l);
       const tag = l.lane1 && l.lane2 ? '双路' : (l.lane1 || l.lane2) ? '单路' : '无路';
       if (tag === '双路') both++; else if (tag === '单路') one++; else none++;
-      // 图形题必须登记"图形层"记录（layer='fig'）：历史批次未登记层别，故只提示不拦
+      // 图形题必须登记"图形层"记录（layer='fig'）——v2.5 口径；门禁 2026-11-22 起对新批次硬拦（历史批次 ⚠ 可见）
       const figCard = isFigureCard(x.dirAbs);
       const hasFigLayer = ['lane1', 'lane2'].some(ln => l[ln] && l[ln].layer === 'fig');
       if (figCard && !hasFigLayer) figMissing.push(key);
@@ -523,7 +535,7 @@ switch (action) {
     if (opt.json) console.log(JSON.stringify({ ok: one === 0 && none === 0, checked: rows.length, both, one, none, figMissing, lanes: lanes.lanes }, null, 1));
     else {
       console.log(`\n合计 ${rows.length} 题：双路 ${both} ｜ 单路 ${one} ｜ 无路 ${none}`);
-      if (figMissing.length) console.log(`⚠ 图形题未登记"图形层"记录：${figMissing.length} 张（历史批次；新批次落库请加 --layer fig，否则 门禁 无法证明图形层真的跑过）`);
+      if (figMissing.length) console.log(`⚠ 图形题未登记"图形层"记录：${figMissing.length} 张（门禁 2026-11-22 起对新批次硬拦；历史批次补跑走清稿重盲解并 --layer fig）`);
     }
     break;
   }
@@ -657,14 +669,34 @@ switch (action) {
       if (!opt.json) console.log(`   ⚠ ${mtimeSuspect.length} 张题干文件在盲解**之后**被改动过（mtime 证据），而指纹仍判"有效"：` + mtimeSuspect.slice(0, 8).map(x => x.item.id).join(' ') + '  ← 若改的是图形（v1 指纹看不见）应重盲解');
     }
 
-    /* 图形题必须有"图形层"记录（v2.5）：只在 双路 动作里点名，因为历史批次未登记层别。
-       判据：台账里任一路带 layer='fig'；没有则提示需补图形层。 */
-    if (action === '双路') {
-      const missFig = rows.filter(x => isFigureCard(x.dirAbs) &&
-        !['lane1', 'lane2'].some(ln => { const r = lanesDB.lanes[x.student + '|' + x.item.id]; return r && r[ln] && r[ln].layer === 'fig'; }));
-      if (missFig.length) {
-        if (opt.json) missFig.forEach(x => problems.push(`${x.student}|${x.item.id}[图形题缺图形层记录]`));
-        else console.log(`\n⚠ 图形题缺"图形层"记录（历史批次未登记层别，新批次请用 --layer fig）：${missFig.length} 张`);
+    /* 图形题必须有"图形层"记录（v2.5）：
+       ⚠ 2026-11-22 修（M0070 报障）：这段原写作 `if (action === '双路')`，但它位于
+       `状态/门禁` case 里，action 只可能是 '状态' 或 '门禁' ⇒ 恒为假，**整段死代码**，
+       图形层缺失从未进过 problems。这正是 M0070（jpg 图卡，两路都没有 layer='fig'）
+       门禁照样绿灯的根因之一。
+       口径：**新批次硬拦，历史批次可见不放行**。切换日 2026-11-22（本修复发版日）之后
+       落库的盲解结论（按 lane.at 记录日期），图形题两路必须至少一路带 layer='fig'，
+       否则进 problems；切换日之前的历史批次保持 ⚠ 提示 + meta 计数，不拦组卷
+       （存量补跑走清稿重盲解，属整改台账欠账，不在门禁一刀切）。 */
+    if (action === '门禁') {
+      const FIG_LAYER_CUTOVER = '2026-11-22';
+      const missFigNew = [], missFigOld = [];
+      for (const x of rows) {
+        if (x.item.status === '已归档' || !isFigureCard(x.dirAbs)) continue;
+        const hasFigLayer = ['lane1', 'lane2'].some(ln => { const r = lanesDB.lanes[x.student + '|' + x.item.id]; return r && r[ln] && r[ln].layer === 'fig'; });
+        if (hasFigLayer) continue;
+        const l = lanesDB.lanes[x.student + '|' + x.item.id] || {};
+        const bothAt = ['lane1', 'lane2'].map(ln => String((l[ln] && l[ln].at) || ''));
+        const isNew = bothAt.every(at => /^\d{4}-\d{2}-\d{2}$/.test(at) && at >= FIG_LAYER_CUTOVER);
+        (isNew ? missFigNew : missFigOld).push(`${x.student}|${x.item.id}`);
+      }
+      if (missFigNew.length) {
+        missFigNew.forEach(k => problems.push(`${k}[图形题缺图形层记录]`));
+        if (!opt.json) console.log(`\n⛔ 图形题缺"图形层"记录（${FIG_LAYER_CUTOVER} 起硬拦）：${missFigNew.length} 张——图形题两路必须至少一路用 --layer fig 登记`);
+      }
+      if (missFigOld.length) {
+        meta.figLayerMissing = missFigOld.length;
+        if (!opt.json) console.log(`   ⚠ ${missFigOld.length} 张图形题无"图形层"记录（历史批次不拦；补跑走清稿重盲解并 --layer fig）`);
       }
     }
 

@@ -359,16 +359,17 @@ console.log('\n═══ ⑦ 台账能找回当初那张卷 ═══');
   A('占位不影响真卡取回（第 1、3 张仍是真卡）',
     s2.refs[0].card === M.cards.find(y => y.card.id === real.items[0] && y.kid === real.student).card);
 
-  /* 台账行：必须给出「看这张卷」的入口；已批改的批次也一样（那是重印/对答案的主场景） */
-  const rowPending = V.ledgerRow(Object.assign({}, real, { status: '待批改', results: {} }), '唯一', false);
-  const rowDone = V.ledgerRow(Object.assign({}, real, { status: '已批改', results: real.results || {} }), '唯一', false);
+  /* 台账行：必须给出「看这张卷」的入口；已批改的批次也一样（那是重印/对答案的主场景）。
+     ★ 2026-11-22（显示层合并）：ledgerRow 改吃 V.ledgerUnits 的单元——单批单元 { b }。 */
+  const rowPending = V.ledgerRow({ b: Object.assign({}, real, { status: '待批改', results: {} }) }, '唯一', false);
+  const rowDone = V.ledgerRow({ b: Object.assign({}, real, { status: '已批改', results: real.results || {} }) }, '唯一', false);
   A('★ 待批改批次有「👁 看这张卷」入口（data-open 带批次号）',
     /data-open="P\d{8}-\d\d"/.test(rowPending) && /看这张卷/.test(rowPending));
   A('★ 已批改批次同样有入口（做完的卷也要能回看/重印）', /data-open="/.test(rowDone) && /看这张卷/.test(rowDone));
   A('行里仍是人话「日期 印的 N 道题」+ 判分进度（没被新按钮挤掉）',
     /印的 '\s*\+\s*n\s*\+\s*' 道题'/.test(paperSrc) && /已判 '/.test(paperSrc));
-  A('入口在卷面页接上复原逻辑（点 data-open → batchToSheet → preview）',
-    /querySelectorAll\('\[data-open\]'\)/.test(paperSrc) && /V\.batchToSheet\(batch\)/.test(paperSrc));
+  A('入口在卷面页接上复原逻辑（点 data-open → batchToSheet/groupToSheet → preview）',
+    /querySelectorAll\('\[data-open\]'\)/.test(paperSrc) && /V\.batchToSheet\(/.test(paperSrc) && /V\.groupToSheet\(/.test(paperSrc));
   A('复原卷的返回键回台账而不是回编卷（编卷屏是空篮子，会让人以为卷丢了）',
     /fromBatch \? '← 回台账'/.test(paperSrc) && /if \(fromBatch\) mode = 'ledger'/.test(paperSrc));
 
@@ -433,23 +434,25 @@ console.log('\n═══ ⑨ 任何时候、任何阶段都能撤销试卷 ═�
   CTB.host.mode = 'shell';
   A('前置：暴露纯函数 V.revokeList（撤销确认的题列，门禁能直接断言）', typeof V.revokeList === 'function');
 
-  const rowPending = V.ledgerRow(Object.assign({}, BIG_BATCH, { status: '待批改', results: {} }), '唯一', false);
-  const rowDone = V.ledgerRow(Object.assign({}, BIG_BATCH, { status: '已批改', results: BIG_BATCH.results || {} }), '唯一', false);
+  const rowPending = V.ledgerRow({ b: Object.assign({}, BIG_BATCH, { status: '待批改', results: {} }) }, '唯一', false);
+  const rowDone = V.ledgerRow({ b: Object.assign({}, BIG_BATCH, { status: '已批改', results: BIG_BATCH.results || {} }) }, '唯一', false);
   const predRevoke = row => /data-revoke="P\d{8}-\d\d"/.test(row) && /撤销试卷/.test(row);
   A('★ 等你批改的行有「↩ 撤销试卷」', predRevoke(rowPending));
   A('★ 已批改的行同样有（用户原话「任何阶段」——已批改撤＝判分流水一并回滚）', predRevoke(rowDone));
   A('撤销键是危险色（btn sm danger）且悬停说明写清后果',
     /btn sm danger" data-revoke=/.test(rowPending) && /恢复为未组卷/.test(rowPending));
 
-  /* 撤销链路（源码级）：绑定 → 确认抽屉 → 唯一写入口 → 成功后的连带处理 */
-  A('撤销动作只走唯一写入口 H.mark（\'撤批\'）并带批次号', /H\.mark\('撤批', \{ paper: paperId \}\)/.test(paperSrc));
+  /* 撤销链路（源码级）：绑定 → 确认抽屉 → 唯一写入口 → 成功后的连带处理。
+     ★ 2026-11-22（显示层合并）：组卷撤销按组内批次**逐批**走「撤批」（H.mark('撤批', { paper: pid })，
+       pid 取自组内批次列表）；单批撤销仍是单条。写入口不变。 */
+  A('撤销动作只走唯一写入口 H.mark（\'撤批\'）并带批次号', /H\.mark\('撤批', \{ paper: pid \}\)/.test(paperSrc));
   A('确认抽屉列出卷面题号（复用 V.revokeList，不另抄一份行模板）', /V\.revokeList\(items, lookup, results\)/.test(paperSrc));
   A('确认文案说清「整卷退回/恢复为未组卷」且分阶段说明（已判 N 题一并回滚 / 未录将无处回录）',
     /整卷退回/.test(paperSrc) && /恢复为未组卷/.test(paperSrc) && /一并从题库回滚/.test(paperSrc) && /无处回录/.test(paperSrc));
   A('撤销成功后清防重复缓存（下次「近 7 天印过」不再算被撤的卷）',
-    /_ledgerCache = null;\s*\n\s*S\.toast\('已撤销 /.test(paperSrc));
+    /_ledgerCache = null;/.test(paperSrc) && /S\.toast\('已撤销 /.test(paperSrc));
   A('撤销是台账行的绑定（data-revoke → revokeDialog），不是只有函数没入口',
-    /querySelectorAll\('\[data-revoke\]'\)/.test(paperSrc) && /revokeDialog\(b\.dataset\.revoke/.test(paperSrc));
+    /querySelectorAll\('\[data-revoke\]'\)/.test(paperSrc) && /revokeDialog\(pid/.test(paperSrc));
 
   /* revokeList 行为断言（真跑纯函数）：题号铁律 + 已判/未录 + 转义 */
   const items = BIG_BATCH.items.slice(0, 4);
@@ -482,7 +485,7 @@ console.log('\n═══ ⑨ 任何时候、任何阶段都能撤销试卷 ═�
   A('前置（样本）：现版两条谓词全真（判据不是恒假）', predRevoke(rowPending) && predRevoke(rowDone));
   const mutHide = paperSrc.replace(MUT_HIDE, "(!done && H.mode === 'shell' ? '<button class=\"btn sm danger\" data-revoke=");
   A('前置：变异点唯一命中（改得到才谈得上自证）', mutHide !== paperSrc);
-  const rowDoneMut = engineOf(mutHide).ledgerRow(Object.assign({}, BIG_BATCH, { status: '已批改', results: BIG_BATCH.results || {} }), '唯一', false);
+  const rowDoneMut = engineOf(mutHide).ledgerRow({ b: Object.assign({}, BIG_BATCH, { status: '已批改', results: BIG_BATCH.results || {} }) }, '唯一', false);
   A('自证 · 变形「只有未批改才有撤销键」后，已批改行不再满足判据', !predRevoke(rowDoneMut),
     (rowDoneMut.match(/data-revoke/g) || []).length + ' 个残留键');
 

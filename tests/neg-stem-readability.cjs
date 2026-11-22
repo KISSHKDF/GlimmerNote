@@ -75,11 +75,15 @@ function loadIngestPure() {
   /* ★ 2026-11-12：判据已收敛到**零副作用**共享模块 `_划线.mjs`（F03）。抽出的源码不带文件顶部的
      import，而 `export { … } from '…'` **不建立本地绑定** ⇒ 必须自己注入一行 import，且要用
      **仓库里的绝对 URL**（否则临时模块会去找 %TEMP%\_划线.mjs）。用同一个 URL 也保证了
-     "两侧是同一函数引用"这条断言成立。 */
+     "两侧是同一函数引用"这条断言成立。
+     ★ 2026-11-22：分数保真判据同理收敛到 `_分数.mjs`——`assertFractionsStacked /
+       checkFractionsStacked`（在抽段内）依赖它，注入第二个 import。 */
   const gateUrl = asUrl(path.join(ROOT, 'src', 'tools', '_划线.mjs'));
+  const fracUrl = asUrl(path.join(ROOT, 'src', 'tools', '_分数.mjs'));
   const code = 'import { mentionsUnderlineSense, hasUnderlineMark, hasUnderlineMarkEntity } from ' + JSON.stringify(gateUrl) + ';\n'
+    + 'import { flatComplexFractions, flatComplexFractionMsg } from ' + JSON.stringify(fracUrl) + ';\n'
     + src.slice(start, end).replace(/from '\.\/_划线\.mjs'/g, 'from ' + JSON.stringify(gateUrl))
-    + '\nexport { buildStemHtml, escapeHtmlAllowMarkup, assertNoEntityTags, checkEntityTags, assertUnderlineMarked, checkUnderlineMarked };';
+    + '\nexport { buildStemHtml, escapeHtmlAllowMarkup, assertNoEntityTags, checkEntityTags, assertUnderlineMarked, checkUnderlineMarked, assertFractionsStacked, checkFractionsStacked };';
   /* ⚠ `UNDERLINE_*` / `mentionsUnderlineSense` 由抽段里那行 re-export 提供，别再列一次（会 Duplicate export）。 */
   /* 源码里 assertNoEntityTags / checkEntityTags 已是 export ⇒ 再 export 一次会报重复 */
   const tmp = path.join(require('os').tmpdir(), 'ctb-ingest-pure-' + process.pid + '.mjs');
