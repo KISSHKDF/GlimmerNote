@@ -57,7 +57,7 @@
       /* 底部操作条（rc.5 找回 v1 的浮动条：下一步去哪，永远摆在眼前） */
       '<div class="card pp-basket" style="margin-top:16px"><div class="row">' +
       '<b style="font-size:16px">已选 <span class="num" style="color:var(--brand)">' + basket.length + '</span> 题</b>' +
-      '<span class="small muted">跨学科会自动拆成多个批次记账（同一次打印的几批在台账里合并成一个「录入对错」）；被盲解/答案来源门禁拦的题入账时可剔除</span>' +
+      '<span class="small muted">跨学科会自动拆成多个批次记账（台账里同一次打印的几批仍显示为一张卷）；被盲解/答案来源门禁拦的题入账时可剔除</span>' +
       '<span class="tb-sp"></span>' +
       '<button class="btn ghost" id="pbClear2"' + (basket.length ? '' : ' disabled') + '>清空</button>' +
       '<button class="btn" id="pbLedger2">📒 台账 / 回录</button>' +
@@ -664,53 +664,111 @@
         第 1 层是人话（「2026-10-11 印的 30 道题」+ 判分进度），第 2 层才是元信息（学科/批次号/标题）。
         标题只有在**彼此不同时**才有意义 ⇒ 自动生成的「学生B错题重做卷 日期·学科」直接不显示。 */
   /* ★ 2026-11-21（合并录入）：同一次打印拆出的批次组（纯函数，门禁直接断言）。
-     判据三条（缺一不可，宁可不并也别并错）：
+     ★ 2026-11-22（显示层合并，用户定案「37 道题是一张卷子出来的，没必要在界面上分开展示」）：
+     判据两条（缺一不可，宁可不并也别并错）：
        ① printGroup 相同且非空 —— 组号只由「一次界面组卷且拆了 ≥2 个学科批次」时签发；
-       ② 同一个学生 —— 判分写回按学生隔离，跨学生的两批不能合成一张"卷"来录；
-       ③ 至少一批还没批改完 —— 全录完的组没有任何待办，合并按钮没有意义。
+       ② 同一个学生 —— 题库/判分/撤批按学生隔离，跨学生的两批不是同一张"卷"。
+     与旧版（pendingPrintGroups）的差异：**不再要求组内仍有待批改**——分组是显示口径
+     （一行 = 一张卷），已批改的组同样并成一行看进度；录不录得由行渲染另行判断。
      按「组号|学生」分桶（不靠台账相邻串链）：同一组号里若隔着别的学生的批次，
      同一学生的几批照样并上（实机验收踩过：相邻串链被隔断 ⇒ 按钮消失）。
-     返回 Map(printGroup → 该组待批改批次数组，按传入顺序=台账顺序=打印顺序）。 */
-  V.pendingPrintGroups = function (batches) {
+     已作废批次不属于任何卷（撤批即删行，此状态仅防御）不进组。
+     返回 Map(printGroup → 该组全部批次数组，按传入顺序=台账顺序=打印顺序）。 */
+  V.printGroups = function (batches) {
     const byKey = new Map();
     for (const b of (batches || [])) {
-      if (!b || !b.printGroup || b.status === '已批改') continue;
+      if (!b || !b.printGroup || b.status === '已作废') continue;
       const k = b.printGroup + '|' + b.student;
       if (!byKey.has(k)) byKey.set(k, []);
       byKey.get(k).push(b);
     }
     const m = new Map();
     for (const arr of byKey.values()) {
-      if (arr.length < 2) continue;                           // 组内只剩一批 ⇒ 旧行为单独录
+      if (arr.length < 2) continue;                           // 组内只剩一批 ⇒ 旧行为单独一行
       m.set(arr[0].printGroup, arr);
     }
     return m;
   };
-  V.ledgerRow = function (b, seq, isAll, grp) {
-    const n = (b.items || []).length;
-    const graded = Object.keys(b.results || {}).length;
-    const done = b.status === '已批改';
+  /* ★ 2026-11-22（显示层合并）：把批次列表折叠成「一行 = 一张卷」的显示单元（纯函数，门禁断言）。
+     组内批次只保留**打印顺序的第一批**当 lead 行，其余整行藏掉（不是缩小，是不渲染）；
+     lead 单元自带聚合信息（总题数/学科去重拼接），渲染层按它出整卷的行。
+     无组号的批次原样保留为单批单元（旧行为逐字节不变）。 */
+  V.ledgerUnits = function (batches, grpMap) {
+    const covered = new Set();
+    const leadOf = new Map();
+    for (const g of (grpMap || new Map()).values()) {
+      leadOf.set(g[0].paperId, g);
+      for (let i = 1; i < g.length; i++) covered.add(g[i].paperId);
+    }
+    const units = [];
+    for (const b of (batches || [])) {
+      if (covered.has(b.paperId)) continue;                   // 组内非首行：整行藏掉
+      if (leadOf.has(b.paperId)) {
+        const g = leadOf.get(b.paperId);
+        units.push({
+          lead: b, gid: g[0].printGroup, batches: g, n: g.length,
+          total: g.reduce((a, x) => a + (x.items || []).length, 0),
+          subjects: [...new Set(g.map(x => x.subject || ''))].join('+'),
+        });
+      } else units.push({ b: b });
+    }
+    return units;
+  };
+  /* ★ 2026-11-22（显示层合并）：整卷复原 = 组内各批 items 按**打印顺序**连排成一张卷面（纯函数）。
+     标题取组内公共前缀（界面入账的批次标题是「卷名·学科」）；committed 给每个真实批次的
+     (学生|学科) 键都标上自己的批次号 ⇒ 预览判定已入账、不可能对这个卷面再次入账。 */
+  V.groupToSheet = function (batches) {
+    if (!batches || !batches.length) return null;
+    const items = batches.flatMap(x => (x && x.items) || []);
+    if (!items.length) return null;
+    const first = batches[0];
+    let title = first.title || '';
+    if (batches.length > 1 && title.includes('·')) {
+      const pre = title.slice(0, title.lastIndexOf('·'));
+      if (batches.every(x => (x.title || '').startsWith(pre + '·'))) title = pre;
+    }
+    const sheet = V.batchToSheet({
+      paperId: first.paperId, date: first.date, student: first.student,
+      subject: [...new Set(batches.map(x => x.subject || ''))].join('+'),
+      title: title, items: items,
+    });
+    if (!sheet) return null;
+    sheet.results = Object.assign({}, ...batches.map(x => (x && x.results) || {}));   // 进度跨批聚合（仅展示用，不写库）
+    sheet.committed = {};
+    for (const b of batches) sheet.committed[(b.student || first.student) + '|' + (b.subject || '')] = b.paperId;
+    sheet.batchIds = batches.map(x => x.paperId);              // 撤批/提示按整组匹配
+    return sheet;
+  };
+  /* ★ 2026-11-22（显示层合并，重写）：一行 = 一张卷。u = V.ledgerUnits 的单元：
+     单批单元 { b } 与旧版行为一致；组单元 { lead, gid, batches, n, total, subjects } 渲染整卷：
+       · 题数/进度/状态按组聚合（总题数、已判总数、组内全批改才算已批改）；
+       · 录入键：组内仍有待批改 ⇒ data-gradegroup（合并抽屉，题号连排）；全录完 ⇒ 无录入键；
+       · 看这张卷/撤销都按整卷（data-open/data-revoke 取 lead 批次号，事件侧再展开整组）。
+     未合并的单批行不渲染任何「同卷」标签——旧行为逐字节不变。 */
+  V.ledgerRow = function (u, seq, isAll) {
+    const grp = u.batches || null;
+    const b = u.lead || u.b;
+    if (!b) return '';
+    const n = grp ? u.total : (b.items || []).length;
+    const graded = grp
+      ? u.batches.reduce((a, x) => a + Object.keys((x && x.results) || {}).length, 0)
+      : Object.keys(b.results || {}).length;
+    const done = grp ? u.batches.every(x => x.status === '已批改') : b.status === '已批改';
+    const pending = !done;
     const who = isAll ? '<span class="tag sj">' + U.esc(b.student) + '</span>' : '';
-    /* ★ 2026-11-21（合并录入）：grp = 本批所属「待批改打印组」的信息（可选，不传=旧行为逐字节一致）。
-       lead 行（组内第一行）承担整个组的合并录入键；其余行不渲染各自的录入键，
-       避免同一张纸被开两个抽屉各录一半。查看/撤销每行照旧保留。 */
-    const isLead = !!(grp && grp.lead);
-    const isCovered = !!grp && !grp.lead;
-    const gradeBtn = !done && H.mode === 'shell'
-      ? (isLead
-        ? '<button class="btn sm primary" data-gradegroup="' + U.esc(grp.gid) +
-          '" title="这张卷跨学科拆成了 ' + grp.n + ' 个批次（共 ' + grp.total + ' 题），在这里按打印的整张纸一次录完">✍ 合并录入对错</button>'
-        : (isCovered ? '' : '<button class="btn sm primary" data-grade="' + U.esc(b.paperId) + '">✍ 录入对错</button>'))
+    const gradeBtn = pending && H.mode === 'shell'
+      ? (grp
+        ? '<button class="btn sm primary" data-gradegroup="' + U.esc(u.gid) +
+          '" title="这张卷跨学科拆成了 ' + u.n + ' 个批次（共 ' + u.total + ' 题），在这里按打印的整张纸一次录完">✍ 合并录入对错</button>'
+        : '<button class="btn sm primary" data-grade="' + U.esc(b.paperId) + '">✍ 录入对错</button>')
       : '';
     return '<div class="lg-row' + (done ? ' done' : '') + '" title="' + U.esc(b.paperId + '　' + (b.title || '')) + '">' +
       '<div class="lg-main">' +
       '<div class="lg-t1"><b class="num">' + U.esc(String(seq)) + '</b>　' + U.esc(b.date || '') + ' 印的 ' + n + ' 道题' +
       (graded ? '<span class="muted small">（已判 ' + graded + '/' + n + '）</span>' : '') + '</div>' +
-      '<div class="lg-t2">' + who + '<span class="tag gray">' + U.esc(b.subject || '') + '</span>' +
+      '<div class="lg-t2">' + who + '<span class="tag gray">' + U.esc(grp ? u.subjects : (b.subject || '')) + '</span>' +
       '<span class="small muted num">' + U.esc((b.paperId || '').replace('P', '')) + '</span>' +
       (b.title && !/错题重做卷 \d{4}-\d{2}-\d{2}·/.test(b.title) ? '<span class="small muted">' + U.esc(b.title) + '</span>' : '') +
-      (isLead ? '<span class="tag sj" title="同一次打印拆成的 ' + grp.n + ' 批，一起录">同卷 ' + grp.n + ' 批</span>' : '') +
-      (isCovered ? '<span class="small muted" title="与上一行同一次打印，在那行的「合并录入对错」里一起录">同卷合并 ↑</span>' : '') +
       '</div></div>' +
       '<span class="tag ' + (done ? 'ok' : 'warn') + '">' + (done ? '已批改' : '等你批改') + '</span>' +
       /* ⚠ 2026-10-24（用户原话：「我根本找不到当初给孩子组卷子选的是哪几道题目」）：
@@ -718,12 +776,14 @@
          连"我当初组了哪 30 题"都无从看起（与"打印了但没入账"是同一个洞的另一半：
          那次是根本没入账，这次是入了账但没有回看入口）。
          现在每个批次都有「👁 看这张卷」：台账 items 就是印刷顺序（组卷入账显式 --no-interleave 保证），
-         所以能从台账原样复原卷面（题干/答题区/答案册/打印），不必另存卷面快照。 */
+         所以能从台账原样复原卷面（题干/答题区/答案册/打印），不必另存卷面快照。
+         ★ 2026-11-22：组卷取 lead 批次号（显示键），事件侧按组号展开整卷复原。 */
       '<button class="btn sm" data-open="' + U.esc(b.paperId) + '">👁 看这张卷</button>' +
       gradeBtn +
       /* ↩ 撤销试卷（2026-10-24 用户要求「任何时候、任何阶段都可以撤销某张试卷」）：
          **不设 !done 条件**——已批改的卷同样能撤（撤＝该卷判分流水一并回滚）。
-         只在桌面壳里出现（写通道 H.mark 在壳侧；浏览器网页版只读）。 */
+         只在桌面壳里出现（写通道 H.mark 在壳侧；浏览器网页版只读）。
+         ★ 2026-11-22：组卷撤的是整卷（data-revoke 带 lead 号，事件侧展开整组逐批撤）。 */
       (H.mode === 'shell' ? '<button class="btn sm danger" data-revoke="' + U.esc(b.paperId) + '" title="撤销这张试卷：卷上的题全部恢复为未组卷（随时可撤，已批改的也能撤）">↩ 撤销试卷</button>' : '') +
       '</div>';
   };
@@ -783,52 +843,66 @@
       const all = (led.batches || []).slice().reverse();
       const cur = M.student(), isAll = M.isAll();
       const mine = isAll ? all : all.filter(b => b.student === cur);
-      const others = all.length - mine.length;
       const othersWho = M.students().filter(s => s !== cur);
-      const head = '<div class="lg-filter">当前看的是 <b>' + U.esc(isAll ? '全部学生' : cur) + '</b>：' + mine.length + ' 个批次' +
-        (isAll ? '（全库共 ' + all.length + ' 个）'
-          : (others ? '，另有 ' + others + ' 个属于 ' + U.esc(othersWho.join('、')) + '，切顶栏姓名看'
-            : '')) + '</div>';
-      /* 「第几次」按 (学生,日期) 计数，不能用全局序号：同一天印多张时，全局序号会被别的孩子插队。 */
+      /* 「第几次」按 (学生,日期) 计数，不能用全局序号：同一天印多张时，全局序号会被别的孩子插队。
+         ★ 2026-11-22：计数按**显示单元**走（一张卷占一个号），组内其余批次不再领号。 */
       const dayCount = {};
-      for (const b of mine) { const k = b.student + '|' + b.date; dayCount[k] = (dayCount[k] || 0) + 1; }
       const daySeen = {};
-      /* ★ 2026-11-21（合并录入）：组信息只算一次。⚠ 必须用台账**原始顺序**（= 打印顺序）分组，
-         `mine` 是给显示用的倒序副本——倒序分组会把组内题号排反，与纸面对不上。 */
-      const grpMap = V.pendingPrintGroups(led.batches || []);
-      const grpInfo = {};
-      for (const g of grpMap.values()) {
-        const info = { gid: g[0].printGroup, lead: true, n: g.length, total: g.reduce((a, x) => a + (x.items || []).length, 0) };
-        g.forEach((x, i) => { grpInfo[x.paperId] = i === 0 ? info : { gid: g[0].printGroup, lead: false }; });
-      }
-      const numbered = mine.map(b => {
+      /* ★ 2026-11-22（显示层合并，用户定案「一张卷就是一行」）：组信息只算一次，且用
+         V.printGroups（全批次、含已批改）而不是旧的"待批改组"——分组是显示口径。
+         ⚠ 必须用台账**原始顺序**（= 打印顺序）分组，`mine` 是显示用的倒序副本——
+         倒序分组会把组内题号排反，与纸面对不上。 */
+      const grpMap = V.printGroups(led.batches || []);
+      /* ★ 2026-11-22：显示单元 = 一行。「同一次打印」的几批折成一行（lead 行聚合整卷），
+         组内其余批次整行藏掉；无组号的批次仍一行一批（旧行为）。 */
+      const units = V.ledgerUnits(mine, grpMap);
+      const unitCount = units.length;
+      const othersUnits = all.length - mine.length;   // 仍按批次口径报"别的孩子"（与批次无关的孩子整卷不会混进来）
+      const head = '<div class="lg-filter">当前看的是 <b>' + U.esc(isAll ? '全部学生' : cur) + '</b>：' + unitCount + ' 张卷' +
+        (isAll ? '（全库共 ' + all.length + ' 个批次）'
+          : (othersUnits ? '，另有 ' + othersUnits + ' 个批次属于 ' + U.esc(othersWho.join('、')) + '，切顶栏姓名看'
+            : '')) + '</div>';
+      /* 「第几次」按 (学生,日期) 计数，不能用全局序号：同一天印多张时，全局序号会被别的孩子插队。
+         ★ 2026-11-22：计数按**显示单元**走（一张卷占一个号），组内其余批次不再领号。 */
+      for (const u of units) { const b = u.lead || u.b; const k = b.student + '|' + b.date; dayCount[k] = (dayCount[k] || 0) + 1; }
+      const numbered = units.map(u => {
+        const b = u.lead || u.b;
         const k = b.student + '|' + b.date;
         daySeen[k] = (daySeen[k] || 0) + 1;
-        return { b: b, seq: dayCount[k] > 1 ? (daySeen[k] + '/' + dayCount[k]) : '唯一', grp: grpInfo[b.paperId] || null };
+        return { u: u, seq: dayCount[k] > 1 ? (daySeen[k] + '/' + dayCount[k]) : '唯一' };
       });
-      const body = mine.length ? numbered.map(x => V.ledgerRow(x.b, x.seq, isAll, x.grp)).join('')
+      const body = units.length ? numbered.map(x => V.ledgerRow(x.u, x.seq, isAll)).join('')
         : '<div class="empty sm ready"><div class="e-ic">🧾</div><b>' + U.esc(cur) + '还没有印过卷子</b>' +
-        '<div class="e-sub">组一张重做卷并「入账」后，这里会列出每一批的题数与批改状态。纸质重做仍是主路径（b1）。</div>' +
+        '<div class="e-sub">组一张重做卷并「入账」后，这里会列出每一卷的题数与批改状态。纸质重做仍是主路径（b1）。</div>' +
         '<div class="e-act"><a class="btn sm" data-go="paper">去组卷 →</a></div></div>';
       const ok = put(head + body);
       if (!ok) return;                                   // 已被重渲染顶掉：不写、不绑事件
-      U.$id('lgBox').querySelectorAll('[data-grade]').forEach(b => b.onclick = () => gradeDialog(b.dataset.grade, mine.find(x => x.paperId === b.dataset.grade)));
+      const allById = pid => mine.find(x => x.paperId === pid) || all.find(x => x.paperId === pid);
+      U.$id('lgBox').querySelectorAll('[data-grade]').forEach(b => b.onclick = () => gradeDialog(b.dataset.grade, allById(b.dataset.grade)));
       /* ★ 2026-11-21（合并录入）：组行键 → 把整组批次交给抽屉（单批形态走上面 data-grade） */
       U.$id('lgBox').querySelectorAll('[data-gradegroup]').forEach(b => b.onclick = () => {
         const g = grpMap.get(b.dataset.gradegroup);
         if (g && g.length) gradeDialog(g.map(x => x.paperId), g);
       });
-      /* 回看/重印：用台账 items 复原卷面（mode=preview 复用卷面渲染与打印通道，不新建任何真源） */
+      /* 回看/重印：用台账 items 复原卷面（mode=preview 复原卷面渲染与打印通道，不新建任何真源）。
+         ★ 2026-11-22：组行按整卷复原（V.groupToSheet：各批 items 连排=打印的整张纸）；
+         单批行照旧 V.batchToSheet。 */
       U.$id('lgBox').querySelectorAll('[data-open]').forEach(b => b.onclick = () => {
-        const batch = mine.find(x => x.paperId === b.dataset.open) || all.find(x => x.paperId === b.dataset.open);
-        const ns = V.batchToSheet(batch);
+        const pid = b.dataset.open;
+        const g = [...grpMap.values()].find(g2 => g2[0].paperId === pid);
+        const ns = g ? V.groupToSheet(g) : V.batchToSheet(allById(pid));
         if (!ns) return S.toast('这个批次没有题目记录，没法复原卷面', 'warn');
         sheet = ns; mode = 'preview'; S.render();
-        S.toast('已从台账复原 ' + batch.paperId + '：' + ns.refs.length + ' 题' + (ns.missing ? '（其中 ' + ns.missing + ' 题的卡已不在库里，题号照旧保留）' : '') + '——可直接打印', 'ok', 9000);
+        const label = g ? g.map(x => x.paperId).join('+') : pid;
+        S.toast('已从台账复原 ' + label + '：' + ns.refs.length + ' 题' + (ns.missing ? '（其中 ' + ns.missing + ' 题的卡已不在库里，题号照旧保留）' : '') + '——可直接打印', 'ok', 9000);
       });
-      /* ↩ 撤销试卷（任何时候、任何阶段；已批改的撤＝判分流水一并回滚，走工具唯一写入口「撤批」） */
-      U.$id('lgBox').querySelectorAll('[data-revoke]').forEach(b => b.onclick = () =>
-        revokeDialog(b.dataset.revoke, mine.find(x => x.paperId === b.dataset.revoke) || all.find(x => x.paperId === b.dataset.revoke)));
+      /* ↩ 撤销试卷（任何时候、任何阶段；已批改的撤＝判分流水一并回滚，走工具唯一写入口「撤批」）。
+         ★ 2026-11-22：组行撤整卷——确认框列整卷题列、提交按组内批次逐批「撤批」（revokeDialog 支持数组）。 */
+      U.$id('lgBox').querySelectorAll('[data-revoke]').forEach(b => b.onclick = () => {
+        const pid = b.dataset.revoke;
+        const g = [...grpMap.values()].find(g2 => g2[0].paperId === pid);
+        revokeDialog(pid, g || allById(pid));
+      });
       const go = U.$id('lgBox').querySelector('[data-go]'); if (go) go.onclick = () => { sheet = null; mode = 'compose'; S.render(); };
     }
   }
@@ -1019,16 +1093,25 @@
     }).join('');
   };
   function revokeDialog(paperId, b) {
-    const items = (b && b.items) || [];
-    const results = (b && b.results) || {};
+    /* ★ 2026-11-22（显示层合并）：b 传**批次数组** = 撤整卷（同一次打印拆出的几批一起退）。
+       题列按组内 items 连排（= 打印的整张纸，与合并录入抽屉同口径）；提交按组内批次
+       逐批走「撤批」（复习流水回滚语义与单批一致；任一批失败先停下报清楚，不吞批）。
+       单批（单个批次对象）行为与旧版逐字节一致。 */
+    const isGroup = Array.isArray(b);
+    const batches = isGroup ? b : [b];
+    const items = isGroup ? batches.flatMap(x => (x && x.items) || []) : ((b && b.items) || []);
+    const results = isGroup ? Object.assign({}, ...batches.map(x => (x && x.results) || {})) : ((b && b.results) || {});
     const graded = items.filter(id => results[id]).length;
-    const lookup = id => M.cards.find(x => x.card.id === id && x.kid === (b && b.student));
+    const kid0 = (batches[0] && batches[0].student) || (b && b.student);
+    const lookup = id => M.cards.find(x => x.card.id === id && x.kid === kid0);
     const stageText = graded
       ? '这张卷已经录了 <b>' + graded + '/' + items.length + '</b> 题的结果：撤销后这些 对/半对/错 <b>一并从题库回滚</b>（连对、错误次数、建议复习日按剩余记录重算，可能退出「已掌握」）。'
       : '这张卷还没有录过结果：撤销后纸卷上做的内容将<b>无处回录</b>（孩子已经或快要做完的话，想清楚再撤）。';
+    const label = isGroup ? batches.map(x => x.paperId).join('+') : paperId;
+    const subjTxt = isGroup ? [...new Set(batches.map(x => x.subject || ''))].join('+') : (b && b.subject);
     S.drawer({
-      title: '↩ 撤销试卷 · ' + paperId + (b ? '（' + b.student + ' · ' + (b.subject || '') + ' · ' + items.length + ' 题）' : ''),
-      body: '<div class="pp-note" style="border-left:4px solid var(--bad)"><b>撤销 = 整卷退回</b>：这张卷从台账移除，卷上的 ' + items.length +
+      title: '↩ 撤销试卷 · ' + label + (b ? '（' + kid0 + ' · ' + subjTxt + ' · ' + items.length + ' 题）' : ''),
+      body: '<div class="pp-note" style="border-left:4px solid var(--bad)"><b>撤销 = 整卷退回</b>：' + (isGroup ? '这张卷（跨学科拆成了 ' + batches.length + ' 个批次，一起退）' : '这张卷') + '从台账移除，卷上的 ' + items.length +
         ' 道题<b>全部恢复为未组卷</b>，立刻可以组进新卷。' + stageText + '</div>' +
         '<div class="small muted" style="margin:12px 0 8px">这张卷上的题（左列＝纸面上印的题号）：</div>' +
         '<div class="stack" style="gap:6px;max-height:45vh;overflow:auto">' + V.revokeList(items, lookup, results) + '</div>' +
@@ -1041,12 +1124,19 @@
           const btn = U.$id('rgSubmit');
           if (btn) { btn.disabled = true; btn.textContent = '⏳ 撤销中…'; }
           try {
-            const r = await H.mark('撤批', { paper: paperId });
-            if (!r || r.code !== 0) throw new Error((r.err || r.out || '').slice(-300));
+            /* ★ 2026-11-22：组卷逐批撤（台账批次语义不变）；单批一次撤。任一批失败先停下报清楚。 */
+            const ids = isGroup ? batches.map(x => x.paperId) : [paperId];
+            const outs = [];
+            for (const pid of ids) {
+              const r = await H.mark('撤批', { paper: pid });
+              if (!r || r.code !== 0) throw new Error((r.err || r.out || '').slice(-300));
+              outs.push(pid);
+            }
             S.closeDrawer();
-            if (sheet && sheet.batch === paperId) sheet = null;   // 正在回看的就是这张卷：别让它还顶着「已在台账 ✓」的旧身份
+            const gone = new Set(ids);
+            if (sheet && (gone.has(sheet.batch) || (sheet.batchIds || []).some(x => gone.has(x)))) sheet = null;   // 正在回看的就是这张卷：别让它还顶着「已在台账 ✓」的旧身份
             _ledgerCache = null;
-            S.toast('已撤销 ' + paperId + '：卷上 ' + items.length + ' 题恢复为未组卷，可重新组卷', 'ok', 9000);
+            S.toast('已撤销 ' + label + '：卷上 ' + items.length + ' 题恢复为未组卷，可重新组卷', 'ok', 9000);
             S.render();
             S.regenBackground();
           } catch (e) {

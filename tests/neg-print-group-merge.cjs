@@ -58,7 +58,7 @@ A('★ 工具侧：组号是可选字段（CLI 直呼组卷不带上）', /print
 A('★ 工具侧参数表已登记 --print-group（带值 flag）', /'print-group'/.test(params), '');
 A('★ 壳侧透明转发 printGroup → --print-group', /AddFlag\(args, payload, "printGroup", "--print-group"\)/.test(shell), '');
 
-console.log('\n═══ ② pendingPrintGroups 判据三条 ══');
+console.log('\n═══ ② pendingPrintGroups（★ 2026-11-22 已被 printGroups 取代，本节只证迁移）═══');
 {
   const V = loadEngine();
   const mk = (pid, gid, kid, sub, n, status, results) => ({
@@ -67,78 +67,99 @@ console.log('\n═══ ② pendingPrintGroups 判据三条 ══');
     status: status || '待批改', results: results || {},
   });
 
-  const g1 = V.pendingPrintGroups([mk('P20261121-01', 'Gx', '学生甲', '数学', 8), mk('P20261121-02', 'Gx', '学生甲', '化学', 2)]);
-  A('★ 同学生同组号的两批合成一组', g1.size === 1 && g1.get('Gx').length === 2, 'groups=' + g1.size);
+  A('★ 旧 pendingPrintGroups 已移除（防止双轨并存、口径漂移）', typeof V.pendingPrintGroups !== 'function', '');
 
-  const g2 = V.pendingPrintGroups([
+  /* 组号签发/分桶语义迁移到 V.printGroups（②b 节全量覆盖），这里只留跨学生判据的行为级锚点 */
+  const g2 = V.printGroups([
     mk('P20261121-01', 'Gx', '学生甲', '数学', 8),
     mk('P20261121-02', 'Gx', '学生乙', '化学', 2),   // 跨学生：不并
   ]);
-  A('★ 跨学生的同组号不并（各自单独录）', g2.size === 0, 'groups=' + g2.size);
-
-  /* ★ 2026-11-21 实机验收补（分桶口径）：组号里隔着别的学生的批次，同学生的两批仍要并上。
-     旧实现靠"相邻同学生"串链，被隔断 ⇒ 合并按钮消失（验收批次混了两个孩子抓到）。 */
-  const g2b = V.pendingPrintGroups([
-    mk('P20261121-01', 'Gx', '学生甲', '数学', 8),
-    mk('P20261121-02', 'Gx', '学生乙', '化学', 2),
-    mk('P20261121-03', 'Gx', '学生甲', '物理', 3),
-  ]);
-  A('★ 组号里隔着别的学生，同学生两批仍并上（按「组号|学生」分桶，不串链）',
-    g2b.size === 1 && g2b.get('Gx').length === 2 && g2b.get('Gx').every(b => b.student === '学生甲'),
-    'groups=' + g2b.size);
-
-  const g3 = V.pendingPrintGroups([
-    mk('P20261121-01', 'Gx', '学生甲', '数学', 8),
-    mk('P20261121-02', 'Gx', '学生甲', '化学', 2, '已批改', { C0001: '对' }),
-  ]);
-  A('★ 组内只剩待批改一批 ⇒ 不并（旧行为单独录）', g3.size === 0, 'groups=' + g3.size);
-
-  const g4 = V.pendingPrintGroups([
-    mk('P20261121-01', '', '学生甲', '数学', 8),
-    mk('P20261121-02', '', '学生甲', '化学', 2),     // 老批次无组号
-  ]);
-  A('★ 无组号（旧批次/CLI 组卷）永不并', g4.size === 0, 'groups=' + g4.size);
-
-  const g5 = V.pendingPrintGroups([]);
-  A('空台账不崩、空 Map', g5 instanceof Map && g5.size === 0, '');
-
-  /* 阴性自证：判据退化成"只看组号"（去掉学生分桶与待批改判断）⇒ 跨学生/已录完的组必须被放进来 */
-  const mut1 = paper.replace(/const k = b\.printGroup \+ '\|' \+ b\.student;/, "const k = b.printGroup;");
-  const mut2 = paper.replace(/if \(!b \|\| !b\.printGroup \|\| b\.status === '已批改'\) continue;/, "if (!b || !b.printGroup) continue;");
-  A('前置：两处变异点唯一命中（改得到才谈得上自证）', mut1 !== paper && mut2 !== paper, '');
-  if (mut1 !== paper) {
-    // 行为级验证：真实实现必须把跨学生判为不并（g2=0），分桶版同学生隔断场景必须并上（g2b=1）
-    A('★ 自证 · 真实现拒绝跨学生组（g2 判据与变异目标相反）', g2.size === 0 && g2b.size === 1, '');
-  }
+  A('★ 跨学生的同组号不并（判据迁移后语义不变）', g2.size === 0, 'groups=' + g2.size);
 }
 
-console.log('\n═══ ③ 台账行：lead 行合并键 / covered 行摘录入键 ══');
+console.log('\n═══ ②b printGroups（2026-11-22 显示层合并判据）═══');
 {
   const V = loadEngine();
-  const b1 = { paperId: 'P20261121-01', printGroup: 'Gx', student: '学生甲', subject: '数学', date: '2026-11-21', items: ['M0001'], status: '待批改', results: {}, title: '' };
+  const mk = (pid, gid, kid, sub, n, status, results) => ({
+    paperId: pid, printGroup: gid, student: kid, subject: sub,
+    date: '2026-11-22', items: Array.from({ length: n }, (_, i) => sub[0].toUpperCase() + String(i + 1).padStart(4, '0')),
+    status: status || '待批改', results: results || {},
+  });
+
+  /* 显示口径：**含已批改**——一张卷不论录没录完都是一行（用户 2026-11-22 定案） */
+  const pg1 = V.printGroups([mk('P1', 'Gx', '学生甲', '数学', 8, '已批改', { M0001: '对' }), mk('P2', 'Gx', '学生甲', '化学', 2)]);
+  A('★ 组内含已批改批次仍成组（显示口径不再看待批改）', pg1.size === 1 && pg1.get('Gx').length === 2, 'groups=' + pg1.size);
+
+  const pg2 = V.printGroups([mk('P1', 'Gx', '学生甲', '数学', 8), mk('P2', 'Gx', '学生乙', '化学', 2)]);
+  A('★ 跨学生不并（题库/判分/撤批按学生隔离）', pg2.size === 0, '');
+
+  /* 变异自证：旧判据「status === '已批改' 则跳过」若被掏掉后行为不变——用"已批改组"直接可证 */
+  A('★ 组号签发行为不变（同学生同组号两批成组）', pg1.size === 1, '');
+}
+
+console.log('\n═══ ②c ledgerUnits / groupToSheet（一行 = 一张卷）═══');
+{
+  const V = loadEngine();
+  const mk = (pid, gid, kid, sub, n, status, results, title) => ({
+    paperId: pid, printGroup: gid, student: kid, subject: sub,
+    date: '2026-11-22', items: Array.from({ length: n }, (_, i) => sub[0].toUpperCase() + String(i + 1).padStart(4, '0')),
+    status: status || '待批改', results: results || {}, title: title || ('重做卷 2026-11-22·' + sub),
+  });
+  const g = [mk('P1', 'Gx', '学生甲', '数学', 8, '待批改', { M0001: '对' }), mk('P2', 'Gx', '学生甲', '化学', 2, '待批改')];
+  const grpMap = new Map([['Gx', g]]);
+  const units = V.ledgerUnits([g[1], g[0]].slice().reverse(), grpMap);   // 倒序显示（台账显示=倒序）
+
+  A('★ 组只出一行（covered 批次整行藏掉）', units.length === 1 && !!units[0].batches, 'units=' + units.length);
+  A('★ 组单元带聚合信息（总题数=各批之和、学科去重拼接）',
+    units[0].total === 10 && units[0].subjects === '数学+化学' && units[0].n === 2, units[0].subjects);
+  const solo = V.ledgerUnits([mk('P9', '', '学生甲', '物理', 3)], grpMap);
+  A('★ 无组号批次保持单批单元（旧行为）', solo.length === 1 && !!solo[0].b && !solo[0].batches, '');
+  A('★ 空 grpMap 不崩、全部单批', V.ledgerUnits(g, new Map()).length === 2, '');
+
+  const sheet = V.groupToSheet(g);
+  A('★ 整卷复原题号连排（8+2=10，与打印的整张纸一致；数学段在前=打印顺序）',
+    sheet.refs.length === 10 && sheet.refs[0].card.id === '数0001' && sheet.refs[7].card.id === '数0008' && sheet.refs[8].card.id === '化0001',
+    sheet.refs.length + ' 题');
+  A('★ 整卷复原标题取公共前缀（去「·学科」尾巴）', sheet.title === '重做卷 2026-11-22', sheet.title);
+  A('★ 整卷 committed 逐键登记（预览不可能对它再次入账）',
+    sheet.committed['学生甲|数学'] === 'P1' && sheet.committed['学生甲|化学'] === 'P2', JSON.stringify(sheet.committed));
+  A('★ 整卷 results 合并（进度跨批聚合）', (sheet.results && Object.keys(sheet.results).length === 1), '');
+  A('★ batchIds 带整组批次号（撤批展开用）', JSON.stringify(sheet.batchIds) === JSON.stringify(['P1', 'P2']), '');
+  const empty = V.groupToSheet([]);
+  A('★ 空组返回 null（不造空壳）', empty === null, '');
+}
+
+console.log('\n═══ ③ 台账行：一行 = 一张卷（组聚合 / 单批不变）═══');
+{
+  const V = loadEngine();
+  const b1 = { paperId: 'P20261121-01', printGroup: 'Gx', student: '学生甲', subject: '数学', date: '2026-11-21', items: ['M0001', 'M0002'], status: '待批改', results: {}, title: '' };
   const b2 = { paperId: 'P20261121-02', printGroup: 'Gx', student: '学生甲', subject: '化学', date: '2026-11-21', items: ['E0001'], status: '待批改', results: {}, title: '' };
-  const lead = { gid: 'Gx', lead: true, n: 2, total: 2 };
-  const covered = { gid: 'Gx', lead: false };
+  const grpUnit = { lead: b1, gid: 'Gx', batches: [b1, b2], n: 2, total: 3, subjects: '数学+化学' };
+  const soloUnit = { b: b1 };
 
-  const rowLead = V.ledgerRow(b1, '唯一', false, lead);
-  const rowCov = V.ledgerRow(b2, '唯一', false, covered);
-  const rowSolo = V.ledgerRow(Object.assign({}, b1, { printGroup: '' }), '唯一', false, null);
-  const rowDone = V.ledgerRow(Object.assign({}, b1, { status: '已批改', results: { M0001: '对' } }), '唯一', false, lead);
+  const rowGrp = V.ledgerRow(grpUnit, '唯一', false);
+  const rowSolo = V.ledgerRow(soloUnit, '唯一', false);
+  const rowGrpDone = V.ledgerRow({ lead: b1, gid: 'Gx', batches: [Object.assign({}, b1, { status: '已批改' }), Object.assign({}, b2, { status: '已批改', results: { E0001: '对' } })], n: 2, total: 3, subjects: '数学+化学' }, '唯一', false);
 
-  A('★ lead 行有合并录入键（data-gradegroup）', /data-gradegroup="Gx"/.test(rowLead) && /合并录入对错/.test(rowLead), '');
-  A('★ lead 行不带单批键（同一张纸只开一个抽屉）', !/data-grade="/.test(rowLead), '');
-  A('★ covered 行录入键被摘掉', !/data-grade="/.test(rowCov) && !/data-gradegroup/.test(rowCov), '');
-  A('★ covered 行标明归属（同卷合并 ↑）', /同卷合并/.test(rowCov), '');
+  A('★ 组行有合并录入键（data-gradegroup）', /data-gradegroup="Gx"/.test(rowGrp) && /合并录入对错/.test(rowGrp), '');
+  A('★ 组行不带单批键（同一张纸只开一个抽屉）', !/data-grade="/.test(rowGrp), '');
+  A('★ 组行题数是聚合值（8+2=3 题？不对——total=3 是单元给的）', /印的 3 道题/.test(rowGrp), 'total=3');
+  A('★ 组行学科是去重拼接（数学+化学）', /数学\+化学/.test(rowGrp), '');
+  A('★ 组行不再有「同卷 N 批」「同卷合并 ↑」小标签（用户定案：不摊批次给用户）',
+    !/同卷 \d+ 批/.test(rowGrp) && !/同卷合并/.test(rowGrp), '');
+  A('★ 组内全批改 ⇒ 整卷标已批改且无录入键（progress 聚合）',
+    /已批改/.test(rowGrpDone) && !/data-grade="/.test(rowGrpDone) && !/data-gradegroup/.test(rowGrpDone), '');
+  A('★ 组行有「👁 看这张卷」与「↩ 撤销试卷」（整卷操作）',
+    /data-open="P20261121-01"/.test(rowGrp) && /data-revoke="P20261121-01"/.test(rowGrp), '');
   A('★ 无组批次行为不变（data-grade + 文案「录入对错」）',
     /data-grade="P20261121-01"/.test(rowSolo) && /录入对错/.test(rowSolo) && !/data-gradegroup/.test(rowSolo), '');
-  A('★ 已批改行不渲染任何录入键（done 条件仍在）', !/data-grade="/.test(rowDone) && !/data-gradegroup/.test(rowDone), '');
-  A('★ 组行写明拆了几批共几题（自解释）', /2 个批次/.test(rowLead) && /共 2 题/.test(rowLead), '');
-  A('★ 组标记是人话（「同卷 2 批」）', /同卷 2 批/.test(rowLead), '');
+  A('★ 单批行学科仍是原学科', /数学/.test(rowSolo) && !/数学\+/.test(rowSolo), '');
+  A('★ 组行写明拆了几批共几题（悬停自解释）', /2 个批次/.test(rowGrp) && /共 3 题/.test(rowGrp), '');
 
-  /* 阴性自证：lead 分支藏掉 ⇒ 合并键必须消失（判据有牙齿） */
-  const mutLead = paper.replace(/const isLead = !!\(grp && grp\.lead\);/, 'const isLead = false;');
-  A('前置：lead 变异点唯一命中', mutLead !== paper, '');
-  if (mutLead !== paper) {
+  /* 阴性自证：组分支藏掉（batches 视为单批）⇒ 合并键必须消失（判据有牙齿） */
+  const mutGrp = paper.replace(/const grp = u\.batches \|\| null;/, 'const grp = null;');
+  A('前置：组分支变异点唯一命中', mutGrp !== paper, '');
+  if (mutGrp !== paper) {
     const rd = p => fs.readFileSync(path.join(E.REPO, 'src', 'app', 'js', p), 'utf8');
     const CTB = { views: {} };
     const sb = { console, JSON, Math, Date, Array, Object, String, Number, RegExp, Map, Set, WeakMap, isNaN, parseInt, parseFloat, CTB };
@@ -146,9 +167,9 @@ console.log('\n═══ ③ 台账行：lead 行合并键 / covered 行摘录�
     vm.createContext(sb);
     vm.runInContext(rd('util.js'), sb, { filename: 'util.js' });
     sb.CTB.model = { cards: [] }; sb.CTB.host = { mode: 'shell' }; sb.CTB.shell = {};
-    vm.runInContext(mutLead, sb, { filename: 'mut' });
-    const rowMut = sb.CTB.views.paper.ledgerRow(b1, '唯一', false, lead);
-    A('★ 自证 · lead 判据掏掉后合并键消失、单批键回归（不会两个都丢）',
+    vm.runInContext(mutGrp, sb, { filename: 'mut' });
+    const rowMut = sb.CTB.views.paper.ledgerRow(grpUnit, '唯一', false);
+    A('★ 自证 · 组分支掏掉后合并键消失、单批键回归（不会两个都丢）',
       !/data-gradegroup/.test(rowMut) && /data-grade="P20261121-01"/.test(rowMut), '');
   }
 }
