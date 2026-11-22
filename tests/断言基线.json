@@ -1,6 +1,6 @@
 {
  "chunk-roundtrip.cjs": 25,
- "e2e-ui.mjs": 67,
+ "e2e-ui.mjs": 68,
  "e2e-writepath.cjs": 0,
  "fixtures-smoke.cjs": 15,
  "gates-contract.mjs": 8,
@@ -153,5 +153,10 @@
  "neg-pdf-page-number.cjs": 23,
  "neg-print-group-merge.cjs": 49,
  "neg-fraction-stack.mjs": 29,
- "neg-fig-chain.cjs": 23
+ "neg-fig-chain.cjs": 23,
+ "neg-snapshot-emptied-ledgers.cjs": 5,
+ "neg-session-crash-persist.cjs": 17,
+ "neg-ingest-lock-reread.cjs": 12,
+ "neg-ingest-first-review.cjs": 8,
+ "neg-revlog-no-ghost-rows.cjs": 9
 }

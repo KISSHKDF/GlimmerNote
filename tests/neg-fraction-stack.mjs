@@ -128,4 +128,8 @@ const gate = await import(toURL(path.join(TOOLS, '_题干门禁.mjs')));
   }
 }
 
-console.log(`RESULT=PASS 断言=${n}`);
+/* ★ 2026-11-23（审计 T-02 · P1）：结果行不许谎报。修前这里无条件打印 `RESULT=PASS 断言=N`——
+   断言失败只置 process.exitCode=1，输出最后一行却写着 PASS ⇒ 汇总器/人眼都被骗
+   （变异实测：改坏 _分数.mjs 后本用例报 9 个 ✖、exit 1，最后一行仍 RESULT=PASS）。
+   现在按实际结果打印；PASS 才叫 PASS。 */
+console.log(`RESULT=${process.exitCode === 1 ? 'FAIL' : 'PASS'} 断言=${n}${process.exitCode === 1 ? '（存在失败项，见上方 ✖）' : ''}`);

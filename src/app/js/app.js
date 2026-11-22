@@ -35,6 +35,9 @@
     } catch (e) { console.warn('[拾光小册] ' + text); }
   }
 
+  /* ★ 2026-11-23（审计 F-01）：boot 恢复复习会话时的待播提示（mount 之后 toast 才可用） */
+  let S_PENDING_RESTORE_NOTE = null;
+
   window.addEventListener('error', function (e) {
     var msg = (e && e.message) || '未知错误';
     var src = (e && e.filename ? e.filename : '') + ':' + (e && e.lineno || '');
@@ -65,9 +68,22 @@
          否则用户上次存的组卷篮会全部失效。放在 applyState 之后（需要卡片清单）、
          mount 之前（迁移完再渲染，首屏就是对的）。 */
       try { M.basketMigrate(); } catch (e) { console.warn('basketMigrate:', e); }
+      /* ★ 2026-11-23（审计 F-01 · P1）：启动恢复复习会话 —— 修前会话只在内存，关窗/崩溃/刷新
+         丢整场判分。现在判分即时落 localStorage，这里把上次没落完的会话接回来；
+         卡已撤/已改号的剔除并计数，恢复成功给一条 toast（打断最小化）。
+         放在 applyState 之后（需要卡片清单）、mount 之前（首屏侧栏角标就是对的）。 */
+      try {
+        const rs = M.restoreSession();
+        if (rs && rs.restored) {
+          const n = M.sessionPendingCount();
+          S_PENDING_RESTORE_NOTE = '上次有一场复习没落完（已恢复 ' + n + ' 条判定' +
+            (rs.dropped ? '，' + rs.dropped + ' 张卡已不在库中被剔除' : '') + '）——到「复习」页继续或落库';
+        }
+      } catch (e) { console.warn('restoreSession:', e); }
       U.$id('boot').remove();
       U.$id('app').hidden = false;
       S.mount();
+      if (typeof S_PENDING_RESTORE_NOTE === 'string') { S.toast(S_PENDING_RESTORE_NOTE, 'warn', 9000); S_PENDING_RESTORE_NOTE = null; }
       if (!U.lsGet('ctb2.seen', false)) {
         U.lsSet('ctb2.seen', true);
         setTimeout(() => S.help(), 700);

@@ -67,6 +67,16 @@ let _root = null;
 const ROOT = () => (_root || (_root = libraryRoot()));
 
 const sha256 = s => crypto.createHash('sha256').update(s).digest('hex');
+
+/* ★ 2026-11-23（审计 D-01/D-02 回归用）：**测试缝** —— 只在设了 CTB_TEST_PRELOCK_HOOK 时，
+   在"锁外读完索引、即将取锁"这一刻同步跑一段脚本，模拟别的工具恰好此时写了索引。
+   neg-ingest-lock-reread.cjs 靠它证明锁内会重读（不覆盖并发写、不撞卡号）。
+   正常运行没有这个环境变量 ⇒ 空操作。 */
+function testPrelockHook() {
+  const h = String(process.env.CTB_TEST_PRELOCK_HOOK || '').trim();
+  if (!h) return;
+  execFileSync(process.execPath, [h], { stdio: 'inherit', env: process.env });
+}
 /** 文件是否存在且是普通文件（改卡动作找原图时用） */
 const isFile = p => { try { return fs.statSync(p).isFile(); } catch { return false; } };
 /** 红色批注与采用答案是否冲突（去空白、全半角归一后比；没写 ⇒ 不算冲突） */
@@ -708,10 +718,26 @@ function cmdFix() {
   if (!srcImg) console.log('  ⚠ 找不到原图（按 sha256 没找到）——只改文本与索引，**不重裁图**');
 
   /* ④ 写盘（锁 + 事务） */
+  testPrelockHook();
   const release = acquireLibLock(root, { label: '_录题入库 改卡 ' + cardId });
   let tx = null;
   try {
     tx = openTransaction(root, { label: '_录题入库 改卡 ' + cardId });
+
+    /* ★ 2026-11-23（审计 D-02 · P0）：**取锁后重读索引**。
+       修前索引在锁外（②）读进内存，锁内直接把那份旧对象写回 ⇒ 读与取锁之间别的工具
+       （批改、作答门禁、红字回填）写进同一份索引的内容会被整段覆盖。
+       现在锁内重读、重新定位条目，后面只改这份新鲜对象。 */
+    {
+      const j2 = readJsonStrict(hit.idxFile, { shape: x => Array.isArray(x.items) || (!!x.subjects && typeof x.subjects === 'object'), what: '索引', label: path.basename(hit.idxFile) });
+      const items2 = (j2.subjects && typeof j2.subjects === 'object')
+        ? (((j2.subjects[hit.subject] || {}).items) || [])
+        : (j2.items || []);
+      const it2 = items2.find(x => String(x.id) === cardId);
+      if (!it2) throw new Error('取锁后重读索引，卡 ' + cardId + ' 已不在（期间被别的工具撤掉或改号）——中止，未写任何文件');
+      if ((it2.dir || cardId) !== oldDir) throw new Error('取锁后重读索引，卡 ' + cardId + ' 的目录已变（' + oldDir + ' → ' + (it2.dir || cardId) + '）——中止，请重跑');
+      hit.j = j2; hit.items = items2; hit.item = it2;
+    }
 
     /* ④a 题干.html */
     const hasBlank = /_{3,}|＿{2,}/.test(String(c.questionText || '')) || (Array.isArray(c.answerSlots) && c.answerSlots.length > 0);
@@ -803,6 +829,7 @@ function cmdFix() {
       /* 题图：hasFigure=true 且给了 figBbox ⇒ 重新裁「题图.jpg」（纯图，无笔迹）。 */
       let figCropped = false;
       if (c.hasFigure === true && srcImg && Array.isArray(c.figBbox)) {
+        tx.snapshot(path.join(abs, '题图.jpg'));   // ★ 2026-11-23（审计 D-03）：题图进事务，--dry/失败回滚能复原
         const r = cropFigure(srcImg, path.join(abs, '题图.jpg'), c.figBbox);
         if (r.ok) { figCropped = true; console.log('  · 题图已裁出（题图.jpg）'); }
         else console.error('⚠ ' + cardId + ' 没裁出题图：' + r.why);
@@ -942,10 +969,10 @@ function cmdLand() {
   /* ⑥ 找落点 */
   const subj = subject || task.subject || (cards[0] && cards[0].subject) || '';
   if (!subj) return fail('不知道学科：请给 --subject（或在任务单里留了学科）', 2);
-  const tgt = findTarget(student, subj);
+  let tgt = findTarget(student, subj);
   if (tgt.why) return fail(tgt.why, 2);
 
-  const itemsOwner = tgt.owner === 'multi' ? tgt.subjNode.items : tgt.idx.items;
+  let itemsOwner = tgt.owner === 'multi' ? tgt.subjNode.items : tgt.idx.items;
   if (!Array.isArray(itemsOwner)) return fail('索引 ' + path.basename(tgt.idxFile) + ' 的 items 不是数组（形状异常，拒绝写入）', 2);
 
   /* ⑦ 规划卡号（先规划再写，避免半批写坏）
@@ -957,17 +984,23 @@ function cmdLand() {
           · 记录里已有同一个 digest ⇒ **幂等跳过**，回 exit 0 并点名"已入库过"；
           · digest 不同（内容改了）⇒ 那是**新内容**，正常入库。
         卡号规划本身也从"库里最大号+1"起，所以即使 digest 变了也不会撞号。 */
-  const plan = [];
-  const usedIds = new Set(itemsOwner.map(i => String(i.id)));
-  let nextIdCur = nextId(subj, itemsOwner);
-  for (const c of cards) {
-    let id = nextIdCur;
-    let n = Number((/(\d+)$/.exec(id) || [0, 0])[1]);
-    while (usedIds.has(id)) { n += 1; id = PREFIX_OF[subj] + String(n).padStart(4, '0'); }
-    usedIds.add(id);
-    nextIdCur = PREFIX_OF[subj] + String(n + 1).padStart(4, '0');
-    plan.push({ id, c });
-  }
+  /* ★ 2026-11-23（审计 D-01 · P0）：规划抽成函数 —— 锁外先规划一次（给前置检查点名用），
+     **取锁后按重读的索引再规划一次**，写盘只用锁内那份（见 ⑨）。 */
+  const planIds = (owner) => {
+    const p = [];
+    const used = new Set(owner.map(i => String(i.id)));
+    let cur = nextId(subj, owner);
+    for (const c of cards) {
+      let id = cur;
+      let n = Number((/(\d+)$/.exec(id) || [0, 0])[1]);
+      while (used.has(id)) { n += 1; id = PREFIX_OF[subj] + String(n).padStart(4, '0'); }
+      used.add(id);
+      cur = PREFIX_OF[subj] + String(n + 1).padStart(4, '0');
+      p.push({ id, c });
+    }
+    return { plan: p, usedIds: used };
+  };
+  let { plan, usedIds } = planIds(itemsOwner);
 
   /* ⑧ 契约字段检查（缺一项就点名，不静默补） */
   const need = ['subject', 'title', 'questionText', 'studentAnswer', 'answerSource', 'causeCode', 'confidence', 'sourceImageSha256'];
@@ -1147,10 +1180,27 @@ function cmdLand() {
        --dry 也改成**真预演**：全部写完后整体回滚，库里不留任何东西（修前 --dry 照样写盘）。
        门禁子进程放在 commit **之后**跑：子工具继承锁、会开自己的事务，同一个 journal 不能有两个主人。 */
   const root = ROOT();
+  testPrelockHook();
   const release = acquireLibLock(root, { label: '_录题入库' });
   let tx = null;
   try {
     tx = openTransaction(root, { label: '_录题入库 ' + taskId });
+    /* ★ 2026-11-23（审计 D-01 · P0）：**取锁后重读索引 + 重新规划卡号**。
+       修前 ⑥ 在锁外读的索引对象一路带到这里、整份写回 ⇒ 读与取锁之间别的工具写进同一份索引
+       的内容（批改、红字、另一批入库新增的卡）会被覆盖；两批并发入库还会规划出同一个卡号。
+       现在：锁内重新 findTarget（同一索引文件），按新鲜 items 重排卡号，后面只动这份对象。 */
+    {
+      const t2 = findTarget(student, subj);
+      if (t2.why) throw new Error('取锁后重读索引失败：' + t2.why);
+      if (path.resolve(t2.idxFile) !== path.resolve(tgt.idxFile)) throw new Error('取锁后索引文件变了（' + path.basename(tgt.idxFile) + ' → ' + path.basename(t2.idxFile) + '）——中止，请重跑');
+      const o2 = t2.owner === 'multi' ? t2.subjNode.items : t2.idx.items;
+      if (!Array.isArray(o2)) throw new Error('取锁后重读索引，items 不是数组（形状异常，拒绝写入）');
+      const before = plan.map(p => p.id).join(',');
+      tgt = t2; itemsOwner = o2;
+      ({ plan, usedIds } = planIds(itemsOwner));
+      const after = plan.map(p => p.id).join(',');
+      if (before !== after) console.log('  · 取锁期间索引有新卡进来，卡号已顺延：' + before + ' → ' + after);
+    }
     /* 学科目录按需创建（新学生的第一张卡）：必须先登记，
        否则回滚时只删卡目录、留下一个空学科目录 ⇒ N4「有册无卡/有卡无册」两头都可能违规。 */
     tx.mkdir(tgt.dirAbs);
@@ -1217,6 +1267,7 @@ function cmdLand() {
          这里只兜底：没裁到就如实记 need=false，不假装有图。 */
       let figCropped = false;
       if (c.hasFigure === true && srcImg) {
+        tx.snapshot(path.join(abs, '题图.jpg'));   // ★ 2026-11-23（审计 D-03）：题图进事务，--dry/失败回滚能删掉
         const r = cropFigure(srcImg, path.join(abs, '题图.jpg'), c.figBbox);
         if (r.ok) {
           figCropped = true;
@@ -1236,6 +1287,14 @@ function cmdLand() {
 
       /* 索引条目（**不含** answerMode/answerSlots —— 红线：只能由 `_作答门禁.mjs` 写） */
       if (!usedIds.has(id) || !itemsOwner.some(i => String(i.id) === id)) {
+        /* ★ 2026-11-23（审计 R-03 · P1）：**新卡入库即排首次复习（次日）**。
+           修前 nextDue='' ⇒ 卡永远不进到期池，只有"被组过一次卷、批改回录"之后才开始复习 ——
+           运行区实测 645 张卡里 482 张（75%）从未复习，其中一名学生的物理 146 张里 141 张没碰过。
+           现在新卡第二天就到期（给孩子至少一夜的间隔，也符合分散练习的证据）；
+           reviewStatus 仍是「未复习」（没有复习记录），到期池按 nextDue 判，两条互不冲突。
+           批改时 `_标记复习` 会按判分重算 nextDue，这里的初值只管"第一次"。 */
+        const _d = new Date(); _d.setDate(_d.getDate() + 1);
+        const _firstDue = `${_d.getFullYear()}-${String(_d.getMonth() + 1).padStart(2, '0')}-${String(_d.getDate()).padStart(2, '0')}`;
         const it = {
           id, dir: dn,
           source: c.source || '', sourceDate: c.sourceDate || '',
@@ -1255,7 +1314,7 @@ function cmdLand() {
           errorCount: 1, status: '在册',
           hasImage: !!cropped, hasVariants: false,
           reviews: [], reviewStatus: '未复习', reviewCount: 0, passStreak: 0,
-          lastReviewedAt: '', nextDue: '', masteredAt: null,
+          lastReviewedAt: '', nextDue: _firstDue, masteredAt: null,
           blindStatus: '未盲解', blindSolveAt: '', blindSolver: '', blindNote: '', blindFingerprint: '',
           answerSource: c.answerSource || '未能确认',
           answerSourceNote: c.answerSourceNote || '',

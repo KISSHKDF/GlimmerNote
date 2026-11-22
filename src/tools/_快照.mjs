@@ -62,9 +62,14 @@ const CRITICAL_FIELDS_BY_NAME = {
   '_待确认.json': ['items'],
   '_原卷台账.json': ['cards'],
   '_影像清单.json': ['files'],
-  '_盲解双路.json': ['cards'],
-  '_配图台账.json': ['figures'],
-  '_页码映射.json': ['mappings'],
+  /* ★ 2026-11-23（审计 D-04 · P1）：三份台账的关键字段名**按真源实测纠正**。
+     修前这里写的是想当然的名字：_盲解双路 写成 cards（真源顶层是 lanes）、
+     _配图台账 写成 figures（真源顶层是 cards）⇒ countOf 恒 0 ⇒
+     "基准非空 ⇒ 现不能为空"与"缩水过半"两档校验对这三份台账**全部失效**——
+     台账被掏空也照样"恢复通过"。实验证据：300 条的原卷台账按 cards 计 0（恒真空）。 */
+  '_盲解双路.json': ['lanes'],
+  '_配图台账.json': ['cards'],
+  '_页码映射.json': ['rules'],
   '_原图台账.json': ['objects'],
   '_笔形台账.json': ['items'],
 };
@@ -295,9 +300,18 @@ if (args.includes('--restore')) {
       const v = o ? o[f] : undefined;
       if (Array.isArray(v)) return v.length;
       if (v && typeof v === 'object') {
-        let n = 0;
-        for (const s of Object.values(v)) if (s && Array.isArray(s.items)) n += s.items.length;
-        return n;
+        /* ★ 2026-11-23（审计 D-04 · P1）：与恢复校验里的 countOf 同步修——
+           键值表（值是裸对象，不含 items 子数组）按裸键数计，否则 richness 恒 0、
+           "最富历史版"恒空 ⇒ 掏空抓不住。 */
+        let n = 0, hasItemsSub = false;
+        for (const s of Object.values(v)) {
+          if (s && typeof s === 'object') {
+            if (Array.isArray(s.items)) { hasItemsSub = true; n += s.items.length; }
+            else if (Array.isArray(s)) { n += s.length; }
+          }
+        }
+        if (hasItemsSub) return n;
+        return Object.keys(v).length;
       }
       return 0;
     };
@@ -411,9 +425,20 @@ if (args.includes('--restore')) {
           const v = o ? o[f] : undefined;
           if (Array.isArray(v)) return v.length;
           if (v && typeof v === 'object') {
-            let n = 0;
-            for (const s of Object.values(v)) if (s && Array.isArray(s.items)) n += s.items.length;
-            return n;
+            /* ★ 2026-11-23（审计 D-04 · P1）：键值表形态（值不是 {items[]} 包一层）。
+               _原卷台账.cards / _原图台账.objects / _盲解双路.lanes / _配图台账.cards
+               的值是**裸对象**（{ "<cardKey>": {...} }），不含 items 子数组 ⇒
+               修前落到"扫 items 子数组"分支恒得 0 ⇒ 掏空照样通过。
+               现在先数"值里带 items 的"（学生级 subjects 形态），没有就按裸键数计。 */
+            let n = 0, hasItemsSub = false;
+            for (const s of Object.values(v)) {
+              if (s && typeof s === 'object') {
+                if (Array.isArray(s.items)) { hasItemsSub = true; n += s.items.length; }
+                else if (Array.isArray(s)) { n += s.length; }
+              }
+            }
+            if (hasItemsSub) return n;
+            return Object.keys(v).length;
           }
           return 0;
         };

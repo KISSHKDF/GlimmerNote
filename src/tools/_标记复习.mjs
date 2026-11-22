@@ -74,18 +74,30 @@ import { applyElo } from './_难度.mjs';
    且事务锁与组卷/批改共用同一把（见下 openTransaction 的调用点）——不新增锁序。
    ══════════════════════════════════════════════════════════════════════════ */
 const REVLOG_DIR = () => path.join(ROOT, '_复习日志');
+/* ★ 2026-11-23（审计 D-07 · P1）：revlog 行**先攒后写**——在事务 commit 之后统一追加。
+   修前判分循环里当场 appendFileSync：批改中途失败 ⇒ process.on('exit') 把台账/索引整体回滚，
+   但 revlog 的行**不会**被撤销（append 无法回滚）⇒ 日志记下了没发生的批改（假账）。
+   现在动作全程只往 PENDING_REVLOG 攒行，commitTx() 成功后才 flush；
+   回滚路径（throw / exit）PENDING 直接丢弃 ⇒ 日志与真源一致。
+   撤批的 undo 行同理（1072 附近的调用点已改为推入队列）。 */
+let PENDING_REVLOG = [];
 function revlogAppend(entry) {
-  try {
-    const dir = REVLOG_DIR();
-    fs.mkdirSync(dir, { recursive: true });
-    const month = String(entry.ts).slice(0, 10).replace(/-/g, '').slice(0, 6);
-    const file = path.join(dir, 'revlog-' + month + '.jsonl');
-    fs.appendFileSync(file, JSON.stringify(entry) + '\n', 'utf8');
-    return file;
-  } catch (e) {
-    /* 日志失败不阻断主流程（批改是主账，revlog 是旁路账）——但要响亮：静默丢行=假账 */
-    console.error('⚠ 复习日志（revlog）写入失败（批改本身已落库，不受影响）：' + e.message);
-    return null;
+  PENDING_REVLOG.push(entry);
+  return null;
+}
+function flushRevlog() {
+  const rows = PENDING_REVLOG; PENDING_REVLOG = [];
+  for (const entry of rows) {
+    try {
+      const dir = REVLOG_DIR();
+      fs.mkdirSync(dir, { recursive: true });
+      const month = String(entry.ts).slice(0, 10).replace(/-/g, '').slice(0, 6);
+      const file = path.join(dir, 'revlog-' + month + '.jsonl');
+      fs.appendFileSync(file, JSON.stringify(entry) + '\n', 'utf8');
+    } catch (e) {
+      /* 日志失败不阻断主流程（批改是主账，revlog 是旁路账）——但要响亮：静默丢行=假账 */
+      console.error('⚠ 复习日志（revlog）写入失败（批改本身已落库，不受影响）：' + e.message);
+    }
   }
 }
 /** 从索引条目取 revlog 需要的 before 快照（判分前调） */
@@ -1347,6 +1359,9 @@ switch (action) {
    走到这里 = 本动作成功；中途 `throw` / `process.exit(2)` 都不会经过这一行
    ⇒ `process.on('exit')` 钩子把这一批文件整体退回原样（这就是"要么全成、要么全退"）。 */
 commitTx();
+/* ★ 2026-11-23（审计 D-07）：revlog 在事务提交**之后**落盘 —— 回滚路径不会再留下
+   "没发生的批改"的日志行（修前 append 不可回滚，失败也留行 ⇒ 假账）。 */
+flushRevlog();
 
 if (opt.refresh) {
   /* ★ 2026-11-09 清债：PS1 生成器已退役删除，改跑 Node 生成器（镜像 _服务端.mjs runGen 参数）。 */

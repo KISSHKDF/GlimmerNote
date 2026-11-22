@@ -335,11 +335,61 @@
       .sort((a, c) => idx.get(a.kid + '|' + a.card.id) - idx.get(c.kid + '|' + c.card.id));
   };
 
-  /* ---------- 复习会话（内存态；结束时一次性走 组卷→批改） ---------- */
+  /* ---------- 复习会话（持久化到 localStorage；结束时一次性走 组卷→批改） ---------- */
+  /* ★ 2026-11-23（审计 F-01 · P1）：修前会话只存在内存（M.session），关窗/崩溃/刷新丢整场判分
+     ——而判分是孩子一题一题按出来的，丢了等于白做一场。
+     现在：每次判分/撤销/摘组都同步落 `localStorage['ctb2.session']`；页面启动时若有残留会话
+     先恢复（M.restoreSession 由 shell 启动流程调用，恢复前不覆盖）；
+     会话真正结束（endSession 全组落库 / 用户明确丢弃）才删除该键。
+     ⚠ queue 里是 cardRef（含 card 对象引用）——持久化存 **kid|subject|id 键**，
+     恢复时按当前库重查卡（卡可能已改/已撤：查不到的剔除并计数，绝不静默吞）。 */
+  M.SESSION_KEY = 'ctb2.session';
   M.session = null;         // {queue:[cardRef], idx, results:{kid|subject|id:{res,date}}, committed:{kid|subject:{paperId,list}}, startedAt}
+  const sessionSave = function () {
+    const s = M.session;
+    if (!s) { U.lsDel(M.SESSION_KEY); return; }
+    U.lsSet(M.SESSION_KEY, {
+      startedAt: s.startedAt,
+      idx: s.idx,
+      results: s.results,
+      skipped: s.skipped || {},
+      committed: s.committed || {},
+      refs: (s.queue || []).map(r => ({ kid: r.kid, subject: r.subject, id: r.card.id, key: r.key || (r.kid + '|' + r.subject + '|' + r.card.id) })),
+    });
+  };
+  /** 启动恢复：把上次没落完的会话接回来。返回 {restored, dropped}（供 UI 提示）。 */
+  M.restoreSession = function () {
+    const saved = U.lsGet(M.SESSION_KEY, null);
+    if (!saved || !Array.isArray(saved.refs) || !saved.refs.length) return { restored: false, dropped: 0 };
+    const queue = [];
+    let dropped = 0;
+    for (const ref of saved.refs) {
+      const x = M.cardsOf().find(c => c.kid === ref.kid && c.subject === ref.subject && c.card.id === ref.id);
+      if (x) queue.push(x); else dropped++;
+    }
+    if (!queue.length) { U.lsDel(M.SESSION_KEY); return { restored: false, dropped }; }
+    M.session = {
+      queue,
+      idx: Math.min(Number(saved.idx) || 0, queue.length),
+      results: saved.results || {},
+      skipped: saved.skipped || {},
+      committed: saved.committed || {},
+      startedAt: saved.startedAt || new Date().toISOString(),
+    };
+    /* 被剔除的卡（已撤/已改号）其判定一并清掉 —— 判定跟着卡走，卡没了判定留着
+       会在结算屏变成"幽灵条目"（落库时对不上号）。 */
+    if (dropped) {
+      const alive = new Set(queue.map(r => r.kid + '|' + r.subject + '|' + r.card.id));
+      for (const k of Object.keys(M.session.results)) if (!alive.has(k)) delete M.session.results[k];
+    }
+    M.session.idx = Math.min(M.session.idx, M.session.queue.length);
+    sessionSave();
+    return { restored: true, dropped };
+  };
   M.startSession = function (queue) {
     if (!queue.length) return null;
     M.session = { queue, idx: 0, results: {}, committed: {}, startedAt: new Date().toISOString() };
+    sessionSave();
     return M.session;
   };
   M.sessionGrade = function (res) {
@@ -347,6 +397,7 @@
     const ref = s.queue[s.idx];
     s.results[ref.kid + '|' + ref.subject + '|' + ref.card.id] = { id: ref.card.id, kid: ref.kid, subject: ref.subject, res, date: U.today() };
     s.idx++;
+    sessionSave();
     M.emit();
   };
   M.sessionUndo = function () {
@@ -367,8 +418,12 @@
       const p = s.queue[s.queue.length - 1]; delete s.results[p.kid + '|' + p.subject + '|' + p.card.id]; s.idx--;
       if (s.skipped) delete s.skipped[p.key];
     }
+    sessionSave();
     M.emit();
   };
+  /** 用户明确丢弃本场：清内存态 + 持久化副本（review.js 的退出/丢弃入口都用它，
+      防止哪一处只清内存、localStorage 里还留着一场"幽灵会话"，下次启动又弹恢复）。 */
+  M.discardSession = function () { M.session = null; U.lsDel(M.SESSION_KEY); M.emit(); };
   M.sessionDone = () => M.session && M.session.idx >= M.session.queue.length;
   M.sessionGradedCount = () => M.session ? Object.keys(M.session.results).length : 0;
   M.sessionSkippedCount = () => M.session ? Object.keys(M.session.skipped || {}).length : 0;
@@ -393,6 +448,7 @@
       const keep = c.list.filter(r => !match(r));
       if (keep.length !== c.list.length) { n += c.list.length - keep.length; c.list = keep; }
     }
+    sessionSave();
     M.emit();
     return n;
   };
@@ -471,6 +527,7 @@
         /* 立刻登记批次号 + 摘出本组判定：此后任一步失败都不会再组第二张卷 */
         s.committed[key] = { paperId: paperId, list: list.slice() };
         for (const x of list) delete s.results[x.kid + '|' + x.subject + '|' + x.id];
+        sessionSave();                            // ★ F-01：摘组即持久化，崩溃后恢复"已建批、待补批改"
       }
       const noteParts = list.filter(x => x.note).map(x => x.id + '：' + x.note);
       const noteStr = ('屏幕复习·' + kid + subject + ' ' + stamp + (noteParts.length ? ' ｜转折点笔记 ' + noteParts.join('；') : '')).slice(0, 400);
@@ -487,7 +544,12 @@
       if (!r2 || r2.code !== 0) throw new Error('批改失败（批次 ' + paperId + ' 已建，重试只会补批改、不会重复组卷）：' + ((r2 && (r2.err || r2.out) || '').slice(-400)));
       out.push(paperId + '（' + list.length + ' 题）');
       delete s.committed[key];                    // 本组全链路完成
+      sessionSave();
     }
+    /* 全部组落库完成 ⇒ 会话结束：清内存态与持久化副本（恢复入口据此不再弹） */
+    M.session = null;
+    U.lsDel(M.SESSION_KEY);
+    M.emit();
     return out;
   };
 

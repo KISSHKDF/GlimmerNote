@@ -814,6 +814,13 @@ function cardsOfStudent(libDir, student, prefix) {
 
 module.exports = {
   REPO, TOOLS, LIB, LIB_SOURCE, isFrozen, findIndexes,
+  /* ★ 2026-11-23（审计 T-01 · P1）：把"这份库是不是本进程自建的临时夹具"暴露给门禁入口。
+     背景：Node 的 exit 监听按**注册顺序**跑 —— 本文件第 546 行的 cleanupTempDirs
+     注册在先、run.mjs 的 checkLibZeroWrite 注册在后 ⇒ 退出时**先删库、后对账**，
+     物化夹具（gn-synthlib-*）被删光后零写入断言把每个文件都报成"凭空消失"（假红）。
+     消费方（run.mjs）据此跳过对临时夹具的零写入对账 —— 夹具本来就是一次性的，
+     真库（非本进程自建）仍全额对账。 */
+  isProcessOwnedFixture: () => !!(LIB_MATERIALIZED_HERE && path.resolve(LIB).startsWith(path.join(os.tmpdir(), 'gn-synthlib-'))),
   eachCard, firstStudentWithCards, cardsOfStudent,
   lib, tool, makeTempLib, runToolSync,
   /* ★ 2026-11-03（批次 2）：隔离树复制 —— 把工具**及其相对 import 的传递闭包**一起搬走，
