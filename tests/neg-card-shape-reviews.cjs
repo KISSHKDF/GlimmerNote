@@ -69,5 +69,8 @@ A(problems === 0, '数据真源存在 ' + problems + ' 张复习字段形状不�
    分母为 0 的"通过"没有信息量，本仓在 `_体检.mjs` 与 `_数据区门禁.mjs` 都已把空真当缺陷。 */
 A(cards > 0, '实扫必须真的扫到卡（扫到 0 张 = 判据空转，不算通过）：真源 ' + FILES.length + ' 个、卡 ' + cards + ' 张');
 console.log('PASS 复习字段形状：' + FILES.length + ' 个真源、' + cards + ' 张卡、0 违规');
+/* ★ 2026-11-23（审计 T-02 同类）：修前无条件打印 `RESULT=PASS … 失败=0` ——
+   上面 A() 失败时 process.exit(1) 根本走不到这行，但万一未来有人把 exit 改成
+   process.exitCode 风格，这里就会谎报 PASS。按实际结果打印，不写死。 */
 console.log('\nRESULT=PASS  断言=' + nAssert + '  失败=0');
 process.exit(0);

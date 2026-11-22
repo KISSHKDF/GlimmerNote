@@ -8,7 +8,8 @@
 param(
   [Parameter(Mandatory=$true)][string]$Zip,
   [string]$ProdRoot,
-  [switch]$WhatIf
+  [switch]$WhatIf,
+  [switch]$SkipHashCheck   # ★ 2026-11-23（S-72）：显式跳过"缺 .sha256"告警对应的强制校验位（告警本身不拦）
 )
 $ErrorActionPreference = 'Stop'
 
@@ -31,14 +32,33 @@ if (-not (Test-Path $Zip)) { $Zip = Join-Path (Get-Location) $Zip }
 if (-not (Test-Path $Zip)) { Fail "找不到发布包：$Zip" }
 if (-not (Test-Path $ProdRoot)) { Fail "找不到运行区：$ProdRoot（请先建好 app\ 与 数据\）" }
 
+# ★ 2026-11-23（审计 S-70 · P1）：部署前检测运行中的程序。
+#   修前不管程序是否开着就直接清空 app\：exe/node.exe 被锁 ⇒ 删到一半失败（见 catch 回退）；
+#   不被锁的 .mjs 照常被替换，但**正在跑的服务端仍是旧代码**（实测：21:34 部署后
+#   21:38 请求仍打在 18:36 启动的旧进程上），verify-deploy 只看磁盘发现不了。
+#   现在按可执行路径识别运行中的实例，发现即中止并点名进程 —— 让人先关再部署，
+#   不做自动杀进程（部署是运维动作，杀掉正在使用的程序必须由人决定）。
+$runningProcs = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+    $_.Path -and ($_.Path -like ((Join-Path $ProdRoot 'app') + '\*') -or $_.Path -like ((Join-Path $ProdRoot '_app-上一版') + '\*'))
+  })
+if ($runningProcs.Count -gt 0) {
+  $runningProcs | ForEach-Object { Write-Host ("  · PID " + $_.Id + "  " + $_.Path + "（" + $_.StartTime + " 启动）") }
+  Fail "运行区程序正在运行（ $($runningProcs.Count) 个进程，见上）。请先关闭拾光小册再部署——否则替换到一半会失败，或部署后仍在跑旧版服务端。"
+}
+
 $zipItem = Get-Item $Zip
 
 # 哈希校验（若同目录有 .sha256）
+# ★ 2026-11-23（审计 S-72 · P2）：缺 .sha256 不再静默放行 —— 打出醒目告警，
+#   让"包被调包/损坏"的风险看得见（要跳过请显式 -SkipHashCheck）。
 $shaFile = "$($zipItem.FullName).sha256"
 $expect = $null
 if (Test-Path $shaFile) {
   $line = (Get-Content $shaFile -Raw -Encoding UTF8).Trim()
   $expect = ($line -split '\s+')[0]
+} elseif (-not $SkipHashCheck) {
+  Write-Host "⚠ 发布包旁边没有 .sha256 文件（$shaFile）——本次**跳过**包完整性校验。" -ForegroundColor Yellow
+  Write-Host "  正式发布包都带 .sha256；没有它就无法发现包被改动或下载损坏。" -ForegroundColor Yellow
 }
 $actual = (Get-FileHash $zipItem.FullName -Algorithm SHA256).Hash
 if ($expect -and ($expect.ToUpper() -ne $actual.ToUpper())) {
@@ -199,7 +219,39 @@ try {
   if ($backupMade) {
     Get-ChildItem $appDir -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
     Copy-Item (Join-Path $prevDir '*') $appDir -Recurse -Force -ErrorAction SilentlyContinue
-    Write-Host "  已回退到 $oldVer" -ForegroundColor Yellow
+    # ★ 2026-11-23（审计 S-71 · P1）：回退**必须校验**，不许打印没验证过的"已回退"。
+    #   修前两条拷回命令全程 SilentlyContinue，文件被锁（正是触发回退的常见原因）时回退
+    #   也会部分失败 ⇒ app\ 新旧混杂，屏幕上却写"已回退到 旧版"。
+    #   现在回退后比对 `_app-上一版` 逐文件哈希；对不上就大声说明现状并给出下一步。
+    $rollOk = $false
+    try {
+      $landedVer = '(无)'
+      if (Test-Path (Join-Path $appDir '版本.json')) {
+        $landedVer = [string]((Get-Content (Join-Path $appDir '版本.json') -Raw -Encoding UTF8 | ConvertFrom-Json).version)
+      }
+      if ($landedVer -eq $oldVer) {
+        $mismatch = 0
+        Get-ChildItem $prevDir -Recurse -File | ForEach-Object {
+          $rel = $_.FullName.Substring($prevDir.Length).TrimStart('\')
+          $cur = Join-Path $appDir $rel
+          if (-not (Test-Path $cur)) { $mismatch++ }
+          else {
+            $h1 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
+            $h2 = (Get-FileHash -LiteralPath $cur -Algorithm SHA256).Hash
+            if ($h1 -ne $h2) { $mismatch++ }
+          }
+        }
+        $rollOk = ($mismatch -eq 0)
+        if (-not $rollOk) { Write-Host ("  ⚠ 回退后与 _app-上一版 有 " + $mismatch + " 个文件不一致（多半是文件仍被占用）") }
+      } else {
+        Write-Host "  ⚠ 回退后版本号是 $landedVer，期望 $oldVer —— app\ 可能处于新旧混杂状态"
+      }
+    } catch { Write-Host "  ⚠ 回退校验自身失败：" + $_.Exception.Message }
+    if ($rollOk) {
+      Write-Host "  已回退到 $oldVer（逐文件哈希校验通过）" -ForegroundColor Yellow
+    } else {
+      Write-Host "  ✖ 回退**未通过校验**：app\ 可能新旧混杂。请关闭所有拾光小册/node 进程后运行 rollback.ps1 重来。" -ForegroundColor Red
+    }
   } else {
     Write-Host "  之前没有可回退的版本，app\ 可能为空" -ForegroundColor Yellow
   }

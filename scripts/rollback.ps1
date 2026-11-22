@@ -69,11 +69,24 @@ Write-Host "  当前版本：$cur"
 
 if ($Version) {
   # ── 场景二：从归档包重新部署指定版本 ──
-  $zip = Get-ChildItem $relArchive -Filter "*$Version*.zip" -ErrorAction SilentlyContinue | Select-Object -First 1
-  if (-not $zip) {
+  # ★ 2026-11-23（审计 S-73 · P2）：精确匹配，不再 `*$Version*` 通配取第一个。
+  #   修前 `-Version 2026.11.14` 会同时命中正式包与 `-internal` 包（还有几十个同前缀版本），
+  #   取哪个取决于枚举顺序 ⇒ 可能回滚到错的包。现在按发布包固定名匹配，
+  #   多于一个（或零个）都报错列出候选，让人显式指定。 */
+  $candidates = @(Get-ChildItem $relArchive -Filter ("GlimmerNote-" + $Version + "-win-x64.zip") -ErrorAction SilentlyContinue)
+  if ($candidates.Count -eq 0) {
+    $loose = @(Get-ChildItem $relArchive -Filter "*$Version*.zip" -ErrorAction SilentlyContinue)
     $all = (Get-ChildItem $relArchive -Filter *.zip -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }) -join ', '
+    if ($loose.Count -gt 0) {
+      throw "[回滚失败] 找不到精确包 GlimmerNote-$Version-win-x64.zip。版本号含糊（带 -internal 等变体）。现有：$all"
+    }
     throw "[回滚失败] _releases 里找不到版本 $Version。现有：$all"
   }
+  if ($candidates.Count -gt 1) {
+    $names = ($candidates | ForEach-Object { $_.Name }) -join '、'
+    throw "[回滚失败] 版本 $Version 命中 $($candidates.Count) 个包（$names）——请给出完整版本号（YYYY.MM.DD.NN）"
+  }
+  $zip = $candidates[0]
   Write-Host "  目标：$Version（来自 $($zip.Name)）"
   $deploy = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\deploy.ps1'
   & powershell -NoProfile -ExecutionPolicy Bypass -File $deploy -Zip $zip.FullName -ProdRoot $ProdRoot

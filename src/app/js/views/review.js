@@ -256,7 +256,7 @@ let longOpen = false, maskOpen = false;
 
     U.$id('rvAbort').onclick = async () => {
       /* 2026-10-25 换 S.confirm：壳里原生 confirm 不可见且冻结整页（见 shell.js S.confirm 注释） */
-      if (await S.confirm({ title: '退出并清空本场判定？', body: '未落库的判分将丢失。', ok: '退出并清空', danger: true })) { M.session = null; S.render(); }
+      if (await S.confirm({ title: '退出并清空本场判定？', body: '未落库的判分将丢失。', ok: '退出并清空', danger: true })) { M.discardSession(); S.render(); }
     };
     /* ⚠ 2026-10-11（F-22）：此前 `splice(idx,1)` +「idx 回退」——跳过队尾那题时 idx 退 1，
        会**重新显示上一道已判过的题**（判定还在 results 里），用户以为跳题没生效。
@@ -448,7 +448,7 @@ let longOpen = false, maskOpen = false;
       '<div class="row"><button class="btn" id="rvMore">再来一场</button><span class="tb-sp"></span></div></div>';
     const c1 = U.$id('rvCommit'); if (c1) c1.onclick = commit;
     const d1 = U.$id('rvDrop'); if (d1) d1.onclick = async () => {
-      if (await S.confirm({ title: '丢弃本场判定？', body: '不落库，判定直接清空。', ok: '丢弃', danger: true })) { M.session = null; S.render(); }
+      if (await S.confirm({ title: '丢弃本场判定？', body: '不落库，判定直接清空。', ok: '丢弃', danger: true })) { M.discardSession(); S.render(); }
     };
     /* ★ 2026-10-31（codex D02，已复现）：**"离开本场"必须与"丢弃不写"同口径**。
        三个入口**无条件** `M.session = null` —— 判分（含 BUG-12 那种"已建批、待补批改"的
@@ -468,7 +468,7 @@ let longOpen = false, maskOpen = false;
         });
         if (!ok) return;
       }
-      M.session = null;
+      M.discardSession();
       if (typeof next === 'function') next();
       S.render();
     };
@@ -530,13 +530,13 @@ let longOpen = false, maskOpen = false;
            旧代码无条件 `S.toast('已落库：' + (... || '（剩余判定此前已入账）'))` ⇒ 用户看到"已落库"，
            其实判分已经丢了、台账一个字节没变。现在分开说，并把"判定已丢"讲明白。 */
         if (!papers.length) {
-          commitBusy = false; M.session = null;
+          commitBusy = false; M.discardSession();
           S.toast('本场没有写入任何内容（判定已在剔除时作废，台账未改动）', 'warn', 12000);
           S.render();
           return;
         }
         S.toast('已落库：' + papers.join('；'), 'ok', 8000);
-        commitBusy = false; M.session = null;
+        commitBusy = false; M.discardSession();
         S.regenBackground();          // 非阻塞：后台重建磁盘快照（壳侧写闸排队）
         S.render();
         return;

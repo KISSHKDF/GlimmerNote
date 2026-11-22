@@ -393,13 +393,20 @@ function checkLibZeroWrite() {
   console.log('✔ 真库零写入：除上面列出的派生缓存外，' + LIB0.size + ' 个文件 + ' + (LIB0_DIRS ? LIB0_DIRS.size : 0) + ' 个目录全部零变化');
   return 0;
 }
-if (mode !== 'fixture') {
+if (mode !== 'fixture' && !E.isProcessOwnedFixture()) {
   LIB0 = libSnapshot(E.LIB);
   LIB0_DIRS = libDirSnapshot(E.LIB);
   snapshotSemanticFilesWithMap(E.LIB);
   console.log('\n真库零写入断言：已记录 ' + LIB0.size + ' 个文件的 size+mtime（文本类另算 sha256）＋ ' +
     LIB0_DIRS.size + ' 个目录（只比存在性，不比 mtime）—— ' + E.LIB);
   process.on('exit', () => { checkLibZeroWrite(); });
+} else if (mode !== 'fixture') {
+  /* ★ 2026-11-23（审计 T-01 · P1）：库是**本进程物化的临时夹具**（gn-synthlib-*）时跳过对账。
+     修前照样记快照 + 挂 exit 钩子 —— 而 Node 的 exit 监听按注册顺序跑：
+     `_测试环境.cjs` 的 cleanupTempDirs 注册在先 ⇒ **先删夹具、后对账**，
+     每个文件都被报成"凭空消失"（假红）。这正是干净克隆 quick 报"文件消失"的一类假红。
+     夹具是一次性的，对账它没有意义；真库（非本进程自建）仍全额对账。跳过必须可见： */
+  console.log('\n[零写入断言跳过] 库是本进程物化的临时夹具（' + E.LIB_SOURCE + '），退出清理会删除它，对账无意义（真库不受影响）');
 }
 
 /* ════════ fixture 模式：零依赖自检（新克隆第一步）════════
@@ -1063,6 +1070,13 @@ const unitTests = [
      （`git clone --no-hardlinks` 到 %TEMP%，无 exe、无真库；实测 13+13+16+9=51 断言、exit 0）
      ⇒ 已搬进上面的 HERMETIC 白名单，此处不再重复挂（unitTests 循环不去重，挂了会跑两遍）。 */
   ['neg-snapshot-text-and-force.cjs'],    // ★ 2026-11-05 合并评审 P1-5/P0-4：md/html 掏空不许直接恢复；--force-restore 二次确认 + 审计
+  /* ★ 2026-11-23（审计 D-04 · P1）：防掏空校验的字段表/计数器**按真源实测纠正**——
+     _盲解双路 顶层是 lanes（修前写成 cards）、_配图台账 是 cards（修前 figures）、
+     _页码映射 是 rules（修前 mappings）；且 _原卷台账.cards/_原图台账.objects/_盲解双路.lanes/
+     _配图台账.cards 是**键值表**（值是裸对象），修前 countOf 恒计 0 ⇒ 四份台账被掏空也"恢复通过"。
+     本用例对 4 份台账真跑 `_快照 --restore 掏空版`：必须拦下并退回；变异自证（旧字段表+旧计数器
+     必须放行）。迷你 git 仓，零真库依赖。 */
+  ['neg-snapshot-emptied-ledgers.cjs'],
   /* ★ 2026-11-12（批次 3 / 可访问性）：字号 px→rem（视觉逐值不变）+ prefers-reduced-motion
      + 动态状态 aria-live。改前实测：58 处 px 字号、reduced-motion 0 处、aria-live 0 处。 */
   /* ★ 2026-11-12（批次 3 / README 用户视角重构）：守一级标题唯一 / 内部锚点都能落地 /
@@ -1144,6 +1158,13 @@ const unitTests = [
      没有 `原卷截图.jpg` 的合法卡（生成器本来就给 img:null）在 `U.$id('rvImg').onclick` 崩掉整屏，
      且崩在退出/判分按钮绑定之前 ⇒ 整场复习锁死、重进仍崩。两条都带阴性自证。 */
   ['neg-review-leave-and-noidx.cjs'],
+  /* ★ 2026-11-23（审计 F-01 · P1）：复习会话**崩溃/关窗不丢判分**。
+     修前 M.session 只在内存，刷新/崩溃/关窗丢整场判分。现在判分/撤销/摘组即时落
+     localStorage['ctb2.session']；boot 时 M.restoreSession() 接回（卡已撤的剔除并计数、
+     孤儿判定一并清）；endSession 全组落库 / discardSession 才删键。
+     本用例纯内存 DOM 桩：判分/撤销同步落盘、跨环境恢复、撤卡剔除、清键时机、
+     阴性自证（掏掉 sessionSave ⇒ 不落盘）。 */
+  ['neg-session-crash-persist.cjs'],
   /* D03：门禁剔除被拒题只改提交列表、不改卷面题源 `sheet.refs` ⇒ 纸面仍印着被拒题、
      题号错位（纸上第 2 题成了台账第 1 题）、清篮还把没入账的题一起摘掉。
      附带守"剔除重试不得对已成功组重复组卷"（external 复核抓到的第二个缺陷）。 */
@@ -1248,6 +1269,20 @@ const unitTests = [
      F **变异自证**（摘掉任一前置检查 ⇒ 变异体确实放行 ⇒ 判据有牙齿）。
      51 断言。 */
   ['neg-ingest-land.cjs'],
+  /* ★ 2026-11-23（审计 D-01/D-02 · P0）：**取锁后重读索引**。
+     入库（⑥）与改卡（②）都曾在锁外把索引读进内存、锁内整份写回 ⇒
+     读与取锁之间别的工具（批改/门禁/另一批入库）写进同一份索引的内容被覆盖；
+     两批并发入库还撞同一个卡号。本用例用 `CTB_TEST_PRELOCK_HOOK` 测试缝在
+     "锁外读完、即将取锁"那一刻模拟并发写：
+     A 入库 ⇒ 新卡顺延（M1000）、并发卡保留；B 改卡 ⇒ 批改回写（reviewCount=3）不被覆盖；
+     A6/B5 变异自证（摘掉锁内重读 ⇒ M0999 丢/撞号 M0001、reviewCount 回 0）。
+     零真库依赖（夹具自建 %TEMP%），干净克隆可跑。 */
+  ['neg-ingest-lock-reread.cjs'],
+  /* ★ 2026-11-23（审计 R-03 · P1）：**新卡入库即排首次复习（次日）**。
+     修前 nextDue='' ⇒ 卡永不进到期池，只有组过卷才可能被复习 —— 运行区实测 75% 卡从未复习。
+     现在 nextDue=明天、reviewStatus 仍「未复习」（不伪造复习记录）；
+     --dry 零写盘；变异自证（nextDue 改回 '' ⇒ 主判据红）。 */
+  ['neg-ingest-first-review.cjs'],
   /* ★ 2026-11-16：**全新库第一张卡**（别人拿这个程序来用，到底能不能录进第一道错题）。
      真机复现的两个缺陷：① 新学生 `subjects: {}` 而全仓没有代码创建学科节 ⇒ 第一张卡 exit 2 零写盘；
      ② 盲解清稿写出 `-第1路-重盲解-<摘要>`，与 N13 对不上 ⇒ 入库当场制造库级违规。
@@ -1346,6 +1381,11 @@ const unitTests = [
      真跑 组卷→批改→撤批（临时库）：14 字段行契约 / rating 映射 / 间隔阶梯 / 只增不改 /
      撤批落 undo 不删正向行 / 净判分对账 / 双进程并发 append 零交错零丢失 / 崩溃半行不冒充好数据。 */
   ['neg-revlog-appendonly.cjs'],
+  /* ★ 2026-11-23（审计 D-07 · P1）：批改**失败回滚**后 revlog 不得留下"没发生的批改"。
+     修前判分循环当场 append，事务回滚不覆盖 append ⇒ 失败也留行（假账，对账对不平）。
+     现在 revlog 攒行、commitTx 之后统一落盘。本用例：真跑批改半途失败（第二题非法结果）
+     ⇒ 台账/索引回滚 + revlog 零新增；变异自证（revlogAppend 退回当场落盘 ⇒ 必留脏行）。 */
+  ['neg-revlog-no-ghost-rows.cjs'],
 ];
 /* ★ 2026-11-13（P0-C③，方案批次0-4）：单元级用例 **fail-soft**——逐用例跑完、末尾汇总点名。
    改前这里一条红就 process.exit：R1 实测白名单只跑到 10/40，被遮的 5 条（fixtures-smoke /
