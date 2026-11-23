@@ -576,7 +576,12 @@ switch (action) {
        *   注意：**测量要在裁好的卡图上做，不能在原图上做**（原图是斜着拍的手机照，
        *   行列方向不对，量出来全是垃圾读数）。 */
       warnTruncated(c, finalFile);
-      const sha = crypto.createHash('sha256').update(fs.readFileSync(finalFile)).digest('sha256');
+      /* ⚠ 2026-11-24 修：`digest('sha256')` 传的是**编码名**（'sha256' 不是合法编码）⇒
+       *   Node 把它当 'hex' 处理，其实返回的是 **Buffer**（不是字符串）⇒
+       *   写进 `_裁图记录.json` 后序列化成 {"type":"Buffer","data":[...]}，
+       *   **人工核对时没法直接比 sha**（2026-11-24 实测踩到）。
+       *   正确写法：`digest('hex')`（小写十六进制字符串）。 */
+      const sha = crypto.createHash('sha256').update(fs.readFileSync(finalFile)).digest('hex');
       const srcSize = probeRed(p.srcAbs);
       /* 写 sidecar：**追加**一条 crops[] 记录，不覆盖整份 —— `_原卷台账.mjs` 的
          ruleSidecar 从 crops[] 里挑 `out` 含「原卷截图」的那条作为**整页证据图的出处**
