@@ -36,15 +36,16 @@ import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
 const argv = process.argv.slice(2);
 const { opt } = parseArgs(argv, {
   valueFlags: [...COMMON_VALUE_FLAGS, 'in', 'out', '放大', '最小宽', '裁剪', '抹除', '裁剪后最小宽'],
-  boolFlags: ['探测', '去红笔', '去黑笔', '矫正', '增强', '锐化', '去噪', 'help', 'h'],
+  boolFlags: ['探测', '边缘墨迹', '去红笔', '去黑笔', '矫正', '增强', '锐化', '去噪', 'help', 'h'],
 });
 
-if (opt.help || opt.h || (!opt['in'] && !opt['探测'])) {
+if (opt.help || opt.h || (!opt['in'] && !opt['探测'] && !opt['边缘墨迹'])) {
   console.log([
     '拾光小册 · 配图清洗工具 v1.0（零依赖 · System.Drawing）',
     '',
     '  node src\\tools\\_配图清洗.mjs --in <原图> --out <输出> [动作...]',
     '  node src\\tools\\_配图清洗.mjs --in <原图> --探测        （只分析：红/黑笔占比、尺寸、包围盒）',
+    '  node src\\tools\\_配图清洗.mjs --in <原图> --边缘墨迹    （只分析：四条边界上的暗像素数 ⇒ 判"图是否被切在边界上"）',
     '',
     '  --去红笔    去除红色系笔画（红笔批改），保留印刷体',
     '  --去黑笔    去除黑色手写笔画（默认关：印刷体也是黑的，误伤风险高）',
@@ -54,6 +55,7 @@ if (opt.help || opt.h || (!opt['in'] && !opt['探测'])) {
     '  --裁剪 x,y,w,h   按 0~1 归一化框裁剪（裁掉压边的字迹/留白）',
     '  --放大 N    放大到 N 倍（高质量插值）',
     '  --最小宽 N  放大到宽度不小于 N 像素（与 --放大 二选一，--最小宽 优先）',
+    '  --裁剪后最小宽 N  裁剪完若仍不足 N 宽则再放大（**注意：--最小宽 是"先缩放后裁剪"**）',
     '',
     '  例：去红笔 + 去噪 + 裁掉下边字迹 + 放大到 1200 宽',
     '    node src\\tools\\_配图清洗.mjs --in a.jpg --out b.jpg --去红笔 --去噪 --裁剪 0,0,1,0.92 --最小宽 1200',
@@ -64,7 +66,10 @@ if (opt.help || opt.h || (!opt['in'] && !opt['探测'])) {
 if (!opt['in']) { console.error('✖ 缺少 --in <原图>'); process.exit(2); }
 const IN = String(opt['in']);
 if (!fs.existsSync(IN)) { console.error('✖ 原图不存在：' + IN); process.exit(2); }
-if (!opt['探测'] && !opt.out) { console.error('✖ 缺少 --out <输出>（或用 --探测 只分析）'); process.exit(2); }
+if (!opt['探测'] && !opt['边缘墨迹'] && !opt.out) { console.error('✖ 缺少 --out <输出>（或用 --探测 只分析）'); process.exit(2); }
+
+/* ───────────────── 边缘墨迹（只分析，不写盘） ─────────────────
+ * ⚠ 放在 PS_EDGE 定义之后调用（const 有 TDZ，见文件末尾的 --边缘墨迹 分支）。 */
 
 /* ───────────────── PowerShell 图像处理脚本（零依赖） ─────────────────
  * 一律写成参数化的 .ps1 临时文件执行：
@@ -254,6 +259,31 @@ const PS_PROBE = [
  *   ③ 把这些像素替换为邻域的中性白（纸张色），不留红边。
  * 增强：对灰度做对比度拉伸 + 3x3 unsharp 掩模（把印刷线条的边缘拉锐）。
  */
+/**
+ * 边缘墨迹探针（只分析，不写盘）：统计图**四条边界**上的暗像素数。
+ *
+ * 为什么需要（2026-11-24 实测 P0128 踩到）：裁图时如果内容**正好被切在裁切框边界上**，
+ * 肉眼看整图未必察觉（尤其图(b) 右侧那只电压表只被切掉"15/3"那一端的一小条），
+ * 但**印出来会缺一块**。判据：裁完再逐列/逐行统计边界处的墨迹 ——
+ * 任一边不为 0 ⇒ 内容压在边界上 ⇒ 可能被截断。
+ *
+ * 只数**暗像素**（R,G,B 都 < 200）：彩色印刷边缘不算，避免误报。
+ */
+const PS_EDGE = [
+  'param([string]$In)',
+  'Add-Type -AssemblyName System.Drawing',
+  '$ErrorActionPreference = "Stop"',
+  '$img=[System.Drawing.Image]::FromFile($In)',
+  '$W=$img.Width; $H=$img.Height',
+  'function DarkAt($x,$y){ $c=$img.GetPixel($x,$y); if($c.R -lt 200 -and $c.G -lt 200 -and $c.B -lt 200){ return 1 } return 0 }',
+  '$l=0; for($y=0;$y -lt $H;$y++){ $l += DarkAt 0 $y }',
+  '$r=0; for($y=0;$y -lt $H;$y++){ $r += DarkAt ($W-1) $y }',
+  '$t=0; for($x=0;$x -lt $W;$x++){ $t += DarkAt $x 0 }',
+  '$b=0; for($x=0;$x -lt $W;$x++){ $b += DarkAt $x ($H-1) }',
+  '$img.Dispose()',
+  '"左=" + $l + " 右=" + $r + " 上=" + $t + " 下=" + $b',
+].join('\r\n');
+
 const PS_CLEAN = [
   'param([string]$In,[string]$Out,[int]$Mode,[double]$Scale,[int]$MinW,[int]$Threshold,[int]$MinBlob,[string]$Crop,[string]$Erase,[int]$CropMinW)',
   'Add-Type -AssemblyName System.Drawing',
@@ -464,6 +494,14 @@ const MIN_BLOB = 2;       /* 去笔迹时的最小簇面积：小于它的当噪
      · 现 THRESHOLD=8 ⇒ 那道红笔（实测 69 个红像素、跨 3 行）能聚成一簇被检出。
      · 彩色印刷边缘的误报靠**色相判据**（G/R ≤ 0.85 且 B/R ≥ 0.70）挡住，
        不靠面积门槛 —— 面积门槛只负责滤噪点。 */
+
+if (opt['边缘墨迹']) {
+  const raw = psRun(PS_EDGE, ['-In', IN]);
+  console.log('边缘墨迹：' + IN);
+  console.log('  ' + raw.trim());
+  console.log('  ⇒ 任一边不为 0 ⇒ 图内容被切在边界上（可能被截断），请肉眼确认边缘图元是否完整。');
+  process.exit(0);
+}
 
 if (opt['探测']) {
   const raw = psRun(PS_PROBE, ['-In', IN, '-Threshold', String(THRESHOLD), '-MinBlob', String(MIN_BLOB)]);
