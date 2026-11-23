@@ -224,6 +224,15 @@ switch (action) {
       by: opt.by || 'agent',
       date: opt.date || today()
     };
+    /* ★ 2026-11-23 修（实测踩到）：`登记` 原先**整条重建** entry ⇒ 把 `fix`/`fixAt`/`fixBy`
+       三个「欠账登记」字段**静默抹掉** ⇒ 那张卡立刻从"已登记为待整改（降级为警告）"
+       变成"未登记（一律阻断）"，一条待整改的登记凭空消失、门禁从警告翻成阻断。
+       根因：欠账字段是后来加的，而登记动作按旧 schema 整体覆盖，没有保留既有字段。
+       修法：保留 prev 上**未被本次显式覆盖**的字段（欠账登记与其它扩展字段）。
+       ⚠ 只保留 fix* 三个字段 + 其它未在 entry 里出现的键，不动 need/kind/ref/note 的语义。 */
+    for (const [k, v] of Object.entries(prev)) {
+      if (!(k in entry)) entry[k] = v;
+    }
     led.cards[x.key] = entry;
     saveLedger(led);
     const fs_ = figState(x, entry);
@@ -244,10 +253,18 @@ switch (action) {
       /* 写入端同一条 schema 校验：need 必须是布尔。字符串 "true"/1 旧代码静默写成 false，
          等于把「必须配图」悄悄改成「无需图」——门禁从此不管这张卡（2026-10-09 补）。 */
       if (typeof row.need !== 'boolean') fail(`批量登记 ${row.card}：need 必须是布尔 true/false，收到 ${JSON.stringify(row.need)}`);
-      led.cards[x.key] = {
+      /* ★ 2026-11-23：与「登记」动作同一个坑（整条重建 ⇒ 抹掉 fix/fixAt/fixBy）。
+         批量更要小心：一次登记 20 张 ⇒ 20 张的欠账登记一起消失 ⇒ 门禁从警告整片翻成阻断。
+         修法同上：保留既有条目里未被本次显式覆盖的字段。 */
+      const prev = led.cards[x.key] || {};
+      const entry = {
         need: row.need, kind: row.kind || (row.need ? 'jpg' : 'none'),
         ref: row.ref || '', note: row.note || '', by: row.by || 'agent', date: row.date || today()
       };
+      for (const [k, v] of Object.entries(prev)) {
+        if (!(k in entry)) entry[k] = v;
+      }
+      led.cards[x.key] = entry;
       n++;
     }
     saveLedger(led);
