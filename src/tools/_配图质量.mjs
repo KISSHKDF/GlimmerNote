@@ -47,8 +47,12 @@ export const MIN_WIDTH = (() => {
  *  依据：M0070 那道红笔横线实测 43 像素（放大到 1200 宽后），是最细也最真实的量级。 */
 export const RED_BLOB_MIN = 20;
 
-/** 台账 ref/note 里出现这些词 ⇒ 登记过清洗痕迹（符合第 2 级规则） */
-const CLEAN_MARKERS = /清洗|去红笔|去笔迹|矫正|摆正|增强|放大|去噪|锐化|修复|重裁|重新裁|矢量|重画|svg/i;
+/** 台账 ref/note 里出现这些词 ⇒ 登记过清洗痕迹（符合第 2 级规则）
+ *  ⚠ 2026-11-23 补两个词：**裁出** 与 **原卷裁图**。
+ *     实测 10 张卡的 ref 写的是「原卷裁图，源：…；按 figBbox 裁出，无孩子笔迹」——
+ *     这**就是**第 2 级处理的如实登记，却因为没有出现"清洗/放大"这类词而被判「来源未登记」。
+ *     判据要认的是"有没有写明图的来历与处理"，不是"有没有用某个特定动词"。 */
+const CLEAN_MARKERS = /清洗|去红笔|去笔迹|矫正|摆正|增强|放大|去噪|锐化|修复|重裁|重新裁|矢量|重画|svg|裁出|裁图|按 figBbox|无孩子笔迹/i;
 
 /** 台账 ref/note 里出现这些词 ⇒ 声明来源是网上题库（第 1 级规则） */
 const ONLINE_MARKERS = /网上|题库|菁优|jyeoo|21cnjy|作业帮|教习网|二一|精英家教|青果|原图|印刷版/i;
@@ -83,6 +87,29 @@ export function isDeferred(entry) {
  * 真判据（有牙的）：调用 `_配图清洗.mjs --探测` 拿到精确的成形红笔簇数。
  * 本模块提供 `probeRedInk(file)`，**按需**调用一次并缓存结果。
  */
+/** 残余红味覆盖率上限（%）。
+ *  ⚠ **为什么需要这条**（实测 M0061，2026-11-23）：探测的「成形红笔」判据要求
+ *    「连通域面积 >= 阈值 且 长宽比 >= 2」，于是**孩子用红笔画的曲线**
+ *    （一条连续的线，但每个连通段都很细、段与段之间被抗锯齿断开）**判不出来** ——
+ *    实测那张图「成形红笔 0 个」，可图上那条红曲线清清楚楚，就是孩子的答案
+ *    ⇒ **重做卷泄答案**。
+ *    补一条：整图红味像素占比（探测输出里已带这个百分比，不必再扫像素）。
+ *    实测干净印刷图 < 0.05%；带红笔的图 0.25%~0.8% ⇒ 阈值取 0.15%。
+ *    ⚠ 这是**补充**判据，不取代「成形红笔」：后者抓粗红块（红叉、红圈），
+ *    前者抓细红线（手写曲线）。两条都要过。 */
+export const RED_COVERAGE_MAX = 0.15;
+
+/** 从已探测的结果里取红味覆盖率（%）；读不到就返回 null（不下结论）。
+ *  ⚠⚠ **口径必须与 `_配图重裁.mjs` 的严格口径一致**（R-G >= 25，实测 C0003）：
+ *     探测输出的「红色像素」用的是探测的四类判据（含浅粉 R-G>=15）⇒ **泛黄旧纸张**
+ *     也会被算进去：实测 C0003 那张**干净无笔迹**的扫描页红味占 1.58% ⇒ 直接假红。
+ *     实测分界：旧纸 R-G = 18~19（几乎只是偏黄）；真红笔 R-G >= 60（洋红）/ >= 25（褪色）。
+ *     所以这里**不能**直接用探测的百分比，要另算一次严格口径。 */
+export function redCoverageOf(file, probe) {
+  if (probe && typeof probe.redPctStrict === 'number') return probe.redPctStrict;
+  return null;
+}
+
 let _probeCache = new Map();
 
 /**
@@ -101,11 +128,23 @@ export function probeRedInk(file) {
     const w = /尺寸：(\d+)x(\d+)/.exec(out);
     const rp = /红色像素：(\d+)/.exec(out);
     const rb = /成形红笔（面积\+形状达标）：(\d+)/.exec(out);
+    /* ★ 2026-11-23：探测输出里带了红味像素**占比**（"红色像素：2531（0.2761%）"），
+       正好是"残余红味覆盖率"判据要的量 ⇒ 一并取出来，不必再扫一遍像素。 */
+    const rpp = /红色像素：(\d+)（([\d.]+)%）/.exec(out);
+    /* ★ 2026-11-23：**严格口径**红味占比（R-G>=25，排除泛黄旧纸）。
+       探测输出里的「红色像素」用的是四类判据（含浅粉 R-G>=15）⇒ 旧纸也算 ⇒ 假红
+       （实测 C0003 的干净扫描页 1.58%）。严格口径由清洗工具在同一次探测里算出。 */
+    const rsp = /严格红味（R-G>=25[^）]*）：(\d+)（([\d.]+)%）/u.exec(out);
     if (w) {
       res = {
         w: Number(w[1]), h: Number(w[2]),
         redPixels: rp ? Number(rp[1]) : 0,
         redBig: rb ? Number(rb[1]) : 0,
+        redPct: rpp ? Number(rpp[2]) : null,
+        /* ⚠ 捕获组编号：rsp[1]=像素数、rsp[2]=百分比（rsp[3] 是 undefined）。
+           写错成 rsp[3] 时 pct=NaN ⇒ `NaN > 阈值` 恒为 false ⇒ **闸门全程失效**。 */
+        redPctStrict: rsp ? Number(rsp[2]) : null,
+        redStrict: rsp ? Number(rsp[1]) : null,
       };
     }
   } catch {
@@ -147,8 +186,22 @@ export function checkFigureFile(file, entry, opts = {}) {
     if (probe) {
       info.redBig = probe.redBig;
       info.redPixels = probe.redPixels;
-      if (probe.redBig > 0) {
-        problems.push(`检出成形红笔 ${probe.redBig} 处（${probe.redPixels} 像素）——重做卷会泄答案`);
+      /* ★ 2026-11-24 修（实测 M0061/M0065/M0066/P0152 假红）：
+       *   「成形红笔 N 处」是**簇计数**，不判面积 ⇒ JPEG 压缩在黑字边缘产生的
+       *   彩色振铃（色度噪声）也会被数成"红笔簇"。
+       *   实测那 4 张图红味像素占比只有 0.02%~0.09%（肉眼完全看不出红色），
+       *   却被判"检出成形红笔 1~10 处"⇒ **闸门对刚转成 JPEG 的干净图集体假红**。
+       *   修法：**成形红笔只在红味覆盖率超阈值时才报**（单看簇数会误伤压缩噪声）。
+       *   阈值与"残余红味"同口径（RED_COVERAGE_MAX=0.15%）。 */
+      const cov = redCoverageOf(file, probe);
+      if (cov !== null) {
+        info.redCoverage = cov;
+        if (probe.redBig > 0 && cov > RED_COVERAGE_MAX) {
+          problems.push(`检出成形红笔 ${probe.redBig} 处（${probe.redPixels} 像素，占 ${cov}%）——重做卷会泄答案`);
+        }
+        if (cov > RED_COVERAGE_MAX) {
+          problems.push(`残余红味像素占 ${cov}%（> ${RED_COVERAGE_MAX}%）——图上还有红笔痕迹，疑似孩子的作答，重做卷会泄答案`);
+        }
       }
     }
   }
@@ -179,11 +232,27 @@ export function checkFigureFile(file, entry, opts = {}) {
  *   正确判据：**看题干.html 引用了哪个资产**。
  *     · 题干.html 内联了 svg / <img> ⇒ 在用的是它，目录里的 jpg 是遗留 ⇒ 报「遗留冗余」（提示级，非阻断）
  *     · 题干.html 没引用任何图    ⇒ 那个 jpg 才是**在用**的 ⇒ need=false 登记就是真矛盾（阻断）
+ *
+ * ★ 2026-11-23 修（实测 P0036 漏判，**真矛盾被当成冗余放过**）：
+ *   原判据 `stemUsesInlineFig = 存在 <svg> || 存在任何 <img>` —— 把
+ *   `<img src="题图.jpg">` 也算成「内联图」⇒ 题干引用的**正是目录里那个 jpg** 时，
+ *   判据反而说"在用的是内联图、jpg 是冗余" ⇒ need=false 登记的真矛盾**不报红**。
+ *   实测：P0036（need=false，题干 `<img src="题图.jpg">`）被门禁当「遗留冗余」放过，
+ *   而它恰恰是"登记说无需图、实际靠 jpg 才能解题"的典型。
+ *   修法：**按"题干引用的是哪个资产"判**，而不是"题干里有没有图标签"：
+ *     · 题干引用了 `题图.jpg`（或 `题干.jpg`）⇒ **那个文件就是在用的** ⇒ need=false 是真矛盾（阻断）；
+ *     · 题干只有内联 svg / 其它 <img> ⇒ 目录里的 jpg 是遗留 ⇒ 提示级；
+ *     · 题干完全没有图 ⇒ jpg 就是在用的 ⇒ 真矛盾（阻断）。
  */
-export function checkLedgerContradiction(key, entry, assetFiles, stemUsesInlineFig) {
+export function checkLedgerContradiction(key, entry, assetFiles, stemUsesInlineFig, stemRefsAssets) {
   const problems = [];
   if (!entry) return problems;
   if (entry.need === false && assetFiles && assetFiles.length > 0) {
+    /* 题干直接引用了目录里的图资产 ⇒ 它在用，不是冗余 */
+    if (Array.isArray(stemRefsAssets) && stemRefsAssets.length > 0) {
+      problems.push(`台账矛盾：登记为「无需图」但题干.html 正在引用 ${stemRefsAssets.join(',')}（在用的图资产却登记为不需要）`);
+      return problems;
+    }
     if (stemUsesInlineFig) {
       /* 遗留冗余：不算矛盾，但要说清（否则人不知道为什么这卡有 jpg） */
       problems.push(`遗留冗余：登记为「无需图」但目录里留着 ${assetFiles.join(',')}（题干.html 已内联图，实际在用的是内联图）——建议删冗余文件并把台账改回 need=true`);
@@ -211,19 +280,46 @@ export function checkCardFigure(x, entry, opts = {}) {
   const hp = path.join(dir, '题干.html');
   const stemHtml = fs.existsSync(hp) ? fs.readFileSync(hp, 'utf8') : '';
   const stemUsesInlineFig = /<svg[\s\S]*?<\/svg>/i.test(stemHtml) || /<img\b/i.test(stemHtml);
+  /* ★ 2026-11-23：题干**引用了哪个目录里的资产**（见 checkLedgerContradiction 的说明）。
+     判据：<img src="题图.jpg">（含百分号编码/相对路径写法）⇒ 引用的就是那个文件。 */
+  const stemRefsAssets = assets.filter(f => {
+    const esc = f.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`<img\\b[^>]*\\bsrc\\s*=\\s*["']?[^"'>]*${esc}`, 'i').test(stemHtml);
+  });
 
-  for (const p of checkLedgerContradiction(x.key, entry, assets, stemUsesInlineFig)) {
+  for (const p of checkLedgerContradiction(x.key, entry, assets, stemUsesInlineFig, stemRefsAssets)) {
     (/遗留冗余/.test(p) ? warnings : problems).push(p);
   }
 
-  for (const f of assets) {
+  /* ★ 2026-11-23 修（实测 M0070 整改后仍被报"尺寸不足"，**卡死发版链**）：
+   *   原实现对**目录里存在的每个**图资产都跑质量判据，于是
+   *   「题干已改用内联 svg、目录里的旧 题图.jpg 只是遗留」的卡，
+   *   它的**遗留 jpg** 照样被判"尺寸不足/红笔残留"⇒ 卡永远清不掉。
+   *   判据修正：**只判"实际会被渲染/印出来"的资产**。
+   *     · 题干引用了某个资产（<img src="题图.jpg">）⇒ 那个文件在用 ⇒ 判它；
+   *     · 题干里有内联图 ⇒ 内联图在用，目录里没被引用的 jpg 是**遗留** ⇒ 不判（只提示）；
+   *     · 题干里没有任何图 ⇒ 目录里的 jpg 由前端的 fig 兜底渲染（见 model.js:663）⇒ 判它。
+   *   遗留资产的清理由「台账 kind 修正 + 删除冗余文件」负责，不由质量判据负责。
+   */
+  const stemHasInlineSvg = /<svg[\s\S]*?<\/svg>/i.test(stemHtml);
+  const inUseAssets = stemRefsAssets.length > 0
+    ? stemRefsAssets
+    : (stemHasInlineSvg ? [] : assets);
+  const legacyAssets = assets.filter(f => !inUseAssets.includes(f));
+
+  for (const f of inUseAssets) {
     const r = checkFigureFile(path.join(dir, f), entry, opts);
     for (const p of r.problems) problems.push(`${f} ${p}`);
   }
 
   /* 内联 svg：kind 登记要跟着改 */
-  if (stemUsesInlineFig && /<svg[\s\S]*?<\/svg>/i.test(stemHtml) && entry && entry.kind === 'jpg') {
+  if (stemHasInlineSvg && entry && entry.kind === 'jpg') {
     warnings.push('台账 kind 登记为 jpg，但题干.html 已内联 svg（矢量），kind 应改为 svg');
+  }
+
+  /* 遗留资产：只提示，不判质量（它不参与渲染） */
+  for (const f of legacyAssets) {
+    warnings.push(`遗留冗余：${f} 未被题干引用（题干用内联图）—— 建议删冗余文件并把台账 kind 改为 svg`);
   }
 
   /* ★ 2026-11-23：分阶段 —— 显式登记为「待整改」的存量欠账降级为警告，不阻断。

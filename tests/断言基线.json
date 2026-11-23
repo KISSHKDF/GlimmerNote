@@ -159,5 +159,5 @@
  "neg-ingest-lock-reread.cjs": 12,
  "neg-ingest-first-review.cjs": 8,
  "neg-revlog-no-ghost-rows.cjs": 9,
- "neg-fig-quality-gate.cjs": 10
+ "neg-fig-quality-gate.cjs": 15
 }
