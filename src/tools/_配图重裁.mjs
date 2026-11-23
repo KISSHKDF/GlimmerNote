@@ -289,7 +289,11 @@ function eraseBoxesFor(probe) {
 function edgeInk(file) {
   try {
     const out = runClean(['--in', file, '--边缘墨迹']);
-    const m = /左(\d+)\s+右(\d+)\s+上(\d+)\s+下(\d+)/.exec(out);
+    /* ⚠ 正则必须与 `_配图清洗.mjs --边缘墨迹` 的**实际输出格式**一致：
+     *   它打印的是「左=8 右=0 上=0 下=0」（**等号**分隔，不是空格）。
+     *   写成 /左(\d+)\s+右(\d+)/ 会永远匹配不上 ⇒ warnTruncated 永远静默 ⇒
+     *   告警形同虚设（2026-11-24 实测踩到：输出明明有「左=8」，函数却返回 null）。 */
+    const m = /左\s*=\s*(\d+)\s+右\s*=\s*(\d+)\s+上\s*=\s*(\d+)\s+下\s*=\s*(\d+)/.exec(out);
     if (!m) return null;
     return { left: Number(m[1]), right: Number(m[2]), top: Number(m[3]), bottom: Number(m[4]) };
   } catch { return null; }
@@ -564,6 +568,14 @@ switch (action) {
         try { fs.unlinkSync(tmp); } catch { }
         fail++; continue;
       }
+      /* ⚠ 落盘前自检（2026-11-24，实测 P0128 踩到）：**边界墨迹**。
+       *   裁切框的右/左/下/上边界若**正好压着图内墨迹** ⇒ 图内容被切在边界上
+       *   （实测 P0128：图(b) 右侧 V₂ 电压表的"15/3"端被切掉一条，印到卷面上缺块；
+       *     把框从 831 px 放宽到 1057 px 就好了）。
+       *   ⇒ **告警但不阻断**：整页扫描/贴边图的边也会命中，最终仍要人眼看一眼。
+       *   注意：**测量要在裁好的卡图上做，不能在原图上做**（原图是斜着拍的手机照，
+       *   行列方向不对，量出来全是垃圾读数）。 */
+      warnTruncated(c, finalFile);
       const sha = crypto.createHash('sha256').update(fs.readFileSync(finalFile)).digest('sha256');
       const srcSize = probeRed(p.srcAbs);
       /* 写 sidecar：**追加**一条 crops[] 记录，不覆盖整份 —— `_原卷台账.mjs` 的
