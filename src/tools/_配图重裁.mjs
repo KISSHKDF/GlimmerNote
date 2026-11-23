@@ -40,6 +40,7 @@ import { libraryRoot, toolPath } from './_库根.mjs';
 import { readJsonStrict, withLibWrite } from './_安全写.mjs';
 import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
 import { indexFiles } from './_题库发现.mjs';
+import { displaySize } from './_图尺寸.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = libraryRoot();
@@ -273,6 +274,78 @@ function eraseBoxesFor(probe) {
       return [x0 / probe.w, y0 / probe.h, (x1 - x0 + 1) / probe.w, (y1 - y0 + 1) / probe.h]
         .map(v => v.toFixed(6)).join(',');
     });
+}
+
+/* ─────────── 裁切框「贴边截断」检测（2026-11-24，实测 P0128 踩到） ─────────── */
+/**
+ * 事件：P0128 重裁后，图(b) 右侧 V₂ 电压表的**右端（"15"刻度那头）被切掉一条**，
+ *   印到卷面上会缺块（读数不受影响，但图不完整）。
+ *   根因：裁切框的右边界**正好压在图内墨迹上** ⇒ 墨迹被切成两半。
+ *   现有门禁查不出来：它只看**输出图**的像素，看不到"输出图的边缘正好断在某根线上"。
+ *
+ * 判据：**输出图最右/最左/最上/最下那一列（行）的暗像素数不为 0** ⇒ 墨迹被切在边界上
+ *   ⇒ 图内容可能被截断，**告警**（不阻断：整页扫描的边也会命中，最后还得人眼看）。
+ *   实测：P0128 旧版（944 宽，V₂ 被切）右边界 = 36；当前版（1057 宽）右边界 = 0。
+ */
+function edgeInk(file) {
+  try {
+    const out = runClean(['--in', file, '--边缘墨迹']);
+    const m = /左(\d+)\s+右(\d+)\s+上(\d+)\s+下(\d+)/.exec(out);
+    if (!m) return null;
+    return { left: Number(m[1]), right: Number(m[2]), top: Number(m[3]), bottom: Number(m[4]) };
+  } catch { return null; }
+}
+
+/** 边界墨迹告警（人眼复核前先给机器提示） */
+function warnTruncated(c, file) {
+  const e = edgeInk(file);
+  if (!e) return false;
+  const hits = [];
+  if (e.right > 0) hits.push(`右边界 ${e.right} px`);
+  if (e.left > 0) hits.push(`左边界 ${e.left} px`);
+  if (e.bottom > 0) hits.push(`下边界 ${e.bottom} px`);
+  if (e.top > 0) hits.push(`上边界 ${e.top} px`);
+  if (!hits.length) return false;
+  console.log(`⚠ ${c.key}：裁切框边缘有墨迹（${hits.join('，')}）⇒ 图内容**可能被截断**（实测 P0128：V₂ 表右端被切）——请肉眼确认边缘图元是否完整；不够就把框往外放宽一档再裁。`);
+  return true;
+}
+
+/* ─────────── 裁切记录「孤儿坐标」检测（2026-11-24，实测 P0128 踩到） ─────────── */
+/**
+ * 事件：P0128 的 `_裁图记录.json` 里第一条 crop 记着
+ *   `src: "_收件箱/…/微信图片_20261105175011_219_1.jpg"`、`srcPx: [1760,2454]`。
+ *   但那个收件箱文件**在库里已被清理/迁移** ⇒ 按这条记录的坐标去裁，裁出来的是**原页另一题**。
+ *   根因：`srcPx` 是**像素坐标**，只在"那个 src 文件还是同一个字节"时才有意义；
+ *   `src` 指向的文件被换过/迁过（哪怕 sha 相同、路径不同），坐标就成了孤儿。
+ *
+ * 判据：读某张卡的 `_裁图记录.json`，对每条 crop：
+ *   · `src`（库内相对或绝对路径）现在**是否还可达**；
+ *   · 可达时，**实际尺寸**是否与记录的 `srcPx` 一致。
+ *   任一不符 ⇒ 该条记录的坐标**不可信**，告警（让人重新定位，而不是照抄旧坐标）。
+ */
+function warnOrphanCropCoords(c) {
+  const sidecar = path.join(c.dirAbs, '_裁图记录.json');
+  if (!fs.existsSync(sidecar)) return 0;
+  let rec;
+  try { rec = JSON.parse(fs.readFileSync(sidecar, 'utf8').replace(/^\uFEFF/, '')); } catch { return 0; }
+  const crops = Array.isArray(rec.crops) ? rec.crops : [];
+  let bad = 0;
+  for (const crop of crops) {
+    if (!crop || !crop.src || !crop.srcPx) continue;
+    const src = String(crop.src);
+    const abs = path.isAbsolute(src) ? src : path.join(ROOT, src);
+    if (!fs.existsSync(abs)) {
+      console.log(`⚠ ${c.key}：裁切记录里有**孤儿坐标**（src 已不可达：${src.slice(-52)}）——该条的 srcPx 不可信，重裁时不要照抄它。`);
+      bad++;
+      continue;
+    }
+    const sz = displaySize(abs);
+    if (sz && crop.srcPx.length >= 2 && (sz.w !== crop.srcPx[0] || sz.h !== crop.srcPx[1])) {
+      console.log(`⚠ ${c.key}：裁切记录的 srcPx 与源图实际尺寸不符（记录 ${crop.srcPx[0]}x${crop.srcPx[1]}，实际 ${sz.w}x${sz.h}）⇒ 坐标是孤儿，重裁时不要照抄它。`);
+      bad++;
+    }
+  }
+  return bad;
 }
 
 const argv = process.argv.slice(2);
