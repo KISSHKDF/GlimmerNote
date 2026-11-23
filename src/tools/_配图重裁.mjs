@@ -40,7 +40,6 @@ import { libraryRoot, toolPath } from './_库根.mjs';
 import { readJsonStrict, withLibWrite } from './_安全写.mjs';
 import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
 import { indexFiles } from './_题库发现.mjs';
-import { displaySize } from './_图尺寸.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = libraryRoot();
@@ -308,44 +307,6 @@ function warnTruncated(c, file) {
   if (!hits.length) return false;
   console.log(`⚠ ${c.key}：裁切框边缘有墨迹（${hits.join('，')}）⇒ 图内容**可能被截断**（实测 P0128：V₂ 表右端被切）——请肉眼确认边缘图元是否完整；不够就把框往外放宽一档再裁。`);
   return true;
-}
-
-/* ─────────── 裁切记录「孤儿坐标」检测（2026-11-24，实测 P0128 踩到） ─────────── */
-/**
- * 事件：P0128 的 `_裁图记录.json` 里第一条 crop 记着
- *   `src: "_收件箱/…/微信图片_20261105175011_219_1.jpg"`、`srcPx: [1760,2454]`。
- *   但那个收件箱文件**在库里已被清理/迁移** ⇒ 按这条记录的坐标去裁，裁出来的是**原页另一题**。
- *   根因：`srcPx` 是**像素坐标**，只在"那个 src 文件还是同一个字节"时才有意义；
- *   `src` 指向的文件被换过/迁过（哪怕 sha 相同、路径不同），坐标就成了孤儿。
- *
- * 判据：读某张卡的 `_裁图记录.json`，对每条 crop：
- *   · `src`（库内相对或绝对路径）现在**是否还可达**；
- *   · 可达时，**实际尺寸**是否与记录的 `srcPx` 一致。
- *   任一不符 ⇒ 该条记录的坐标**不可信**，告警（让人重新定位，而不是照抄旧坐标）。
- */
-function warnOrphanCropCoords(c) {
-  const sidecar = path.join(c.dirAbs, '_裁图记录.json');
-  if (!fs.existsSync(sidecar)) return 0;
-  let rec;
-  try { rec = JSON.parse(fs.readFileSync(sidecar, 'utf8').replace(/^\uFEFF/, '')); } catch { return 0; }
-  const crops = Array.isArray(rec.crops) ? rec.crops : [];
-  let bad = 0;
-  for (const crop of crops) {
-    if (!crop || !crop.src || !crop.srcPx) continue;
-    const src = String(crop.src);
-    const abs = path.isAbsolute(src) ? src : path.join(ROOT, src);
-    if (!fs.existsSync(abs)) {
-      console.log(`⚠ ${c.key}：裁切记录里有**孤儿坐标**（src 已不可达：${src.slice(-52)}）——该条的 srcPx 不可信，重裁时不要照抄它。`);
-      bad++;
-      continue;
-    }
-    const sz = displaySize(abs);
-    if (sz && crop.srcPx.length >= 2 && (sz.w !== crop.srcPx[0] || sz.h !== crop.srcPx[1])) {
-      console.log(`⚠ ${c.key}：裁切记录的 srcPx 与源图实际尺寸不符（记录 ${crop.srcPx[0]}x${crop.srcPx[1]}，实际 ${sz.w}x${sz.h}）⇒ 坐标是孤儿，重裁时不要照抄它。`);
-      bad++;
-    }
-  }
-  return bad;
 }
 
 const argv = process.argv.slice(2);
