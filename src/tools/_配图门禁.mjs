@@ -36,6 +36,11 @@ import { readJsonStrict, writeJsonAtomic, acquireLibLock } from './_安全写.mj
 /* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。 */
 import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
 import { indexFiles } from './_题库发现.mjs';
+/* ★ 2026-11-23：配图**质量**检查（共享模块，零副作用）。
+   此前本工具只判「有没有图」，不判「图好不好」——实测全库 39 张 jpg 里 21 张是
+   剪自孩子作业本的糊图，M0070 的图上还带红笔，而门禁全绿（exit 0）。
+   质量判据集中在 `_配图质量.mjs`（唯一实现），本工具与 `_盲解复核.mjs` 共用。 */
+import { checkCardFigure, checkFigureFile, MIN_WIDTH } from './_配图质量.mjs';
 
 /* ★ 2026-10-23 程序与数据分家：ROOT 现在是**用户库根**，不再是"本脚本所在目录"。
    兄弟工具一律用 toolPath(...)，见 _库根.mjs。 */
@@ -59,10 +64,11 @@ const { action, opt } = parseArgs(argv, {
   valueFlags: [
     ...COMMON_VALUE_FLAGS,
     // 本工具专属的带值 flag（**布尔开关不要列进来**：json 是开关）
+    'card', 'need', 'kind', 'ref', 'note', 'by', 'date', 'file', 'reason',
   ],
   /* ★ 2026-11-05（PR #13 复审 ①）：写盘工具一律严格模式 —— 拼错的开关（如 --dryy）当场报错，绝不静默丢弃后真写盘。
      清单 = 本文件用到的布尔开关（机扫 opt.x / val('x') 后人工核对），新增开关必须同步加进来，否则会被拒。 */
-  boolFlags: ['json', 'help', 'h'],
+  boolFlags: ['json', 'help', 'h', '深检', '只质量', 'list'],
 });
 const dstr = x => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
 const today = () => dstr(new Date());
@@ -253,7 +259,7 @@ switch (action) {
   case '门禁': {
     const led = loadLedger();
     const cards = allCards();
-    const map = {}, problems = [], archived = [];
+    const map = {}, problems = [], archived = [], warnings = [];
     for (const x of cards) {
       const e = led.cards[x.key];
       const r = figState(x, e);
@@ -285,6 +291,21 @@ switch (action) {
       }
       if (r.state === '缺图') problems.push(`${x.key}[缺图]`);
       else if (!e && FIGWORDS.test(r.a.stem.text)) problems.push(`${x.key}[提到图/表但未登记]`);
+
+      /* ★ 2026-11-23：配图**质量**闸门（新增第四类判定）。
+         判据在 `_配图质量.mjs`（共享模块）：Q1 尺寸不足 / Q2 红笔残留 / Q3 来源未登记 / Q4 台账矛盾。
+         ⚠ **默认只判 Q1/Q3/Q4（零成本，纯文件头 + 台账字段）；Q2 红笔要解码像素 ⇒ 必须 --深检**。
+         为什么默认不深检：全库 60 张 jpg，逐张 spawn PowerShell 解码要 1–2 分钟，
+         而门禁是每次提交都要跑的。深检留给「整改存量」与「入库前抽检」两个场合。 */
+      if (!opt['只质量']) {
+        const q = checkCardFigure(x, e, { deep: !!opt['深检'] });
+        for (const p of q.problems) {
+          /* 质量问题与「缺图」分级：缺图=硬错误（阻断），质量问题=也阻断但分开报，
+             让人一眼看出是「图没有」还是「图不好」。 */
+          problems.push(`${x.key}[配图质量 ${p}]`);
+        }
+        for (const w of (q.warnings || [])) warnings.push(`${x.key}[${w}]`);
+      }
     }
     // L1+L2 单一判定、同码同判：judge 只算一次；人类模式与 --json 用同一份 problems、同一个退出码
     if (opt.json) {
@@ -292,7 +313,7 @@ switch (action) {
          属性个数报「N 张卡已扫描」；`门禁 --json` 才带判定信封。把两者合一 = 页面把 ok/problems
          当成两张卡数。 */
       console.log(JSON.stringify(action === '清单' ? map : {
-        ok: problems.length === 0, action, problems, archivedSkipped: archived, cards: map,
+        ok: problems.length === 0, action, problems, warnings, archivedSkipped: archived, cards: map,
       }));
       if (action === '门禁' && problems.length) process.exitCode = 1;
       break;
@@ -303,6 +324,7 @@ switch (action) {
     const needN = Object.values(map).filter(v => v.need === true).length;
     const haveN = Object.values(map).filter(v => v.need === true && v.ok).length;
     console.log(`必须配图的卡：${haveN}/${needN} 已就位`);
+    if (warnings.length) console.log(`配图提示（不阻断，${warnings.length} 条）：\n   ` + warnings.slice(0, 12).join('\n   ') + (warnings.length > 12 ? `\n   … 另有 ${warnings.length - 12} 条` : ''));
     if (archived.length) console.log(`（已归档卡另有 ${archived.length} 张问题，只记录不阻断：${archived.join(' ')}）`);
     if (action === '门禁') {
       if (problems.length) { console.log('⛔ 配图门禁未通过：\n   ' + problems.join('\n   ')); process.exitCode = 1; }
@@ -316,7 +338,142 @@ switch (action) {
     break;
   }
 
+  case '质量': {
+    /* 配图质量专项：只列质量问题的卡（不进「缺图」那一套），供整改存量用。
+       --深检 会逐张解码像素查红笔（慢，但结论确定）。 */
+    const led = loadLedger();
+    const cards = allCards();
+    const rows = [];
+    const warns = [];
+    for (const x of cards) {
+      const e = led.cards[x.key];
+      const q = checkCardFigure(x, e, { deep: !!opt['深检'] });
+      for (const w of (q.warnings || [])) warns.push({ key: x.key, text: w });
+      if (!q.problems.length) continue;
+      const kind = e ? e.kind : 'none';
+      rows.push({ key: x.key, kind, problems: q.problems, assets: q.assets });
+    }
+    if (opt.json) {
+      console.log(JSON.stringify({ ok: rows.length === 0, count: rows.length, rows, warnings: warns }));
+      if (rows.length) process.exitCode = 1;
+      break;
+    }
+    console.log(`配图质量：${rows.length} 张卡有问题${opt['深检'] ? '（已深检，含红笔）' : '（浅检：尺寸/来源/台账矛盾）'}`);
+    if (warns.length) {
+      console.log(`\n【提示级·不阻断】${warns.length} 条`);
+      for (const w of warns.slice(0, 15)) console.log('  ' + w.key + '  ' + w.text);
+      if (warns.length > 15) console.log(`  … 另有 ${warns.length - 15} 条`);
+    }
+    if (!rows.length) { console.log('\n✓ 全部通过（阻断级）。'); break; }
+    /* 按问题类型分组，让人一眼看出欠账的规模 */
+    const byKind = {};
+    for (const r of rows) {
+      for (const p of r.problems) {
+        const t = /尺寸不足/.test(p) ? '尺寸不足'
+          : /红笔/.test(p) ? '红笔残留'
+            : /来源未登记/.test(p) ? '来源未登记'
+              : /台账矛盾/.test(p) ? '台账矛盾' : '其他';
+        (byKind[t] = byKind[t] || []).push(r.key + '  ' + p);
+      }
+    }
+    for (const [t, list] of Object.entries(byKind)) {
+      console.log(`\n【${t}】${list.length} 条`);
+      for (const s of list.slice(0, 40)) console.log('  ' + s);
+      if (list.length > 40) console.log(`  … 另有 ${list.length - 40} 条`);
+    }
+    process.exitCode = 1;
+    break;
+  }
+
+  case '整改完成': {
+    /* ★ 2026-11-23：把「待整改」标记清掉（该卡已经整改完，不再欠账）。
+       必须走工具而不是手改 JSON —— 手改会绕过写锁与备份轮转，
+       被 tests\run.mjs 的「真库零写入断言」当场抓到（本轮真踩过）。
+       用法：node _配图门禁.mjs 整改完成 --card 学生|编号 [--note "整改说明"] */
+    if (!opt.card) fail('整改完成 需要 --card 学生|编号');
+    const x = resolveCard(opt.card);
+    const led = loadLedger();
+    const prev = led.cards[x.key];
+    if (!prev) fail('台账里没有这张卡：' + x.key);
+    if (!/待整改|已知欠账|待重配/.test(`${prev.fix || ''}`)) {
+      console.log(`${x.key} 本来就没有待整改标记，无需处理。`);
+      break;
+    }
+    const doneNote = opt.note || '已整改';
+    led.cards[x.key] = {
+      ...prev,
+      fix: `已整改：${doneNote}`,
+      fixAt: today(),
+      fixBy: opt.by || 'agent',
+      note: (prev.note ? prev.note + ' ｜ ' : '') + `整改完成：${doneNote}`,
+    };
+    saveLedger(led);
+    console.log(`${x.key} 已标记整改完成：${doneNote}`);
+    break;
+  }
+
+  case '待整改': {
+    /* ★ 2026-11-23：把一批卡登记为「待整改」，让配图质量闸门**降级为警告**。
+       用途：存量欠账一次改不完 ⇒ 若一律阻断，发版链路被欠账锁死；
+       但完全放行又等于闸门虚设。折中：**显式登记 ⇒ 降级；未登记 ⇒ 阻断**。
+       用法：
+         node _配图门禁.mjs 待整改 --file <json>          # [{card, reason}]
+         node _配图门禁.mjs 待整改 --card 学生|编号 --reason "为什么欠账"
+         node _配图门禁.mjs 待整改 --list                # 只读：看当前登记的欠账
+       登记会写进台账条目的 fix 字段（留痕：谁、何时、为什么）。 */
+    const led = loadLedger();
+    if (opt.list) {
+      const list = Object.entries(led.cards).filter(([, v]) => /待整改|已知欠账|待重配/.test(`${v.fix || ''} ${v.note || ''} ${v.ref || ''}`));
+      console.log(`已登记为待整改的卡：${list.length} 张`);
+      for (const [k, v] of list) console.log(`  ${k.padEnd(12)} fix=${v.fix || '(无)'}`);
+      break;
+    }
+    if (opt.file) {
+      if (!fs.existsSync(opt.file)) fail('文件不存在：' + opt.file);
+      const list = readJson(opt.file);
+      if (!Array.isArray(list)) fail('文件内容应为数组：[{card,reason}]');
+      for (const row of list) {
+        if (!row || !row.card) fail('每项都要有 card');
+        const x = resolveCard(row.card);
+        const prev = led.cards[x.key] || {};
+        led.cards[x.key] = {
+          ...prev,
+          need: prev.need === undefined ? true : prev.need,
+          kind: prev.kind || 'jpg',
+          ref: prev.ref || '',
+          note: prev.note || '',
+          fix: `待整改：${row.reason || '（未写原因）'}`,
+          fixAt: today(),
+          fixBy: opt.by || 'agent',
+          by: prev.by || 'agent',
+          date: prev.date || today(),
+        };
+      }
+      saveLedger(led);
+      console.log(`已登记 ${list.length} 张卡为待整改 → ${LEDGER}`);
+      break;
+    }
+    if (!opt.card) fail('用法：待整改 --card 学生|编号 --reason "..."｜--file <json>｜--list');
+    const x = resolveCard(opt.card);
+    const prev = led.cards[x.key] || {};
+    led.cards[x.key] = {
+      ...prev,
+      need: prev.need === undefined ? true : prev.need,
+      kind: prev.kind || 'jpg',
+      ref: prev.ref || '',
+      note: prev.note || '',
+      fix: `待整改：${opt.reason || '（未写原因）'}`,
+      fixAt: today(),
+      fixBy: opt.by || 'agent',
+      by: prev.by || 'agent',
+      date: prev.date || today(),
+    };
+    saveLedger(led);
+    console.log(`${x.key} 已登记为待整改：${led.cards[x.key].fix}`);
+    break;
+  }
+
   default:
-    console.log('未知动作：' + action + '\n可用：扫描 / 登记 / 批量 / 清单 / 门禁');
+    console.log('未知动作：' + action + '\n可用：扫描 / 登记 / 批量 / 清单 / 门禁 / 质量 / 待整改');
     process.exitCode = 2;
 }

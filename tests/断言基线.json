@@ -153,10 +153,11 @@
  "neg-pdf-page-number.cjs": 23,
  "neg-print-group-merge.cjs": 49,
  "neg-fraction-stack.mjs": 29,
- "neg-fig-chain.cjs": 23,
+ "neg-fig-chain.cjs": 24,
  "neg-snapshot-emptied-ledgers.cjs": 5,
  "neg-session-crash-persist.cjs": 17,
  "neg-ingest-lock-reread.cjs": 12,
  "neg-ingest-first-review.cjs": 8,
- "neg-revlog-no-ghost-rows.cjs": 9
+ "neg-revlog-no-ghost-rows.cjs": 9,
+ "neg-fig-quality-gate.cjs": 10
 }

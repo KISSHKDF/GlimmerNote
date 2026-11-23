@@ -23,6 +23,7 @@
     "_core/base.md",
     "_core/cause.md",
     "_core/provenance.md",
+    "_core/配图.md",
     "_subject/${subject}.md"
   ],
   "requires": {
