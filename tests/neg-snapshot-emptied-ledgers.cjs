@@ -30,7 +30,15 @@ const A = (n, ok, d) => {
   if (!ok) fails++;
 };
 
-const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-snap-emptied-'));
+/* ★ 2026-11-23 修：原来用 `fs.mkdtempSync` 自造了一个**专用前缀**，
+   而该前缀**没登记进 `_测试环境.cjs` 的 TMP_PREFIXES** ⇒ 被 `neg-proc-hygiene.cjs`
+   的断言 ③i 当场抓住（"清扫表覆盖全仓全部 mkdtemp 前缀"）⇒ 卡住整条发布链。
+   ⚠ 那个字面量**不能留在本文件里**（哪怕在注释里）：③i 是**按源码 grep 字面量**对账的，
+     注释里的前缀也会被算成"未登记" ⇒ 又红。
+   正确修法：**改用已登记的前缀 `gn-testlib-`** 并走 `E.allocTempDir`
+   （统一登记 + 退出切除 + 被 SIGKILL 后由清扫表认领）——
+   而不是给清扫表再加一个前缀（新前缀 = 新清扫面，且要另改断言的豁免表）。 */
+const sandbox = E.allocTempDir('gn-testlib-');
 const mini = path.join(sandbox, 'repo');
 fs.mkdirSync(mini, { recursive: true });
 for (const f of ['_快照.mjs', '_安全写.mjs', '_库根.mjs']) {

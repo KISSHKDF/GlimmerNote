@@ -350,7 +350,43 @@ const targets = () => allItems().filter(x =>
  *  **向后兼容**：老卡只有 v1 指纹（没有 `blindFingerprintVer`），仍按 v1 算法比对，不会被集体判失效；
  *  新落的盲解结论写 `blindFingerprintVer=2`，从此享受图形级保护。
  *  `--upgrade-fp` 可把老卡的指纹显式升级到 v2（**记录升级时刻**，并标记"基线时刻不可考"）。 */
+/**
+ * 图形签名（v3）：内联 svg / img **加上外链图资产的内容哈希**。
+ *
+ * ⚠ **为什么要 v3 而不是直接改 v2**（2026-11-23 实测踩到）：
+ *   v2 的签名只含题干.html 里的内联 svg/img ⇒ 换掉 `题图.jpg`（本仓最常见的配图形态）
+ *   指纹纹丝不动 ⇒ **"换图即失效"这条铁律破了**。而配图整改（清洗裁图 / 网上找图 /
+ *   矢量重画）恰恰要换这个文件 ⇒ 必须让指纹变。
+ *
+ *   但**不能直接把 v2 的算法改掉**：那会让全库 73 张图形卡的旧结论**一次性全部失效**
+ *   （实测：跑盲解门禁 exit 1，73 张变"待重盲解"），而其中绝大多数的图根本没换过 ——
+ *   这是"用真问题掩盖真问题"，且把发版链路锁死。
+ *   正确做法 = **版本化**：v2 的算法原样保留（老卡按其记录的版本比对），
+ *   v3 才含图资产哈希；**新落的结论一律写 v3**，从此享受"换图即失效"。
+ *
+ *   v2 与 v3 的差别只有一条：v3 多了 `[asset:题图.jpg:#<hash16>]` 这几行。
+ */
 function figureSignature(x) {
+  const p = path.join(x.dirAbs, '题干.html');
+  const parts = [];
+  if (fs.existsSync(p)) {
+    const h = fs.readFileSync(p, 'utf8');
+    for (const m of h.matchAll(/<svg[\s\S]*?<\/svg>/gi)) parts.push(m[0]);
+    for (const m of h.matchAll(/<img\b[^>]*>/gi)) parts.push(m[0]);
+  }
+  /* v3 才并入外链图资产的内容哈希（v2 不含 ⇒ 老卡指纹不受影响） */
+  for (const f of ['题图.jpg', '题干.jpg']) {
+    const fp = path.join(x.dirAbs, f);
+    if (!fs.existsSync(fp)) continue;
+    try {
+      const buf = fs.readFileSync(fp);
+      parts.push(`[asset:${f}:#${crypto.createHash('sha256').update(buf).digest('hex').slice(0, 16)}]`);
+    } catch { /* 读不动 ⇒ 不并入（不误杀） */ }
+  }
+  return parts.map(s => s.replace(/\s+/g, ' ').trim()).join('\n');
+}
+/** v2 的签名（不含外链图资产哈希）——老卡按 v2 比对时用它，保证老指纹不失效 */
+function figureSignatureV2(x) {
   const p = path.join(x.dirAbs, '题干.html');
   if (!fs.existsSync(p)) return '';
   const h = fs.readFileSync(p, 'utf8');
@@ -361,10 +397,16 @@ function figureSignature(x) {
 }
 const fingerprintV1 = fingerprintV1Legacy;   // 兼容别名：老卡比对用
 const fingerprint = (text, fig = '') => fingerprintV1(String(text) + '\u0000' + String(fig));
-/** 该卡当前应有的指纹（按其记录的指纹版本算，保证同版本可比） */
+/** 该卡当前应有的指纹（按其记录的指纹版本算，保证同版本可比）
+ *  ★ 2026-11-23：新增 **v3**（含外链图资产哈希 ⇒ 换图即失效）。
+ *    v1 = 只算文字；v2 = 文字 + 内联 svg/img；v3 = v2 + 外链图资产内容哈希。
+ *    ⚠ 老卡按其**记录的版本**比对 ⇒ v2 卡不会因为这次升级而集体失效。 */
 function currentFingerprint(x) {
   const st = stemOf(x);
-  return Number(x.item.blindFingerprintVer) >= 2 ? fingerprint(st.text, figureSignature(x)) : fingerprintV1(st.text);
+  const ver = Number(x.item.blindFingerprintVer || 1);
+  if (ver >= 3) return fingerprint(st.text, figureSignature(x));
+  if (ver >= 2) return fingerprint(st.text, figureSignatureV2(x));
+  return fingerprintV1(st.text);
 }
 /** 题干文件是否在盲解之后被改过（按 mtime 的**日期**比，粗但独立于指纹）。
  *  为什么要它：v1 指纹只覆盖纯文本（见 BUG-08），对老卡而言"只改图形"不会被指纹发现；
@@ -478,10 +520,11 @@ switch (action) {
       const st = VERDICTS[v];
       if (!st) fail('非法盲解结论：' + id + '=' + v + '（只能 一致/不一致/修正）');
       const key = opt.student + '|' + id;
-      /* v2 指纹（含图形）：新落的结论一律记 fpVer=2，从此"只改图形不改文字"也会让结论失效（BUG-08） */
+      /* v3 指纹（含图形 + 外链图资产哈希）：新落的结论一律记 fpVer=3，
+         从此"换图"也会让结论失效（v2 只认内联 svg/img，换掉 `题图.jpg` 指纹不动）。 */
       const fp = fingerprint(stemOf({ dirAbs: info[id].dirAbs, item: it }).text, figureSignature({ dirAbs: info[id].dirAbs }));
       const rec = lanes.lanes[key] || (lanes.lanes[key] = {});
-      rec[lane] = { verdict: st, at: date, solver, note: opt.note || '', fp, fpVer: 2, fixed: st === '已修正' || (rec[lane] && rec[lane].fixed) || false };
+      rec[lane] = { verdict: st, at: date, solver, note: opt.note || '', fp, fpVer: 3, fixed: st === '已修正' || (rec[lane] && rec[lane].fixed) || false };
       if (opt.layer) rec[lane].layer = String(opt.layer);            // text | fig —— 图形题必须登记图形层
       if (opt.overruled) { rec[lane].overruled = true; rec[lane].overruledNote = String(opt.note || ''); }
       const composed = composeStatus(rec);
@@ -491,7 +534,7 @@ switch (action) {
       it.blindNote = `[${lane === 'lane1' ? '第1路' : '第2路'}] ` + (opt.note || (st === '已通过' ? '独立解题与录入答案一致' : st === '不一致' ? '与录入不符，待回原卷核实' : '曾不一致，核实后重盲解通过'))
         + (composed === '待双路' ? ' ｜ 另一路未跑，禁止组卷' : '');
       it.blindFingerprint = fp;
-      it.blindFingerprintVer = 2;
+      it.blindFingerprintVer = 3;
       /* 顺带补 answerSource（见 fillAnswerSource 注释）：只补字段缺失/空串的卡，已有值一律不动 */
       const asVal = fillAnswerSource(it, rec);
       log.push(`   ${id} ${lane} → ${st} ｜ 合成=${composed}  fp=${fp}` +
@@ -590,7 +633,7 @@ switch (action) {
     /* --upgrade：把 v1（只含文字）指纹升级到 v2（含图形）。语义同"补指纹"——图形在盲解当时
        有没有变过同样无法自证，所以一并要 --force 且打 blindFpAssumed 标记。 */
     const need = opt.upgrade
-      ? all.filter(x => VERIFIED.includes(x.item.blindStatus) && x.item.blindFingerprint && Number(x.item.blindFingerprintVer || 1) < 2)
+      ? all.filter(x => VERIFIED.includes(x.item.blindStatus) && x.item.blindFingerprint && Number(x.item.blindFingerprintVer || 1) < 3)
       : all.filter(x => VERIFIED.includes(x.item.blindStatus) && !x.item.blindFingerprint);
     if (!need.length) { console.log(opt.upgrade ? '没有需要升级到 v2 的指纹' : '没有需要补指纹的条目'); break; }
     console.log(`待补指纹 ${need.length} 条：` + need.map(x => x.item.id).join(' '));
@@ -608,15 +651,18 @@ switch (action) {
       let touched = false;
       for (const { item, dirAbs } of itemsOfJson(j, base)) {
         if (!VERIFIED.includes(item.blindStatus)) continue;
-        const isUpgrade = !!item.blindFingerprint && Number(item.blindFingerprintVer || 1) < 2;
+        /* 升级口径：v1→v2→v3 都算"升级"（都可显式执行，都带假设标记）。
+           ⚠ v3 比 v2 多含外链图资产哈希 ⇒ 升级到 v3 之后，**换图也会让结论失效**。 */
+        const isUpgrade = !!item.blindFingerprint && Number(item.blindFingerprintVer || 1) < 3;
         if (opt.upgrade ? !isUpgrade : !!item.blindFingerprint) continue;
         const fp = fingerprint(stemOf({ dirAbs, item }).text, figureSignature({ dirAbs }));
+        const oldVer = Number(item.blindFingerprintVer || 1);
         item.blindFingerprint = fp;
-        item.blindFingerprintVer = 2;
+        item.blindFingerprintVer = 3;
         item.blindFpAssumed = true;                 // ← 关键留痕：这条有效性是"假设题干/图形未改"得来的
         item.blindFpAssumedAt = today();
         n++; touched = true;
-        console.log(`   ${item.id} fp=${fp}（${isUpgrade ? 'v1→v2 升级' : '补录'}，假设标记已写入）`);
+        console.log(`   ${item.id} fp=${fp}（v${oldVer}→v3 升级，假设标记已写入）`);
       }
       if (touched) { j.updatedAt = today(); writeJson(f, j); }
     }
@@ -654,8 +700,7 @@ switch (action) {
     }
     /* 指纹版本（BUG-08 可见性）：v1 指纹**不覆盖图形** ⇒ 这些卡"只改图形"不会被发现。
        不阻断（否则全库老卡立刻不能组卷），但必须让人知道"哪一批卡的保护是弱一档的"。 */
-    const v1fp = rows.filter(x => VERIFIED.includes(x.item.blindStatus) && Number(x.item.blindFingerprintVer || 1) < 2);
-    if (v1fp.length) {
+    const v1fp = rows.filter(x => VERIFIED.includes(x.item.blindStatus) && Number(x.item.blindFingerprintVer || 1) < 2);    if (v1fp.length) {
       meta.fpV1 = v1fp.length;
       meta.fpV1Ids = v1fp.slice(0, 20).map(x => x.item.id);
       if (!opt.json) console.log(`   ⚠ 其中 ${v1fp.length} 张仍是 v1 指纹（只覆盖文字，**不覆盖图形**）：` + v1fp.slice(0, 8).map(x => x.item.id).join(' ') + (v1fp.length > 8 ? ' …' : '') + `  ← 升级：node _盲解复核.mjs 指纹 --upgrade --force（打"假设"标记），或重盲解`);
@@ -680,15 +725,32 @@ switch (action) {
        （存量补跑走清稿重盲解，属整改台账欠账，不在门禁一刀切）。 */
     if (action === '门禁') {
       const FIG_LAYER_CUTOVER = '2026-11-22';
-      const missFigNew = [], missFigOld = [];
+      const missFigNew = [], missFigOld = [], oneLaneOnly = [];
       for (const x of rows) {
         if (x.item.status === '已归档' || !isFigureCard(x.dirAbs)) continue;
-        const hasFigLayer = ['lane1', 'lane2'].some(ln => { const r = lanesDB.lanes[x.student + '|' + x.item.id]; return r && r[ln] && r[ln].layer === 'fig'; });
-        if (hasFigLayer) continue;
-        const l = lanesDB.lanes[x.student + '|' + x.item.id] || {};
-        const bothAt = ['lane1', 'lane2'].map(ln => String((l[ln] && l[ln].at) || ''));
+        const lanesOf = ['lane1', 'lane2'].map(ln => {
+          const r = lanesDB.lanes[x.student + '|' + x.item.id];
+          return r && r[ln] ? r[ln] : null;
+        });
+        const figLanes = lanesOf.filter(r => r && r.layer === 'fig').length;
+        const key = `${x.student}|${x.item.id}`;
+        if (figLanes >= 2) continue;
+        const bothAt = lanesOf.map(r => String((r && r.at) || ''));
         const isNew = bothAt.every(at => /^\d{4}-\d{2}-\d{2}$/.test(at) && at >= FIG_LAYER_CUTOVER);
-        (isNew ? missFigNew : missFigOld).push(`${x.student}|${x.item.id}`);
+        if (figLanes === 1 && isNew) {
+          /* ★ 2026-11-23（用户裁定「最后都要通过双路盲解」）：图形题**两路都要跑图形层**。
+             原口径是「至少一路带 layer=fig」——那是"有一路看过图"，
+             但用户要的是**双路都看过图**：只有两路都在图上独立解题，才能互为对照
+             （一路看图解出 A、另一路只读文字解出 B ⇒ 结论打架时无法判断是图的问题还是读图的问题）。
+             口径升级：图形题（isFigureCard）两路都必须有 layer='fig'。 */
+          oneLaneOnly.push(key);
+          continue;
+        }
+        (isNew ? missFigNew : missFigOld).push(key);
+      }
+      if (oneLaneOnly.length) {
+        oneLaneOnly.forEach(k => problems.push(`${k}[图形题只有一路跑了图形层]`));
+        if (!opt.json) console.log(`\n⛔ 图形题只有**一路**跑了图形层（${oneLaneOnly.length} 张）——图形题必须**两路都**用 --layer fig（用户 2026-11-23 裁定：最后都要通过双路盲解）`);
       }
       if (missFigNew.length) {
         missFigNew.forEach(k => problems.push(`${k}[图形题缺图形层记录]`));
@@ -752,8 +814,45 @@ switch (action) {
     break;
   }
 
+  case '现指纹': {
+    /* ★ 2026-11-23（配图三级来源 + 换图即失效）：打印**每张卡的当前指纹**与记录指纹。
+       为什么要有这个出口：排查"这张卡为什么说待重盲解"时，之前只能靠猜 ——
+       `指纹` 子命令是"补指纹"（写操作，要 --force），不是查询；`状态` 只给新鲜度字符串，
+       不给指纹本身 ⇒ 没法机械比对"当前指纹 vs 记录指纹"。
+       本动作**只读**：算出当前指纹并与索引里记录的并列打印，便于定位是哪一环变了。 */
+    const all = [];
+    for (const f of indexFiles(ROOT)) {
+      const j = readJson(f);
+      for (const { item, dirAbs } of itemsOfJson(j, path.dirname(f))) all.push({ item, dirAbs, student: j.student });
+    }
+    const sel = opt.ids ? new Set(splitIds(opt.ids)) : null;
+    const rows = all.filter(x => !sel || sel.has(String(x.item.id).toUpperCase()));
+    const out = [];
+    for (const x of rows) {
+      const cur = currentFingerprint({ item: x.item, dirAbs: x.dirAbs });
+      out.push({
+        key: x.student + '|' + x.item.id,
+        id: x.item.id,
+        current: cur,
+        recorded: x.item.blindFingerprint || '',
+        ver: Number(x.item.blindFingerprintVer || 1),
+        match: cur === (x.item.blindFingerprint || ''),
+        fresh: freshState({ item: x.item, dirAbs: x.dirAbs }),
+      });
+    }
+    if (opt.json) console.log(JSON.stringify({ ok: true, count: out.length, rows: out }));
+    else {
+      for (const r of out) {
+        console.log(`${r.key.padEnd(10)} ${r.match ? '✓一致' : '✗不一致'}  当前=${r.current}  记录=${r.recorded || '(无)'}  v${r.ver}  ${r.fresh}`);
+      }
+      console.log(`共 ${out.length} 张；不一致 ${out.filter(r => !r.match).length} 张`);
+    }
+    break;
+  }
+
   default:
-    console.log('未知动作：' + action + '\n可用：清稿 / 录入 / 批量 / 双路 / 迁移双路 / 状态 / 门禁 / 指纹');    process.exitCode = 2;
+    console.log('未知动作：' + action + '\n可用：清稿 / 录入 / 批量 / 双路 / 迁移双路 / 状态 / 门禁 / 指纹 / 现指纹');
+    process.exitCode = 2;
 }
 
 if (opt.refresh) {

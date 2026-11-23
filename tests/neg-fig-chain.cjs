@@ -198,9 +198,12 @@ const CUT = '2026-11-22';
   A('C2 problems 点名了这张卡', (g1.env.problems || []).some(p => /小图\|M0907\[图形题缺图形层记录\]/.test(p)),
     (g1.env.problems || []).join(' ; '));
 
-  /* 带图形层的新批次 → 放行 */
-  const libOk = makeLib({
-    id: 'M0908', dir: 'M0908-带图形层', figJpg: true, blindStatus: '已通过',
+  /* ★ 2026-11-23（用户裁定「最后都要通过双路盲解」）：口径从「**至少一路** layer=fig」
+     升级为「**两路都** layer=fig」。
+     理由：只有一路看过图时，若两路结论打架，无法判断是「图有问题」还是「那一路没读图」——
+     双路都读图才能互为对照。旧口径下 C3（任一路有 fig 即放行）现在**必须拦**。 */
+  const libOneOnly = makeLib({
+    id: 'M0908', dir: 'M0908-只有一路带图形层', figJpg: true, blindStatus: '已通过',
     lanes: {
       '小图|M0908': {
         lane1: { verdict: '已通过', at: '2026-11-25', solver: 't1', note: '', fp: 'bbbbbbbbbbbb', fpVer: 2, layer: 'fig' },
@@ -208,10 +211,27 @@ const CUT = '2026-11-22';
       },
     },
   });
-  const g2 = gate(libOk);
-  const figProblems2 = (g2.env.problems || []).filter(p => /图形题缺图形层记录/.test(p));
-  A('C3 ★ 带图形层（任一路 layer=fig）的新批次不拦', g2.code === 0 && figProblems2.length === 0,
+  const g2 = gate(libOneOnly);
+  const figProblems2 = (g2.env.problems || []).filter(p => /只有一路跑了图形层/.test(p));
+  A('C3 ★ 只有一路跑图形层的新批次：门禁 exit 1（两路都必须读图）',
+    g2.code === 1 && figProblems2.length > 0,
     'exit=' + g2.code + ' problems=' + figProblems2.join(';'));
+
+  /* 两路都带图形层 → 放行 */
+  const libBoth = makeLib({
+    id: 'M0910', dir: 'M0910-两路带图形层', figJpg: true, blindStatus: '已通过',
+    lanes: {
+      '小图|M0910': {
+        lane1: { verdict: '已通过', at: '2026-11-25', solver: 't1', note: '', fp: 'dddddddddddd', fpVer: 2, layer: 'fig' },
+        lane2: { verdict: '已通过', at: '2026-11-26', solver: 't2', note: '', fp: 'dddddddddddd', fpVer: 2, layer: 'fig' },
+      },
+    },
+  });
+  const g2b = gate(libBoth);
+  const figProblems2b = (g2b.env.problems || []).filter(p => /图形层/.test(p));
+  A('C3b ★ 两路都跑图形层：门禁 exit 0（不拦）',
+    g2b.code === 0 && figProblems2b.length === 0,
+    'exit=' + g2b.code + ' problems=' + figProblems2b.join(';'));
 
   /* 历史批次（at < 切换日）缺图形层 → ⚠ 计数不拦（不打破存量门禁绿态） */
   const libOld = makeLib({
