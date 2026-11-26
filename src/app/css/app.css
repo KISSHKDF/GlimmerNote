@@ -227,12 +227,22 @@ kbd{font:0.6875rem var(--font-num);background:var(--surface3);border:1px solid v
 .drawer .sect+.sect{margin-top:var(--s5);padding-top:var(--s4);border-top:1px dashed var(--line)}
 .drawer .sect>h4{margin:0 0 var(--s2);font-size:var(--fs-sm);color:var(--text3);font-weight:700;letter-spacing:.08em}
 
-/* ---------- 打印预览遮罩（S.printLock：预览层开着时挡住主界面，防「看不见的预览吃点击」） ---------- */
+/* ---------- 打印预览遮罩（S.printLock：说明"预览还开着，主界面点不动"） ----------
+   ★ 2026-11-27（用户报障「点『关闭』反应特别慢」—— 实测复盘）：
+     浏览器式打印预览是**盖在主窗口里的整屏原生层**（OS 截图证实），页面**盖不住它**；
+     预览开着时页面**收不到任何鼠标事件** ⇒ 用户回到主界面点「关闭」那一下**根本没送到页面**
+     ⇒ 抽屉纹丝不动 ⇒「点了没反应 / 特别慢」。
+     ⇒ 这张遮罩**不是用来拦点击的**（拦不住原生层），而是用来**解释现象**的；
+        而且它自己**绝不能变成第二道墙**（那就是"点了没反应"的第二个来源）。
+     ⇒ 所以：**背景层 pointer-events:none**（点击直接穿到下面的按钮 ⇒ 用户点「关闭」那一下就生效），
+        只有中间那张**说明卡片**可点（点了给提示"请先关预览"）。
+        页面侧另有一个探针：一旦页面收到任何 click ⇒ 预览已关 ⇒ 立刻撤掉整张遮罩。 */
 .print-lock{position:fixed;inset:0;z-index:95;display:flex;align-items:center;justify-content:center;
-  background:rgba(10,12,20,.55);backdrop-filter:blur(3px);animation:fade .2s;cursor:pointer}
+  background:rgba(10,12,20,.55);backdrop-filter:blur(3px);animation:fade .2s;pointer-events:none}
 .print-lock[hidden]{display:none}
 .print-lock-card{background:var(--surface);border:1px solid var(--line2);border-radius:var(--r-xl);box-shadow:var(--shadow-l);
-  padding:34px 44px;text-align:center;display:flex;flex-direction:column;gap:10px;max-width:min(460px,88vw)}
+  padding:34px 44px;text-align:center;display:flex;flex-direction:column;gap:10px;max-width:min(460px,88vw);
+  pointer-events:auto;cursor:pointer}
 .print-lock-card .e-ic{font-size:2.5rem}
 .print-lock-card b{font-size:var(--fs-lg)}
 .print-lock-card .small{line-height:1.7}
