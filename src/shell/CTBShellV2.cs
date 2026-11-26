@@ -1899,6 +1899,16 @@ namespace CTBShell2
                                    顺便让 Ctrl+P 这条退路也能印出正确内容。 */
                                 wv.CoreWebView2.ShowPrintUI(dlg);
                                 HostBridge.Log("print: dialog shown");
+                                /* ★ 2026-11-27（用户报障「点『关闭』反应特别慢」—— 实测复盘）：
+                                   壳的**浏览器式**打印预览（edge://print）开着时，**主页面一个鼠标事件都收不到**
+                                   （CDP Input 派发 0 命中，连页面里临时放的探针按钮也收不到 click；
+                                   关掉预览后立刻恢复）⇒ 用户回到主界面点「关闭」，那一下**根本没送到页面**
+                                   ⇒ 抽屉纹丝不动 ⇒ 表现为「点了没反应 / 特别慢」，而页面侧毫无线索。
+                                   ⚠ 壳侧**给不出**"预览已关闭"的信号：WebView2 SDK 1.0.2903.40 只有
+                                   ShowPrintUI/PrintAsync/PrintToPdf*，**无对话框事件**；实测该预览也
+                                   **不是独立 Win32 窗口**（枚举可见窗口只有主窗「拾光小册」）⇒ 窗口标题判据同样不成立。
+                                   ⇒ 所以修法全部落在**页面侧**（src/app/js/shell.js 的 S.printLock）：
+                                   页面自己判断"输入回来了"（能收到点击 ⇒ 预览已关）并撤遮罩。 */
                             }
                             catch (Exception ex) { HostBridge.Log("print FAILED: " + ex.Message); }
                         }));
@@ -1909,8 +1919,7 @@ namespace CTBShell2
                         HostBridge.Log("print FAILED: " + ex.Message);
                         resp = "{\"ok\":false,\"error\":\"" + EscJs(ex.Message) + "\"}";
                     }
-                }
-                else if (op == "pdf")
+                }                else if (op == "pdf")
                 {
                     /* 2026-10-11 新增（用户报障「点打印没反应」的**根治性替代路**）：
                        用户目标是「打出来给孩子纸面重做」，而打印对话框能否成功还取决于打印机/驱动。
@@ -2096,6 +2105,7 @@ namespace CTBShell2
                 BeginInvoke((Action)(() => PostToWeb(id, resp)));
             });
         }
+
 
         // PostWebMessageAsJson 有 1MB 硬限（_状态.json 已 1.3MB+，还会涨）→ 大响应切片传输，页面侧重组。
         // 预算按 **UTF-8 字节数**算（F-02）：题库中文/emoji 占比高时「字符数」会低估真实体积，且 Esc 把 " 变 \" 还会再胀一倍。

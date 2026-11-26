@@ -161,5 +161,6 @@
  "neg-revlog-no-ghost-rows.cjs": 9,
  "neg-fig-quality-gate.cjs": 16,
  "neg-multipart-answer.cjs": 18,
- "neg-fig-declared-but-missing.cjs": 21
+ "neg-fig-declared-but-missing.cjs": 21,
+ "neg-print-preview-close-latency.cjs": 20
 }

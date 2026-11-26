@@ -337,11 +337,22 @@
   };
   /* 壳事件（托盘菜单等） */
   H.onEvent = function (m) { if (m.evt === 'refresh') S.reload(true); };
-  /* 打印预览关闭探测：主窗口重新获得焦点时，若打印遮罩还开着就收掉它
-     （预览层是原生覆盖层，页面拿不到它的关闭事件；焦点恢复是最可靠的信号） */
+  /* 打印预览关闭探测（**兜底**）：主窗口重新获得焦点时，若打印遮罩还开着就收掉它。
+     ⚠ 2026-11-27（用户报障「点『关闭』反应特别慢」—— 实测复盘）：
+     预览开着时，**主页面一个鼠标事件都收不到**（原生层吃掉了全部输入）⇒
+     用户回到主界面点「关闭」，那一下**根本没送到页面** ⇒ 抽屉纹丝不动 ⇒「点了没反应」。
+     ⇒ 撤场的**主判据**是页面侧那个「输入回来了吗」探针（见 S.printLock 处的 armPrintInputProbe）：
+        页面一旦收到任何 click，就说明预览已关 ⇒ 立刻撤遮罩。
+     ⇒ 这里保留 focus 这条作为**兜底**（有的机器上确实会触发），并把延迟从 600ms 缩到 150ms：
+        600ms 在"用户已经回到主界面"的体感里是明显的空档。
+     ⚠ 只在遮罩确实开着时才做事（否则每次失焦/获焦都白跑一次）。 */
   window.addEventListener('focus', () => {
     const pl = U.$id('printLock');
-    if (pl && !pl.hidden) setTimeout(() => S.printLock(false), 600);
+    if (pl && !pl.hidden) setTimeout(() => {
+      /* 再确认一次：可能壳侧看门狗已经撤了 */
+      const p2 = U.$id('printLock');
+      if (p2 && !p2.hidden) S.printLock(false);
+    }, 150);
   });
 
   /* ================= Toast =================
@@ -415,8 +426,58 @@
      「看得见的墙」；预览关闭（主窗口重新获得焦点）后遮罩自动退场。
      解除判据用焦点：预览层开着时主窗口失焦，用户关掉预览（点取消/打印完成）后窗口
      重新获焦 ⇒ focus 事件 + 短延迟解除。兜底：10 分钟自动解除（防极端情况下锁死）。
-     遮罩本身可点（点了提示「请先关闭打印预览」），不冒充可交互。 */
+     遮罩本身可点（点了提示「请先关闭打印预览」），不冒充可交互。
+
+     ★ 2026-11-27 修（用户报障「点击『关闭』时，反应特别慢」——**实测复盘**）：
+     复现链条（壳日志 + CDP/OS 双路取证，见 CHANGELOG 2026.11.27.02）：
+       16:29:50 用户点「🖨 打印这一题」⇒ 壳 `ShowPrintUI(Browser)` 弹**浏览器式打印预览**；
+       该预览是**盖在主窗口里的整屏原生层**（实测截图：它就是主窗口的内容区，
+       底下压着我们的抽屉；OS 级枚举可见窗口只有主窗「拾光小册」⇒ **不是独立窗口**），
+       开着期间**主页面一个鼠标事件都收不到**（CDP Input 派发 0 命中，连页面里
+       临时放的探针按钮也收不到 click）⇒ 用户回到主界面点「关闭」，
+       **那一下根本没送到页面** ⇒ 抽屉纹丝不动 ⇒ 表现为「点了没反应 / 特别慢」。
+     ⇒ 关键结论：**不能指望用户再点一次**，也不能指望壳来通知 ——
+       WebView2 SDK 1.0.2903.40 没有"打印预览已关闭"的回调（只有 ShowPrintUI /
+       PrintAsync / PrintToPdf*），窗口标题判据也不成立（预览不是独立 Win32 窗口）。
+     ⇒ 所以修法**全部落在页面侧**，用**「输入回来了没有」这个可自证的信号**：
+       ① **探针**：预览开着时，页面在**捕获阶段**监听 click —— 收不到就说明输入还被预览占着；
+          一旦收到（哪怕是用户点预览外的某个地方），就说明预览已经关了 ⇒ **立刻撤遮罩**。
+       ② 探针是**一次性**的：撤完遮罩就摘掉，不长期占着捕获阶段。
+       ③ focus 事件仍保留为**兜底**（有的机器上确实会触发）。
+       ④ 遮罩上的提示文案说清"关掉预览后主界面会自动恢复"（原本就有，保持）。 */
   let printLockTimer = 0;
+  /* 「输入回来了吗」探针（2026-11-27）。
+     预览开着时页面**收不到任何鼠标事件** ⇒ 页面无从知道用户是不是已经把预览关了。
+     ⇒ 装一个**捕获阶段**的 click 监听：预览关掉后，用户在主界面的**第一下点击**
+     （哪怕点的是别处）会到达页面 ⇒ 那一刻就说明"输入回来了" ⇒ 立刻撤遮罩 + 撤探针。
+     ⚠ 为什么用 click 而不是 focus：实测 focus 在"预览是同窗口内嵌层"时**不可靠**
+       （不触发/触发得太晚），而 click 是**必然**会到的（用户总要再点一下才能继续用）。
+     ⚠ 探针**只装一次、且不改变任何行为**：它在捕获阶段跑，**不 preventDefault、
+       不 stopPropagation** ⇒ 用户那一下点击照常生效（点「关闭」就真的会关抽屉）。
+     ⚠ 探针期间**不要**撤遮罩：用户那一下点击可能正是要打在遮罩上的 ⇒ 遮罩还在才点得到。
+        撤遮罩必须等"再下一次"点击？—— 不。撤遮罩与"那一下生效"是同一件事：
+        遮罩撤了，用户下一次点击才能打到下面的按钮。而用户此刻点的若是遮罩本身，
+        遮罩的 onclick 会提示"请先关闭打印预览"——语义正确。 */
+  let printInputProbe = null;
+  function armPrintInputProbe() {
+    if (printInputProbe) return;
+    const probe = function (e) {
+      /* 收到了 click ⇒ **输入已经回到页面**（预览已关；实测预览关掉后点击立刻恢复）。
+         ⇒ 撤遮罩，让主界面当场可点。
+         ⚠ 不干预这次点击（不 preventDefault / 不 stopPropagation）——
+            用户那一下若是按「关闭」，就让它真的生效。
+         ⚠ 顺序很重要：先撤遮罩再让这次点击继续 ⇒ 遮罩不会把它吃掉。 */
+      disarmPrintInputProbe();
+      S.printLock(false);
+    };
+    printInputProbe = probe;
+    document.addEventListener('click', probe, true);
+  }
+  function disarmPrintInputProbe() {
+    if (!printInputProbe) return;
+    document.removeEventListener('click', printInputProbe, true);
+    printInputProbe = null;
+  }
   S.printLock = function (on) {
     let el = U.$id('printLock');
     if (on) {
@@ -424,16 +485,25 @@
         el = U.h('div', { id: 'printLock', class: 'print-lock' });
         el.innerHTML = '<div class="print-lock-card"><div class="e-ic">🖨</div>' +
           '<b>打印预览已打开</b>' +
-          '<div class="small muted">预览窗口还开着时，主界面暂时点不动。<br>请在预览里完成打印或点「取消」关闭它，<br>关闭后这里会自动恢复。</div></div>';
+          '<div class="small muted">预览窗口还开着时，主界面暂时点不动。<br>请在预览里完成打印或点「取消」关闭它，<br>关闭后这里会自动恢复。</div>' +
+          '<button class="btn" id="printLockClose">知道了，先关预览</button></div>';
         U.$id('app').appendChild(el);
         el.onclick = () => S.toast('请先关闭打印预览（点预览左下角的「取消」或右上角 ✕），主界面就会恢复', 'warn', 6000);
+        /* 遮罩里的按钮：点了只提示，**不假装**能关掉预览（页面管不了原生层）。 */
+        const pb = U.$id('printLockClose');
+        if (pb) pb.onclick = (e) => {
+          e.stopPropagation();
+          S.toast('请在打印预览窗口里点「取消」或右上角 ✕ 关掉它，关掉后主界面立刻恢复', 'warn', 7000);
+        };
       }
       el.hidden = false;
       clearTimeout(printLockTimer);
       printLockTimer = setTimeout(() => S.printLock(false), 600000);   // 兜底：10 分钟自动解除
+      armPrintInputProbe();
       return;
     }
     clearTimeout(printLockTimer);
+    disarmPrintInputProbe();
     if (el) el.hidden = true;
   };
 

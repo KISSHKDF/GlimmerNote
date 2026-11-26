@@ -1515,6 +1515,18 @@ if (mode === 'full') {
   }
 }
 worst = Math.max(worst, run('e2e-ui.mjs'));
+/* ★ 2026-11-27（用户报障「点击『关闭』时，反应特别慢」）：
+   实测根因不是"关闭慢"，而是**那一下点击根本没送到页面** ——
+   壳的浏览器式打印预览（edge://print）是盖在主窗口内容区里的**整屏原生层**
+   （OS 截图证实；可见窗口枚举只有主窗 ⇒ 不是独立窗口），它开着时页面收不到任何鼠标事件。
+   ⇒ 用户点「关闭」时抽屉纹丝不动。本用例守：
+     ① 打印遮罩**不再拦点击**（背景 pointer-events:none）⇒ 不变成"点了没反应"的第二道墙；
+     ② 页面侧「输入回来了吗」探针（一次性捕获 click）⇒ 收到即撤遮罩；
+     ③ focus 兜底仍在且延迟已缩；
+     ④ **阴性自证**：把 pointer-events 改回 auto ⇒ ① 必须变红。
+   ⚠ 放在**壳起来之后**这一段（而不是用例清单里）：清单跑的时候壳还没起
+     ⇒ 用例自己起壳会 taskkill 掉跑门禁的那个 ⇒ 收尾的 e2e-ui 假红。 */
+worst = Math.max(worst, run('neg-print-preview-close-latency.cjs'));
 if (mode === 'full') {
   /* ⚠ 2026-10-11 新增：**页面内 CTA 按钮**的路由回归。
      起因（用户实测）：「今日总览」点「🔁 进入复习流」→「视图渲染出错 Cannot read properties of undefined (reading '1')」——
