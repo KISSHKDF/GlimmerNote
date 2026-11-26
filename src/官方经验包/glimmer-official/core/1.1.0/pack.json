@@ -14,6 +14,12 @@
       "body": "multi-part-only-wrong.md"
     },
     {
+      "id": "multipart-answer-per-question",
+      "title": "多问整题：答案要逐问标注",
+      "steps": ["正确答案"],
+      "body": "multipart-answer-per-question.md"
+    },
+    {
       "id": "all-correct-zero-cards",
       "title": "整页全对：0 卡是合法结果",
       "steps": ["错题判定"],

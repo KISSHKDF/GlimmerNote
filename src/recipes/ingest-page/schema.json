@@ -71,6 +71,10 @@
             "items": { "type": "number", "minimum": 0, "maximum": 1 },
             "description": "这道题的**插图**在整页原图上的位置：归一化 0~1 的 [x, y, w, h]。hasFigure=true 时必填 —— 程序据此裁出「题图.jpg」（只含图，不含孩子的作答与红笔）。"
           },
+          "figSrcPage": {
+            "type": "string",
+            "description": "**插图自己的源页**（库内相对路径，如「<学生>/数学/原卷/…/试卷-p2.jpg」）—— 只在插图与题干**不在同一页**时填。实测 M0077（第12题·气球气压）：题干与作答在 p1，而「其图象如图所示」的那张 p/kPa 反比例图象被排到了 p2 顶部 ⇒ 不填这一项，图永远裁不出来。框（figBbox）也按**这一页**算。"
+          },
           "studentAnswerHtml": { "type": "string", "maxLength": 4000 },
           "answerMode": { "type": "string", "enum": ["blank", "figure", "zone", "none"] },
           "answerSlots": { "type": "array", "items": { "type": "string" } }

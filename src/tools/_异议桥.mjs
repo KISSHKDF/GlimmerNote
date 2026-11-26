@@ -35,11 +35,31 @@ import path from 'path';
 /** 与 `_标记复习.mjs::teacherConflictOpen` 同口径：有冲突对象且没有 resolvedAt ⇒ 未裁决 */
 const openConflict = it => !!(it && it.teacherConflict && typeof it.teacherConflict === 'object' && !it.teacherConflict.resolvedAt);
 
-/** 学生目录下两张候选卡面图里，真实存在的那张（路径相对库根；都不在 ⇒ null） */
-function cardImageRel(stuDirRel, dir) {
-  for (const name of ['原卷截图.jpg', '题干.jpg']) {
-    const rel = path.join(stuDirRel, dir, name);
-    if (fs.existsSync(rel)) return rel;
+/** 卡片目录下两张候选卡面图里，真实存在的那张（**相对库根**的路径；都不在 ⇒ null）
+ *
+ *  ★ 2026-11-26 修（真实缺陷，e2e-ui 实测「灯箱带问题正文」红在 `no-img`）：
+ *    改前两个错叠在一起 ⇒ **任何一张卡的证据图都找不到**：
+ *      ① 用的是**相对路径**（`<学生>\M0077-…\原卷截图.jpg`）⇒ 拿 cwd 去 existsSync
+ *         ⇒ 在仓库目录下永远是 false（库里根本没有这个相对路径）；
+ *      ② **漏了学科层** ⇒ 真实布局是 `<库根>\<学生>\<学科>\<卡号-描述>\原卷截图.jpg`
+ *         （实测 657 张卡里 305+ 张带学科层级），而它拼的是 `<库根>\<学生>\<卡号-描述>\…`。
+ *    ⇒ 现在：拼**绝对路径**去找，但**返回相对库根**的路径。
+ *
+ *  ⚠ **分隔符必须用 `/`**（2026-11-26 实测）：`path.join` 在 Windows 上产出 `\`
+ *    ⇒ 前端 `H.asset` 把它 encodeURI 成 `%5C` ⇒ `file://` URL 里反斜杠是**非法字符**
+ *    ⇒ 图片必然加载失败（实测 ERR）。库里其它相对路径（`_录题` 的 `image.rel` 等）一律用 `/`，
+ *    这里必须跟同一口径。
+ */
+function cardImageRel(root, stuDirRel, subject, dir) {
+  /* 学科层可能有、也可能没有（老卡是 `<学生>\<卡号-描述>`）⇒ 两种都试 */
+  const rels = [];
+  if (subject) rels.push(path.join(stuDirRel, subject, dir));
+  rels.push(path.join(stuDirRel, dir));
+  for (const rel of rels) {
+    for (const name of ['原卷截图.jpg', '题干.jpg']) {
+      const full = path.join(root, rel, name);
+      if (fs.existsSync(full)) return rel.split(path.sep).join('/') + '/' + name;
+    }
   }
   return null;
 }
@@ -77,7 +97,7 @@ export function deriveConflictTodos(ROOT) {
       for (const it of items) {
         if (!openConflict(it)) continue;
         const tc = it.teacherConflict;
-        const imgRel = cardImageRel(stu.name, String(it.dir || it.id || ''));
+        const imgRel = cardImageRel(base, stu.name, sn, String(it.dir || it.id || ''));
         const where = (it.source || '').slice(0, 40);
         out.push({
           id: xcId(idx.student || stu.name, it.id),

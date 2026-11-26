@@ -41,6 +41,9 @@ import { indexFiles } from './_题库发现.mjs';
    剪自孩子作业本的糊图，M0070 的图上还带红笔，而门禁全绿（exit 0）。
    质量判据集中在 `_配图质量.mjs`（唯一实现），本工具与 `_盲解复核.mjs` 共用。 */
 import { checkCardFigure, checkFigureFile, MIN_WIDTH } from './_配图质量.mjs';
+/* ★ 2026-11-26（用户报障「M0077 裁图与题目完全不对」引出的相邻缺陷）：
+   「录题任务单声明有图、台账却记 need=false」⇒ 图没落地却没人拦（判据与理由见 `_图声明.mjs`）。 */
+import { taskFigures, figureDeclaredButMissing } from './_图声明.mjs';
 
 /* ★ 2026-10-23 程序与数据分家：ROOT 现在是**用户库根**，不再是"本脚本所在目录"。
    兄弟工具一律用 toolPath(...)，见 _库根.mjs。 */
@@ -276,6 +279,8 @@ switch (action) {
   case '门禁': {
     const led = loadLedger();
     const cards = allCards();
+    /* ★ 2026-11-26：录题任务单里「声明有图」的卡清单（判据见 `_图声明.mjs`）。 */
+    const taskFigs = taskFigures(ROOT);
     const map = {}, problems = [], archived = [], warnings = [];
     for (const x of cards) {
       const e = led.cards[x.key];
@@ -308,6 +313,19 @@ switch (action) {
       }
       if (r.state === '缺图') problems.push(`${x.key}[缺图]`);
       else if (!e && FIGWORDS.test(r.a.stem.text)) problems.push(`${x.key}[提到图/表但未登记]`);
+
+      /* ★ 2026-11-26：录题任务单说「有图」、台账却说「无需图」⇒ **图没落地**。
+         为什么单列一条：上面那两条判据都管不到它 ——
+           · 台账登记过 ⇒ "提到图/表但未登记"不触发；
+           · need=false ⇒ 判成「无需图」⇒ "缺图"不触发；
+         而题干写着"如图"却没有图 ⇒ 这道题印出来就是**做不了的题**。
+         判据与理由见 `_图声明.mjs`。 */
+      {
+        const decl = figureDeclaredButMissing(x.item, e, taskFigs);
+        if (decl && !decl.ok) {
+          problems.push(`${x.key}[图声明未落地：${decl.msg}]`);
+        }
+      }
 
       /* ★ 2026-11-23：配图**质量**闸门（新增第四类判定）。
          判据在 `_配图质量.mjs`（共享模块）：Q1 尺寸不足 / Q2 红笔残留 / Q3 来源未登记 / Q4 台账矛盾。

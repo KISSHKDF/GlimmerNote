@@ -556,6 +556,14 @@ if (LIB_MATERIALIZED_HERE && path.resolve(LIB).startsWith(path.join(os.tmpdir(),
 function makeTempLib(extraDirs, opts) {
   const o = opts || {};
   const dir = allocTempDir('gn-testlib-');
+  /* ★ 2026-11-26：`opts.keep` ⇒ **本进程退出时不删这份副本**。
+   *   用途：开发壳（launch-dev 起的后台进程）要用它当库根，而 launch-dev 自己
+   *   是 fire-and-forget（起完壳就退出）⇒ 默认的「退出时切除」会把壳的库根删掉，
+   *   壳随后报「重建后仍无 _状态.json」（实测 e2e-ui 直接红在"启动完成·数据到位"）。
+   *   ⇒ 给壳用的副本必须**活过**启动进程；它由 `tests\sweepStaleTempDirs()` 按
+   *   「进程已死 + 超过陈旧期」在**下一轮**清扫（见 TMP_STALE_MS）。
+   */
+  if (o.keep) { _ownedTmp.delete(path.resolve(dir)); }
   for (const f of COPY_FILES) {
     const s = path.join(LIB, f);
     if (fs.existsSync(s)) fs.copyFileSync(s, path.join(dir, f));
@@ -574,9 +582,12 @@ function makeTempLib(extraDirs, opts) {
      而**同一份真库直跑门禁是 656/656 全过**（本次实测：4 张卡的图都叫 `题图.jpg`）。
      影响面比一个用例大得多：**凡基于 makeTempLib 且涉及"卡有没有图/有没有证据图"的判据**，
      都会出现同族假红/假绿。故改为**按名字正则匹配**，未来新增命名只需改这一处正则。
-     ⚠ 仍**刻意不复制** `原卷截图.jpg` 与整页扫描（那才是 copyCardFiles 要省的东西）：
-     当前没有任何门禁依赖副本里有它们；若将来有判据要，必须显式加进来并说明代价。 */
-  const CARD_FILE_RE = /^(?:题干\.html|错题记录\.md|_裁图记录\.json|配图\.(?:svg|png|jpe?g)|题图\.(?:svg|png|jpe?g))$/i;
+     * ⚠ 仍**刻意不复制**整页扫描与大批影像（那才是 copyCardFiles 要省的东西）。
+     *   但 `原卷截图.jpg` **要复制**（2026-11-26 实测）：它是**卡片的证据图**，
+     *   「红字异议」派生待办（`_异议桥.mjs` 的 cardImageRel）把它当 evidence 指向
+     *   ⇒ 副本里缺它 ⇒ 灯箱开不出图 ⇒ e2e-ui 的「灯箱带问题正文」红在 `no-img`。
+     *   它是**单题一小块**（几十 KB），不是整页扫描 ⇒ 与「省影像」不冲突。 */
+  const CARD_FILE_RE = /^(?:题干\.html|错题记录\.md|_裁图记录\.json|配图\.(?:svg|png|jpe?g)|题图\.(?:svg|png|jpe?g)|原卷截图\.(?:svg|png|jpe?g))$/i;
   const copySidecars = (idxAbs, relDir) => {
     if (!o.copyCardFiles) return;
     let j;
@@ -600,6 +611,37 @@ function makeTempLib(extraDirs, opts) {
       }
     }
   };
+  /* 整页原卷（2026-11-26 新增，`opts.copyOrigPages` 时才复制）：
+     * 卡片的 `origPage` 指向**整页扫描**（真库 173 张 / 210 MB）——
+     * e2e-ui 的「整页原卷 file:// 真能加载」与「整页红框 = 归一化框×整页像素」两条断言
+     * 都要真的加载整页图 ⇒ 副本里必须有它，否则这两条恒红（ERR/direct）。
+     * ⚠ 210 MB 拷贝不便宜 ⇒ **按需开**：只给需要整页的用例开（opts.copyOrigPages）。
+     * ⚠ 路径是 **URL 编码**的（状态包里就是 `%E4%B9%90…`）⇒ 必须先 decodeURIComponent。
+     */
+  const copyOrigPages = () => {
+    if (!o.copyOrigPages) return;
+    /* 整页路径的来源是 **_状态.json**（不是索引）—— `origPage` 是状态包里的派生字段，
+       索引条目上没有它（实测：657 张卡的索引里带 origPage 的 = 0）。
+       ⚠ 状态包里的 `origPage` 是 **URL 编码**的 ⇒ 必须先 decodeURIComponent。 */
+    const stPath = path.join(LIB, '_状态.json');
+    let st; try { st = JSON.parse(fs.readFileSync(stPath, 'utf8').replace(/^\uFEFF/, '')); } catch { return; }
+    const seen = new Set();
+    for (const d of (st.data || [])) {
+      for (const s of (d.subjects || [])) {
+        for (const it of (s.items || [])) {
+          const op = it.origPage;
+          if (!op) continue;
+          let rel; try { rel = decodeURIComponent(String(op)); } catch { rel = String(op); }
+          rel = rel.split('/').join(path.sep);
+          if (seen.has(rel)) continue; seen.add(rel);
+          const src = path.join(LIB, rel);
+          if (!fs.existsSync(src)) continue;
+          const dst = path.join(dir, rel);
+          try { fs.mkdirSync(path.dirname(dst), { recursive: true }); copyKeepTime(src, dst); } catch { }
+        }
+      }
+    }
+  };
   /* 学生目录：只复制结构（含 _索引.json 的层级），不复制图片，除非调用方点名要 */
   const walk = (base, rel, depth) => {
     let ents; try { ents = fs.readdirSync(base, { withFileTypes: true }); } catch { return; }
@@ -617,6 +659,8 @@ function makeTempLib(extraDirs, opts) {
     }
   };
   walk(LIB, '', 2);
+  /* 整页原卷（按需：opts.copyOrigPages）—— 见上面 copyOrigPages 的注释 */
+  copyOrigPages();
   /* extraDirs：额外整目录复制的相对路径（如 '九年级' 需要图片时） */
   for (const d of (extraDirs || [])) {
     const s = path.join(LIB, d);
