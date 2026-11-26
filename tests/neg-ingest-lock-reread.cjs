@@ -143,8 +143,10 @@ const buildMutated = (src) => {
   let m = cutBefore(src, '/* ★ 2026-11-23（审计 D-01 · P0）：**取锁后重读索引 + 重新规划卡号**。', 'tx.mkdir(tgt.dirAbs);');
   if (m === null) return null;
   /* D-02（改卡）：裸块 `{ … }` 整体删——从注释起，删到 ④a 注释开头为止。
-     ⚠ 锚点必须落在闭合大括号**之后**：切在 hit.j 行之前会把裸块的 `{` 留下 ⇒ "try 后没有 catch" 语法坏。 */
-  m = cutBefore(m, '/* ★ 2026-11-23（审计 D-02 · P0）：**取锁后重读索引**。', '    /* ④a 题干.html */');
+     ⚠ 锚点必须落在闭合大括号**之后**：切在 hit.j 行之前会把裸块的 `{` 留下 ⇒ "try 后没有 catch" 语法坏。
+     ⚠ 锚点取的是 ④a 注释的**第一行**（`/* ④a 题干.html`）：那一行后面可能接续说明文字
+        （2026-11-26 加了 stemHtml 说明），锚点若写整行就再也匹配不上 ⇒ 变异体生成失败。 */
+  m = cutBefore(m, '/* ★ 2026-11-23（审计 D-02 · P0）：**取锁后重读索引**。', '    /* ④a 题干.html');
   return m;
 };
 const MUTATED = buildMutated(LAND_SRC);
