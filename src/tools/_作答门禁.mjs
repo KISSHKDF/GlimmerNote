@@ -48,6 +48,9 @@ import { libraryRoot, toolPath } from './_库根.mjs';
 import { procPath } from './_过程目录.mjs';
 import { readJsonStrict, writeJsonAtomic, backupJson, writeTextAtomic, acquireLibLock } from './_安全写.mjs';
 import { slotsOf, slotCount, needEm, blankWidthEm, alignedAnswers, fitSlots, applySlotWidths, BLANK_MAX_EM, CHILD_FACTOR } from './_空位.mjs';
+/* ★ 2026-11-26（用户报障「m0063 问了两个问题，给家长的答案只回答了第二问」）：
+   多问整题的小问编号解析（唯一实现）。判据与豁免见 `_小问.mjs` 头部注释。 */
+import { multiPartCoverage } from './_小问.mjs';
 /* ★ 2026-11-04（M1·实测）：参数解析改走**唯一实现** `_参数.mjs`。 */
 import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
 import { indexFiles } from './_题库发现.mjs';
@@ -151,6 +154,10 @@ const answerContractFingerprint = (stemHtml) =>
     .digest('hex')
     .slice(0, 16);
 
+/** 错题记录.md 里的「答案类标题」判据（工单摘答案与写回主答案共用同一份 ⇒ 不会两处漂移）。
+ *  实测三种形态：`## 正确答案` / `## 正确完整过程（…）` / `## 正确表述`。 */
+const ANSWER_HEAD_RE = /^#{1,6}\s*(.*正确答案.*|.*正确完整.*|.*答案与过程.*|.*标准答案.*|.*正确表述.*)\s*$/;
+
 /** 错题记录里的「正确答案」段（工单要把它摘给填答案的人，别让人再翻一遍 md）
  *  ★ 2026-10-25：早一版只认 `## 正确答案` / `**正确答案` 两个标题，而库里真实段落名有
  *    「## 正确完整过程（标准已对照官方答案页 pXX…）」「## 正确答案与过程」等多种写法 ⇒
@@ -160,8 +167,7 @@ function recordAnswerOf(dirAbs) {
   const p = path.join(dirAbs, '错题记录.md');
   if (!fs.existsSync(p)) return '';
   const lines = fs.readFileSync(p, 'utf8').split(/\r?\n/);
-  const HEAD = /^#{1,6}\s*(.*正确答案.*|.*正确完整.*|.*答案与过程.*|.*标准答案.*)\s*$/;
-  const i = lines.findIndex(l => HEAD.test(l.trim()));
+  const i = lines.findIndex(l => ANSWER_HEAD_RE.test(l.trim()));
   if (i < 0) return '';
   const out = [];
   for (let k = i + 1; k < lines.length; k++) {
@@ -300,6 +306,24 @@ function judge(x) {
     }
   }
 
+  /* ★ 2026-11-26（用户报障「m0063 问了两个问题，给家长的答案只回答了第二问」）：
+     **多问整题的答案必须逐问标注**。
+
+     根因（实测）：录题配方只规定「**收哪一问**」（只收错的那一问），没规定「**答案要答哪一问**」
+     ⇒ `answer` 只登记了错的那一问的答案；而印刷版题干里 (1)(2) 两问都在（卷面让孩子做两问），
+     答案册于是只有 (2) 的答案 ⇒ **家长判不了 (1)**。
+     M0063 实测（用本仓自己的渲染代码复现）：题干 `(1)求…月平均增长率；(2)…降价多少元`，
+     答案册印出来只有「答案：降价8元」。
+
+     判据（`_小问.mjs` 唯一实现）：只有「**段内没有空位**」的小问才依赖主答案通道
+     （有空的走逐空通道，答案册按空号印，家长对得上空）；
+     这些小问必须在主答案里被逐问标注 ⇒ 缺标注 = 红。
+     补标注时顺手把那一问的答案也写了 —— 这正是用户要的那件事。 */
+  const mp = multiPartCoverage(it, { stemHtml: stem });
+  if (mp.multi && mp.missing.length) {
+    problems.push({ code: 'multipart-answer', msg: mp.reason });
+  }
+
   /* 归档卡：只报告不阻断（沿用本仓惯例），但要可见 */
   const archived = it.status === '已归档';
   /* 只报告不阻断的两类"契约覆盖不到的地方"（2026-10-25 子代理填报时实测提出）：
@@ -355,6 +379,43 @@ function writeDecl(x, d) {
     if (!it.answerSlotsAt.length) delete it.answerSlotsAt;      // at: [] 的语义是"清空"
   }
   if (d.note != null) { const s = String(d.note); if (s.trim()) it.answerNote = s; else delete it.answerNote; }
+  /* ★ 2026-11-26（用户报障「m0063 问了两问，答案册只答了第二问」）：
+     **主答案也要能通过本工具写回** —— 多问整题的答案必须逐问标注（`_小问.mjs` 的判据），
+     而 `answer` 此前**没有工具能改**（只能手工改索引 ⇒ 违反「唯一写入入口」纪律）。
+
+     卡面同步（`错题记录.md`）：卡面结构**不统一**（实测三形态）——
+       ① `## 正确答案` + 下一行 `**…**`（入库器新写的形态）；
+       ② `## 正确完整过程（…）` + 正文（**过程**，不是单行答案）—— 多数老卡是这个形态；
+       ③ 压根没有「正确答案」段（M0002 用的标题是「## 正确表述」）。
+     ⇒ 判据：**只替换「答案类标题」下的那一个答案行/段**；找不到就**响亮报错**（不静默只改索引）。
+     ⚠ 形态 ② 的正文是**过程**（多行），不是一个 `**…**` 行 —— 此时**追加**一段「逐问答案」，
+        保留原过程（过程是家长讲题时的好材料，删了可惜）。
+     ⚠ 形态 ③（没有答案段）⇒ 不许自己造一个标题（卡面是人写的，标题风格属于人）⇒ 报错并说明。 */
+  if (d.answer != null) {
+    const ans = String(d.answer);
+    it.answer = ans;
+    const mdPath = path.join(x.dirAbs, '错题记录.md');
+    if (fs.existsSync(mdPath)) {
+      const lines = fs.readFileSync(mdPath, 'utf8').replace(/^\uFEFF/, '').split(/\r?\n/);
+      const h = lines.findIndex(l => ANSWER_HEAD_RE.test(l.trim()));
+      if (h < 0) {
+        fail(`${x.key} 的卡面「错题记录.md」里找不到答案段（标题须含「正确答案 / 正确完整 / 答案与过程 / 标准答案 / 正确表述」），`
+          + '未写盘：请先在卡面里补一个答案段标题，再写主答案');
+      }
+      const ai = lines.findIndex((l, i) => i > h && /^\*\*.+\*\*\s*$/.test(l.trim()));
+      if (ai >= 0 && ai < lines.length) {
+        /* 形态 ①：单行答案 ⇒ 原地替换 */
+        lines[ai] = '**' + ans + '**';
+      } else {
+        /* 形态 ②：正文是过程 ⇒ 在该段末尾**追加**一行「逐问答案」，不删原过程 */
+        let end = h + 1;
+        while (end < lines.length && !/^#{1,6}\s/.test(lines[end].trim())) end++;
+        while (end > h + 1 && !lines[end - 1].trim()) end--;
+        lines.splice(end, 0, '', '**逐问答案**（各小问的答案，用于家长批改时逐问对照）：', '', ans, '');
+      }
+      writeTextAtomic(mdPath, lines.join('\n'));
+    }
+  }
   it.answerSlotsBy = it.answerSlotsBy || 'agent';
   it.answerSlotsAt2 = today();     // 登记/复核日期（与"第几空"的 answerSlotsAt 是两回事，名字刻意分开）
   /* ★ 2026-10-27：登记答案即"以当前题干为基线"盖章——人是在看着这一版题干填答案的，
@@ -365,6 +426,9 @@ function writeDecl(x, d) {
   x.item.answerMode = it.answerMode; x.item.answerSlots = it.answerSlots; x.item.answerScope = it.answerScope;
   x.item.answerSlotsAt = it.answerSlotsAt; x.item.answerNote = it.answerNote;
   x.item.answerSlotsFp = it.answerSlotsFp; x.item.answerSlotsFpAt = it.answerSlotsFpAt;
+  /* ★ 2026-11-26：主答案写回后**必须同步内存副本**，否则紧接着的 judge() 仍拿旧值
+     ⇒ 「补登 --answer」刚写完就报「仍不合契约」（自己写的答案自己判不合格）。 */
+  if (d.answer != null) x.item.answer = it.answer;
   writeJsonAtomic(x.file, j, { backup: true });
   return it;
 }
@@ -501,7 +565,7 @@ switch (action) {
     const hit = cards.filter(c => c.key === String(opt.card) || c.item.id === String(opt.card).toUpperCase());
     if (hit.length !== 1) fail(`卡片定位失败：${opt.card}（命中 ${hit.length} 张，请用 学生|编号）`);
     const slots = opt.slots ? String(opt.slots).split(/[；;]/).map(s => s.trim()) : undefined;
-    writeDecl(hit[0], { mode: opt.mode, slots, scope: opt.scope, at: opt.at, note: opt.note });
+    writeDecl(hit[0], { mode: opt.mode, slots, scope: opt.scope, at: opt.at, note: opt.note, answer: opt.answer != null && opt.answer !== true ? String(opt.answer) : undefined });
     const r = judge(hit[0]);
     console.log(`${r.key} 已登记：mode=${r.mode || '—'} 空${r.slots}/登${r.answers} → ${r.ok ? '✓ 通过' : '⛔ 仍不合契约'}`);
     for (const p of r.problems) console.log('   ↳ ' + p.msg);
@@ -518,7 +582,7 @@ switch (action) {
     for (const row of list) {
       const x = byKey.get(String(row.card));
       if (!x) { miss.push(row.card); continue; }
-      writeDecl(x, { mode: row.mode, slots: row.slots, scope: row.scope, at: row.at, note: row.note });
+      writeDecl(x, { mode: row.mode, slots: row.slots, scope: row.scope, at: row.at, note: row.note, answer: row.answer != null ? String(row.answer) : undefined });
       n++;
     }
     console.log(`已写回 ${n} 张卡的作答契约` + (miss.length ? `；未命中 ${miss.length} 张：${miss.slice(0, 10).join(' ')}` : ''));

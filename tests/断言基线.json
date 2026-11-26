@@ -1,6 +1,6 @@
 {
  "chunk-roundtrip.cjs": 25,
- "e2e-ui.mjs": 68,
+ "e2e-ui.mjs": 69,
  "e2e-writepath.cjs": 0,
  "fixtures-smoke.cjs": 15,
  "gates-contract.mjs": 8,
@@ -24,7 +24,7 @@
  "neg-deps-lock.cjs": 32,
  "neg-difficulty-elo.cjs": 19,
  "neg-disposition-mapping.cjs": 30,
- "neg-e2e-frozen-lib.cjs": 22,
+ "neg-e2e-frozen-lib.cjs": 27,
  "neg-emphasis-mark.cjs": 19,
  "neg-experience-draft.cjs": 105,
  "neg-figure-fingerprint.cjs": 3,
@@ -159,5 +159,7 @@
  "neg-ingest-lock-reread.cjs": 12,
  "neg-ingest-first-review.cjs": 8,
  "neg-revlog-no-ghost-rows.cjs": 9,
- "neg-fig-quality-gate.cjs": 15
+ "neg-fig-quality-gate.cjs": 16,
+ "neg-multipart-answer.cjs": 18,
+ "neg-fig-declared-but-missing.cjs": 21
 }

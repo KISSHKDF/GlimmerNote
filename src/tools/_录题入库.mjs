@@ -550,6 +550,16 @@ function cropInkRatio(file) {
   }
 }
 const CROP_MIN_INK = 0.05;   /* 5% —— 实测标定：框错的 2.59%，真实卡最低 14.07% */
+/* ★ 2026-11-26（M0077 报障引出的真缺陷）：**插图与题干的空白阈值不是一个口径**。
+ *   上面那个 5% 是拿**题干文字块**标定的（满页文字 ⇒ 笔画密 ⇒ 14%+）。
+ *   而**插图**（坐标系、曲线、几何图形）是稀疏线条画：非白像素天然很低 ——
+ *   实测 M0077 那张 p/kPa 反比例图象只有 **4.63%**，**低于 5%** ⇒
+ *   `cropFigure` 把它判成「几乎全是空白」⇒ **图根本没裁出来**（图与题分处两页时更致命）。
+ *   ⇒ 插图另用一条阈值：稀疏线条图在 400×400 抽样下 ≥1.5% 就算有内容
+ *     （真空白页的抽样值 <0.6%；实测框错的整页空白 2.59% 是**文字**框错的量级，
+ *      插图框错时框到的通常是纯白纸面 ⇒ 更低）。
+ *   ⚠ 两条阈值分开记，别用文字的量级去卡图 —— 这正是本次报障的成因。 */
+const FIG_MIN_INK = 0.015;
 
 /**
  * 裁「题图.jpg」：**只含插图**，不含孩子的作答与红笔。
@@ -575,11 +585,13 @@ function cropFigure(srcImg, outFile, fb) {
   } catch (e) {
     return { ok: false, why: '裁图失败：' + String(e && e.message || e).slice(0, 120) };
   }
-  /* 题图也过一遍空白检测：框到留白 ⇒ 同样是没落地 */
+  /* 题图也过一遍空白检测：框到留白 ⇒ 同样是没落地。
+     ⚠ 用**插图自己的阈值**（FIG_MIN_INK），不用题干文字块的 CROP_MIN_INK ——
+        稀疏线条图（坐标系/曲线/几何）天然低于文字密度，用文字量级会把真图判成空白。 */
   const ink = cropInkRatio(outFile);
-  if (ink !== null && ink < CROP_MIN_INK) {
+  if (ink !== null && ink < FIG_MIN_INK) {
     try { fs.unlinkSync(outFile); } catch { }
-    return { ok: false, why: 'figBbox 框出来的题图几乎全是空白（非白像素 ' + (ink * 100).toFixed(2) + '%）' };
+    return { ok: false, why: 'figBbox 框出来的题图几乎全是空白（非白像素 ' + (ink * 100).toFixed(2) + '% < ' + (FIG_MIN_INK * 100).toFixed(1) + '%）' };
   }
   return { ok: true, file: outFile };
 }
@@ -717,6 +729,30 @@ function cmdFix() {
   }
   if (!srcImg) console.log('  ⚠ 找不到原图（按 sha256 没找到）——只改文本与索引，**不重裁图**');
 
+  /* ★ 2026-11-26（用户报障「M0077 裁图与题目完全不对」引出的真缺陷）：
+   *   **题图（插图）可能印在另一页上**。
+   *   实测：M0077（第12题·气球气压）的题干与作答在 p1，但「其图象如图所示」的那张
+   *   p/kPa 反比例图象被排到了 **p2 顶部**（试卷把第12题的图单独排到下一页）。
+   *   而 `改卡` 的裁图**只认一个源页**（`sourceImageSha256`）⇒
+   *   图与题分处两页时，**图永远裁不出来**（要么框错页、要么干脆没有图）。
+   *
+   *   修法：允许卡里另给一个**插图自己的源页**（`figSrcPage`，库内相对路径）。
+   *   给了就用它裁 `figBbox`；没给就沿用 `sourceImageSha256` 对应的那页（既有行为不变）。
+   *   ⚠ 路径必须**在库内**（防越界读任意文件）；读不到就**响亮报错**，不许静默跳过图。
+   */
+  let figSrcImg = null;
+  if (c.figSrcPage) {
+    const relFig = String(c.figSrcPage).replace(/\\/g, '/').replace(/^\/+/, '');
+    const absFig = path.resolve(root, relFig);
+    /* 越界检查：必须在库根之内 */
+    const rootAbs = path.resolve(root);
+    if (!(absFig === rootAbs || absFig.startsWith(rootAbs + path.sep))) {
+      return fail('改卡中止：figSrcPage 越出库根（' + relFig + '）——插图源页只能是库内相对路径');
+    }
+    if (!isFile(absFig)) return fail('改卡中止：figSrcPage 指向的插图源页不存在（' + relFig + '）');
+    figSrcImg = absFig;
+  }
+
   /* ④ 写盘（锁 + 事务） */
   testPrelockHook();
   const release = acquireLibLock(root, { label: '_录题入库 改卡 ' + cardId });
@@ -739,9 +775,26 @@ function cmdFix() {
       hit.j = j2; hit.items = items2; hit.item = it2;
     }
 
-    /* ④a 题干.html */
+    /* ④a 题干.html
+     * ★ 2026-11-26（用户报障「M0077 裁图与题目完全不对」引出的相邻缺陷）：
+     *   `buildStemHtml()` **只包纯文本**，所以**内联 SVG 永远写不进去** ——
+     *   而本仓配图三级来源的第 3 级「矢量重画」正是靠内联 SVG 落的图
+     *   （实测 M0048 就是这么整改的：旧 题图.jpg 上是孩子用黑笔写的角度演算 ⇒ 泄答案，
+     *     印刷体正文也是黑的 ⇒ 去黑笔会连图一起毁掉 ⇒ 只能矢量重画）。
+     *   以前补这类图只能**手工改 题干.html**（绕过唯一写入口）⇒ 与"一切写盘走工具"的纪律冲突。
+     *   现在：卡里给 `stemHtml`（整段 HTML，含内联 SVG）⇒ 原样落盘（**只认它自己是完整 HTML**，
+     *   即以 `<div class="stem">` 开头；否则仍走 buildStemHtml 纯文本路径，既有行为不变）。
+     *   ⚠ stemHtml 必须是**可信来源**产出的（人工/工具写的印刷版），程序不做语义校验 ——
+     *     它会绕过 escapeHtml（那正是内联 SVG 需要的）。
+     */
     const hasBlank = /_{3,}|＿{2,}/.test(String(c.questionText || '')) || (Array.isArray(c.answerSlots) && c.answerSlots.length > 0);
-    tx.writeText(path.join(abs, '题干.html'), buildStemHtml(c.questionText, hasBlank));
+    const stemHtmlIn = typeof c.stemHtml === 'string' ? c.stemHtml.trim() : '';
+    if (stemHtmlIn && /^\s*<div\s+class="stem"/i.test(stemHtmlIn)) {
+      tx.writeText(path.join(abs, '题干.html'), stemHtmlIn + '\n');
+      console.log('  · 题干.html 用给定的 stemHtml 落盘（含内联图）');
+    } else {
+      tx.writeText(path.join(abs, '题干.html'), buildStemHtml(c.questionText, hasBlank));
+    }
 
     /* ④b 裁图（有了原图且给了 bbox 才重裁；空白 ⇒ 撤掉旧图） */
     let cropped = null;
@@ -826,12 +879,15 @@ function cmdFix() {
      *   修卡时配图状态可能变了（重裁了图 / 撤了空图 / 补裁了题图），登记必须跟着改，
      *   否则配图门禁会拿旧登记判 —— 门禁就成了摆设。 */
     {
-      /* 题图：hasFigure=true 且给了 figBbox ⇒ 重新裁「题图.jpg」（纯图，无笔迹）。 */
+      /* 题图：hasFigure=true 且给了 figBbox ⇒ 重新裁「题图.jpg」（纯图，无笔迹）。
+         ★ 2026-11-26：插图源页可与题干源页**不同**（figSrcPage）——跨页插图
+           （M0077 的 p/kPa 反比例图被排到 p2 顶部）。没给 figSrcPage 时沿用题干那页。 */
       let figCropped = false;
-      if (c.hasFigure === true && srcImg && Array.isArray(c.figBbox)) {
+      const figSrc = figSrcImg || srcImg;
+      if (c.hasFigure === true && figSrc && Array.isArray(c.figBbox)) {
         tx.snapshot(path.join(abs, '题图.jpg'));   // ★ 2026-11-23（审计 D-03）：题图进事务，--dry/失败回滚能复原
-        const r = cropFigure(srcImg, path.join(abs, '题图.jpg'), c.figBbox);
-        if (r.ok) { figCropped = true; console.log('  · 题图已裁出（题图.jpg）'); }
+        const r = cropFigure(figSrc, path.join(abs, '题图.jpg'), c.figBbox);
+        if (r.ok) { figCropped = true; console.log('  · 题图已裁出（题图.jpg）' + (figSrcImg ? '，源页=figSrcPage' : '')); }
         else console.error('⚠ ' + cardId + ' 没裁出题图：' + r.why);
       }
       const stemHtmlNow = (() => { try { return fs.readFileSync(path.join(abs, '题干.html'), 'utf8'); } catch { return ''; } })();

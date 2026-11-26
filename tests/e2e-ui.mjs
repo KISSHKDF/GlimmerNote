@@ -172,8 +172,27 @@ const S = (name, why) => { skipped++; P('[SKIP]' + name + '  → ' + why); };
      处置：显式 [SKIP] 并打出原因与恢复条件，让"没验到"这件事在日志里看得见；
      门禁统计只把 SKIP 记进 skipped，不计 FAIL（见文末 RESULT 行会显示 skipped 数）。 */
   await cdp.evalJs(`CTB.shell.route('pending')`); await sleep(400);
-  const pendOpenN = await cdp.evalJs(`CTB.model.pendingOpen().length`);
-  if (pendOpenN > 0) {
+  /* ⚠ 2026-11-26 修（真缺陷带出来的用例修正）：灯箱画廊**只收非派生条目**
+     （`pending.js` 的 buildGallery：`!p.derived`）—— 派生条目（红字异议）不进灯箱，
+     它的办结按钮写 T 台账、对派生条目必失败（异议桥的既定设计）。
+     ⇒ 前置条件不能只看 `pendingOpen().length`（派生条目也计入），
+        必须与画廊同口径：**存在一条带 [data-zoom] 的非派生待办**才是样本。
+     改前：真库正好剩 1 条派生条目 ⇒ 断言以为有样本 ⇒ 点开不了灯箱 ⇒ 红在 `no-img`，
+     而且后面的 `document.querySelector('#lbFoot [data-lbsolve]').click()` 直接抛异常中断整套回归。 */
+  const hasLbSample = await cdp.evalJs(`(function(){
+    var items=[].slice.call(document.querySelectorAll('#pdList .pd-item'));
+    for(var i=0;i<items.length;i++){
+      var it=items[i];
+      // 灯箱画廊只收非派生条目（pending.js 的 buildGallery 里的 !p.derived）。
+      // 派生条目（红字异议）虽然渲染了证据图（evBlock 的 derived 分支），
+      // 但点开时 openLbAt 建的画廊里没有它 ⇒ 灯箱打不开（只弹一句 toast）。
+      // 判样本必须与画廊同口径：非派生 + 有证据图。
+      if(it.getAttribute('data-derived')==='1') continue;
+      if(it.querySelector('[data-zoom]')) return 'yes';
+    }
+    return 'no';
+  })()`);
+  if (hasLbSample === 'yes') {
     const lbProbe = await cdp.evalJs(`(async function(){
       var img=document.querySelector('#pdList .pd-item [data-zoom]');
       if(!img)return JSON.stringify({err:'no-img'});
@@ -198,8 +217,10 @@ const S = (name, why) => { skipped++; P('[SKIP]' + name + '  → ' + why); };
     })()`));
     await cdp.evalJs(`CTB.shell.closeLightbox()`);
   } else {
-    S('待办灯箱办结流（3 条）', `当前未办结待办 0 条（台账已清零）⇒ 无样本可点。不是回归失败，是覆盖缺口：` +
-      `要看这 3 条断言真跑起来，先用 node _待确认.mjs 加 造一条未确认条目再跑 quick（跑完记得 删/作废）。`);
+    S('待办灯箱办结流（3 条）', `没有可进灯箱的待办样本（台账里剩下的都是**派生条目**（红字异议），` +
+      `按设计不进灯箱 —— 它们的办结按钮写 T 台账、对派生条目必失败）⇒ 无样本可点。` +
+      `不是回归失败，是覆盖缺口：要用 node _待确认.mjs 加 造一条**非派生**的未确认条目再跑 quick` +
+      `（跑完记得 删/作废）。`);
   }
   const fakeRes = await cdp.evalJs(`CTB.host.pendingResolve([{id:'T999',action:'答',answer:'E2E 安全探针：不存在的 id，应被工具拒绝、不落库'}]).then(r=>r).catch(e=>({err:String(e&&e.message||e)}))`);
   A('pendingResolve 全链路可达且幂等（T999→missing，不崩库）', !!(fakeRes && (fakeRes.results || fakeRes.state)), JSON.stringify(fakeRes).slice(0, 200));

@@ -168,6 +168,34 @@ A('run.mjs 里不再有"无条件把 _备份-真源 当派生"的旧写法',
 A('run.mjs 在 frozen 时会显式说明"本条不该出现"（可观察性，不是静默）',
   /本条本不该出现/.test(runSrc), '缺少冻结库上的告警文案');
 
+/* ══════════ ⑤ 开发壳的库根（2026-11-26 真实事故新增）══════════
+ * 事故（实测，日志为证 `%LOCALAPPDATA%\拾光小册\shell.log`）：
+ *   22:27:00 起了一个壳，导航白名单是 `file:<运行区>\app\index.html`
+ *         ⇒ DataRoot = **用户真库** `<运行区>\数据`；
+ *   22:28:43 那个壳收到 `op=mark`（批改）⇒ 真库里待批改批次 P20261117-06 的 30 张卡
+ *         被全判了（note='桌面版回录'），索引复习流水与复习日志一起被改写。
+ *   ⇒ 用户的真实复习记录被自动化污染。
+ *
+ * 为什么以前没挡住：`launch-dev.cjs` 把 `CTB_DATA: E.LIB` 传给壳，而 E.LIB 在开发机上
+ * 就是真库。**开发壳 = 真库 + 带 CDP 调试口** ⇒ 它就是一个"能被自动化点击的真实程序"。
+ *
+ * 修法：开发壳一律用**副本库**（真库冻结区时），真库只读。
+ * 本段守这条修法不许被悄悄改回去（判据是源码级 + 实际解析一次 spawn 的环境变量）。 */
+console.log('\n══ ⑤ 开发壳不得指向用户真库（2026-11-26 事故）══');
+{
+  const srcLaunch = fs.readFileSync(path.join(REPO, 'tests', 'launch-dev.cjs'), 'utf8');
+  A('launch-dev 判了真库冻结区（isFrozen）', /E\.isFrozen\(/.test(srcLaunch), '');
+  A('★ 冻结区时改用副本库（makeTempLib），不用真库',
+    /makeTempLib\(/.test(srcLaunch), 'launch-dev.cjs 里找不到 makeTempLib(');
+  A('★ 传给壳的 CTB_DATA 是副本库变量，不是 E.LIB',
+    /CTB_DATA:\s*SHELL_LIB/.test(srcLaunch) && !/CTB_DATA:\s*E\.LIB\s*,/.test(srcLaunch),
+    'CTB_DATA 必须指向副本变量');
+  A('副本库也写进 process.env（工具与壳看同一份）',
+    /process\.env\.CTB_DATA\s*=\s*tmp/.test(srcLaunch) || /process\.env\.CTB_DATA\s*=\s*SHELL_LIB/.test(srcLaunch), '');
+  A('副本不含影像这一取舍被写明（不是静默降级）',
+    /不含影像/.test(srcLaunch), '缺少说明');
+}
+
 /* 阴性自证（判据层面）：把判据换成"永远放行"，④ 里那条断言就会红 */
 const oldAllow = () => true;
 A('阴性自证 · 旧的"永远放行"判据会让上面那条断言变红',

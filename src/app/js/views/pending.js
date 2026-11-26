@@ -94,7 +94,12 @@
        `closed=false` = 你回答了，但没人补判定/处置（欠账）—— 这正是此前"问了白问"的真相，
        界面必须把它显式喊出来，不许再让"办结"看起来像"办完"。 */
     const owes = done && p.closed === false;
-    return '<div class="pd-item' + (owes ? ' owes' : '') + '" id="pd-' + U.esc(p.id) + '">' +
+    /* ★ 2026-11-26：标出**派生条目**（红字异议）。为什么要有这个标记：
+       派生条目虽然**渲染**了证据图（evBlock 的 derived 分支），但**不进灯箱画廊**
+       （buildGallery 的 `!p.derived`）⇒ 点它的图只会弹一句 toast，灯箱打不开。
+       ⇒ 标记出来，别的消费方（测试、将来的脚本）就能按同一口径判断"这条能不能进灯箱"。 */
+    return '<div class="pd-item' + (owes ? ' owes' : '') + '" id="pd-' + U.esc(p.id) + '"' +
+      (p.derived ? ' data-derived="1"' : '') + '>' +
       '<div class="pd-top"><span class="tag ' + (done ? 'gray' : stale == null || stale >= 3 ? 'bad' : 'warn') + '">' + U.esc(p.id) + '</span>' +
       '<span class="tag gray">' + U.esc(p.kind || '') + '</span>' +
       '<span class="tag info">' + (M.ASK_IC[p.askWho] || '') + ' 问' + U.esc(p.askWho || '') + '</span>' +
