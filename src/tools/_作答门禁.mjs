@@ -48,6 +48,9 @@ import { libraryRoot, toolPath } from './_库根.mjs';
 import { procPath } from './_过程目录.mjs';
 import { readJsonStrict, writeJsonAtomic, backupJson, writeTextAtomic, acquireLibLock } from './_安全写.mjs';
 import { slotsOf, slotCount, needEm, blankWidthEm, alignedAnswers, fitSlots, applySlotWidths, BLANK_MAX_EM, CHILD_FACTOR } from './_空位.mjs';
+/* ★ 2026-11-27（用户报障「M0067 题干明写只收第1小问，却把第2小问也出给孩子了」）：
+   「一道大题拆成多张卡 ⇒ 各自的题干不许带**别人**的答题空位」——判据见 `_拆卡串味.mjs`（唯一实现）。 */
+import { splitContamination } from './_拆卡串味.mjs';
 /* ★ 2026-11-26（用户报障「m0063 问了两个问题，给家长的答案只回答了第二问」）：
    多问整题的小问编号解析（唯一实现）。判据与豁免见 `_小问.mjs` 头部注释。 */
 import { multiPartCoverage } from './_小问.mjs';
@@ -179,6 +182,23 @@ function recordAnswerOf(dirAbs) {
 }
 
 /* ---------- 单卡判定（唯一判据实现：门禁/清单/扫描/工单全用它） ---------- */
+/* ★ 2026-11-27：「拆卡串味」是**跨卡**属性（要知道同组还有哪些卡），
+   ⇒ 在 judge 之前按整库算一次，按卡号索引；judge 里只查表。
+   ⇒ 惰性算一次（首次用到时算），免得每次 judge 都重算。 */
+let _contamination = null;
+function contaminationOf(cardId) {
+  if (_contamination === null) {
+    const cards = allCards().map(x => ({
+      id: x.item.id,
+      source: x.item.source,
+      stemHtml: stemOf(x),
+    }));
+    const bad = splitContamination(cards);
+    _contamination = new Map(bad.map(b => [b.id, b]));
+  }
+  return _contamination.get(cardId) || null;
+}
+
 function judge(x) {
   const it = x.item;
   const stem = stemOf(x);
@@ -322,6 +342,29 @@ function judge(x) {
   const mp = multiPartCoverage(it, { stemHtml: stem });
   if (mp.multi && mp.missing.length) {
     problems.push({ code: 'multipart-answer', msg: mp.reason });
+  }
+
+  /* ★ 2026-11-27（用户报障「M0067 题干明写只收第1小问，却把第2小问也出给孩子了」）：
+     **同一道大题拆成多张卡时，一张卡的题干不许带「别的卡那一问」的答题空位**。
+
+     实测根因：M0067（=第①问）与 M0068（=第②问）是同一道大题拆出来的两张卡，
+     可 M0067 的题干还留着第②小问的**文字和它的横线空位**
+     ⇒ 印出来那道②变成一道**也要做**的题，而 M0067 的答案册只有①的答案
+     ⇒ 孩子多做一题、家长判不了那一问。
+     （与 2026-11-26 的 M0063 报障是同一族、方向相反：那次是「题干两问、答案只一问」，
+       这次是「卡只收一问、题干却带了两问」。）
+     判据见 `_拆卡串味.mjs`（唯一实现）：只认**答题空位**，
+     光有别的编号的文字是"大题条件"（配方要求带上）⇒ 不算；
+     表格里的编号引用（某张语文卡「③（另卡）」）⇒ 不算。 */
+  const contam = contaminationOf(it.id);
+  if (contam) {
+    problems.push({
+      code: 'split-contamination',
+      msg: `这道大题拆成了多张卡（本题归属第${contam.own}小问），但题干里还留着第${contam.leaked.join('、')}小问的**答题空位**`
+        + ` ⇒ 印出来那一问也变成"要做"的题，而本题的答案册只有第${contam.own}问的答案`
+        + `。**把别人的空位去掉**（要留它的文字当条件可以留，但别留它的横线）。`
+        + `改题干后用 \`node _作答门禁.mjs 补登 --card 学生|编号 --mode blank --slots "…"\` 重登记。`,
+    });
   }
 
   /* 归档卡：只报告不阻断（沿用本仓惯例），但要可见 */
