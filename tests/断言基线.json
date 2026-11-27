@@ -162,5 +162,6 @@
  "neg-fig-quality-gate.cjs": 16,
  "neg-multipart-answer.cjs": 18,
  "neg-fig-declared-but-missing.cjs": 21,
- "neg-print-preview-close-latency.cjs": 20
+ "neg-print-preview-close-latency.cjs": 20,
+ "neg-split-contamination.cjs": 15
 }
