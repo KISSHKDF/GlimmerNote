@@ -33,6 +33,8 @@ import { parseArgs, COMMON_VALUE_FLAGS } from './_参数.mjs';
 import { extractJsonText } from './_配方.mjs';
 import { slotCount } from './_空位.mjs';
 import { displaySize } from './_图尺寸.mjs';
+import { resolveByPath } from './_原图寻址.mjs';
+import { judgeOpenSubjective } from './_主观题.mjs';
 /* ★ 2026-11-12（审计 F03）：判据⑦「该画线却没画线」的语境判定**唯一真源是 `_划线.mjs`**
    （零副作用模块）。此前这里是**逐字抄的第二份**（3 个正则 + `mentionsUnderlineSense`），
    而测试只覆盖门禁侧 ⇒ 两处一旦分叉：要么把好题拒收（入库侧），要么放过废题（门禁侧），**且测试全绿**。
@@ -426,11 +428,67 @@ function buildRecord(id, c, meta) {
     L.push(c.notes);
     L.push('');
   }
+  /* ★ 2026-11-27：卡面也承载**人工增补段**（记忆口诀 / 举一反三）——
+     实测 657 张卡里 449 张有口诀、490 张有举一反三（人手写进卡面文件的，索引里没有字段）。
+     ⇒ 它们**必须能被工具重新写回去**，否则一次改卡就把这些内容抹了（本次实测真发生了）。
+     卡里给了这两个字段就写进卡面；没给时**保留旧卡面里的**（见 extraSectionsOf）。 */
+  if (c.mnemonic) {
+    L.push('## 给孩子的记忆口诀');
+    L.push('');
+    L.push(String(c.mnemonic));
+    L.push('');
+  }
+  if (c.variantsNote) {
+    L.push('## 举一反三（变式题，组卷时抽取）');
+    L.push('');
+    L.push(String(c.variantsNote));
+    L.push('');
+  }
   L.push('> 判定来源：录题入库（配方 ' + (meta.recipe || '?') + ' v' + (meta.recipeVer || '?') + ' · 指纹 ' + (meta.fingerprint || '?') + '）');
   L.push('> 原图：' + (meta.imageRel || '（未指定）') + '（sha256 ' + ((meta.imageSha || '').slice(0, 12) || '—') + '…）');
   L.push('> 任务号：' + (meta.taskId || '—') + ' ｜ 入库日期：' + (meta.date || today()));
   L.push('');
   return L.join('\n');
+}
+
+/* ★ 2026-11-27：切出卡面里**工具不生成**的"人工增补段落"（改卡时要保留）。
+ *
+ * 背景：本仓的卡面有**两套形态** ——
+ *   · 工具生成形态：`buildRecord()` 产出的段落（原题 / 孩子的错解 / 错在哪一步 / 正确答案 / 转录注 / 判定来源…）；
+ *   · **人工增补形态**：另有「## 给孩子的记忆口诀」「## 举一反三（变式题…）」等段落。
+ *     实测：657 张卡里 **449 张有口诀、490 张有举一反三** —— 那是**人手写进卡面文件**的，
+ *     **索引里没有对应字段** ⇒ 工具既不生成、也不认识 ⇒ 改卡整份重写就会静默抹掉它们。
+ *
+ * 本函数：从旧卡面里挑出**工具不管的**那几段，原样返回（供改卡接回去）。
+ *   · **保留**「记忆口诀 / 举一反三 / 变式题」这类人工增补段（工具不管 ⇒ 得留着）；
+ *   · **不保留**工具自己管的那些（原题 / 孩子的错解 / 错在哪一步 / 正确答案 / 正确完整过程 / 转录注）
+ *     —— 那些必须按本次改卡的字段**重写**，否则改卡就等于"改不动"；
+ *   · 顺序按出现先后保留。
+ */
+const TOOL_OWNED_SECTIONS = [
+  '原题', '孩子的错解', '孩子的解答', '错在哪一步', '正确答案', '正确完整过程', '转录注',
+];
+const EXTRA_SECTIONS = [
+  '给孩子的记忆口诀', '记忆口诀', '举一反三', '变式题',
+];
+function extraSectionsOf(recordPath) {
+  let txt = '';
+  try { txt = fs.readFileSync(recordPath, 'utf8'); } catch { return []; }
+  /* 按二级标题切段 */
+  const parts = txt.split(/\n(?=## )/);
+  const out = [];
+  for (const seg of parts) {
+    const m = /^##\s+(.+?)\s*$/.exec(seg.split('\n')[0] || '');
+    if (!m) continue;
+    const title = m[1].trim();
+    /* 工具自己管的段落 ⇒ 不保留（按本次改卡重写） */
+    if (TOOL_OWNED_SECTIONS.some(t2 => title.startsWith(t2))) continue;
+    /* 人工增补段落（口诀/举一反三…）⇒ 保留 */
+    if (!EXTRA_SECTIONS.some(t2 => title.startsWith(t2))) continue;
+    const seg2 = seg.trim();
+    if (seg2) out.push(seg2);
+  }
+  return out;
 }
 
 /* 从既有 `错题记录.md` 里读回"判定来源"那一行（配方 id / 版本 / 指纹）。
@@ -726,6 +784,42 @@ function cmdFix() {
         try { if (sha256(fs.readFileSync(p)) === sha) { srcImg = p; break; } } catch { }
       }
     }
+    if (!srcImg) {
+      /* ★ 2026-11-27（用户报障「某学生 M0161」引出）：**保全库兜底** ——
+         台账里 `page` 指向的**原路径可能已失效**（收件箱被清空 / 原件被改名），
+         而字节其实在**内容寻址的保全库** `_原图\<桶>\<sha>.<ext>` 里
+         （实测：真库 657 张卡里有 **97 张**的 page 路径已死，全靠保全库兜底 ——
+          `_原图寻址.mjs` 的 `resolveByPath` 就是干这件事的，它是**唯一实现**）。
+         ⇒ 改卡要重裁图时，找不到原图就只能"只改文本不动裁图" ⇒ **这类卡永远裁不好**。
+         ⇒ 这里接上同一套判据：按 sha 在保全库里找同字节的对象。
+         ⚠ 只认**字节完全相同**的（不按尺寸猜、不按名字猜）⇒ 不会张冠李戴。 */
+      try {
+        /* 把台账里该卡的 page 交给唯一实现去解析（含保全库兜底） */
+        const led2 = path.join(root, '_原卷台账.json');
+        if (isFile(led2)) {
+          const doc2 = readJsonStrict(led2, { shape: j => !!j.cards && typeof j.cards === 'object' && !Array.isArray(j.cards), what: 'cards 对象', label: '_原卷台账.json' });
+          const key = (opt.student || '') + '|' + cardId;
+          const ent = (doc2.cards || {})[key];
+          const rel = ent && (ent.page || ent.import);
+          if (rel) {
+            const got = resolveByPath(rel);
+            if (got && got.path) {
+              const abs = path.resolve(root, got.path);
+              if (isFile(abs)) {
+                try {
+                  if (sha256(fs.readFileSync(abs)) === sha) {
+                    srcImg = abs;
+                    console.log('  · 原图按内容从保全库找回（' + got.via + '）：' + got.path);
+                  }
+                } catch { }
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.log('  · 保全库兜底查找未成功：' + String((e && e.message) || e).slice(0, 120));
+      }
+    }
   }
   if (!srcImg) console.log('  ⚠ 找不到原图（按 sha256 没找到）——只改文本与索引，**不重裁图**');
 
@@ -833,13 +927,29 @@ function cmdFix() {
 
     /* ④c 错题记录.md
        ★ 2026-11-18：判定来源沿用卡上原有的（不许写死配方名、不许清空）——
-       改一张卡不该把它"当初按哪版配方收的"抹掉。 */
+       改一张卡不该把它"当初按哪版配方收的"抹掉。
+       ★ 2026-11-27（用户报障「某学生 M0161」复核时实测到的真缺陷）：
+       本仓有**两套卡面形态**：
+         · 工具生成形态（`buildRecord` 的段落：原题/孩子的错解/错在哪一步/正确答案/转录注…）；
+         · **人工增补形态**：另有「## 给孩子的记忆口诀」「## 举一反三（变式题…）」等段落
+           （实测 **449/657** 张有口诀、**490/657** 张有举一反三）——
+           那些是**人手写进卡面文件**的，**索引里没有对应字段** ⇒ 工具不生成、也不认识。
+       ⇒ 改卡原先**整份重写**卡面 ⇒ 改一张卡就把这些人工内容**静默抹掉**。
+       ⇒ 修法：**保留人工增补段落**（从旧卡面里切出来，改卡后原样接回去），
+         并在输出里**可见**地说明保留了什么（不许静默）。
+       ⚠ 只保留"工具不生成"的那几段（口诀/举一反三/记忆口诀…）——
+         工具自己管的段落（答案/错解/错在哪一步…）仍旧由本次改卡的字段重写。 */
     const prev = recipeOfRecord(abs);
-    tx.writeText(path.join(abs, '错题记录.md'), buildRecord(cardId, c, {
+    const extras = extraSectionsOf(path.join(abs, '错题记录.md'));
+    const rec = buildRecord(cardId, c, {
       recipe: prev.recipe, recipeVer: prev.recipeVer, fingerprint: prev.fingerprint,
       imageRel: srcImg ? path.relative(root, srcImg).split(path.sep).join('/') : '',
       imageSha: sha, taskId: '', date: today(), teacherConflict: teacherConflictOf(c),
-    }));
+    });
+    tx.writeText(path.join(abs, '错题记录.md'), extras.length ? (rec.replace(/\n*$/, '\n\n') + extras.join('\n\n') + '\n') : rec);
+    if (extras.length) {
+      console.log('  · 保留卡面上的人手增补段落 ' + extras.length + ' 段：' + extras.map(s => s.replace(/^##\s*/, '')).join('、'));
+    }
 
     /* ④d 索引条目：**只改内容字段，复习/状态字段原样保留** */
     const it = hit.item;
@@ -1096,6 +1206,31 @@ function cmdLand() {
             '即使是老师写的，也可能照抄错题本或批漏）。改用：独立判卷 / 官方答案 / 未能确认；' +
             '红字与答案不一致时写进 notes，入库后走「异议裁决」'
           : ''));
+    }
+    /* ★ 2026-11-27（用户报障「某学生 Y0021：这一类的题目…孩子是无法做的…建议不要收录进题库了」引出）：
+       **不可客观判定的主观题**（启示题 / 谈看法 / 开放表达）当场拒收。
+       为什么在入库器拦（而不是事后靠门禁扫描）：
+         · 这类题**会通过现有全部门禁** —— 盲解子代理独立写出一段"像样"的答案，
+           与录入答案语义相近 ⇒ 判"一致" ⇒ 卡入库。盲解验的是"能否写出答案"，
+           **不验"孩子的答案错在哪"**（用户原话：「你是怎么通过盲解的？」）。
+         · 事后靠人工挑出来，成本高且必然漏 ⇒ 与其在库外挑，不如在入库那一刻就不让它进来。
+       判据（唯一真源 `_主观题.mjs`，与 `_主观题门禁.mjs` 共用同一份）：
+         ① 题干命中开放性题型标记词；
+         ② 卡面**没有**客观判定依据（具体分数 / 可枚举采分点清单）；
+         ③ 「错在哪一步」是**笼统主观**表述。
+       三条同时成立才拒 ⇒ 宁可漏放，不可误伤（Y0016 作文有老师给分 40 ⇒ 放行）。 */
+    const openSubj = judgeOpenSubjective({
+      question: c.questionText || '',
+      answer: c.answer || '',
+      studentAnswer: c.studentAnswer || '',
+      causeNote: c.causeNote || '',
+      teacherAnswer: c.teacherAnswer || '',
+      notes: c.notes || '',
+      recordText: '',
+    });
+    if (openSubj.blocked) {
+      problems.push(id + ' 是**不可客观判定的主观题**，不得收录进错题库 —— ' + openSubj.msg +
+        '（证据：' + openSubj.evidence.join('；') + '）');
     }
     /* ★ 2026-11-07（先搜公开题库，用户裁定）：录题第一步应先上网与成熟错题库比对
        （菁优网等），实在找不到再自己一点一点录 —— 这条规则**以前只写在提示词与人工 checklist 里**，

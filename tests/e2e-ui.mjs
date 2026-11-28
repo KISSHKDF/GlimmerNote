@@ -97,6 +97,12 @@ const S = (name, why) => { skipped++; P('[SKIP]' + name + '  → ' + why); };
       P('     → 用开发壳重启：node tests\\launch-dev.cjs   （或直接跑 node tests\\run.mjs full，它会自己重启带口壳）');
     }
     fs.writeFileSync(path.join(ROOT, 'tests', 'out', 'e2e-ui.log'), out.join('\r\n'), 'utf8');
+    /* ★ 2026-11-28（发版前 quick 判红时挖出）：失败路径**也必须报 `断言=N`**。
+       改前这里只 exit(2) 不带断言数 ⇒ `tests\run.mjs` 的断言数对账把它记成
+       「**未申报断言数**」⇒ 报出来的病是"对账坏了"，
+       而**真正的病是"页面/壳没起来"**被淹没在后面。
+       ⇒ 失败路径补上断言数 + 说清真正原因，别让对账噪声盖住真病。 */
+    console.log('RESULT=FAIL  断言=' + assertions + '  失败=' + (failures + 1));
     process.exit(2);
   }
   P('[A] 页面目标: ' + home.url);
@@ -113,7 +119,9 @@ const S = (name, why) => { skipped++; P('[SKIP]' + name + '  → ' + why); };
   if (!booted) {
     try { P('bootMsg=' + (await cdp.evalJs(`(document.getElementById('bootMsg')||{}).textContent`))); } catch (e) { }
     P('JS错误：' + cdp.jsErrors.join(' || '));
-    fs.writeFileSync(path.join(ROOT, 'tests', 'out', 'e2e-ui.log'), out.join('\r\n'), 'utf8'); process.exit(2);
+    fs.writeFileSync(path.join(ROOT, 'tests', 'out', 'e2e-ui.log'), out.join('\r\n'), 'utf8');
+    console.log('RESULT=FAIL  断言=' + assertions + '  失败=' + (failures + 1));
+    process.exit(2);
   }
 
   A('通道=shell（桌面壳直连）', await cdp.evalJs(`CTB.host.mode`) === 'shell', await cdp.evalJs(`CTB.host.mode`));

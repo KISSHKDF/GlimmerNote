@@ -40,9 +40,37 @@ const A = (n, ok, d) => { total++;
   if (!ok) fails++;
 };
 
-function killShell() {
-  const name = path.basename(exe, '.exe');
-  spawnSync('taskkill', ['/F', '/IM', name + '.exe'], { encoding: 'utf8' });
+/* ── 只杀自己启动的壳（2026-11-28 修复；与 neg-v2-ingest-task-e2e.cjs 同口径）────────────
+   改前是 `taskkill /F /IM 拾光小册.exe` —— 按**镜像名**全杀。
+   实测故障（2026-11-28 发版前跑 quick 时暴露）：
+     `run.mjs` 用 spawnSync 捕获 stdout，本用例的**最后一行 `RESULT=PASS 断言=14` 整行不见了**
+     ⇒ run.mjs 的断言对账判「有 1 个用例没报 `断言=N`：smoke-shell.mjs」⇒ quick 整体 exit 3。
+     单跑本用例却是绿的（断言=14 正常打印）⇒ **不是用例坏了，是被外层环境截断的**。
+     根因：镜像名全杀会波及**用户正开着的程序**与**并发用例**的壳
+     （neg-v2-pagesmoke / neg-v2-ingest-task-e2e 都用同一个 exe）；
+     在 run.mjs 里前一个用例刚起过壳，本用例的 /IM 全杀把那一串进程树一起带走，
+     stdout 管道随之被切断 ⇒ 尾部输出丢失。
+   修法：只按 **pid** 杀自己 spawn 出来的那一个（`/F /T /PID`），
+        并用 tasklist 自证「它真的没了」（壳进程可能已死但端口还没释放，看进程才是真判据）。
+   编码注意：tasklist 输出走 OEM 代码页，中文可能乱码 ⇒ 只按 **ASCII 的 pid 数字** 判存在性。 */
+let shellPid = null;
+function killOwnShell() {
+  if (!shellPid) return;
+  spawnSync('taskkill', ['/F', '/T', '/PID', String(shellPid)], { encoding: 'buffer' });
+}
+function ownShellAlive() {
+  if (!shellPid) return false;
+  const r = spawnSync('tasklist', ['/FI', 'PID eq ' + shellPid, '/NH', '/FO', 'CSV'], { encoding: 'buffer' });
+  const txt = Buffer.isBuffer(r.stdout) ? r.stdout.toString('latin1') : String(r.stdout || '');
+  return txt.includes('"' + shellPid + '"');
+}
+/* 起壳前的**只读**体检：CDP 端口已被占 = 有别的壳/开发实例在跑。**只报告，不杀**
+   （那可能是用户正开着的程序）。 */
+async function portInUse() {
+  try {
+    const r = await fetch(`http://127.0.0.1:${PORT}/json/version`);
+    return r.ok;
+  } catch { return false; }
 }
 async function waitPort(ms) {
   const t0 = Date.now();
@@ -101,7 +129,24 @@ const evalJs = async (c, expr) => {
   }
 
   console.log('=== ① 清场 + 拉起（CDP ' + PORT + '）===');
-  killShell();
+  /* 端口被占 = 有别的壳/开发实例在跑 ⇒ **只报告，不杀**（那可能是用户正开着的程序）。
+     改前这里是无条件 `taskkill /F /IM`（按镜像名全杀）—— 见上面 killOwnShell 的说明。
+     ★ 2026-11-28 补：若占端口的是「**测试自己起的开发壳**」（`launch-dev.cjs` 登记在册），
+       本用例需要**独占**一个壳 ⇒ 只关**那一个**（按 pid 杀，不按镜像名 ⇒ 不碰用户的程序）。 */
+  const busy = await portInUse();
+  if (busy) {
+    console.log('  ⓘ CDP 端口 ' + PORT + ' 已被占用（可能有别的壳/开发实例在跑）');
+    try {
+      const { createRequire } = await import('module');
+      const req = createRequire(import.meta.url);
+      const { claimExclusiveShell } = req('./_开发壳登记.cjs');
+      const r = claimExclusiveShell();
+      console.log('  · 独占壳：' + r.note);
+      if (r.closed) await sleep(800);
+    } catch (e) {
+      console.log('  · 独占壳：跳过（登记模块不可用：' + String((e && e.message) || e).slice(0, 100) + '）');
+    }
+  }
   await sleep(1500);
 
   const env = Object.assign({}, process.env, {
@@ -113,11 +158,12 @@ const evalJs = async (c, expr) => {
 
   const p = spawn(exe, [], { detached: true, stdio: 'ignore', env });
   p.unref();
+  shellPid = p.pid;          /* 本用例唯一允许杀的进程 */
   console.log('  pid=' + p.pid + (dataDir ? '  CTB_DATA=' + path.resolve(dataDir) : ''));
 
   const up = await waitPort(45000);
   A('CDP 端口就绪（壳窗口与 WebView2 都起来了）', up, up ? `127.0.0.1:${PORT}` : '45s 内未就绪');
-  if (!up) { if (!KEEP) killShell(); console.log('\nRESULT=FAIL'); process.exit(1); }
+  if (!up) { if (!KEEP) killOwnShell(); console.log('\nRESULT=FAIL'); process.exit(1); }
 
   console.log('=== ② 连 CDP，看页面到底渲染了什么 ===');
   /* ★ 2026-11-13：改前 `list.find(t => t.type === 'page')` —— WebView2 起来瞬间列表里
@@ -126,7 +172,7 @@ const evalJs = async (c, expr) => {
   const { page, waitedMs } = await E.waitAppPageTarget(`http://127.0.0.1:${PORT}`, { timeoutMs: 60000 });
   A('拿到 app page target（只认 index.html，不许退化成 about:blank）', !!page,
     page ? page.url.slice(0, 120) + '（等了 ' + waitedMs + 'ms）' : '60s 内没有 app 页面');
-  if (!page) { if (!KEEP) killShell(); console.log('\nRESULT=FAIL'); process.exit(1); }
+  if (!page) { if (!KEEP) killOwnShell(); console.log('\nRESULT=FAIL'); process.exit(1); }
 
   const c = await connect(page.webSocketDebuggerUrl);
   await c.send('Runtime.enable');
@@ -200,12 +246,18 @@ const evalJs = async (c, expr) => {
   console.log('\n  页面标题：' + S.title + '　界面版本：' + S.ctbVer);
   console.log('  正文前 200 字：' + String(S.bodyText || '').replace(/\s+/g, ' ').slice(0, 200));
 
-  if (!KEEP) { console.log('=== ④ 关掉壳 ==='); killShell(); }
+  if (!KEEP) {
+    console.log('=== ④ 关掉壳 ===');
+    killOwnShell();
+    /* 自证「它真的没了」—— 壳进程可能已死但端口还没释放，看进程才是真判据。 */
+    await sleep(400);
+    A('自己起的壳已退出（只杀自己那个 pid，不波及用户正开着的程序）', !ownShellAlive());
+  }
 
   console.log('\nRESULT=' + (fails ? 'FAIL(' + fails + ')' : 'PASS') + '  断言=' + total + '  失败=' + fails);
   process.exit(fails ? 1 : 0);
 })().catch(e => {
   console.log('EXC ' + (e && e.stack || e));
-  if (!KEEP) killShell();
+  if (!KEEP) killOwnShell();
   process.exit(3);
 });

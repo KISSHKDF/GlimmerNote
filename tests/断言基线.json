@@ -120,7 +120,7 @@
  "neg-task-binding.cjs": 50,
  "neg-task-page-wiring.cjs": 64,
  "neg-triage-dedupe.cjs": 24,
- "neg-v1-admit-consumption.cjs": 21,
+ "neg-v1-admit-consumption.cjs": 26,
  "neg-v2-identity-and-session.mjs": 28,
  "neg-v2-ingest-task-e2e.cjs": 44,
  "neg-v2-pagesmoke.cjs": 19,
@@ -137,11 +137,11 @@
  "repo-hygiene.cjs": 14,
  "restore-drill.cjs": 23,
  "safe-write.test.mjs": 12,
- "smoke-shell.mjs": 14,
+ "smoke-shell.mjs": 15,
  "verify-shell-parser.mjs": 7,
  "verify-shell-visual.cjs": 16,
- "verify-stem-13.cjs": 651,
- "verify-stem-shape.cjs": 656,
+ "verify-stem-13.cjs": 649,
+ "verify-stem-shape.cjs": 654,
  "verify-v2-interactive-sweep.cjs": 24,
  "verify-v2-route-cta.cjs": 23,
  "verify-variant-retrieval.cjs": 23,
@@ -163,5 +163,7 @@
  "neg-multipart-answer.cjs": 18,
  "neg-fig-declared-but-missing.cjs": 21,
  "neg-print-preview-close-latency.cjs": 20,
- "neg-split-contamination.cjs": 15
+ "neg-split-contamination.cjs": 15,
+ "neg-record-extra-sections.cjs": 25,
+ "neg-open-subjective-gate.cjs": 30
 }

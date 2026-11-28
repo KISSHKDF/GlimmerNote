@@ -69,20 +69,54 @@ const snapDiff = (a, b) => DERIVED.filter(f => JSON.stringify((a || {})[f]) !== 
 const eqj = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 /* 当前用哪个孩子（严格回滚断言需要 ≥3 张「非已掌握」的卡，运行时挑，不写死卡号）。
-   全程跑在 makeTempLib 副本上，与真实待批改批次无关；「恢复未组卷」的逐字段等式
-   在卡挂不挂在别的待批改批次里都成立（pendingMap 组卷前=组卷后=撤批后）。 */
+   全程跑在 makeTempLib 副本上，与真实待批改批次无关。
+   ★ 2026-11-28 修正一个**过于乐观的假设**（原注释写「在卡挂不挂在别的待批改批次里都成立」，
+     实测**不成立**）：
+     `reviewStatus` 是**派生**字段（`_标记复习.mjs` 的 derive()：卡在任一「待批改」批次里
+     ⇒ reviewStatus = '复习中·待批改'；否则按 reviews 的最后一条判）。
+     而**索引里存的是上一次派生时的值**（不一定与当前台账一致 —— 台账里那个批次后来被批改/撤批了，
+     索引的 reviewStatus 却没跟着重算 ⇒ 是个**陈旧值**）。
+     于是挑到这样的卡时：组卷前 reviewStatus = '复习中·待批改'（陈旧），
+     组卷后 = '复习中·待批改'（真），撤批后 = '已复习·通过'（真重算）
+     ⇒ 逐字段等式里 `reviewStatus` 这一项必然不等 ⇒ 断言假红。
+     实测触发：真库里 M0006/M0007/M0008 的 reviewStatus 停在 '复习中·待批改'，
+     而它们在台账里的批次（P20261025-06 等）早已是「已批改」。
+   ⇒ 修法：挑卡时**排除 reviewStatus 为「复习中·待批改」的卡** ——
+     它们要么陈旧、要么真的挂在别的待批改批次里，两种情况都不适合做"撤批后逐字段回退"的实验对象。
+     （不是放宽断言：放宽就等于放弃这条断言的牙齿。） */
 let CUR = null;
+/** 某个学生里"当前挂在待批改批次上"的卡号集合（按台账，不是按索引的派生字段）。 */
+function pendingIdsOf(root, student) {
+  const ledPath = path.join(root, '_组卷台账.json');
+  const out = new Set();
+  try {
+    const led = JSON.parse(fs.readFileSync(ledPath, 'utf8').replace(/^\uFEFF/, ''));
+    for (const b of (led.batches || [])) {
+      if (b.status !== '待批改') continue;
+      for (const id of (b.items || [])) out.add(student + '|' + id);
+    }
+  } catch { }
+  return out;
+}
+/** 这张卡能不能当"撤批后逐字段回退"的实验对象？ */
+function usableAsProbe(it, student, pending) {
+  if (!it || !it.id) return false;
+  if (pending.has(student + '|' + it.id)) return false;              /* 真挂在待批改批次里 */
+  if (it.reviewStatus === '复习中·待批改') return false;              /* 索引里是陈旧/在途的派生值 */
+  if (it.reviewStatus === '已掌握') return false;
+  if (num(it.errorCount) < 1) return false;
+  return true;
+}
 function pickStudent(root) {
   const counts = {};
   for (const rel of E.findIndexes(root)) {
     try {
       const j = JSON.parse(fs.readFileSync(path.join(root, rel), 'utf8').replace(/^\uFEFF/, ''));
+      const pending = pendingIdsOf(root, j.student);
       for (const it of itemsOf(j)) {
-        if (!it || !it.id) continue;
-        if ((seed.items || []).includes(it.id) &&
-          it.reviewStatus !== '已掌握' && num(it.errorCount) >= 1) {
-          counts[j.student] = (counts[j.student] || 0) + 1;
-        }
+        if (!(seed.items || []).includes(it.id)) continue;
+        if (!usableAsProbe(it, j.student, pending)) continue;
+        counts[j.student] = (counts[j.student] || 0) + 1;
       }
     } catch { }
   }
@@ -91,8 +125,9 @@ function pickStudent(root) {
 }
 const idsOfStudent = (t, student, n) => {
   const j = JSON.parse(fs.readFileSync(idxAbsOf(t, student), 'utf8').replace(/^\uFEFF/, ''));
+  const pending = pendingIdsOf(t, student);
   return itemsOf(j).filter(it => (seed.items || []).includes(it.id) &&
-    it.reviewStatus !== '已掌握' && num(it.errorCount) >= 1).slice(0, n).map(it => it.id);
+    usableAsProbe(it, student, pending)).slice(0, n).map(it => it.id);
 };
 
 let IDS = null, ID_PRE = null, tmp1 = null;
