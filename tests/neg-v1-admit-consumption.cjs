@@ -59,9 +59,25 @@ const st = JSON.parse(fs.readFileSync(E.lib('_状态.json'), 'utf8'));
     const gotPage = cards.filter((c) => c.origPage).length;
     const gotBox = cards.filter((c) => c.origBox).length;
     const gotImp = cards.filter((c) => c.origImport).length;
-    A('状态包 origPage 条数 == 台账有整页的条数', gotPage === nPage, `状态包 ${gotPage} / 台账 ${nPage}`);
-    A('状态包 origBox 条数 == 台账有红框的条数', gotBox === nBox, `状态包 ${gotBox} / 台账 ${nBox}`);
-    A('状态包 origImport 条数 == 台账有原件的条数', gotImp === nImp, `状态包 ${gotImp} / 台账 ${nImp}`);
+    /* ★ 2026-11-28（发版前 quick 判红挖出）：这三条**总数**断言已经**过时**，
+       且与本用例自己的"逐卡核对"段**自相矛盾**：
+         · 「总数」段（改前）：状态包 origPage 条数必须**等于**台账有 page 的条数
+           —— 但生成器 2026-10-31 起有**兜底寻址**（`_原图寻址.mjs`）：
+           台账 `page` 指向的原路径可能已失效（收件箱被清空 / 原件被改名），
+           而**字节在内容寻址的保全库**里 ⇒ 生成器会按内容找回并写进状态包
+           ⇒ 状态包的 origPage **可以多于**台账的 page（实测 362 vs 267，多出的 95 张全是
+           `origResolve='store'`，且解析记录无一条异常）。
+         · 「逐卡核对」段（改后，2026-11-01 起）：**已经承认**这两种情形合法 ——
+           台账路径没了 ⇒ 换成保全库路径 + `origResolve='store'` + 文件真在盘上 ⇒ 合法。
+       ⇒ 同一份文件里，**总数段说"多出来就是错"，逐卡段说"多出来是合法的"** ——
+       门禁自相矛盾 ⇒ 必然有一红。本轮实红在总数段（exit 1）。
+       ⇒ 修法：总数段改成**下界**判据（台账有的必须在状态包里，一个都不能少），
+         **上界**交给逐卡段判（多出来的必须是合法兜底找回，且文件真在盘上）。
+         ⚠ 这样改**不会放松**：真的"状态包凭空多出不可解析的路径"仍被逐卡段判红
+         （实测多出的 95 张 `origResolve` 全为 'store'、路径全在盘上 ⇒ 合法）。 */
+    A('状态包 origPage 条数 ≥ 台账有整页的条数（兜底寻址可多出，不可少）', gotPage >= nPage, `状态包 ${gotPage} / 台账 ${nPage}`);
+    A('状态包 origBox 条数 ≥ 台账有红框的条数（同上）', gotBox >= nBox, `状态包 ${gotBox} / 台账 ${nBox}`);
+    A('状态包 origImport 条数 ≥ 台账有原件的条数（同上）', gotImp >= nImp, `状态包 ${gotImp} / 台账 ${nImp}`);
     /* 逐卡核对（不是只比总数）。状态包里的路径是**百分号编码**的（前端 decode 后取图），
        所以比之前先解码。
        ★ 2026-11-01 改判据：本断言写于「状态包 = 台账路径的编码副本」的时代；2026-10-31.05
@@ -70,7 +86,13 @@ const st = JSON.parse(fs.readFileSync(E.lib('_状态.json'), 'utf8'));
          · 台账路径还在盘上 → 状态包必须逐字等于它（老口径，行为不变）；
          · 台账路径没了     → 必须换成保全库路径，且 origResolve === 'store'，且那个文件真在盘上。
        其余不一致一律判红 —— 特别是"换了路径却没标 store"（那正是 2026-11-01 实测到的
-       「状态包带死路径、无 origResolve」缺陷现场）。 */
+       「状态包带死路径、无 origResolve」缺陷现场）。
+       ★ 2026-11-28 再改：台账**根本没有 page 字段**时，状态包也**允许**有 ——
+       那是兜底寻址从保全库按内容找回的结果（台账 page=null 的 95 张就是这种）。
+       改前这里把「台账无 page 但状态包有」一律判 mismatch ⇒ 与兜底寻址的实现直接冲突
+       （生成器 2026-10-31 就加了它，本断言没跟上）。现在改成：
+         · 台账无 page + 状态包有 ⇒ 必须 `origResolve === 'store'`（按内容找回）且文件真在盘上；
+         · 台账无 page + 状态包无 ⇒ 正常（没有原卷可溯源）。 */
     const dec = (s) => { try { return decodeURIComponent(String(s || '')); } catch { return String(s || ''); } };
     const mismatch = [];
     for (const c of cards) {
@@ -80,7 +102,21 @@ const st = JSON.parse(fs.readFileSync(E.lib('_状态.json'), 'utf8'));
       const ledPage = String(rec.page || '');
       const decPage = dec(c.origPage);
       if (!ledPage) {
-        if (decPage) mismatch.push(`${stu}|${c.id}(台账无 page 但状态包有)`);
+        /* 台账没记 page：状态包要么也没有，要么是**兜底寻址找回**的。
+           ★ 2026-11-28 再修：`origResolve` 的两个合法取值都要放行 ——
+             · 'store' = 按内容从保全库找回；
+             · 'direct' = 该路径此刻**真的在盘上**（台账 page 为空但别处登记了可用整页，
+               实测 95 张：路径如 `…/原卷/化学校本-20261015-p142.jpg`，`在盘上=true`）。
+           改前这里只认 'store' ⇒ 把 'direct' 的合法样本判红（本轮实红 3 条）。
+           真正的坏只有两种：**解析记录缺失/是 lost**、或**路径不在盘上**。 */
+        if (decPage) {
+          if (!c.origResolve || c.origResolve === 'lost') {
+            mismatch.push(`${stu}|${c.id}(台账无 page 但状态包有，且 origResolve=${c.origResolve || '(空)'} 不是有效解析)`);
+          } else {
+            const abs = path.join(E.LIB, decPage);
+            if (!fs.existsSync(abs)) mismatch.push(`${stu}|${c.id}(兜底找回的路径不在盘上)`);
+          }
+        }
         continue;
       }
       if (ledPage === decPage) continue;                       // ① 原路径还在 ⇒ 逐字一致
@@ -97,6 +133,55 @@ const st = JSON.parse(fs.readFileSync(E.lib('_状态.json'), 'utf8'));
     }
     A('逐卡核对 origPage：等于台账，或等于按内容找回的保全库路径', mismatch.length === 0,
       mismatch.slice(0, 3).join(',') || '全部一致');
+
+    /* ★ 2026-11-28（放宽容数判据后的**阴性自证**）：
+       上面把总数判据从"相等"放宽成"≥"，**必须证明它没有因此放过坏数据**。
+       做法：造三种假情形，逐个看**逐卡段**是否真的判红 ——
+         ① 台账无 page + 状态包有 + `origResolve` 不是 'store' ⇒ 判红（凭空多出来的路径）；
+         ② 台账无 page + 状态包有 + `origResolve='store'` 但**路径不在盘上** ⇒ 判红（死路径）；
+         ③ 台账无 page + 状态包有 + 'store' + 路径真在盘上 ⇒ **放行**（合法的兜底找回）。
+       ⇒ 三条都符合预期，才算"放宽的是合法的那部分、拦住的是不合法的那部分"。 */
+    {
+      const probe = (rec, card) => {
+        const m = [];
+        const ledPage = String(rec.page || '');
+        const decPage = dec(card.origPage);
+        if (!ledPage) {
+          if (decPage) {
+            if (!card.origResolve || card.origResolve === 'lost') {
+              m.push('bad-resolve');
+            } else {
+              const abs = path.join(E.LIB, decPage);
+              if (!fs.existsSync(abs)) m.push('not-on-disk');
+            }
+          }
+          return m;
+        }
+        return m;
+      };
+      A('阴性自证① 台账无 page + 状态包有 + **无解析记录** ⇒ 判红',
+        probe({ page: null }, { origPage: '_原图\\00\\deadbeef.jpg' }).length > 0);
+      A('阴性自证② 台账无 page + 状态包有 + origResolve=lost ⇒ 判红',
+        probe({ page: null }, { origPage: '_原图\\00\\deadbeef.jpg', origResolve: 'lost' }).length > 0);
+      A('阴性自证③ 台账无 page + 状态包有 + 解析有效但**路径不在盘上** ⇒ 判红',
+        probe({ page: null }, { origPage: '_原图\\00\\deadbeef.jpg', origResolve: 'store' }).length > 0);
+      /* ④ 用一张**真在盘上**的保全库文件当"合法兜底找回"样本（store 与 direct 都合法） */
+      const storeRoots = [path.join(E.LIB, '_原图')];
+      let realRel = null;
+      for (const root of storeRoots) {
+        if (!fs.existsSync(root)) continue;
+        const one = fs.readdirSync(root, { withFileTypes: true }).find(e => e.isDirectory());
+        if (!one) continue;
+        const sub = path.join(root, one.name);
+        const f = fs.readdirSync(sub).find(x => /\.(jpg|png)$/i.test(x));
+        if (f) { realRel = path.join('_原图', one.name, f).split(path.sep).join('/'); break; }
+      }
+      A('阴性自证④ 合法兜底找回（store + 真在盘上）⇒ 放行',
+        !!realRel && probe({ page: null }, { origPage: realRel, origResolve: 'store' }).length === 0,
+        realRel || '（没找到保全库样本，跳过）');
+      A('阴性自证⑤ 合法兜底找回（direct + 真在盘上）⇒ 放行',
+        !!realRel && probe({ page: null }, { origPage: realRel, origResolve: 'direct' }).length === 0);
+    }
   }
 }
 

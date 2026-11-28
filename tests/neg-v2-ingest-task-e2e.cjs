@@ -75,6 +75,27 @@ async function preflight() {
       '若随后失败请先手动关掉它再跑。');
   } catch (e) { /* 没人应答 = 正常 */ }
 }
+
+/* ★ 2026-11-28（发版前 quick 连续判红挖出）：本用例需要**独占**一个壳
+ *   （它要连自己的 CDP 端口、连自己的库根），而 `launch-dev.cjs` 会**故意留一个**
+ *   带调试口的开发壳给 `e2e-ui.mjs` 用 ⇒ 撞车 ⇒ 那个壳占着**单实例互斥体**
+ *   ⇒ 本用例起的壳立即退出 ⇒ CDP 端口永远不就绪 ⇒ 报「壳起来且 CDP 就绪：失败」。
+ *
+ *   修法：调 `_开发壳登记.cjs` 的 `claimExclusiveShell()` ——
+ *   它**只关登记在册的那个开发壳**（按 pid 杀，不按镜像名 ⇒ 不波及用户正开着的程序），
+ *   没有登记 / 那个壳已死 ⇒ 不杀任何东西。
+ *   ⚠ 绝不能退回 `taskkill /IM 拾光小册.exe`（按镜像名全杀）—— 那会杀掉用户的程序。 */
+function claimExclusive() {
+  try {
+    const { claimExclusiveShell } = require('./_开发壳登记.cjs');
+    const r = claimExclusiveShell();
+    console.log('  · 独占壳：' + r.note);
+    return r;
+  } catch (e) {
+    console.log('  · 独占壳：跳过（登记模块不可用：' + String((e && e.message) || e).slice(0, 100) + '）');
+    return { closed: false };
+  }
+}
 async function waitPort(ms) {
   const t0 = Date.now();
   while (Date.now() - t0 < ms) {
@@ -176,6 +197,10 @@ async function waitFor(cdp, expr, ok, tries, gap) {
   let cdp = null;
   try {
     await preflight();
+    /* ★ 2026-11-28：本用例要**独占**壳 ⇒ 先把「测试自己起的那个开发壳」关掉
+       （只关登记在册的那个，按 pid 杀 ⇒ 不碰用户正开着的程序）。 */
+    claimExclusive();
+    await sleep(800);
     console.log('═══ ① 拉起真壳（临时库 ' + LIB + '，CDP ' + PORT + '）═══');
     const p = spawn(EXE, [], {
       detached: true, stdio: 'ignore',
@@ -190,7 +215,19 @@ async function waitFor(cdp, expr, ok, tries, gap) {
     p.unref();
     const up = await waitPort(45000);
     A('壳起来且 CDP 就绪（pid=' + shellPid + '）', up);
-    if (!up) { console.log('RESULT=FAIL'); process.exit(2); }
+    /* ★ 2026-11-28（发版前 quick 判红时挖出）：失败路径**也必须报 `断言=N`**。
+       改前这里只打印 `RESULT=FAIL` 就不带断言数 ⇒ `tests\run.mjs` 的断言数对账
+       把它记成「**未申报断言数**」⇒ 报出来的病是"对账坏了"，
+       而**真正的病是"壳起不来"**被淹没在后面（本轮真触发过：前序用例残留的壳
+       占着单实例锁 ⇒ 新壳立即退出 ⇒ CDP 端口永远不就绪）。
+       ⇒ 失败路径补上断言数 + 说清真正原因，别让对账噪声盖住真病。 */
+    if (!up) {
+      console.log('\n✖ 壳起来且 CDP 就绪：**失败** —— 常见原因：① 上一次用例残留的壳还活着、'
+        + '占着单实例锁（用 `Get-Process 拾光小册` 查，活着的按 pid 杀掉）；'
+        + '② WebView2 profile 被锁；③ exe 缺失/版本不匹配。');
+      console.log('RESULT=FAIL  断言=' + total + '  失败=' + (fails + 1));
+      process.exit(2);
+    }
     /* ⚠ `waitPort()` 只看 `/json/list` **应答**（HTTP 200），而壳刚起来时那个列表可能是**空的**
        —— 2026-11-03 实测撞上：`拿到 page target → []`，整轮 quick 因此红（不是产品缺陷，是竞态）。
        这里改成**有界轮询**等 page target 出现（最多 20s），拿到再断言。
@@ -209,7 +246,12 @@ async function waitFor(cdp, expr, ok, tries, gap) {
     }
     A('拿到 app page target（有界等待 ≤20s：只认 index.html，不许退化成 about:blank）', !!page,
       page ? page.url.slice(0, 100) : '20s 内没等到 app 页面（壳起来了但页面没导航完）');
-    if (!page) { console.log('RESULT=FAIL'); process.exit(2); }
+    if (!page) {
+      console.log('\n✖ 拿到 app page target：**失败** —— 壳起来了但页面没导航完（boot 卡住）。'
+        + '先看壳的 stdout/stderr 与 `src\app\index.html` 是否存在。');
+      console.log('RESULT=FAIL  断言=' + total + '  失败=' + (fails + 1));
+      process.exit(2);
+    }
     cdp = await Cdp.connect(page.webSocketDebuggerUrl);
     await cdp.send('Runtime.enable');
     await cdp.send('Log.enable');

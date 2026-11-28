@@ -130,5 +130,15 @@ function shellCount() {
   });
   p.unref();
   console.log('relaunched pid', p.pid);
+  /* ★ 2026-11-28（发版前 quick 连续判红挖出）：登记这个 pid。
+     本脚本起的壳是**故意留着的**（e2e-ui 要连它的 CDP 调试口），
+     而 `neg-v2-ingest-task-e2e.cjs` / `smoke-shell.mjs` 需要**独占**起壳 ——
+     两者撞车 ⇒ 残留壳占着单实例互斥体 ⇒ 后起的壳立即退出 ⇒ CDP 端口永远不就绪。
+     ⇒ 把 pid 登记下来，让"需要独占"的用例能**只关这一个**（按 pid 杀，不按镜像名
+     ⇒ 不波及用户正开着的程序）。契约见 `_开发壳登记.cjs`。 */
+  try {
+    require('./_开发壳登记.cjs').rememberDevShell(p.pid);
+    console.log('已登记开发壳 pid（独占用例可据此只关这一个）');
+  } catch (e) { console.log('（登记开发壳 pid 失败，不阻断：' + String((e && e.message) || e).slice(0, 120) + '）'); }
   process.exit(0);
 })();
